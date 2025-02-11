@@ -1,5 +1,6 @@
 #![no_std]
 #![no_main]
+#![cfg_attr(feature = "strict", deny(warnings))]
 
 use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use limine::request::{
@@ -11,7 +12,7 @@ use limine::smp::{Cpu, RequestFlags};
 use limine::BaseRevision;
 use taos::constants::x2apic::CPU_FREQUENCY;
 use taos::events::futures::print_nums_after_rand_delay;
-use taos::events::{schedule, register_event_runner, run_loop};
+use taos::events::{register_event_runner, run_loop, schedule};
 use taos::interrupts::{gdt, idt, x2apic};
 use x86_64::VirtAddr;
 
@@ -28,7 +29,7 @@ use taos::{
         frame_allocator::{GlobalFrameAllocator, FRAME_ALLOCATOR},
         heap, paging,
     },
-    serial_println
+    serial_println,
 };
 
 #[used]
@@ -63,13 +64,13 @@ static BOOT_COMPLETE: AtomicBool = AtomicBool::new(false);
 static MEMORY_SETUP: AtomicBool = AtomicBool::new(false);
 static CPU_COUNT: AtomicU64 = AtomicU64::new(0);
 
- // ASYNC
+// ASYNC
 async fn test_sum(start: u64) -> u64 {
     let mut sum: u64 = start;
     const MAX: u64 = 10000000;
     for i in 0..MAX {
         sum += i;
-        if i == MAX/2 {
+        if i == MAX / 2 {
             serial_println!("Halfway through long event");
         }
     }
@@ -83,7 +84,7 @@ async fn test_event(arg1: u64) {
 
 async fn test_event_two_blocks(arg1: u64) {
     let tv = test_sum(arg1).await;
-    let tv2 = test_sum(arg1*2).await;
+    let tv2 = test_sum(arg1 * 2).await;
     serial_println!("Long events results: {} {}", tv, tv2);
 }
 
@@ -230,7 +231,7 @@ extern "C" fn kmain() -> ! {
     schedule(1, test_event(353), 1);
 
     serial_println!("BSP entering event loop");
-    unsafe{ run_loop(bsp_id) }
+    unsafe { run_loop(bsp_id) }
 }
 
 #[no_mangle]

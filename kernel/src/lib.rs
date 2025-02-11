@@ -1,4 +1,5 @@
 #![feature(abi_x86_interrupt)]
+#![cfg_attr(feature = "strict", deny(warnings))]
 #![no_std]
 extern crate alloc;
 
