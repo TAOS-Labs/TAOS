@@ -10,6 +10,8 @@ use limine::response::MemoryMapResponse;
 use limine::smp::{Cpu, RequestFlags};
 use limine::BaseRevision;
 use taos::constants::x2apic::CPU_FREQUENCY;
+use taos::events::futures::print_nums_after_rand_delay;
+use taos::events::{schedule, register_event_runner, run_loop};
 use taos::interrupts::{gdt, idt, x2apic};
 use x86_64::VirtAddr;
 
@@ -26,7 +28,7 @@ use taos::{
         frame_allocator::{GlobalFrameAllocator, FRAME_ALLOCATOR},
         heap, paging,
     },
-    serial_println,
+    serial_println
 };
 
 #[used]
@@ -58,7 +60,32 @@ static _START_MARKER: RequestsStartMarker = RequestsStartMarker::new();
 static _END_MARKER: RequestsEndMarker = RequestsEndMarker::new();
 
 static BOOT_COMPLETE: AtomicBool = AtomicBool::new(false);
+static MEMORY_SETUP: AtomicBool = AtomicBool::new(false);
 static CPU_COUNT: AtomicU64 = AtomicU64::new(0);
+
+ // ASYNC
+async fn test_sum(start: u64) -> u64 {
+    let mut sum: u64 = start;
+    const MAX: u64 = 10000000;
+    for i in 0..MAX {
+        sum += i;
+        if i == MAX/2 {
+            serial_println!("Halfway through long event");
+        }
+    }
+    sum
+}
+
+async fn test_event(arg1: u64) {
+    let tv = test_sum(arg1).await;
+    serial_println!("Long event result: {}", tv);
+}
+
+async fn test_event_two_blocks(arg1: u64) {
+    let tv = test_sum(arg1).await;
+    let tv2 = test_sum(arg1*2).await;
+    serial_println!("Long events results: {} {}", tv, tv2);
+}
 
 #[no_mangle]
 extern "C" fn kmain() -> ! {
@@ -187,9 +214,23 @@ extern "C" fn kmain() -> ! {
 
     serial_println!("FAT16 filesystem test passed!");
 
-    serial_println!("BSP entering idle loop");
+    MEMORY_SETUP.store(true, Ordering::SeqCst);
+
+    register_event_runner(bsp_id);
+
     idt::enable();
-    idle_loop();
+
+    // ASYNC
+    schedule(bsp_id, print_nums_after_rand_delay(0x1332), 3);
+    schedule(bsp_id, print_nums_after_rand_delay(0x532), 2);
+    schedule(bsp_id, test_event_two_blocks(400), 0);
+    schedule(bsp_id, test_event(100), 3);
+
+    // Try giving something to CPU 2 (note this is not how it'll be done for real, just a test)
+    schedule(1, test_event(353), 1);
+
+    serial_println!("BSP entering event loop");
+    unsafe{ run_loop(bsp_id) }
 }
 
 #[no_mangle]
@@ -206,8 +247,26 @@ unsafe extern "C" fn secondary_cpu_main(cpu: &Cpu) -> ! {
     }
 
     idt::enable();
-    serial_println!("AP {} entering idle loop", cpu.id);
-    idle_loop();
+
+    // To avoid constant page faults
+    while !MEMORY_SETUP.load(Ordering::SeqCst) {
+        core::hint::spin_loop();
+    }
+
+    let x: Box<i32> = Box::new(10);
+    serial_println!(
+        "AP {} Heap object allocated at: {:p}",
+        cpu.id,
+        Box::as_ref(&x) as *const i32
+    );
+
+    // ASYNC
+    register_event_runner(cpu.id);
+
+    schedule(cpu.id, test_event(200), 2);
+
+    serial_println!("AP {} entering event loop", cpu.id);
+    run_loop(cpu.id)
 }
 
 #[panic_handler]

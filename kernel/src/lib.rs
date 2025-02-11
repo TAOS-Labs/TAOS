@@ -10,6 +10,8 @@ pub mod filesys;
 pub mod interrupts;
 pub mod memory;
 
+pub mod events;
+
 pub use devices::serial;
 
 pub mod prelude {
