@@ -1,6 +1,5 @@
 use super::{Event, EventRunner};
 
-extern crate alloc;
 use alloc::collections::btree_set::BTreeSet;
 use alloc::sync::Arc;
 use futures::task::waker_ref;
@@ -72,11 +71,8 @@ impl EventRunner {
                     if !ready {
                         let r: Result<(), Arc<Event>> =
                             self.event_queues[event.priority].push(event.clone());
-                        match r {
-                            Err(_) => {
-                                panic!("Event queue full!")
-                            }
-                            Ok(_) => (),
+                        if r.is_err() {
+                            panic!("Event queue full!")
                         }
                     } else {
                         let mut write_lock = self.pending_events.write();

@@ -3,11 +3,16 @@ use crate::{
     serial_println,
 };
 use limine::memory_map::EntryType;
+use limine::request::MemoryMapRequest;
 use limine::response::MemoryMapResponse;
 use x86_64::{
     structures::paging::{FrameAllocator, FrameDeallocator, PhysFrame, Size4KiB},
     PhysAddr,
 };
+
+#[used]
+#[link_section = ".requests"]
+static MEMORY_MAP_REQUEST: MemoryMapRequest = MemoryMapRequest::new();
 
 pub struct BootIntoFrameAllocator {
     pub memory_map: &'static MemoryMapResponse,
@@ -19,7 +24,13 @@ pub struct BootIntoFrameAllocator {
 }
 
 impl BootIntoFrameAllocator {
-    pub unsafe fn init(memory_map: &'static MemoryMapResponse) -> Self {
+    /// # Safety
+    ///
+    /// TODO
+    pub unsafe fn init() -> Self {
+        let memory_map: &MemoryMapResponse = MEMORY_MAP_REQUEST
+            .get_response()
+            .expect("Memory map request failed");
         BootIntoFrameAllocator {
             memory_map,
             next: 0,

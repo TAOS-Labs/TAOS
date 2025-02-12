@@ -1,5 +1,3 @@
-extern crate alloc;
-
 use crate::constants::memory::{HEAP_SIZE, HEAP_START};
 use crate::memory::{frame_allocator::FRAME_ALLOCATOR, paging::create_mapping};
 use crate::serial_println;

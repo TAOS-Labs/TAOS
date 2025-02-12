@@ -4,9 +4,22 @@ use x86_64::{
 };
 
 use crate::memory::frame_allocator::{alloc_frame, dealloc_frame, FRAME_ALLOCATOR};
+use limine::request::HhdmRequest;
+
+#[used]
+#[link_section = ".requests"]
+static HHDM_REQUEST: HhdmRequest = HhdmRequest::new();
 
 /// initializes vmem system. activates pml4 and sets up page tables
-pub unsafe fn init(hhdm_base: VirtAddr) -> OffsetPageTable<'static> {
+///
+/// # Safety
+///
+/// TODO
+pub unsafe fn init() -> OffsetPageTable<'static> {
+    let hhdm_response = HHDM_REQUEST.get_response().expect("HHDM request failed");
+
+    let hhdm_base: VirtAddr = VirtAddr::new(hhdm_response.offset());
+
     let pml4 = active_level_4_table(hhdm_base);
 
     OffsetPageTable::new(pml4, hhdm_base)

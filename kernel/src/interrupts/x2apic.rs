@@ -47,6 +47,12 @@ pub struct X2ApicManager {
     apics: [Option<X2Apic>; MAX_CORES],
 }
 
+impl Default for X2ApicManager {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl X2ApicManager {
     pub const fn new() -> Self {
         const NONE_APIC: Option<X2Apic> = None;
@@ -161,7 +167,7 @@ pub struct X2Apic {
 impl X2Apic {
     fn new() -> Result<Self, X2ApicError> {
         let cpuid = CpuId::new();
-        if !cpuid.get_feature_info().map_or(false, |f| f.has_x2apic()) {
+        if !cpuid.get_feature_info().is_some_and(|f| f.has_x2apic()) {
             return Err(X2ApicError::NotSupported);
         }
         Ok(Self { enabled: false })
@@ -195,6 +201,12 @@ pub struct Pit {
     channel_2: Port<u8>,
     command: Port<u8>,
     control: Port<u8>,
+}
+
+impl Default for Pit {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl Pit {

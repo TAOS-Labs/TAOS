@@ -36,12 +36,12 @@ impl<'a> Fat16<'a> {
         let reserved_sectors = 1; // Boot sector
         let fat_count = 2;
         let root_dir_entries = ROOT_DIR_ENTRIES as u16;
-        let root_dir_sectors = ((root_dir_entries as usize * 32) + (block_size - 1)) / block_size;
+        let root_dir_sectors = (root_dir_entries as usize * 32).div_ceil(block_size);
 
         // Calculate sectors per FAT
         let total_clusters = (total_blocks as usize - reserved_sectors as usize - root_dir_sectors)
             / sectors_per_cluster as usize;
-        let sectors_per_fat = ((total_clusters * 2) + (block_size - 1)) / block_size;
+        let sectors_per_fat = (total_clusters * 2).div_ceil(block_size);
 
         // Create boot sector
         let boot_sector = BootSector {
@@ -49,9 +49,9 @@ impl<'a> Fat16<'a> {
             oem_name: *b"UTTAOS.0",
             bytes_per_sector: block_size as u16,
             sectors_per_cluster: sectors_per_cluster as u8,
-            reserved_sectors: reserved_sectors,
-            fat_count: fat_count,
-            root_dir_entries: root_dir_entries,
+            reserved_sectors,
+            fat_count,
+            root_dir_entries,
             total_sectors_16: if total_blocks < 65536 {
                 total_blocks as u16
             } else {
@@ -128,7 +128,7 @@ impl<'a> Fat16<'a> {
         let fat_start = boot_sector.reserved_sectors as u64;
         let sectors_per_fat = boot_sector.sectors_per_fat as u64;
         let root_dir_start = fat_start + (sectors_per_fat * boot_sector.fat_count as u64);
-        let root_dir_sectors = ((ROOT_DIR_ENTRIES * 32) + (SECTOR_SIZE - 1)) / SECTOR_SIZE;
+        let root_dir_sectors = (ROOT_DIR_ENTRIES * 32).div_ceil(SECTOR_SIZE);
         let data_start = root_dir_start + root_dir_sectors as u64;
         let cluster_size = boot_sector.sectors_per_cluster as usize * SECTOR_SIZE;
         let fd_counter = 0;
@@ -397,7 +397,7 @@ impl<'a> Fat16<'a> {
     }
 }
 
-impl<'a> FileSystem for Fat16<'a> {
+impl FileSystem for Fat16<'_> {
     fn create_file(&mut self, path: &str) -> Result<(), FsError> {
         let (parent_path, name) = match path.rfind('/') {
             Some(pos) => (&path[..pos], &path[pos + 1..]),
@@ -413,7 +413,7 @@ impl<'a> FileSystem for Fat16<'a> {
             None => (name, ""),
         };
 
-        if let Ok(_) = self.find_entry(path) {
+        if self.find_entry(path).is_ok() {
             return Err(FsError::AlreadyExists);
         }
 
@@ -442,7 +442,7 @@ impl<'a> FileSystem for Fat16<'a> {
             return Err(FsError::InvalidName);
         }
 
-        if let Ok(_) = self.find_entry(path) {
+        if self.find_entry(path).is_ok() {
             return Err(FsError::AlreadyExists);
         }
 
@@ -514,17 +514,14 @@ impl<'a> FileSystem for Fat16<'a> {
         Ok(fd)
     }
 
-    fn close_file(&mut self, fd: usize) -> () {
+    fn close_file(&mut self, fd: usize) {
         let file: &mut Fat16File = self.fd_table.get_mut(fd).expect("Invalid file descriptor.");
-        assert_eq!(
-            file.valid, true,
-            "Cannot close an invailid file descriptor."
-        );
+        assert!(file.valid, "Cannot close an invailid file descriptor.");
 
         file.valid = false;
         file.current_cluster = 0;
         file.position = 0;
-        file.size = 0 as u64;
+        file.size = 0_u64;
         file.cluster_size = 0;
         file.fat_start = 0;
         file.data_start = 0;
@@ -772,7 +769,7 @@ impl<'a> FileSystem for Fat16<'a> {
     fn rename(&mut self, from: &str, to: &str) -> Result<(), FsError> {
         let (src_entry, src_pos) = self.find_entry(from)?;
 
-        if let Ok(_) = self.find_entry(to) {
+        if self.find_entry(to).is_ok() {
             return Err(FsError::AlreadyExists);
         }
 

@@ -12,19 +12,19 @@ env:
 jobs:
   build:
     runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: ./kernel
     steps:
     - uses: actions/checkout@v4
     - name: Setup toolchain
       uses: actions-rust-lang/setup-rust-toolchain@v1
       with:
-        components: rustfmt
+        components: rustfmt, clippy
         toolchain: nightly-x86_64-unknown-linux-gnu
     - name: Add rust-src to toolchain
       run:  rustup component add rust-src --toolchain nightly-x86_64-unknown-linux-gnu
-    - name: format
-      run: cargo fmt --check
+    - uses: Swatinem/rust-cache@v2
+      with:
+        workspaces: "kernel -> target"
+    - name: lint
+      run: make check
     - name: Build (check for errors)
-      run: cargo build --features "strict"
+      run: make build

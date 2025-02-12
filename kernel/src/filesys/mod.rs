@@ -78,7 +78,7 @@ pub trait FileSystem {
     fn remove_file(&mut self, path: &str) -> Result<(), FsError>;
     fn remove_dir(&mut self, path: &str) -> Result<(), FsError>;
     fn open_file(&mut self, path: &str) -> Result<usize, FsError>;
-    fn close_file(&mut self, fd: usize) -> ();
+    fn close_file(&mut self, fd: usize);
     fn write_file(&mut self, fd: usize, buf: &[u8]) -> Result<usize, FsError>;
     fn seek_file(&mut self, fd: usize, pos: SeekFrom) -> Result<u64, FsError>;
     fn read_file(&mut self, fd: usize, buf: &mut [u8]) -> Result<usize, FsError>;

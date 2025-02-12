@@ -17,7 +17,7 @@ struct RandomFuture {
 impl RandomFuture {
     fn new(prob: f64, seed: u64) -> Self {
         RandomFuture {
-            prob: prob,
+            prob,
             rng: SmallRng::seed_from_u64(seed),
             waker: None, // Waker is created upon polling Pending
         }
@@ -34,11 +34,8 @@ impl Future for RandomFuture {
 
         let poll = match res {
             true => {
-                match &self.waker {
-                    Some(waker) => {
-                        waker.wake_by_ref();
-                    }
-                    None => (),
+                if let Some(waker) = &self.waker {
+                    waker.wake_by_ref();
                 };
                 Poll::Ready(())
             }
@@ -54,12 +51,12 @@ impl Future for RandomFuture {
 
 async fn rand_delay(seed: u32) -> u32 {
     serial_println!("Awaiting random delay");
-    let foo = RandomFuture::new(0.4, seed as u64);
-    foo.await;
+    let rand_task = RandomFuture::new(0.4, seed as u64);
+    rand_task.await;
     seed
 }
 
-pub async fn print_nums_after_rand_delay(seed: u32) -> () {
+pub async fn print_nums_after_rand_delay(seed: u32) {
     let res = future::join(rand_delay(seed), rand_delay(seed * 2)).await;
 
     serial_println!("Random results: {} {}", res.0, res.1);

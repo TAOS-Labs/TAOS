@@ -9,7 +9,6 @@ use x86_64::{
     PhysAddr,
 };
 
-extern crate alloc;
 use alloc::{boxed::Box, vec, vec::Vec};
 
 pub struct BitmapFrameAllocator {
@@ -20,6 +19,9 @@ pub struct BitmapFrameAllocator {
 }
 
 impl BitmapFrameAllocator {
+    /// # Safety
+    ///
+    /// TODO
     pub unsafe fn init(
         memory_map: &'static MemoryMapResponse,
         initial_frames: impl Iterator<Item = PhysFrame>,

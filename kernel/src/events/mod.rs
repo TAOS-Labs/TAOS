@@ -1,4 +1,3 @@
-extern crate alloc;
 use alloc::collections::btree_map::BTreeMap;
 use alloc::sync::Arc;
 use alloc::{boxed::Box, collections::btree_set::BTreeSet};
@@ -53,6 +52,9 @@ struct EventRunner {
 // TODO will need to expand when distributed, like most globals
 static EVENT_RUNNERS: RwLock<BTreeMap<u32, RwLock<EventRunner>>> = RwLock::new(BTreeMap::new());
 
+/// # Safety
+///
+/// TODO
 pub unsafe fn run_loop(cpuid: u32) -> ! {
     let runners = EVENT_RUNNERS.read();
     let runner = runners.get(&cpuid).expect("No runner found").as_mut_ptr();
