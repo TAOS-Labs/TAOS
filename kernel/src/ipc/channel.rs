@@ -357,7 +357,7 @@ fn spin_wait(spin_count: u32) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alloc::{string::String, vec, vec::Vec};
+    use alloc::vec::Vec;
     use futures::future::join_all;
     use futures::{join, FutureExt};
 
