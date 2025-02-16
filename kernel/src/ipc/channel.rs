@@ -123,6 +123,10 @@ impl<T> Channel<T> {
         self.queue.len()
     }
 
+    pub fn sender_count(&self) -> usize {
+        self.state.sender_count.load(Ordering::Acquire)
+    }
+
     pub fn is_empty(&self) -> bool {
         self.queue.is_empty()
     }
@@ -354,7 +358,7 @@ fn spin_wait(spin_count: u32) {
 mod tests {
 
     use super::*;
-    use alloc::{string::String, vec, vec::Vec};
+    use alloc::vec::Vec;
     use futures::future::join_all;
     use futures::{join, FutureExt};
 

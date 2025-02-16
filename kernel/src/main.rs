@@ -8,7 +8,7 @@ use limine::request::{RequestsEndMarker, RequestsStartMarker};
 use taos::events::run_loop;
 
 extern crate alloc;
-use taos::{debug, serial_println};
+use taos::debug;
 
 #[used]
 #[link_section = ".requests_start_marker"]

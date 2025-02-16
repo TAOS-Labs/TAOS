@@ -77,8 +77,6 @@ where
 }
 
 pub fn test_runner(tests: &[&(dyn Testable + Send + Sync)]) {
-    #[cfg(test)]
-    use alloc::string::String;
     serial_println!("Running {} tests\n", tests.len());
 
     let test_futures: alloc::vec::Vec<_> = tests
