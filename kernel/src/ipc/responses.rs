@@ -1,73 +1,106 @@
+use super::error::ProtocolError;
+use super::messages::{MessageHeader, MessageType, MAX_MESSAGE_SIZE};
 use super::serialization::{MessageReader, MessageWriter};
-use super::{
-    error::ProtocolError,
-    messages::{MessageHeader, MessageType},
-};
 use bytes::Bytes;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Rversion {
     pub header: MessageHeader,
     pub msize: u32,
     pub version: Bytes,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Rattach {
     pub header: MessageHeader,
     pub qid: Bytes,
 }
 
 impl Rversion {
-    pub fn deserialize(mut bytes: Bytes) -> Result<Self, ProtocolError> {
-        let mut reader = MessageReader::new(&mut bytes);
+    pub fn new(tag: u16, msize: u32, version: Bytes) -> Result<Self, ProtocolError> {
+        if version.len() > u16::MAX as usize {
+            return Err(ProtocolError::VersionTooLong);
+        }
+        if msize > MAX_MESSAGE_SIZE {
+            return Err(ProtocolError::ExceedsMaxSize);
+        }
 
-        let header = reader.read_header()?;
-        let msize = reader.read_u32()?;
-        let version = reader.read_bytes()?;
-
-        Ok(Rversion {
-            header,
+        Ok(Self {
+            header: MessageHeader {
+                size: 0,
+                message_type: MessageType::Rversion,
+                tag,
+            },
             msize,
             version,
         })
     }
 
-    pub fn serialize(&self) -> Bytes {
-        let capacity = 4 + 1 + 2 + 4 + 2 + self.version.len();
-        let mut writer = MessageWriter::new(capacity);
-
-        writer.start_message(MessageType::Rversion, self.header.tag);
-        writer.put_u32(self.msize);
-        writer
-            .put_bytes(&self.version)
-            .expect("version bytes too long");
-
+    pub fn serialize(&self) -> Result<Bytes, ProtocolError> {
+        let mut writer = MessageWriter::new();
+        writer.put_header(self.header.message_type, self.header.tag)?;
+        writer.put_u32(self.msize)?;
+        writer.put_bytes(&self.version)?;
         writer.finish()
+    }
+
+    pub fn deserialize(mut bytes: Bytes) -> Result<Self, ProtocolError> {
+        let mut reader = MessageReader::new(&mut bytes);
+        let header = reader.read_header()?;
+        if header.message_type != MessageType::Rversion {
+            return Err(ProtocolError::InvalidMessageType(header.message_type as u8));
+        }
+
+        let msize = reader.read_u32()?;
+        let version = reader.read_bytes()?;
+
+        if msize > MAX_MESSAGE_SIZE {
+            return Err(ProtocolError::ExceedsMaxSize);
+        }
+
+        Ok(Self {
+            header,
+            msize,
+            version,
+        })
     }
 }
 
 impl Rattach {
-    pub fn deserialize(mut bytes: Bytes) -> Result<Self, ProtocolError> {
-        let mut reader = MessageReader::new(&mut bytes);
-
-        let header = reader.read_header()?;
-        let qid = reader.read_bytes()?;
-
+    pub fn new(tag: u16, qid: Bytes) -> Result<Self, ProtocolError> {
         if qid.len() != 13 {
             return Err(ProtocolError::InvalidQid);
         }
 
-        Ok(Rattach { header, qid })
+        Ok(Self {
+            header: MessageHeader {
+                size: 0,
+                message_type: MessageType::Rattach,
+                tag,
+            },
+            qid,
+        })
     }
 
-    pub fn serialize(&self) -> Bytes {
-        let capacity = 4 + 1 + 2 + 2 + self.qid.len();
-        let mut writer = MessageWriter::new(capacity);
-
-        writer.start_message(MessageType::Rattach, self.header.tag);
-        writer.put_bytes(&self.qid).expect("qid bytes too long");
-
+    pub fn serialize(&self) -> Result<Bytes, ProtocolError> {
+        let mut writer = MessageWriter::new();
+        writer.put_header(self.header.message_type, self.header.tag)?;
+        writer.put_bytes(&self.qid)?;
         writer.finish()
+    }
+
+    pub fn deserialize(mut bytes: Bytes) -> Result<Self, ProtocolError> {
+        let mut reader = MessageReader::new(&mut bytes);
+        let header = reader.read_header()?;
+        if header.message_type != MessageType::Rattach {
+            return Err(ProtocolError::InvalidMessageType(header.message_type as u8));
+        }
+
+        let qid = reader.read_bytes()?;
+        if qid.len() != 13 {
+            return Err(ProtocolError::InvalidQid);
+        }
+
+        Ok(Self { header, qid })
     }
 }

@@ -1,5 +1,5 @@
 use super::error::ProtocolError;
-use super::messages::{MessageHeader, MessageType};
+use super::messages::{MessageHeader, MessageType, MAX_MESSAGE_SIZE};
 use bytes::{Buf, BufMut, Bytes, BytesMut};
 
 pub struct MessageWriter {
@@ -7,35 +7,40 @@ pub struct MessageWriter {
 }
 
 impl MessageWriter {
-    pub fn new(initial_capacity: usize) -> Self {
+    pub fn new() -> Self {
         Self {
-            buf: BytesMut::with_capacity(initial_capacity),
+            buf: BytesMut::new(),
         }
     }
 
-    pub fn start_message(&mut self, msg_type: MessageType, tag: u16) {
-        self.buf.put_u32(0);
+    pub fn put_header(&mut self, msg_type: MessageType, tag: u16) -> Result<(), ProtocolError> {
+        self.buf.put_u32_le(0);
         self.buf.put_u8(msg_type as u8);
-        self.buf.put_u16(tag);
+        self.buf.put_u16_le(tag);
+        Ok(())
     }
 
     pub fn put_bytes(&mut self, bytes: &Bytes) -> Result<(), ProtocolError> {
         if bytes.len() > u16::MAX as usize {
             return Err(ProtocolError::MessageTooLarge);
         }
-        self.buf.put_u16(bytes.len() as u16);
+        self.buf.put_u16_le(bytes.len() as u16);
         self.buf.put_slice(bytes);
         Ok(())
     }
 
-    pub fn put_u32(&mut self, val: u32) {
-        self.buf.put_u32(val);
+    pub fn put_u32(&mut self, val: u32) -> Result<(), ProtocolError> {
+        self.buf.put_u32_le(val);
+        Ok(())
     }
 
-    pub fn finish(mut self) -> Bytes {
+    pub fn finish(mut self) -> Result<Bytes, ProtocolError> {
         let size = self.buf.len() as u32;
-        self.buf[0..4].copy_from_slice(&size.to_be_bytes());
-        self.buf.freeze()
+        if size > MAX_MESSAGE_SIZE {
+            return Err(ProtocolError::ExceedsMaxSize);
+        }
+        self.buf[0..4].copy_from_slice(&size.to_le_bytes());
+        Ok(self.buf.freeze())
     }
 }
 
@@ -50,13 +55,16 @@ impl<'a> MessageReader<'a> {
 
     pub fn read_header(&mut self) -> Result<MessageHeader, ProtocolError> {
         if self.buf.len() < 7 {
-            // 4 + 1 + 2
             return Err(ProtocolError::BufferTooSmall);
         }
 
-        let size = self.buf.get_u32();
+        let size = self.buf.get_u32_le();
+        if size > MAX_MESSAGE_SIZE {
+            return Err(ProtocolError::ExceedsMaxSize);
+        }
+
         let message_type = MessageType::try_from(self.buf.get_u8())?;
-        let tag = self.buf.get_u16();
+        let tag = self.buf.get_u16_le();
 
         Ok(MessageHeader {
             size,
@@ -69,7 +77,7 @@ impl<'a> MessageReader<'a> {
         if self.buf.len() < 2 {
             return Err(ProtocolError::BufferTooSmall);
         }
-        let len = self.buf.get_u16() as usize;
+        let len = self.buf.get_u16_le() as usize;
         if len > self.buf.len() {
             return Err(ProtocolError::BufferTooSmall);
         }
@@ -80,6 +88,6 @@ impl<'a> MessageReader<'a> {
         if self.buf.len() < 4 {
             return Err(ProtocolError::BufferTooSmall);
         }
-        Ok(self.buf.get_u32())
+        Ok(self.buf.get_u32_le())
     }
 }

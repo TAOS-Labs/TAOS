@@ -1,18 +1,32 @@
 #[derive(Debug)]
 pub enum ProtocolError {
     MessageTooLarge,
-    InvalidMessageType,
+    InvalidMessageType(u8),
     BufferTooSmall,
     InvalidQid,
+    VersionTooLong,
+    UsernameTooLong,
+    AnameTooLong,
+    ExceedsMaxSize,
+}
+
+impl From<u8> for ProtocolError {
+    fn from(value: u8) -> Self {
+        ProtocolError::InvalidMessageType(value)
+    }
 }
 
 impl core::fmt::Display for ProtocolError {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
             ProtocolError::MessageTooLarge => write!(f, "Message too large"),
-            ProtocolError::InvalidMessageType => write!(f, "Invalid message type"),
+            ProtocolError::InvalidMessageType(t) => write!(f, "Invalid message type: {}", t),
             ProtocolError::BufferTooSmall => write!(f, "Buffer too small"),
             ProtocolError::InvalidQid => write!(f, "Invalid Qid size (must be 13 bytes)"),
+            ProtocolError::VersionTooLong => write!(f, "Version string too long"),
+            ProtocolError::UsernameTooLong => write!(f, "Username too long"),
+            ProtocolError::AnameTooLong => write!(f, "Aname too long"),
+            ProtocolError::ExceedsMaxSize => write!(f, "Message size exceeds maximum"),
         }
     }
 }
