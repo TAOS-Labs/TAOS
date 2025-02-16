@@ -1,7 +1,4 @@
 use super::error::ProtocolError;
-use super::requests::{Tattach, Tversion};
-use super::responses::{Rattach, Rversion};
-use bytes::{Buf, Bytes};
 use core::convert::TryFrom;
 
 pub const VERSION: &[u8] = b"9P2000";
@@ -12,70 +9,6 @@ pub struct MessageHeader {
     pub size: u32,
     pub message_type: MessageType,
     pub tag: u16,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub enum Message {
-    Tversion(Tversion),
-    Rversion(Rversion),
-    Tattach(Tattach),
-    Rattach(Rattach),
-    // ... other variants
-}
-
-impl Message {
-    pub fn tag(&self) -> u16 {
-        match self {
-            Message::Tversion(m) => m.header.tag,
-            Message::Rversion(m) => m.header.tag,
-            Message::Tattach(m) => m.header.tag,
-            Message::Rattach(m) => m.header.tag,
-        }
-    }
-
-    pub fn message_type(&self) -> MessageType {
-        match self {
-            Message::Tversion(_) => MessageType::Tversion,
-            Message::Rversion(_) => MessageType::Rversion,
-            Message::Tattach(_) => MessageType::Tattach,
-            Message::Rattach(_) => MessageType::Rattach,
-        }
-    }
-
-    pub fn serialize(&self) -> Result<Bytes, ProtocolError> {
-        match self {
-            Message::Tversion(m) => m.serialize(),
-            Message::Rversion(m) => m.serialize(),
-            Message::Tattach(m) => m.serialize(),
-            Message::Rattach(m) => m.serialize(),
-        }
-    }
-}
-
-impl TryFrom<Bytes> for Message {
-    type Error = ProtocolError;
-
-    fn try_from(mut bytes: Bytes) -> Result<Self, Self::Error> {
-        if bytes.len() < 7 {
-            return Err(ProtocolError::BufferTooSmall);
-        }
-
-        let size = bytes.get_u32_le();
-        if size as usize != bytes.len() + 4 {
-            // +4 because we just read the size
-            return Err(ProtocolError::MessageTooLarge);
-        }
-
-        let msg_type = MessageType::try_from(bytes.get_u8())?;
-
-        match msg_type {
-            MessageType::Tversion => Ok(Message::Tversion(Tversion::deserialize(bytes)?)),
-            MessageType::Rversion => Ok(Message::Rversion(Rversion::deserialize(bytes)?)),
-            MessageType::Tattach => Ok(Message::Tattach(Tattach::deserialize(bytes)?)),
-            MessageType::Rattach => Ok(Message::Rattach(Rattach::deserialize(bytes)?)),
-            _ => Err(ProtocolError::InvalidMessageType(msg_type as u8)),
-        }
-    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -144,7 +77,7 @@ impl TryFrom<u8> for MessageType {
             125 => Ok(MessageType::Rstat),
             126 => Ok(MessageType::Twstat),
             127 => Ok(MessageType::Rwstat),
-            invalid => Err(invalid.into()),
+            invalid => Err(ProtocolError::InvalidMessageType(invalid)),
         }
     }
 }
