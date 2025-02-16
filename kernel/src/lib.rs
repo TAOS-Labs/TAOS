@@ -79,6 +79,8 @@ where
 }
 
 pub fn test_runner(tests: &[&(dyn Testable + Send + Sync)]) {
+    #[cfg(test)]
+    use alloc::string::String;
     serial_println!("Running {} tests\n", tests.len());
 
     let test_futures: alloc::vec::Vec<_> = tests
@@ -99,7 +101,7 @@ pub fn test_runner(tests: &[&(dyn Testable + Send + Sync)]) {
         exit_qemu(QemuExitCode::Success);
     };
 
-    schedule(0, future, 1);
+    schedule(0, future, 1, 1);
 }
 
 pub fn test_panic_handler(info: &core::panic::PanicInfo) -> ! {
