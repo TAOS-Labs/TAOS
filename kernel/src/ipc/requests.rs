@@ -39,7 +39,7 @@ pub struct Twalk {
     pub header: MessageHeader,
     pub fid: u32,
     pub newfid: u32,
-    pub wnames: Vec<Bytes>, // Sequence of path components.
+    pub wnames: Vec<Bytes>, // Sequence of path components, get nwnames from this
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -285,9 +285,11 @@ impl Tattach {
     }
 }
 
-// TODO: Take a second look at this one (wnames count)
 impl Twalk {
     pub fn new(tag: u16, fid: u32, newfid: u32, wnames: Vec<Bytes>) -> Result<Self, ProtocolError> {
+        if wnames.len() > u16::MAX as usize {
+            return Err(ProtocolError::InvalidDataLength);
+        }
         Ok(Self {
             header: MessageHeader {
                 size: 0,
@@ -455,9 +457,12 @@ impl Tread {
     }
 }
 
-// TODO Second look at this (count)
 impl Twrite {
     pub fn new(tag: u16, fid: u32, offset: u64, data: Bytes) -> Result<Self, ProtocolError> {
+        if data.len() > u32::MAX as usize {
+            return Err(ProtocolError::InvalidDataLength);
+        }
+
         let count = data.len() as u32;
         Ok(Self {
             header: MessageHeader {

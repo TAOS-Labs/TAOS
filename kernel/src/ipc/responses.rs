@@ -55,6 +55,7 @@ pub struct Rcreate {
 #[derive(Debug, Clone, PartialEq)]
 pub struct Rread {
     pub header: MessageHeader,
+    pub count: u32,
     pub data: Bytes,
 }
 
@@ -379,18 +380,25 @@ impl Rcreate {
 
 impl Rread {
     pub fn new(tag: u16, data: Bytes) -> Result<Self, ProtocolError> {
+        if data.len() > u32::MAX as usize {
+            return Err(ProtocolError::InvalidDataLength);
+        }
+
+        let count: u32 = data.len() as u32;
         Ok(Self {
             header: MessageHeader {
                 size: 0,
                 message_type: MessageType::Rread,
                 tag,
             },
+            count,
             data,
         })
     }
     pub fn serialize(&self) -> Result<Bytes, ProtocolError> {
         let mut writer = MessageWriter::new();
         writer.put_header(self.header.message_type, self.header.tag)?;
+        writer.put_u32(self.count)?;
         writer.put_bytes(&self.data)?;
         writer.finish()
     }
@@ -400,8 +408,9 @@ impl Rread {
         if header.message_type != MessageType::Rread {
             return Err(ProtocolError::InvalidMessageType(header.message_type as u8));
         }
+        let count = reader.read_u32()?;
         let data = reader.read_bytes()?;
-        Ok(Self { header, data })
+        Ok(Self { header, count, data })
     }
 }
 
