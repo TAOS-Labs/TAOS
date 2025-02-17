@@ -1,3 +1,5 @@
+//! FAT16 filesystem implementation
+
 use super::*;
 use alloc::collections::BinaryHeap;
 use alloc::vec;
@@ -15,15 +17,25 @@ pub use dir_entry::DirEntry83;
 pub use fat_entry::FatEntry;
 pub use file::Fat16File;
 
+/// FAT16 filesystem driver
 pub struct Fat16<'a> {
+    /// Underlying block device
     pub device: Box<dyn BlockDevice + 'a>,
+    /// Boot sector containing filesystem parameters
     boot_sector: BootSector,
+    /// Starting sector of first FAT
     fat_start: u64,
+    /// Starting sector of root directory
     root_dir_start: u64,
+    /// Starting sector of data area
     data_start: u64,
+    /// Size of each cluster in bytes
     cluster_size: usize,
+    /// Next available file descriptor
     fd_counter: usize,
+    /// Pool of reusable file descriptors
     reuse_fds: BinaryHeap<usize>,
+    /// Table of open files
     fd_table: Vec<Fat16File>,
 }
 

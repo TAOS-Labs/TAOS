@@ -1,15 +1,33 @@
+//! FAT16 file implementation with cluster-chain based I/O
+
 use super::constants::*;
 use super::fat_entry::FatEntry;
 use super::*;
 
+/// Represents an open file on a FAT16 filesystem
 pub struct Fat16File {
+    /// Whether file is valid/open
     pub valid: bool,
+
+    /// Current cluster being accessed
     pub current_cluster: u16,
+
+    /// Current position in file
     pub position: u64,
+
+    /// Total file size in bytes
     pub size: u64,
+
+    /// Size of each cluster in bytes
     pub cluster_size: usize,
+
+    /// Starting sector of FAT
     pub fat_start: u64,
+
+    /// Starting sector of data area
     pub data_start: u64,
+
+    /// Location of directory entry
     pub entry_position: u64,
 }
 
@@ -166,6 +184,7 @@ impl File for Fat16File {
 }
 
 impl Fat16File {
+    /// Reads FAT entry for given cluster
     pub fn read_fat_entry(
         &self,
         device: &mut dyn BlockDevice,
@@ -184,6 +203,7 @@ impl Fat16File {
         Ok(FatEntry { cluster: entry })
     }
 
+    /// Writes FAT entry for given cluster
     pub fn write_fat_entry(
         &self,
         device: &mut dyn BlockDevice,
@@ -206,6 +226,7 @@ impl Fat16File {
         Ok(())
     }
 
+    /// Updates size in directory entry
     pub fn update_directory_entry(
         &self,
         device: &mut dyn BlockDevice,
@@ -225,6 +246,7 @@ impl Fat16File {
         Ok(())
     }
 
+    /// Finds and allocates a free cluster
     pub fn allocate_cluster(&self, device: &mut dyn BlockDevice) -> Result<u16, FsError> {
         let total_clusters = (self.data_start as usize) / self.cluster_size;
 
@@ -239,6 +261,7 @@ impl Fat16File {
         Err(FsError::NoSpace)
     }
 
+    /// Converts cluster number to absolute sector number
     pub fn cluster_to_sector(&self, cluster: u16) -> u64 {
         self.data_start + ((cluster as u64 - 2) * (self.cluster_size / SECTOR_SIZE) as u64)
     }

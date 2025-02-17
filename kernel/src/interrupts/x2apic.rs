@@ -1,3 +1,11 @@
+//! x2APIC (Advanced Programmable Interrupt Controller) management.
+//!
+//! - Allows for x2APIC initialization for both BSP and AP cores
+//! - Provides timer configuration and calibration using PIT
+//! - Delivers inter-processor interrupt (IPI) support
+//! - Timer masking/unmasking
+//! - End-of-interrupt (EOI) handling
+
 use crate::constants::idt::TIMER_VECTOR;
 use crate::constants::MAX_CORES;
 use core::sync::atomic::{AtomicU32, Ordering};
@@ -5,7 +13,7 @@ use raw_cpuid::CpuId;
 use x86_64::instructions::port::Port;
 use x86_64::registers::model_specific::Msr;
 
-// MSR register constants
+/// MSR register addresses for x2APIC control
 const IA32_APIC_BASE_MSR: u32 = 0x1B;
 const X2APIC_EOI: u32 = 0x80B;
 const X2APIC_SIVR: u32 = 0x80F;
@@ -17,32 +25,46 @@ const X2APIC_TIMER_ICR: u32 = 0x838;
 const X2APIC_TIMER_CCR: u32 = 0x839;
 const X2APIC_TIMER_DCR: u32 = 0x83E;
 
-// PIT constants
+/// Programmable Interval Timer (PIT) constants for timer calibration
 const PIT_FREQUENCY: u64 = 1_193_182;
 const CHANNEL_2_PORT: u16 = 0x42;
 const COMMAND_PORT: u16 = 0x43;
 const CONTROL_PORT: u16 = 0x61;
 
+/// Errors that can occur during x2APIC operations
 #[derive(Debug)]
 pub enum X2ApicError {
+    /// x2APIC feature not supported by CPU
     NotSupported,
+    /// x2APIC not enabled in hardware
     NotEnabled,
+    /// Failed to enable x2APIC
     EnableFailed,
+    /// Invalid interrupt vector number
     InvalidVector,
+    /// General configuration failure
     ConfigurationFailed,
+    /// Timer-related error
     TimerError,
+    /// Core ID exceeds MAX_CORES
     CoreOutOfRange,
 }
 
+/// Errors that can occur during PIT operations
 #[derive(Debug)]
 pub enum PitError {
+    /// Invalid timer duration specified
     InvalidDuration,
+    /// Timer calibration failed
     CalibrationFailed,
 }
 
+/// Global manager for all x2APICs in the system
 static mut APIC_MANAGER: X2ApicManager = X2ApicManager::new();
+/// Stores calibrated timer count value shared between cores
 static CALIBRATED_TIMER_COUNT: AtomicU32 = AtomicU32::new(0);
 
+/// Manages x2APIC instances for all CPU cores
 pub struct X2ApicManager {
     apics: [Option<X2Apic>; MAX_CORES],
 }
@@ -54,6 +76,7 @@ impl Default for X2ApicManager {
 }
 
 impl X2ApicManager {
+    /// Creates a new x2APIC manager with empty APIC slots
     pub const fn new() -> Self {
         const NONE_APIC: Option<X2Apic> = None;
         Self {
@@ -61,13 +84,15 @@ impl X2ApicManager {
         }
     }
 
+    /// Gets the current CPU core's ID from the x2APIC ID register
     #[inline(always)]
     pub fn current_core_id() -> usize {
-        // Change this to not use MSRs
+        // TODO: Change this to not use MSRs
         // Look into storing in CPU specific registers like gs
         unsafe { Msr::new(X2APIC_ID).read() as usize }
     }
 
+    /// Initializes the x2APIC for the current CPU core
     pub fn initialize_current_core() -> Result<(), X2ApicError> {
         let mut apic = X2Apic::new()?;
         apic.enable()?;
@@ -83,12 +108,23 @@ impl X2ApicManager {
         Ok(())
     }
 
+    /// Calibrates the APIC timer using the PIT as a reference
+    ///
+    /// # Arguments
+    /// * `hz` - Desired timer frequency in Hertz
+    ///
+    /// # Returns
+    /// Timer count value needed to achieve the requested frequency
     pub fn calibrate_timer(hz: u32) -> Result<u32, X2ApicError> {
         let mut pit = Pit::new();
         pit.calibrate_apic_timer(hz)
             .map_err(|_| X2ApicError::TimerError)
     }
 
+    /// Configures the timer for the current CPU core
+    ///
+    /// # Arguments
+    /// * `counter` - Timer count value from calibration
     #[inline(always)]
     pub fn configure_timer_current_core(counter: u32) -> Result<(), X2ApicError> {
         // Configure timer: Periodic mode (1 << 17), unmasked (0 << 16), vector 32
@@ -101,6 +137,7 @@ impl X2ApicManager {
         Ok(())
     }
 
+    /// Sends EOI signal to acknowledge the current interrupt
     #[inline(always)]
     pub fn send_eoi() -> Result<(), X2ApicError> {
         unsafe {
@@ -109,6 +146,7 @@ impl X2ApicManager {
         Ok(())
     }
 
+    /// Masks the APIC timer
     #[inline(always)]
     pub fn mask_timer() -> Result<(), X2ApicError> {
         unsafe {
@@ -118,6 +156,7 @@ impl X2ApicManager {
         Ok(())
     }
 
+    /// Unmasks the APIC timer
     #[inline(always)]
     pub fn unmask_timer() -> Result<(), X2ApicError> {
         unsafe {
@@ -127,6 +166,11 @@ impl X2ApicManager {
         Ok(())
     }
 
+    /// Sends an Inter-Processor Interrupt (IPI) to a specific core
+    ///
+    /// # Arguments
+    /// * `target_id` - ID of the target CPU core
+    /// * `vector` - Interrupt vector number (must be >= 16)
     #[inline(always)]
     pub fn send_ipi(target_id: u32, vector: u8) -> Result<(), X2ApicError> {
         if vector < 16 {
@@ -140,6 +184,10 @@ impl X2ApicManager {
         Ok(())
     }
 
+    /// Initializes x2APIC for the Bootstrap Processor (BSP)
+    ///
+    /// # Arguments
+    /// * `hz` - Desired timer frequency in Hertz
     pub fn bsp_init(hz: u32) -> Result<(), X2ApicError> {
         // First calibrate the timer
         let count = Self::calibrate_timer(hz)?;
@@ -152,6 +200,7 @@ impl X2ApicManager {
         Ok(())
     }
 
+    /// Initializes x2APIC for an Application Processor (AP)
     pub fn ap_init() -> Result<(), X2ApicError> {
         let count = CALIBRATED_TIMER_COUNT.load(Ordering::Acquire);
         Self::initialize_current_core()?;
@@ -160,11 +209,13 @@ impl X2ApicManager {
     }
 }
 
+/// Represents a single x2APIC instance
 pub struct X2Apic {
     enabled: bool,
 }
 
 impl X2Apic {
+    /// Creates a new x2APIC instance if supported by the CPU
     fn new() -> Result<Self, X2ApicError> {
         let cpuid = CpuId::new();
         if !cpuid.get_feature_info().is_some_and(|f| f.has_x2apic()) {
@@ -173,6 +224,7 @@ impl X2Apic {
         Ok(Self { enabled: false })
     }
 
+    /// Enables the x2APIC in hardware and performs basic initialization
     fn enable(&mut self) -> Result<(), X2ApicError> {
         if self.enabled {
             return Ok(());
@@ -197,6 +249,7 @@ impl X2Apic {
     }
 }
 
+/// Programmable Interval Timer used for APIC timer calibration
 pub struct Pit {
     channel_2: Port<u8>,
     command: Port<u8>,
@@ -210,6 +263,7 @@ impl Default for Pit {
 }
 
 impl Pit {
+    /// Creates a new PIT instance with configured I/O ports
     pub fn new() -> Self {
         Self {
             channel_2: Port::new(CHANNEL_2_PORT),
@@ -218,6 +272,13 @@ impl Pit {
         }
     }
 
+    /// Calibrates the APIC timer using PIT as a reference clock
+    ///
+    /// # Arguments
+    /// * `hz` - Desired APIC timer frequency in Hertz
+    ///
+    /// # Returns
+    /// Timer count value needed to achieve the requested frequency
     pub fn calibrate_apic_timer(&mut self, hz: u32) -> Result<u32, PitError> {
         unsafe {
             X2ApicManager::mask_timer().map_err(|_| PitError::CalibrationFailed)?;
@@ -261,34 +322,41 @@ impl Pit {
     }
 }
 
+/// Initialize x2APIC for the Bootstrap Processor (BSP)
 pub fn init_bsp(hz: u32) -> Result<(), X2ApicError> {
     X2ApicManager::bsp_init(hz)
 }
 
+/// Initialize x2APIC for an Application Processor (AP)
 pub fn init_ap() -> Result<(), X2ApicError> {
     X2ApicManager::ap_init()
 }
 
+/// Send EOI signal to acknowledge the current interrupt
 #[inline(always)]
 pub fn send_eoi() {
     X2ApicManager::send_eoi().expect("Failed sending interrupt");
 }
 
+/// Get the ID of the current CPU core
 #[inline(always)]
 pub fn current_core_id() -> usize {
     X2ApicManager::current_core_id()
 }
 
+/// Send IPI to a specific core
 #[inline(always)]
 pub fn send_ipi(target_id: u32, vector: u8) {
     X2ApicManager::send_ipi(target_id, vector).expect("Failed sending IPI");
 }
 
+/// Mask the APIC timer
 #[inline(always)]
 pub fn mask_timer() {
     X2ApicManager::mask_timer().expect("Failed to mask timer");
 }
 
+/// Unmask the APIC timer
 #[inline(always)]
 pub fn unmask_timer() {
     X2ApicManager::unmask_timer().expect("Failed to unmask timer");

@@ -1,3 +1,6 @@
+//! System-wide constants and hardware-specific values.
+
+/// Maximum number of CPU cores supported by the kernel.
 pub const MAX_CORES: usize = 2;
 
 pub mod events;

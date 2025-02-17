@@ -1,3 +1,5 @@
+//! TAOS Kernel Entry Point
+
 #![no_std]
 #![no_main]
 #![feature(custom_test_frameworks)]
@@ -10,14 +12,24 @@ use taos::events::run_loop;
 extern crate alloc;
 use taos::debug;
 
+/// Marks the start of Limine boot protocol requests.
 #[used]
 #[link_section = ".requests_start_marker"]
 static _START_MARKER: RequestsStartMarker = RequestsStartMarker::new();
 
+/// Marks the end of Limine boot protocol requests.
 #[used]
 #[link_section = ".requests_end_marker"]
 static _END_MARKER: RequestsEndMarker = RequestsEndMarker::new();
 
+/// Kernel entry point called by the bootloader.
+///
+/// # Safety
+///
+/// This function is unsafe as it:
+/// - Assumes proper bootloader setup
+/// - Performs direct hardware access
+/// - Must never return
 #[no_mangle]
 extern "C" fn _start() -> ! {
     let bsp_id = taos::init::init();
@@ -28,6 +40,7 @@ extern "C" fn _start() -> ! {
     unsafe { run_loop(bsp_id) }
 }
 
+/// Production panic handler.
 #[cfg(not(test))]
 #[panic_handler]
 fn rust_panic(info: &core::panic::PanicInfo) -> ! {
@@ -36,6 +49,7 @@ fn rust_panic(info: &core::panic::PanicInfo) -> ! {
     taos::idle_loop();
 }
 
+/// Test panic handler.
 #[cfg(test)]
 #[panic_handler]
 fn rust_panic(info: &core::panic::PanicInfo) -> ! {
