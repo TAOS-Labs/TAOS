@@ -8,6 +8,9 @@ pub enum ProtocolError {
     UsernameTooLong,
     AnameTooLong,
     ExceedsMaxSize,
+    FilenameTooLong,
+    InvalidDataLength,
+    ErrorTooLong
 }
 
 impl From<u8> for ProtocolError {
@@ -27,6 +30,9 @@ impl core::fmt::Display for ProtocolError {
             ProtocolError::UsernameTooLong => write!(f, "Username too long"),
             ProtocolError::AnameTooLong => write!(f, "Aname too long"),
             ProtocolError::ExceedsMaxSize => write!(f, "Message size exceeds maximum"),
+            ProtocolError::FilenameTooLong => write!(f, "Filename is too long"),
+            ProtocolError::InvalidDataLength => write!(f, "Invalid data length"),
+            ProtocolError::ErrorTooLong => write!(f, "Requested error message too long"),
         }
     }
 }

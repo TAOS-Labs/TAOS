@@ -29,8 +29,23 @@ impl MessageWriter {
         Ok(())
     }
 
+    pub fn put_u8(&mut self, val: u8) -> Result<(), ProtocolError> {
+        self.buf.put_u8(val);
+        Ok(())
+    }
+
+    pub fn put_u16(&mut self, val: u16) -> Result<(), ProtocolError> {
+        self.buf.put_u16_le(val);
+        Ok(())
+    }
+
     pub fn put_u32(&mut self, val: u32) -> Result<(), ProtocolError> {
         self.buf.put_u32_le(val);
+        Ok(())
+    }
+
+    pub fn put_u64(&mut self, val: u64) -> Result<(), ProtocolError> {
+        self.buf.put_u64_le(val);
         Ok(())
     }
 
@@ -84,10 +99,31 @@ impl<'a> MessageReader<'a> {
         Ok(self.buf.split_to(len))
     }
 
+    pub fn read_u8(&mut self) -> Result<u8, ProtocolError> {
+        if self.buf.len() < 1 {
+            return Err(ProtocolError::BufferTooSmall);
+        }
+        Ok(self.buf.get_u8())
+    }
+
+    pub fn read_u16(&mut self) -> Result<u16, ProtocolError> {
+        if self.buf.len() < 2 {
+            return Err(ProtocolError::BufferTooSmall);
+        }
+        Ok(self.buf.get_u16_le())
+    }
+
     pub fn read_u32(&mut self) -> Result<u32, ProtocolError> {
         if self.buf.len() < 4 {
             return Err(ProtocolError::BufferTooSmall);
         }
         Ok(self.buf.get_u32_le())
+    }
+
+    pub fn read_u64(&mut self) -> Result<u64, ProtocolError> {
+        if self.buf.len() < 8 {
+            return Err(ProtocolError::BufferTooSmall);
+        }
+        Ok(self.buf.get_u64_le())
     }
 }
