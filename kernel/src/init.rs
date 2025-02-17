@@ -15,7 +15,6 @@ use crate::{
     interrupts::{self, idt},
     logging, memory, trace,
 };
-
 extern crate alloc;
 
 /// Limine base revision request
