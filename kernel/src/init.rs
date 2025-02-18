@@ -16,6 +16,8 @@ use crate::{
     logging, memory, trace,
 };
 
+extern crate alloc;
+
 /// Limine base revision request
 #[used]
 #[link_section = ".requests"]

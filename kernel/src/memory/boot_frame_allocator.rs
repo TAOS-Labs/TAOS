@@ -1,10 +1,12 @@
 use crate::{
-    constants::memory::{FRAME_SIZE, MAX_ALLOCATED_FRAMES},
+    constants::memory::{FRAME_SIZE, HEAP_SIZE, HEAP_START, MAX_ALLOCATED_FRAMES},
     serial_println,
 };
-use limine::memory_map::EntryType;
-use limine::request::MemoryMapRequest;
-use limine::response::MemoryMapResponse;
+use limine::{
+    memory_map::EntryType,
+    request::{KernelAddressRequest, MemoryMapRequest},
+    response::MemoryMapResponse,
+};
 use x86_64::{
     structures::paging::{FrameAllocator, FrameDeallocator, PhysFrame, Size4KiB},
     PhysAddr,
@@ -14,6 +16,14 @@ use x86_64::{
 #[link_section = ".requests"]
 static MEMORY_MAP_REQUEST: MemoryMapRequest = MemoryMapRequest::new();
 
+#[used]
+#[link_section = ".requests"]
+static KERNEL_ADDRESS_REQUEST: KernelAddressRequest = KernelAddressRequest::new();
+
+extern "C" {
+    static _kernel_end: u64;
+}
+
 pub struct BootIntoFrameAllocator {
     pub memory_map: &'static MemoryMapResponse,
     next: usize,
@@ -21,6 +31,8 @@ pub struct BootIntoFrameAllocator {
     first_frame: Option<PhysFrame>,
     last_frame: Option<PhysFrame>,
     allocated_count: usize,
+    kernel_start: u64,
+    kernel_end: u64,
 }
 
 impl BootIntoFrameAllocator {
@@ -31,26 +43,49 @@ impl BootIntoFrameAllocator {
         let memory_map: &MemoryMapResponse = MEMORY_MAP_REQUEST
             .get_response()
             .expect("Memory map request failed");
+        let kernel_address_response = KERNEL_ADDRESS_REQUEST
+            .get_response()
+            .expect("Kernel Address request failed");
+
+        let kernel_start: u64 = kernel_address_response.physical_base();
+        let virtual_kernel_address: u64 = kernel_address_response.virtual_base();
+        serial_println!(
+            "Kernel physical base address: {:#X}, virtual base address: {:#X}",
+            kernel_start,
+            virtual_kernel_address
+        );
+
+        unsafe {
+            serial_println!("virtual kernel end address: {:#X}", _kernel_end);
+        }
+        let kernel_end = unsafe { ((_kernel_end) - virtual_kernel_address) + kernel_start };
+
         BootIntoFrameAllocator {
             memory_map,
             next: 0,
             first_frame: None,
             last_frame: None,
             allocated_count: 0,
+            kernel_start,
+            kernel_end,
         }
     }
 
     /// scan memory map and map only frames we know we can use
-    pub fn usable_frames(&self) -> impl Iterator<Item = PhysFrame> {
+    pub fn usable_frames(&self) -> impl Iterator<Item = PhysFrame> + '_ {
         self.memory_map
             .entries()
             .iter()
             .filter(|r| r.entry_type == EntryType::USABLE)
-            .map(|r| r.base..=r.base + r.length)
-            .flat_map(|r| r.step_by(4096))
+            .flat_map(|r| (r.base..(r.base + r.length)).step_by(4096))
+            .filter(move |&addr| {
+                addr < self.kernel_start
+                    || addr >= self.kernel_end
+                    || addr < HEAP_START as u64
+                    || addr > (HEAP_START as u64).wrapping_add(HEAP_SIZE as u64)
+            })
             .map(|addr| PhysFrame::containing_address(PhysAddr::new(addr)))
     }
-
     /// gets the frame of a specific physical memory access
     pub fn get_frame(&mut self, addr: u64) -> PhysFrame {
         PhysFrame::containing_address(PhysAddr::new(addr))

@@ -1,14 +1,17 @@
 use x86_64::{
-    structures::paging::{Mapper, OffsetPageTable, Page, PageTable, Size4KiB},
+    structures::paging::{
+        Mapper, OffsetPageTable, Page, PageTable, PageTableFlags, PhysFrame, Size4KiB,
+    },
     VirtAddr,
 };
 
-use crate::memory::frame_allocator::{alloc_frame, dealloc_frame, FRAME_ALLOCATOR};
-use limine::request::HhdmRequest;
+use crate::constants::memory::EPHEMERAL_KERNEL_MAPPINGS_START;
+use crate::memory::{
+    frame_allocator::{alloc_frame, dealloc_frame, FRAME_ALLOCATOR},
+    HHDM_OFFSET,
+};
 
-#[used]
-#[link_section = ".requests"]
-static HHDM_REQUEST: HhdmRequest = HhdmRequest::new();
+static mut NEXT_EPH_OFFSET: u64 = 0;
 
 /// initializes vmem system. activates pml4 and sets up page tables
 ///
@@ -16,17 +19,14 @@ static HHDM_REQUEST: HhdmRequest = HhdmRequest::new();
 ///
 /// TODO
 pub unsafe fn init() -> OffsetPageTable<'static> {
-    let hhdm_response = HHDM_REQUEST.get_response().expect("HHDM request failed");
-
-    let hhdm_base: VirtAddr = VirtAddr::new(hhdm_response.offset());
-
-    let pml4 = active_level_4_table(hhdm_base);
-
-    OffsetPageTable::new(pml4, hhdm_base)
+    OffsetPageTable::new(active_level_4_table(*HHDM_OFFSET), *HHDM_OFFSET)
 }
 
 /// activates pml4
-unsafe fn active_level_4_table(physical_memory_offset: VirtAddr) -> &'static mut PageTable {
+/// # Safety
+///
+/// TODO
+pub unsafe fn active_level_4_table(physical_memory_offset: VirtAddr) -> &'static mut PageTable {
     use x86_64::registers::control::Cr3;
 
     let (level_4_table_frame, _) = Cr3::read();
@@ -38,11 +38,14 @@ unsafe fn active_level_4_table(physical_memory_offset: VirtAddr) -> &'static mut
     &mut *page_table_ptr
 }
 
-/// Creates an example mapping, in unsafe
-pub fn create_mapping(page: Page, mapper: &mut impl Mapper<Size4KiB>) {
-    use x86_64::structures::paging::PageTableFlags as Flags;
-
-    let flags = Flags::PRESENT | Flags::WRITABLE;
+/// Creates an example mapping, is unsafe
+/// Takes in page, mapper, and nullable flags (default flags)
+/// Default flags: PRESENT | WRITABLE
+pub fn create_mapping(
+    page: Page,
+    mapper: &mut impl Mapper<Size4KiB>,
+    flags: Option<PageTableFlags>,
+) -> PhysFrame {
     let frame = alloc_frame().expect("no more frames");
 
     let map_to_result = unsafe {
@@ -50,18 +53,71 @@ pub fn create_mapping(page: Page, mapper: &mut impl Mapper<Size4KiB>) {
         mapper.map_to(
             page,
             frame,
-            flags,
+            flags.unwrap_or(
+                PageTableFlags::PRESENT
+                    | PageTableFlags::WRITABLE
+                    | PageTableFlags::USER_ACCESSIBLE,
+            ),
             FRAME_ALLOCATOR
                 .lock()
                 .as_mut()
                 .expect("Global allocator not initialized"),
         )
     };
+
+    // serial_println!("Allocated page with flags: {}", flags.unwrap_or(PageTableFlags::PRESENT | PageTableFlags::WRITABLE).bits());
     map_to_result.expect("map_to failed").flush();
+    frame
 }
 
 pub fn remove_mapping(page: Page, mapper: &mut impl Mapper<Size4KiB>) {
     let (frame, flush) = mapper.unmap(page).expect("map_to failed");
     dealloc_frame(frame);
     flush.flush();
+}
+
+pub fn map_kernel_frame(
+    mapper: &mut impl Mapper<Size4KiB>,
+    frame: PhysFrame,
+    flags: PageTableFlags,
+) -> VirtAddr {
+    let offset = unsafe {
+        let current = NEXT_EPH_OFFSET;
+        NEXT_EPH_OFFSET += 0x1000; // move up by a page
+        current
+    };
+
+    let temp_virt = VirtAddr::new(EPHEMERAL_KERNEL_MAPPINGS_START + offset);
+    let temp_page = Page::containing_address(temp_virt);
+
+    unsafe {
+        let result = mapper.map_to(
+            temp_page,
+            frame,
+            flags,
+            FRAME_ALLOCATOR
+                .lock()
+                .as_mut()
+                .expect("Global allocator not initialized"),
+        );
+        result.expect("Map To Failed").flush();
+    }
+
+    temp_virt
+}
+
+///update permissions for a specific page
+/// # Safety
+///
+/// TODO
+pub unsafe fn update_permissions(
+    page: Page,
+    mapper: &mut impl Mapper<Size4KiB>,
+    flags: PageTableFlags,
+) {
+    mapper
+        .update_flags(page, flags)
+        .expect("Updating flags failed")
+        .flush();
+    // TODO: Deal with TLB Shootdowns
 }

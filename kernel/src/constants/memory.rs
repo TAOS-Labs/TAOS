@@ -21,3 +21,5 @@ pub const BITMAP_ENTRY_SIZE: usize = 64;
 
 /// Value representing a fully allocated bitmap entry.
 pub const FULL_BITMAP_ENTRY: u64 = 0xFFFFFFFFFFFFFFFF;
+
+pub const EPHEMERAL_KERNEL_MAPPINGS_START: u64 = 0xFFFF_FF80_0000_0000;

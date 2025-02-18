@@ -37,6 +37,7 @@ extern "C" fn _start() -> ! {
     test_main();
 
     debug!("BSP entering event loop");
+
     unsafe { run_loop(bsp_id) }
 }
 
