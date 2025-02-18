@@ -10,7 +10,7 @@ pub enum ProtocolError {
     ExceedsMaxSize,
     FilenameTooLong,
     InvalidDataLength,
-    ErrorTooLong
+    ErrorTooLong,
 }
 
 impl From<u8> for ProtocolError {

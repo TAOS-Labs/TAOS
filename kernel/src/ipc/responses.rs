@@ -86,7 +86,6 @@ pub struct Rwstat {
     pub header: MessageHeader,
 }
 
-
 impl Rversion {
     pub fn new(tag: u16, msize: u32, version: Bytes) -> Result<Self, ProtocolError> {
         if version.len() > u16::MAX as usize {
@@ -410,7 +409,11 @@ impl Rread {
         }
         let count = reader.read_u32()?;
         let data = reader.read_bytes()?;
-        Ok(Self { header, count, data })
+        Ok(Self {
+            header,
+            count,
+            data,
+        })
     }
 }
 
