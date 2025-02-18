@@ -1,6 +1,5 @@
 use super::spsc::{Receiver, Sender, SpscChannel, SPSC_DEFAULT_CAPACITY};
 use alloc::vec::Vec;
-use core::sync::atomic::{AtomicUsize, Ordering};
 use spin::Mutex;
 
 #[derive(Debug)]
@@ -11,49 +10,43 @@ pub enum PoolError {
     AllocationFailed,
     SenderAlreadyReturned,
     ReceiverAlreadyReturned,
-    ChannelPartMissing,
 }
 
 #[derive(Default)]
-struct ChannelState<T> {
-    sender: Option<Sender<T>>,
-    receiver: Option<Receiver<T>>,
+struct ChannelState {
+    sender_out: bool,
+    receiver_out: bool,
 }
 
-// Need this because can't assume `T` implements default
-impl<T> ChannelState<T> {
-    fn new() -> Self {
-        Self {
-            sender: None,
-            receiver: None,
-        }
-    }
+struct ChannelEntry<T> {
+    channel: SpscChannel<T>,
+    state: ChannelState,
+}
+
+struct PoolData<T> {
+    channels: Vec<Option<ChannelEntry<T>>>,
+    available: Vec<usize>,
 }
 
 pub struct ChannelPool<T> {
-    channels: Vec<Option<ChannelState<T>>>,
-    available: Vec<AtomicUsize>,
-    allocation_lock: Mutex<()>,
+    allocation_lock: Mutex<PoolData<T>>,
 }
 
 impl<T> ChannelPool<T> {
     pub fn new(num_channels: usize) -> Self {
         assert!(num_channels > 0, "Pool must have at least one channel");
 
-        // Initialize channels with sender/receiver pairs
         let channels = (0..num_channels)
             .map(|_| {
-                let (sender, receiver) = SpscChannel::new(SPSC_DEFAULT_CAPACITY).split();
-                Some(ChannelState {
-                    sender: Some(sender),
-                    receiver: Some(receiver),
+                Some(ChannelEntry {
+                    channel: SpscChannel::new(SPSC_DEFAULT_CAPACITY),
+                    state: ChannelState::default(),
                 })
             })
             .collect();
 
         let bitmap_words = (num_channels + 63) / 64;
         let mut available = Vec::with_capacity(bitmap_words);
-
         for word_idx in 0..bitmap_words {
             let remaining_channels = num_channels.saturating_sub(word_idx * 64);
             let valid_bits = if remaining_channels >= 64 {
@@ -61,16 +54,18 @@ impl<T> ChannelPool<T> {
             } else {
                 (1 << remaining_channels) - 1
             };
-            available.push(AtomicUsize::new(valid_bits));
+            available.push(valid_bits);
         }
 
         Self {
-            channels,
-            available,
-            allocation_lock: Mutex::new(()),
+            allocation_lock: Mutex::new(PoolData {
+                channels,
+                available,
+            }),
         }
     }
 
+    // Helper functions remain the same
     fn find_first_set(word: usize, max_valid_bits: usize) -> Option<usize> {
         if word == 0 {
             return None;
@@ -83,66 +78,44 @@ impl<T> ChannelPool<T> {
         }
     }
 
-    fn try_claim_bit(word: &AtomicUsize, bit_idx: usize) -> bool {
-        let bit_mask = 1 << bit_idx;
-        let mut current = word.load(Ordering::Acquire);
-
-        loop {
-            if current & bit_mask == 0 {
-                return false; // Bit already claimed
-            }
-
-            match word.compare_exchange_weak(
-                current,
-                current & !bit_mask,
-                Ordering::AcqRel,
-                Ordering::Acquire,
-            ) {
-                Ok(_) => return true,
-                Err(new) => current = new,
-            }
-        }
-    }
-
-    fn find_free_pair(&self) -> Option<(usize, usize)> {
+    fn find_free_pair(data: &PoolData<T>) -> Option<(usize, usize)> {
         let channels_per_word = 64;
 
-        for (word_idx, word) in self.available.iter().enumerate() {
-            let value = word.load(Ordering::Acquire);
-            if value == 0 {
+        for (word_idx, &word) in data.available.iter().enumerate() {
+            if word == 0 {
                 continue;
             }
 
-            let remaining_channels = self
+            let remaining_channels = data
                 .channels
                 .len()
                 .saturating_sub(word_idx * channels_per_word);
             let valid_bits = core::cmp::min(remaining_channels, channels_per_word);
 
             // Try to find pair in same word
-            if let Some(bit_idx1) = Self::find_first_set(value, valid_bits) {
-                let remaining = value & !(1 << bit_idx1);
+            if let Some(bit_idx1) = Self::find_first_set(word, valid_bits) {
+                let remaining = word & !(1 << bit_idx1);
                 if let Some(bit_idx2) = Self::find_first_set(remaining, valid_bits) {
                     let idx1 = word_idx * channels_per_word + bit_idx1;
                     let idx2 = word_idx * channels_per_word + bit_idx2;
 
-                    if idx1 < self.channels.len() && idx2 < self.channels.len() {
+                    if idx1 < data.channels.len() && idx2 < data.channels.len() {
                         return Some((idx1, idx2));
                     }
                 }
             }
 
-            // Try to find pair across words
-            if let Some(bit_idx1) = Self::find_first_set(value, valid_bits) {
+            // Try next word if needed
+            if let Some(bit_idx1) = Self::find_first_set(word, valid_bits) {
                 let idx1 = word_idx * channels_per_word + bit_idx1;
 
-                for second_word_idx in word_idx + 1..self.available.len() {
-                    let second_word = self.available[second_word_idx].load(Ordering::Acquire);
+                for second_word_idx in word_idx + 1..data.available.len() {
+                    let second_word = data.available[second_word_idx];
                     if second_word == 0 {
                         continue;
                     }
 
-                    let remaining_channels = self
+                    let remaining_channels = data
                         .channels
                         .len()
                         .saturating_sub(second_word_idx * channels_per_word);
@@ -151,7 +124,7 @@ impl<T> ChannelPool<T> {
                     if let Some(bit_idx2) = Self::find_first_set(second_word, valid_bits) {
                         let idx2 = second_word_idx * channels_per_word + bit_idx2;
 
-                        if idx2 < self.channels.len() {
+                        if idx2 < data.channels.len() {
                             return Some((idx1, idx2));
                         }
                     }
@@ -161,165 +134,156 @@ impl<T> ChannelPool<T> {
         None
     }
 
-    fn find_and_claim_pair(&self) -> Option<(usize, usize)> {
-        let _guard = self.allocation_lock.lock();
-
-        let result = self.find_free_pair();
-        if let Some((idx1, idx2)) = result {
-            self.mark_channel_used(idx1);
-            self.mark_channel_used(idx2);
-        }
-        result
-    }
-
-    fn mark_channel_used(&self, channel_idx: usize) {
+    fn mark_channel_used(data: &mut PoolData<T>, channel_idx: usize) {
         let word_idx = channel_idx / 64;
         let bit_idx = channel_idx % 64;
-        self.available[word_idx].fetch_and(!(1 << bit_idx), Ordering::Release);
+        data.available[word_idx] &= !(1 << bit_idx);
     }
 
-    fn mark_channel_available(&self, channel_idx: usize) {
+    fn mark_channel_available(data: &mut PoolData<T>, channel_idx: usize) {
         let word_idx = channel_idx / 64;
         let bit_idx = channel_idx % 64;
-        self.available[word_idx].fetch_or(1 << bit_idx, Ordering::Release);
+        data.available[word_idx] |= 1 << bit_idx;
     }
 
     pub fn allocate_pair(
-        &mut self,
+        &self,
     ) -> Result<((Sender<T>, Receiver<T>), (Sender<T>, Receiver<T>)), PoolError> {
-        let (idx1, idx2) = self
-            .find_and_claim_pair()
-            .ok_or(PoolError::NoChannelsAvailable)?;
+        let mut data = self.allocation_lock.lock();
 
-        let mut state1 = self.channels[idx1]
-            .take()
-            .ok_or(PoolError::AllocationFailed)?;
+        let (idx1, idx2) = Self::find_free_pair(&data).ok_or(PoolError::NoChannelsAvailable)?;
 
-        let mut state2 = match self.channels[idx2].take() {
-            Some(state2) => state2,
-            None => {
-                // Rollback first channel if second fails
-                self.channels[idx1] = Some(state1);
-                self.mark_channel_available(idx1);
-                return Err(PoolError::AllocationFailed);
-            }
-        };
-
-        // Both parts must be present in both channels
-        match (
-            state1.sender.take(),
-            state1.receiver.take(),
-            state2.sender.take(),
-            state2.receiver.take(),
-        ) {
-            (Some(s1), Some(r1), Some(s2), Some(r2)) => Ok(((s1, r1), (s2, r2))),
-            _ => {
-                self.channels[idx1] = Some(state1);
-                self.channels[idx2] = Some(state2);
-                self.mark_channel_available(idx1);
-                self.mark_channel_available(idx2);
-                Err(PoolError::ChannelPartMissing)
-            }
-        }
-    }
-
-    pub fn get_channel(
-        &mut self,
-        channel_idx: usize,
-    ) -> Result<(Sender<T>, Receiver<T>), PoolError> {
-        if channel_idx >= self.channels.len() {
-            return Err(PoolError::InvalidChannelId);
-        }
-
-        let _guard = self.allocation_lock.lock();
-        let word_idx = channel_idx / 64;
-        let bit_idx = channel_idx % 64;
-
-        if !Self::try_claim_bit(&self.available[word_idx], bit_idx) {
+        // Get entries
+        // Validate both channels exist before mutating anything
+        if data.channels[idx1].is_none() || data.channels[idx2].is_none() {
             return Err(PoolError::ChannelInUse);
         }
 
-        let mut state = self.channels[channel_idx].take().ok_or_else(|| {
-            self.mark_channel_available(channel_idx);
-            PoolError::ChannelInUse
-        })?;
+        // Get channel pointers first - avoids multiple mutable borrows
+        let (channel1_ptr, channel2_ptr) = {
+            let entry1 = data.channels[idx1].as_ref().unwrap();
+            let entry2 = data.channels[idx2].as_ref().unwrap();
 
-        // Both parts must be present to get a channel
-        match (state.sender.take(), state.receiver.take()) {
-            (Some(sender), Some(receiver)) => Ok((sender, receiver)),
-            _ => {
-                self.channels[channel_idx] = Some(state);
-                self.mark_channel_available(channel_idx);
-                Err(PoolError::ChannelPartMissing)
+            if entry1.channel.is_fully_dropped() {
+                entry1.channel.reset();
             }
+            if entry2.channel.is_fully_dropped() {
+                entry2.channel.reset();
+            }
+
+            (
+                &entry1.channel as *const SpscChannel<T>,
+                &entry2.channel as *const SpscChannel<T>,
+            )
+        };
+
+        // Now update states separately
+        if let Some(entry) = data.channels[idx1].as_mut() {
+            entry.state.sender_out = true;
+            entry.state.receiver_out = true;
         }
+        if let Some(entry) = data.channels[idx2].as_mut() {
+            entry.state.sender_out = true;
+            entry.state.receiver_out = true;
+        }
+
+        // Mark both as used
+        Self::mark_channel_used(&mut data, idx1);
+        Self::mark_channel_used(&mut data, idx2);
+
+        let channel1 = channel1_ptr;
+        let channel2 = channel2_ptr;
+
+        Ok((
+            (Sender { channel: channel1 }, Receiver { channel: channel1 }),
+            (Sender { channel: channel2 }, Receiver { channel: channel2 }),
+        ))
     }
 
-    pub fn return_sender(
-        &mut self,
-        channel_idx: usize,
-        sender: Sender<T>,
-    ) -> Result<(), PoolError> {
-        if channel_idx >= self.channels.len() {
+    pub fn return_sender(&self, channel_idx: usize, sender: Sender<T>) -> Result<(), PoolError> {
+        let mut data = self.allocation_lock.lock();
+
+        if channel_idx >= data.channels.len() {
             return Err(PoolError::InvalidChannelId);
         }
 
-        let _guard = self.allocation_lock.lock();
+        let entry = data.channels[channel_idx]
+            .as_mut()
+            .ok_or(PoolError::ChannelInUse)?;
 
-        let state = self.channels[channel_idx].get_or_insert_with(ChannelState::new);
-        if state.sender.is_some() {
+        if !entry.state.sender_out {
             return Err(PoolError::SenderAlreadyReturned);
         }
 
-        state.sender = Some(sender);
+        entry.state.sender_out = false;
 
-        // Mark channel as available only if both parts are present
-        if state.receiver.is_some() {
-            self.mark_channel_available(channel_idx);
+        // Drop sender
+        drop(sender);
+
+        // If both parts are back, clean up and mark available
+        if !entry.state.receiver_out {
+            if entry.channel.is_fully_dropped() {
+                unsafe {
+                    entry.channel.cleanup();
+                }
+            }
+            Self::mark_channel_available(&mut data, channel_idx);
         }
 
         Ok(())
     }
 
     pub fn return_receiver(
-        &mut self,
+        &self,
         channel_idx: usize,
         receiver: Receiver<T>,
     ) -> Result<(), PoolError> {
-        if channel_idx >= self.channels.len() {
+        let mut data = self.allocation_lock.lock();
+
+        if channel_idx >= data.channels.len() {
             return Err(PoolError::InvalidChannelId);
         }
 
-        let _guard = self.allocation_lock.lock();
+        let entry = data.channels[channel_idx]
+            .as_mut()
+            .ok_or(PoolError::ChannelInUse)?;
 
-        let state = self.channels[channel_idx].get_or_insert_with(ChannelState::new);
-        if state.receiver.is_some() {
+        if !entry.state.receiver_out {
             return Err(PoolError::ReceiverAlreadyReturned);
         }
 
-        state.receiver = Some(receiver);
+        entry.state.receiver_out = false;
 
-        // Mark channel as available only if both parts are present
-        if state.sender.is_some() {
-            self.mark_channel_available(channel_idx);
+        // Drop receiver
+        drop(receiver);
+
+        // If both parts are back, clean up and mark available
+        if !entry.state.sender_out {
+            if entry.channel.is_fully_dropped() {
+                unsafe {
+                    entry.channel.cleanup();
+                }
+            }
+            Self::mark_channel_available(&mut data, channel_idx);
         }
 
         Ok(())
     }
 
     pub fn capacity(&self) -> usize {
-        self.channels.len()
+        let data = self.allocation_lock.lock();
+        data.channels.len()
     }
 
     pub fn available_channels(&self) -> usize {
-        self.available
+        let data = self.allocation_lock.lock();
+        data.available
             .iter()
             .enumerate()
-            .map(|(word_idx, word)| {
-                let value = word.load(Ordering::Relaxed);
-                let remaining_channels = self.channels.len().saturating_sub(word_idx * 64);
+            .map(|(word_idx, &word)| {
+                let remaining_channels = data.channels.len().saturating_sub(word_idx * 64);
                 let valid_bits = core::cmp::min(remaining_channels, 64);
-                (value & ((1 << valid_bits) - 1)).count_ones() as usize
+                (word & ((1 << valid_bits) - 1)).count_ones() as usize
             })
             .sum()
     }
@@ -327,6 +291,11 @@ impl<T> ChannelPool<T> {
 
 impl<T> Drop for ChannelPool<T> {
     fn drop(&mut self) {
-        // Channels will be dropped automatically through Vec's Drop implementation
+        let mut data = self.allocation_lock.lock();
+        for entry in data.channels.iter_mut().flatten() {
+            unsafe {
+                entry.channel.cleanup();
+            }
+        }
     }
 }

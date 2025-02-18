@@ -26,11 +26,11 @@ unsafe impl<T: Send> Send for SpscChannel<T> {}
 unsafe impl<T: Send> Sync for SpscChannel<T> {}
 
 pub struct Sender<T> {
-    channel: *const SpscChannel<T>,
+    pub channel: *const SpscChannel<T>,
 }
 
 pub struct Receiver<T> {
-    channel: *const SpscChannel<T>,
+    pub channel: *const SpscChannel<T>,
 }
 
 unsafe impl<T: Send> Send for Sender<T> {}
@@ -78,10 +78,39 @@ impl<T> SpscChannel<T> {
         (Sender { channel }, Receiver { channel })
     }
 
-    unsafe fn cleanup(&self, start: usize, end: usize) {
-        for i in start..end {
-            let idx = i % self.capacity;
-            (*self.buffer[idx].get()).assume_init_drop();
+    pub unsafe fn cleanup(&self) {
+        let head = self.head.load(Ordering::Acquire);
+        let tail = self.tail.load(Ordering::Acquire);
+
+        // Only cleanup elements between head and tail
+        if head <= tail {
+            for i in head..tail {
+                let idx = i % self.capacity;
+                (*self.buffer[idx].get()).assume_init_drop();
+            }
+        } else {
+            // Handle wrapping case: cleanup from head to capacity and 0 to tail
+            for i in head..self.capacity {
+                (*self.buffer[i].get()).assume_init_drop();
+            }
+            for i in 0..tail {
+                (*self.buffer[i].get()).assume_init_drop();
+            }
+        }
+    }
+
+    pub fn is_fully_dropped(&self) -> bool {
+        let state = self.is_dropped.load(Ordering::Acquire);
+        state == (SENDER_DROPPED | RECEIVER_DROPPED)
+    }
+
+    pub fn reset(&self) {
+        self.head.store(0, Ordering::Release);
+        self.tail.store(0, Ordering::Release);
+        self.is_dropped.store(NOT_DROPPED, Ordering::Release);
+        unsafe {
+            *self.rx_waker.get() = None;
+            *self.tx_waker.get() = None;
         }
     }
 }
@@ -160,15 +189,6 @@ impl<T> Drop for Sender<T> {
         if let Some(waker) = unsafe { (*channel.rx_waker.get()).take() } {
             waker.wake();
         }
-
-        if channel.is_dropped.load(Ordering::Acquire) & RECEIVER_DROPPED != 0 {
-            let head = channel.head.load(Ordering::Acquire);
-            let tail = channel.tail.load(Ordering::Acquire);
-            unsafe {
-                channel.cleanup(head, tail);
-                drop(Box::from_raw(self.channel as *mut SpscChannel<T>));
-            }
-        }
     }
 }
 
@@ -181,15 +201,6 @@ impl<T> Drop for Receiver<T> {
 
         if let Some(waker) = unsafe { (*channel.tx_waker.get()).take() } {
             waker.wake();
-        }
-
-        if channel.is_dropped.load(Ordering::Acquire) & SENDER_DROPPED != 0 {
-            let head = channel.head.load(Ordering::Acquire);
-            let tail = channel.tail.load(Ordering::Acquire);
-            unsafe {
-                channel.cleanup(head, tail);
-                drop(Box::from_raw(self.channel as *mut SpscChannel<T>));
-            }
         }
     }
 }
