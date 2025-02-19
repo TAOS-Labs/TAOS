@@ -9,9 +9,14 @@ use core::{future::Future, pin::Pin, sync::atomic::AtomicU64, sync::atomic::Orde
 use crossbeam_queue::SegQueue;
 
 use crate::constants::events::NUM_EVENT_PRIORITIES;
+use crate::processes::process::allocate_pid;
+use tasks::JoinHandle;
 
 mod event;
 mod event_runner;
+mod tasks;
+
+pub use tasks::yield_task::{yield_now, Yield};
 
 // Thread-safe future that remains pinned to a heap address throughout its lifetime
 type SendFuture = Mutex<Pin<Box<dyn Future<Output = ()> + 'static + Send>>>;
@@ -20,7 +25,7 @@ type SendFuture = Mutex<Pin<Box<dyn Future<Output = ()> + 'static + Send>>>;
 type EventQueue = Arc<SegQueue<Arc<Event>>>;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-struct EventId(u64);
+pub struct EventId(u64);
 
 // Unique global ID for events.
 // TODO this, like most globals, will likely need to change when distributed
@@ -127,4 +132,15 @@ pub fn current_running_event_info(cpuid: u32) -> EventInfo {
             pid: 0,
         },
     }
+}
+
+pub fn spawn<F, T>(cpuid: u32, future: F, priority_level: usize) -> JoinHandle<T>
+where
+    F: Future<Output = T> + Send + 'static,
+    T: Send + 'static,
+{
+    let runners = EVENT_RUNNERS.read();
+    let mut runner = runners.get(&cpuid).expect("No runner found").write();
+
+    runner.spawn(future, priority_level, allocate_pid())
 }

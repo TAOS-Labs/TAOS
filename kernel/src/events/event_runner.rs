@@ -8,12 +8,15 @@ use x86_64::instructions::interrupts;
 
 use core::{
     future::Future,
-    task::{Context, Poll},
+    task::{Context, Poll, Waker},
 };
 
 use crossbeam_queue::SegQueue;
 
+use super::tasks::{CancellationToken, JoinHandle, TaskError};
+use super::EventId;
 use crate::constants::events::NUM_EVENT_PRIORITIES;
+use spin::Mutex;
 
 impl EventRunner {
     pub fn init() -> EventRunner {
@@ -113,5 +116,52 @@ impl EventRunner {
 
     pub fn current_running_event(&self) -> Option<&Arc<Event>> {
         self.current_event.as_ref()
+    }
+
+    pub fn spawn<F, T>(&mut self, future: F, priority_level: usize, pid: u32) -> JoinHandle<T>
+    where
+        F: Future<Output = T> + Send + 'static,
+        T: Send + 'static,
+    {
+        let result: Arc<Mutex<Option<Result<T, TaskError>>>> = Arc::new(Mutex::new(None));
+        let waker: Arc<Mutex<Option<Waker>>> = Arc::new(Mutex::new(None));
+        let cancellation = CancellationToken::new();
+
+        // Wrap the future to store its result and handle cancellation
+        let wrapped_future = {
+            let result = result.clone();
+            let waker = waker.clone();
+            let cancellation = cancellation.clone();
+
+            async move {
+                let output = match future.await {
+                    output => {
+                        if cancellation.is_cancelled() {
+                            Err(TaskError::Cancelled)
+                        } else {
+                            Ok(output)
+                        }
+                    }
+                };
+
+                // Store the result
+                *result.lock() = Some(output);
+
+                // Wake up anyone waiting on the join handle
+                if let Some(waker) = waker.lock().take() {
+                    waker.wake();
+                }
+            }
+        };
+
+        // Schedule the wrapped future
+        self.schedule(wrapped_future, priority_level, pid);
+
+        JoinHandle {
+            result,
+            waker,
+            eid: EventId::init(),
+            cancellation,
+        }
     }
 }
