@@ -19,6 +19,11 @@ base_args = [
     "-device", "intel-hda",
     "-device", "hda-duplex",
 
+    # General Storage
+    "-drive", "id=mysdcard,file=storage_test.img,if=none,format=raw",
+    "-device", "sdhci-pci",
+    "-device", "sd-card,drive=mysdcard", 
+
     # Graphics
     "-vga", "std",
 

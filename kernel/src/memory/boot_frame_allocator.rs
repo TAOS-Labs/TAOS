@@ -1,7 +1,9 @@
-use crate::{
-    constants::memory::{FRAME_SIZE, HEAP_SIZE, HEAP_START, MAX_ALLOCATED_FRAMES},
-    serial_println,
-};
+//! Boot Frame Allocator
+//!
+//! - Provides a method to allocate memory before a heap is set up
+//! - Finds contiguous PhysFrames while avoiding unusable regions of memory
+
+use crate::constants::memory::{FRAME_SIZE, HEAP_SIZE, HEAP_START, MAX_ALLOCATED_FRAMES};
 use limine::{
     memory_map::EntryType,
     request::{KernelAddressRequest, MemoryMapRequest},
@@ -24,6 +26,15 @@ extern "C" {
     static _kernel_end: u64;
 }
 
+/// Boot frame allocator, necessary to set up frame mappings before heap init
+///
+/// * `memory_map`: Limine memory map response
+/// * `next`: the next frame to allocate
+/// * `first_frame`: the very first frame allocated
+/// * `last_frame`: the very last frame allocated
+/// * `allocated_count`: the number of allocated frames
+/// * `kernel_start`: where the kernel starts in physical memory, given by Limine
+/// * `kernel_end`: where the kernel ends in physical memory, given by Limine
 pub struct BootIntoFrameAllocator {
     pub memory_map: &'static MemoryMapResponse,
     next: usize,
@@ -36,9 +47,13 @@ pub struct BootIntoFrameAllocator {
 }
 
 impl BootIntoFrameAllocator {
-    /// # Safety
+    /// Init function
     ///
-    /// TODO
+    /// # Returns
+    /// Returns a new created boot frame allocator
+    ///
+    /// # Safety
+    /// This function is unsafe as it deals directly with memory map / physmem
     pub unsafe fn init() -> Self {
         let memory_map: &MemoryMapResponse = MEMORY_MAP_REQUEST
             .get_response()
@@ -49,15 +64,6 @@ impl BootIntoFrameAllocator {
 
         let kernel_start: u64 = kernel_address_response.physical_base();
         let virtual_kernel_address: u64 = kernel_address_response.virtual_base();
-        serial_println!(
-            "Kernel physical base address: {:#X}, virtual base address: {:#X}",
-            kernel_start,
-            virtual_kernel_address
-        );
-
-        unsafe {
-            serial_println!("virtual kernel end address: {:#X}", _kernel_end);
-        }
         let kernel_end = unsafe { ((_kernel_end) - virtual_kernel_address) + kernel_start };
 
         BootIntoFrameAllocator {
@@ -71,8 +77,11 @@ impl BootIntoFrameAllocator {
         }
     }
 
-    /// scan memory map and map only frames we know we can use
-    pub fn usable_frames(&self) -> impl Iterator<Item = PhysFrame> + '_ {
+    /// Function that gives an iterator over sections of usable memory
+    ///
+    /// # Returns
+    /// Returns an iterator of usable PhysFrames
+    fn usable_frames(&self) -> impl Iterator<Item = PhysFrame> + '_ {
         self.memory_map
             .entries()
             .iter()
@@ -86,13 +95,11 @@ impl BootIntoFrameAllocator {
             })
             .map(|addr| PhysFrame::containing_address(PhysAddr::new(addr)))
     }
-    /// gets the frame of a specific physical memory access
-    pub fn get_frame(&mut self, addr: u64) -> PhysFrame {
-        PhysFrame::containing_address(PhysAddr::new(addr))
-    }
 
-    /// returns an iterator that goes over all allocated frames. should only be called
-    /// after allocations have happened
+    /// Give all frames allocated so far
+    ///
+    /// # Returns
+    /// Returns an iterator over all frames allocated so far
     pub fn allocated_frames(&self) -> impl Iterator<Item = PhysFrame> + '_ {
         let start_addr = self
             .first_frame
@@ -105,19 +112,13 @@ impl BootIntoFrameAllocator {
             PhysFrame::containing_address(PhysAddr::new(addr))
         })
     }
-
-    /// Debug function to print allocated_frames
-    pub fn print_allocated_frames(&self) {
-        serial_println!("Number of frames allocated: {}", self.allocated_count);
-        for frame in self.allocated_frames() {
-            serial_println!("Frame at: {:?}", frame.start_address());
-        }
-    }
 }
 
 unsafe impl FrameAllocator<Size4KiB> for BootIntoFrameAllocator {
-    /// allocates a frame that we can use; for rudimentary kernel setup
-    /// FIXME: Is not efficient due to constant calls to usable_frames()
+    /// Allocate the single next available frame
+    ///
+    /// # Returns
+    /// Either a PhysFrame or None (if out of frames)
     fn allocate_frame(&mut self) -> Option<PhysFrame> {
         let frame = Some(self.usable_frames().nth(self.next)?);
         self.next += 1;
@@ -134,6 +135,9 @@ unsafe impl FrameAllocator<Size4KiB> for BootIntoFrameAllocator {
 }
 
 impl FrameDeallocator<Size4KiB> for BootIntoFrameAllocator {
+    /// FrameDeallocator must be created for generalization,
+    /// even though BootIntoFrameAllocator does not support
+    /// deallocation
     unsafe fn deallocate_frame(&mut self, _frame: PhysFrame<Size4KiB>) {
         panic!("Cannot deallocate frames for boot frame allocator")
     }

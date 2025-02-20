@@ -1,4 +1,5 @@
 #![feature(abi_x86_interrupt)]
+#![feature(naked_functions)]
 #![cfg_attr(feature = "strict", deny(warnings))]
 #![no_std]
 #![cfg_attr(test, no_main)]
@@ -6,12 +7,13 @@
 #![test_runner(crate::test_runner)]
 #![reexport_test_harness_main = "test_main"]
 
+//! The TAOS operating system
 extern crate alloc;
 
 use alloc::boxed::Box;
+use events::schedule_kernel;
 use core::future::Future;
 use core::pin::Pin;
-use events::schedule;
 use x86_64::instructions::hlt;
 
 pub mod constants;
@@ -29,10 +31,7 @@ pub mod syscalls;
 pub use devices::serial;
 
 pub mod prelude {
-    pub use crate::debug_print;
-    pub use crate::debug_println;
-    pub use crate::serial_print;
-    pub use crate::serial_println;
+    pub use crate::{debug_print, debug_println, serial_print, serial_println};
 }
 
 #[macro_export]
@@ -99,7 +98,7 @@ pub fn test_runner(tests: &[&(dyn Testable + Send + Sync)]) {
         exit_qemu(QemuExitCode::Success);
     };
 
-    schedule(0, future, 1, 1);
+    schedule_kernel(0, future, 1);
 }
 
 pub fn test_panic_handler(info: &core::panic::PanicInfo) -> ! {

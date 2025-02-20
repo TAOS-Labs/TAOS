@@ -7,7 +7,7 @@ pub const PAGE_SIZE: usize = 4096;
 pub const FRAME_SIZE: usize = 4096;
 
 /// Starting virtual address of the kernel heap.
-pub const HEAP_START: *mut u8 = 0x_FFFF_FFFF_0000_0000 as *mut u8;
+pub const HEAP_START: *mut u8 = 0x_FFFF_8100_0000_0000 as *mut u8;
 
 /// Initial size of the kernel heap (1 MB).
 pub const HEAP_SIZE: usize = 1024 * 1024;

@@ -1,58 +1,47 @@
-use super::{Event, EventRunner};
+use super::{Event, EventQueue, EventRunner};
 
-use alloc::collections::btree_set::BTreeSet;
-use alloc::sync::Arc;
+use alloc::{
+    collections::{btree_set::BTreeSet, vec_deque::VecDeque},
+    sync::Arc,
+};
 use futures::task::waker_ref;
 use spin::rwlock::RwLock;
 use x86_64::instructions::interrupts;
 
 use core::{
     future::Future,
+    sync::atomic::Ordering,
     task::{Context, Poll, Waker},
 };
 
-use crossbeam_queue::SegQueue;
-
-use super::tasks::{CancellationToken, JoinHandle, TaskError};
-use super::EventId;
+use super::{
+    tasks::{CancellationToken, JoinHandle, TaskError},
+    EventId,
+};
 use crate::constants::events::NUM_EVENT_PRIORITIES;
 use spin::Mutex;
+
+use crate::{
+    constants::events::PRIORITY_INC_DELAY,
+    serial_println,
+};
 
 impl EventRunner {
     pub fn init() -> EventRunner {
         EventRunner {
-            event_queues: core::array::from_fn(|_| Arc::new(SegQueue::new())),
-            rewake_queue: Arc::new(SegQueue::new()),
+            event_queues: core::array::from_fn(|_| RwLock::new(VecDeque::new())),
+            rewake_queue: Arc::new(RwLock::new(VecDeque::new())),
             pending_events: RwLock::new(BTreeSet::new()),
             current_event: None,
-        }
-    }
-
-    fn next_event(&mut self) -> Option<Arc<Event>> {
-        if !self.rewake_queue.is_empty() {
-            self.rewake_queue.pop()
-        } else {
-            let mut event = None;
-            for i in 0..NUM_EVENT_PRIORITIES {
-                if !self.event_queues[i].is_empty() {
-                    event = self.event_queues[i].pop();
-                    break;
-                }
-            }
-
-            event
+            clock: 0,
         }
     }
 
     pub fn run_loop(&mut self) -> ! {
         loop {
             loop {
-                {
-                    let read_lock = self.pending_events.read();
-
-                    if read_lock.is_empty() {
-                        break;
-                    }
+                if self.have_pending_events() {
+                    break;
                 }
 
                 self.current_event = self.next_event();
@@ -62,9 +51,9 @@ impl EventRunner {
                     .as_ref()
                     .expect("Have pending events, but empty waiting queues.");
 
-                let pe_read_lock = self.pending_events.read();
-                if pe_read_lock.contains(&event.eid.0) {
-                    drop(pe_read_lock);
+                if self.contains_event(event.eid) {
+                    self.clock += 1;
+
                     let waker = waker_ref(event);
                     let mut context: Context<'_> = Context::from_waker(&waker);
 
@@ -75,7 +64,8 @@ impl EventRunner {
                     drop(future_guard);
 
                     if !ready {
-                        self.event_queues[event.priority].push(event.clone());
+                        let priority = event.priority.load(Ordering::Relaxed);
+                        Self::enqueue(&self.event_queues[priority], event.clone());
                     } else {
                         let mut write_lock = self.pending_events.write();
                         write_lock.remove(&event.eid.0);
@@ -101,16 +91,19 @@ impl EventRunner {
         if priority_level >= NUM_EVENT_PRIORITIES {
             panic!("Invalid event priority: {}", priority_level);
         } else {
-            let arc = Arc::new(Event::init(
+            let event = Arc::new(Event::init(
                 future,
                 self.rewake_queue.clone(),
                 priority_level,
                 pid,
+                self.clock,
             ));
 
-            self.event_queues[priority_level].push(arc.clone());
+            Self::enqueue(&self.event_queues[priority_level], event.clone());
+
             let mut write_lock = self.pending_events.write();
-            write_lock.insert(arc.eid.0);
+
+            write_lock.insert(event.eid.0);
         }
     }
 
@@ -118,7 +111,7 @@ impl EventRunner {
         self.current_event.as_ref()
     }
 
-    pub fn spawn<F, T>(&mut self, future: F, priority_level: usize, pid: u32) -> JoinHandle<T>
+    pub fn spawn<F, T>(&mut self, future: F, priority_level: usize) -> JoinHandle<T>
     where
         F: Future<Output = T> + Send + 'static,
         T: Send + 'static,
@@ -155,13 +148,75 @@ impl EventRunner {
         };
 
         // Schedule the wrapped future
-        self.schedule(wrapped_future, priority_level, pid);
+        self.schedule(wrapped_future, priority_level, 0);
 
         JoinHandle {
             result,
             waker,
             eid: EventId::init(),
             cancellation,
+        }
+    }
+
+    fn have_pending_events(&self) -> bool {
+        self.pending_events.read().is_empty()
+    }
+
+    fn contains_event(&self, eid: EventId) -> bool {
+        self.pending_events.read().contains(&eid.0)
+    }
+
+    fn front_clock(queue: &EventQueue) -> Option<u64> {
+        queue
+            .read()
+            .front()
+            .map(|e| e.scheduled_clock.load(Ordering::Relaxed))
+    }
+
+    fn try_pop(queue: &EventQueue) -> Option<Arc<Event>> {
+        queue.write().pop_front()
+    }
+
+    fn enqueue(queue: &EventQueue, event: Arc<Event>) {
+        queue.write().push_back(event);
+    }
+
+    fn reprioritize(&mut self) {
+        for i in 1..NUM_EVENT_PRIORITIES {
+            let scheduled_clock = Self::front_clock(&self.event_queues[i]);
+
+            scheduled_clock.inspect(|event_scheduled_at| {
+                if event_scheduled_at + PRIORITY_INC_DELAY <= self.clock {
+                    let event_to_move = Self::try_pop(&self.event_queues[i]);
+                    event_to_move.inspect(|e| {
+                        Self::enqueue(&self.event_queues[i - 1], e.clone());
+
+                        e.priority.swap(i - 1, Ordering::Relaxed);
+                        e.scheduled_clock.swap(self.clock, Ordering::Relaxed);
+                        serial_println!("{:?} priority {} -> {} @ {}", e.eid, i, i - 1, self.clock);
+                    });
+                }
+            });
+        }
+    }
+
+    fn next_event(&mut self) -> Option<Arc<Event>> {
+        let rewake = Self::try_pop(&self.rewake_queue);
+        if rewake.is_some() {
+            rewake
+        } else {
+            let mut event = None;
+
+            self.reprioritize();
+
+            for i in 0..NUM_EVENT_PRIORITIES {
+                event = Self::try_pop(&self.event_queues[i]);
+                if event.is_some() {
+                    break;
+                }
+            }
+
+            event
         }
     }
 }

@@ -13,8 +13,11 @@ use crate::{
     debug, devices,
     events::{register_event_runner, run_loop},
     interrupts::{self, idt},
-    logging, memory, trace,
+    logging,
+    memory::{self},
+    trace,
 };
+
 extern crate alloc;
 
 /// Limine base revision request
@@ -43,7 +46,6 @@ pub fn init() -> u32 {
     interrupts::init(0);
     memory::init(0);
     devices::init(0);
-
     // Should be kept after devices in case logging gets complicated
     // Right now log writes to serial, but if it were to switch to VGA, this would be important
     logging::init(0);
@@ -72,7 +74,6 @@ unsafe extern "C" fn secondary_cpu_main(cpu: &Cpu) -> ! {
     CPU_COUNT.fetch_add(1, Ordering::SeqCst);
     interrupts::init(cpu.id);
     memory::init(cpu.id);
-    devices::init(cpu.id);
     logging::init(cpu.id);
 
     debug!("AP {} initialized", cpu.id);
@@ -82,9 +83,9 @@ unsafe extern "C" fn secondary_cpu_main(cpu: &Cpu) -> ! {
         core::hint::spin_loop();
     }
 
+    register_event_runner(cpu.id);
     idt::enable();
 
-    register_event_runner(cpu.id);
     debug!("AP {} entering event loop", cpu.id);
     run_loop(cpu.id)
 }

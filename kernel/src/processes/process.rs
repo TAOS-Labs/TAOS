@@ -1,17 +1,26 @@
 extern crate alloc;
 
-use crate::interrupts::gdt;
-use crate::memory::frame_allocator::alloc_frame;
-use crate::memory::{HHDM_OFFSET, MAPPER};
-use crate::processes::{loader::load_elf, registers::Registers};
-use crate::{restore_registers, serial_println};
-use alloc::collections::BTreeMap;
-use alloc::sync::Arc;
-use core::cell::UnsafeCell;
-use core::sync::atomic::{AtomicU32, Ordering};
+use crate::{
+    debug,
+    interrupts::gdt,
+    memory::{
+        frame_allocator::{alloc_frame, with_generic_allocator},
+        HHDM_OFFSET, MAPPER,
+    },
+    processes::{loader::load_elf, registers::Registers},
+    serial_println,
+};
+use alloc::{collections::BTreeMap, sync::Arc};
+use core::{
+    arch::naked_asm,
+    cell::UnsafeCell,
+    sync::atomic::{AtomicU32, Ordering},
+};
 use spin::rwlock::RwLock;
-use x86_64::instructions::interrupts;
-use x86_64::structures::paging::{OffsetPageTable, PageTable, PhysFrame, Size4KiB};
+use x86_64::{
+    instructions::interrupts,
+    structures::paging::{FrameDeallocator, OffsetPageTable, PageTable, PhysFrame, Size4KiB},
+};
 
 // process counter must be thread-safe
 // PID 0 will ONLY be used for errors/PID not found
@@ -32,7 +41,7 @@ pub struct PCB {
     pub state: ProcessState,
     pub kernel_rsp: u64,
     pub kernel_rip: u64,
-    pub registers: Arc<Registers>,
+    pub registers: Registers,
     pub pml4_frame: PhysFrame<Size4KiB>, // this process' page table
 }
 
@@ -53,6 +62,17 @@ type ProcessTable = Arc<RwLock<BTreeMap<u32, Arc<UnsafePCB>>>>;
 lazy_static::lazy_static! {
     #[derive(Debug)]
     pub static ref PROCESS_TABLE: ProcessTable = Arc::new(RwLock::new(BTreeMap::new()));
+}
+
+impl PCB {
+    /// Creates a page table mapper for temporary use during only process creation and cleanup
+    /// # Safety
+    /// TODO
+    pub unsafe fn create_mapper(&mut self) -> OffsetPageTable<'_> {
+        let virt = *HHDM_OFFSET + self.pml4_frame.start_address().as_u64();
+        let ptr = virt.as_mut_ptr::<PageTable>();
+        OffsetPageTable::new(unsafe { &mut *ptr }, *HHDM_OFFSET)
+    }
 }
 
 /// # Safety
@@ -82,24 +102,24 @@ pub unsafe fn print_process_table(process_table: &PROCESS_TABLE) {
     serial_println!("========================");
 }
 
-pub fn allocate_pid() -> u32 {
-    NEXT_PID.fetch_add(1, Ordering::SeqCst)
-}
-
 pub fn create_process(elf_bytes: &[u8]) -> u32 {
-    let pid = allocate_pid();
+    let pid = NEXT_PID.fetch_add(1, Ordering::SeqCst);
 
     // Build a new process address space
-    let (mut process_mapper, process_pml4_frame) = unsafe { create_process_page_table() };
-
-    let (stack_top, entry_point) = load_elf(elf_bytes, &mut process_mapper, &mut MAPPER.lock());
+    let process_pml4_frame = unsafe { create_process_page_table() };
+    let mut mapper = unsafe {
+        let virt = *HHDM_OFFSET + process_pml4_frame.start_address().as_u64();
+        let ptr = virt.as_mut_ptr::<PageTable>();
+        OffsetPageTable::new(&mut *ptr, *HHDM_OFFSET)
+    };
+    let (stack_top, entry_point) = load_elf(elf_bytes, &mut mapper, &mut MAPPER.lock());
 
     let process = Arc::new(UnsafePCB::init(PCB {
         pid,
         state: ProcessState::New,
         kernel_rsp: 0,
         kernel_rip: 0,
-        registers: Arc::new(Registers {
+        registers: Registers {
             rax: 0,
             rbx: 0,
             rcx: 0,
@@ -118,12 +138,12 @@ pub fn create_process(elf_bytes: &[u8]) -> u32 {
             rsp: stack_top.as_u64(),
             rip: entry_point,
             rflags: 0x202,
-        }),
+        },
         pml4_frame: process_pml4_frame,
     }));
     let pid = unsafe { (*process.pcb.get()).pid };
     PROCESS_TABLE.write().insert(pid, Arc::clone(&process));
-    serial_println!("Created process with PID: {}", pid);
+    debug!("Created process with PID: {}", pid);
     // schedule process (call from main)
     pid
 }
@@ -131,26 +151,79 @@ pub fn create_process(elf_bytes: &[u8]) -> u32 {
 /// # Safety
 ///
 /// TODO
-pub unsafe fn create_process_page_table() -> (OffsetPageTable<'static>, PhysFrame<Size4KiB>) {
-    let new_pml4_frame = alloc_frame().expect("failed to allocate frame for process PML4");
-    let new_pml4_phys = new_pml4_frame.start_address();
-    let new_pml4_virt = *HHDM_OFFSET + new_pml4_phys.as_u64();
-    let new_pml4_ptr: *mut PageTable = new_pml4_virt.as_mut_ptr();
+unsafe fn create_process_page_table() -> PhysFrame<Size4KiB> {
+    let frame = alloc_frame().expect("Failed to allocate PML4 frame");
+    let virt = *HHDM_OFFSET + frame.start_address().as_u64();
+    let ptr = virt.as_mut_ptr::<PageTable>();
 
-    // Need to zero out new page table
-    (*new_pml4_ptr).zero();
-
-    // Copy higher half kernel mappings
+    // Initialize and copy kernel mappings
     let mapper = MAPPER.lock();
-    let kernel_pml4: &PageTable = mapper.level_4_table();
-    for i in 256..512 {
-        (*new_pml4_ptr)[i] = kernel_pml4[i].clone();
+    unsafe {
+        (*ptr).zero();
+        let kernel_pml4 = mapper.level_4_table();
+        for i in 256..512 {
+            (*ptr)[i] = kernel_pml4[i].clone();
+        }
     }
 
-    (
-        OffsetPageTable::new(&mut *new_pml4_ptr, *HHDM_OFFSET),
-        new_pml4_frame,
-    )
+    frame
+}
+
+/// Clear the PML4 associated with the PCB
+///
+/// * `pcb`: The process PCB to clear memory for
+pub fn clear_process_frames(pcb: &mut PCB) {
+    let pml4_frame = pcb.pml4_frame;
+    let mapper = unsafe { pcb.create_mapper() };
+
+    with_generic_allocator(|deallocator| {
+        // Iterate over first 256 entries (user space)
+        for i in 0..256 {
+            let entry = &mapper.level_4_table()[i];
+            if entry.is_unused() {
+                continue;
+            }
+
+            let pdpt_frame = PhysFrame::containing_address(entry.addr());
+            unsafe {
+                free_page_table(pdpt_frame, 3, deallocator, HHDM_OFFSET.as_u64());
+            }
+        }
+        unsafe { deallocator.deallocate_frame(pml4_frame) };
+    });
+}
+
+/// Helper function to recursively multi level page tables
+///
+/// * `frame`: the current page table frame iterating over
+/// * `level`: the current level of the page table we're on
+/// * `deallocator`:
+/// * `hhdm_offset`:
+unsafe fn free_page_table(
+    frame: PhysFrame,
+    level: u8,
+    deallocator: &mut impl FrameDeallocator<Size4KiB>,
+    hhdm_offset: u64,
+) {
+    let virt = hhdm_offset + frame.start_address().as_u64();
+    let table = unsafe { &mut *(virt as *mut PageTable) };
+
+    for entry in table.iter_mut() {
+        if entry.is_unused() {
+            continue;
+        }
+
+        if level > 1 {
+            let child_frame = PhysFrame::containing_address(entry.addr());
+            free_page_table(child_frame, level - 1, deallocator, hhdm_offset);
+        } else {
+            // Free level one page
+            let page_frame = PhysFrame::containing_address(entry.addr());
+            deallocator.deallocate_frame(page_frame);
+        }
+        entry.set_unused();
+    }
+    deallocator.deallocate_frame(frame);
 }
 
 use core::arch::asm;
@@ -160,9 +233,10 @@ use x86_64::registers::control::{Cr3, Cr3Flags};
 /// # Safety
 ///
 /// TODO
+#[no_mangle]
 pub async unsafe fn run_process_ring3(pid: u32) {
     interrupts::disable();
-    serial_println!("RUNNING PROCESS");
+
     let process = {
         let process_table = PROCESS_TABLE.read();
         let process = process_table
@@ -176,8 +250,6 @@ pub async unsafe fn run_process_ring3(pid: u32) {
     // But not TCB
     let process = process.pcb.get();
 
-    (*process).state = ProcessState::Running;
-
     Cr3::write((*process).pml4_frame, Cr3Flags::empty());
 
     let user_cs = gdt::GDT.1.user_code_selector.0 as u64;
@@ -185,56 +257,107 @@ pub async unsafe fn run_process_ring3(pid: u32) {
 
     let registers = &(*process).registers.clone();
 
-    restore_registers!(registers);
+    (*process).kernel_rip = return_process as usize as u64;
 
     // Stack layout to move into user mode
     unsafe {
         asm!(
-            "clc",
-            "jmp 2f",
-            "4:",
-
-            "mov [{pcb_pc}], rax",
-            "mov rax, rsp",
-            // "add rax, 8",
-            "mov [{pcb_rsp}], rax",
-
-            "mov rax, 255",
-
-            // Needed for cross-privilege iretq
-            "push {ss}",
-            "push {userrsp}",
-            "push {rflags}",
-            "push {cs}",
-            "push {rip}",
-
-            "sti",
-
-            "iretq",
-            // will store program counter to return back to scheduling code
-            "2:",
-            "call 3f",
-            "3:",
-            "jb 5f",
+            "push rax",
+            "push rcx",
+            "push rdx",
+            "call call_process",
+            "pop rdx",
+            "pop rcx",
             "pop rax",
-            "jae 4b",
-            "5:",
-            "cli",
-
-            ss = in(reg) user_ds,
-            userrsp = in(reg) registers.rsp,
-            rflags = in(reg) registers.rflags,
-            cs = in(reg) user_cs,
-            rip = in(reg) registers.rip,
-
-            pcb_pc = in(reg) &(*process).kernel_rip,
-            pcb_rsp = in(reg) &(*process).kernel_rsp,
-            out("rax") _
+            in("rdi") registers as *const Registers,
+            in("rsi") user_ds,
+            in("rdx") user_cs,
+            in("rcx") &(*process).kernel_rsp,
+            in("r8")  &(*process).state
         );
     }
+}
 
-    // rust compiler generates this by default
-    // The address of this will be program counter + 4 from the iretq instruction in the load registers macro
-    // return Poll::Ready(())
-    serial_println!("Returned from process")
+#[naked]
+#[allow(undefined_naked_function_abi)]
+#[no_mangle]
+unsafe fn call_process(
+    registers: *const Registers,
+    user_ds: u64,
+    user_cs: u64,
+    kernel_rsp: *const u64,
+    process_state: *const u8,
+) {
+    naked_asm!(
+        //save callee-saved registers
+        "
+        push rbp
+        push r15
+        push r14
+        push r13
+        push r12
+        push r11
+        push r10
+        push r9
+        push r8
+        push rdi
+        push rsi
+        push rbx
+        ",
+        "mov r11, rsp",   // Move RSP to R11
+        "mov [rcx], r11", // store RSP (from R11)
+        // Needed for cross-privilege iretq
+        "push rsi", //ss
+        "mov rax, [rdi + 120]",
+        "push rax", //userrsp
+        "mov rax, [rdi + 136]",
+        "push rax", //rflags
+        "push rdx", //cs
+        "mov rax, [rdi + 128]",
+        "push rax",             //rip
+        "mov byte ptr [r8], 2", //set state to ProcessState::Running
+        // Restore all registers before entering process
+        "mov rax, [rdi]",
+        "mov rbx, [rdi+8]",
+        "mov rcx, [rdi+16]",
+        "mov rdx, [rdi+24]",
+        "mov rsi, [rdi+32]",
+        "mov r8,  [rdi+48]",
+        "mov r9,  [rdi+56]",
+        "mov r10, [rdi+64]",
+        "mov r11, [rdi+72]",
+        "mov r12, [rdi+80]",
+        "mov r13, [rdi+88]",
+        "mov r14, [rdi+96]",
+        "mov r15, [rdi+104]",
+        "mov rbp, [rdi+112]",
+        "mov rdi, [rdi+40]",
+        "sti",   //enable interrupts
+        "iretq", // call process
+    );
+}
+
+#[naked]
+#[allow(undefined_naked_function_abi)]
+#[no_mangle]
+unsafe fn return_process() {
+    naked_asm!(
+        "cli", //disable interrupts
+        //restore callee-saved registers
+        "
+        pop rbx
+        pop rsi
+        pop rdi
+        pop r8
+        pop r9
+        pop r10
+        pop r11
+        pop r12
+        pop r13
+        pop r14
+        pop r15
+        pop rbp
+        ",
+        "ret", // return to event scheduler
+    );
 }

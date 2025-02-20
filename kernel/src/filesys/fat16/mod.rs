@@ -1,8 +1,7 @@
 //! FAT16 filesystem implementation
 
 use super::*;
-use alloc::collections::BinaryHeap;
-use alloc::vec;
+use alloc::{collections::BinaryHeap, vec};
 use core::cmp::{max, min};
 
 mod boot_sector;
@@ -126,7 +125,6 @@ impl<'a> Fat16<'a> {
         for i in 0..root_dir_sectors {
             device.write_block(root_dir_start + i as u64, &zero_block)?;
         }
-
         Fat16::new(device)
     }
 
@@ -861,5 +859,79 @@ impl FileSystem for Fat16<'_> {
             .write_block(src_pos / SECTOR_SIZE as u64, &sector_buffer)?;
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::devices::sd_card::SD_CARD;
+
+    #[test_case]
+    fn fat_test() {
+        let lock = SD_CARD.lock().clone().unwrap();
+        let device = Box::new(lock);
+
+        // Format the filesystem
+        let mut fs = Fat16::format(device).expect("Failed to format filesystem");
+
+        // Test directory operations
+        fs.create_dir("/test_dir")
+            .expect("Failed to create directory");
+        fs.create_dir("/test_dir/subdir")
+            .expect("Failed to create subdirectory");
+
+        // Create a test file
+        fs.create_file("/test_dir/test.txt")
+            .expect("FailedBlockDevice to create file");
+        let fd = fs
+            .open_file("/test_dir/test.txt")
+            .expect("Failed to open file");
+
+        // Write test data
+        let test_data = b"Hello, TaOS FAT16!";
+        let written = fs.write_file(fd, test_data).expect("Failed to write");
+        assert_eq!(written, test_data.len(), "Write length mismatch");
+
+        fs.seek_file(fd, SeekFrom::Start(0))
+            .expect("Failed to seek to start");
+        let mut read_buf = [0u8; 32];
+        let read = fs.read_file(fd, &mut read_buf).expect("Failed to read");
+        assert_eq!(read, test_data.len(), "Read length mismatch");
+        assert_eq!(&read_buf[..read], test_data, "Read data mismatch");
+
+        // List directory contents
+        let entries = fs.read_dir("/test_dir").expect("Failed to read directory");
+        assert!(!entries.is_empty(), "Directory should not be empty");
+        assert_eq!(entries.len(), 2, "Directory should have exactly 2 entries"); // subdir and test.txt
+
+        // Check file metadata
+        let metadata = fs
+            .metadata("/test_dir/test.txt")
+            .expect("Failed to get metadata");
+        assert_eq!(metadata.size, test_data.len() as u64, "File size mismatch");
+        assert!(!metadata.is_dir, "Should not be a directory");
+
+        // Test partial reads
+        fs.seek_file(fd, SeekFrom::Start(7))
+            .expect("Failed to seek");
+        let mut partial_buf = [0u8; 4];
+        let read = fs.read_file(fd, &mut partial_buf).expect("Failed to read");
+        assert_eq!(read, 4, "Partial read length mismatch");
+        assert_eq!(&partial_buf[..read], b"TaOS", "Partial read data mismatch");
+
+        // // Close file and test removal
+        fs.close_file(fd);
+
+        fs.remove_file("/test_dir/test.txt")
+            .expect("Failed to remove file");
+        fs.remove_dir("/test_dir/subdir")
+            .expect("Failed to remove subdirectory");
+        fs.remove_dir("/test_dir")
+            .expect("Failed to remove directory");
+
+        // Verify root is empty
+        let root_entries = fs.read_dir("/").expect("Failed to read root directory");
+        assert_eq!(root_entries.len(), 0, "Root directory should be empty");
     }
 }

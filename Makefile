@@ -1,3 +1,5 @@
+override STORAGE_NAME := storage_test
+
 .PHONY: check
 check:
 	@cd kernel && \
@@ -34,6 +36,11 @@ test:
 fmt:
 	@cd kernel && cargo fmt
 
+.PHONY: blank_drive
+blank_drive:
+	@cd kernel && dd if=/dev/zero of=$(STORAGE_NAME).img bs=1M count=4k
+
 .PHONY: clean
 clean:
+	@cd kernel && rm $(STORAGE_NAME).img
 	@cd kernel && cargo clean

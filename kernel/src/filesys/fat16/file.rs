@@ -1,8 +1,6 @@
 //! FAT16 file implementation with cluster-chain based I/O
 
-use super::constants::*;
-use super::fat_entry::FatEntry;
-use super::*;
+use super::{constants::*, fat_entry::FatEntry, *};
 
 /// Represents an open file on a FAT16 filesystem
 pub struct Fat16File {

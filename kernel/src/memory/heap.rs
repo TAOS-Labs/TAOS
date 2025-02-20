@@ -1,14 +1,18 @@
-use crate::constants::memory::{HEAP_SIZE, HEAP_START};
-use crate::memory::{frame_allocator::FRAME_ALLOCATOR, paging::create_mapping};
-use crate::serial_println;
+//! The Kernel Heap
+//! Contains the initialization for the kernel heap using the Talc allocator
+
+use crate::{
+    constants::memory::{HEAP_SIZE, HEAP_START},
+    memory::{frame_allocator::FRAME_ALLOCATOR, paging::create_mapping, MAPPER},
+    serial_println,
+};
 use talc::{ClaimOnOom, Span, Talc, Talck};
 use x86_64::{
-    structures::paging::{mapper::MapToError, Mapper, Page, Size4KiB},
+    structures::paging::{mapper::MapToError, Page, Size4KiB},
     VirtAddr,
 };
 
-use super::bitmap_frame_allocator::BitmapFrameAllocator;
-use super::frame_allocator::GlobalFrameAllocator;
+use super::{bitmap_frame_allocator::BitmapFrameAllocator, frame_allocator::GlobalFrameAllocator};
 
 #[global_allocator]
 static ALLOCATOR: Talck<spin::Mutex<()>, ClaimOnOom> = Talc::new(unsafe {
@@ -17,7 +21,10 @@ static ALLOCATOR: Talck<spin::Mutex<()>, ClaimOnOom> = Talc::new(unsafe {
 .lock();
 
 /// Initialize the heap and switch to using the bitmap frame_allocator
-pub fn init_heap(mapper: &mut impl Mapper<Size4KiB>) -> Result<(), MapToError<Size4KiB>> {
+///
+/// # Returns
+/// An error, whether the heap was created successfully or not
+pub fn init_heap() -> Result<(), MapToError<Size4KiB>> {
     let page_range = {
         let heap_start = VirtAddr::new(HEAP_START as u64);
         let heap_end = heap_start + HEAP_SIZE as u64 - 1u64;
@@ -27,7 +34,7 @@ pub fn init_heap(mapper: &mut impl Mapper<Size4KiB>) -> Result<(), MapToError<Si
     };
 
     for page in page_range {
-        create_mapping(page, mapper, None);
+        create_mapping(page, &mut *MAPPER.lock(), None);
     }
 
     switch_allocator();
@@ -37,6 +44,7 @@ pub fn init_heap(mapper: &mut impl Mapper<Size4KiB>) -> Result<(), MapToError<Si
     Ok(())
 }
 
+/// Switches the allocator from the boot into frame allocator to the bitmap frame allocator
 fn switch_allocator() {
     let mut alloc = FRAME_ALLOCATOR.lock();
     match *alloc {

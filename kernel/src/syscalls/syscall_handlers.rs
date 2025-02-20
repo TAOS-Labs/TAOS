@@ -1,8 +1,7 @@
 use crate::{
-    constants::syscalls::SYSCALL_EXIT,
+    constants::syscalls::{SYSCALL_EXIT, SYSCALL_PRINT},
     events::{current_running_event_info, EventInfo},
-    memory::frame_allocator::dealloc_frame,
-    processes::process::{ProcessState, PROCESS_TABLE},
+    processes::process::{clear_process_frames, ProcessState, PROCESS_TABLE},
     serial_println,
 };
 
@@ -17,6 +16,7 @@ extern "C" fn dispatch_syscall() {
 
     match syscall_num {
         SYSCALL_EXIT => sys_exit(),
+        SYSCALL_PRINT => serial_println!("Hello world!"),
         _ => panic!("Unknown syscall: {}", syscall_num),
     }
 }
@@ -43,8 +43,8 @@ fn sys_exit() {
         let pcb = process.pcb.get();
 
         (*pcb).state = ProcessState::Terminated;
-        dealloc_frame((*pcb).pml4_frame);
-
+        clear_process_frames(&mut *pcb);
+        process_table.remove(&event.pid);
         ((*pcb).kernel_rsp, (*pcb).kernel_rip)
     };
 

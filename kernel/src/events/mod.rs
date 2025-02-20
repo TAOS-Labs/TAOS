@@ -1,28 +1,31 @@
-use alloc::collections::btree_map::BTreeMap;
-use alloc::sync::Arc;
-use alloc::{boxed::Box, collections::btree_set::BTreeSet};
-use spin::mutex::Mutex;
-use spin::rwlock::RwLock;
+use alloc::{
+    boxed::Box,
+    collections::{btree_map::BTreeMap, btree_set::BTreeSet, vec_deque::VecDeque},
+    sync::Arc,
+};
+use spin::{mutex::Mutex, rwlock::RwLock};
+use x86_64::instructions::interrupts::without_interrupts;
 
-use core::{future::Future, pin::Pin, sync::atomic::AtomicU64, sync::atomic::Ordering};
-
-use crossbeam_queue::SegQueue;
+use core::{
+    future::Future,
+    pin::Pin,
+    sync::atomic::{AtomicU64, AtomicUsize, Ordering},
+};
 
 use crate::constants::events::NUM_EVENT_PRIORITIES;
-use crate::processes::process::allocate_pid;
 
 mod event;
 mod event_runner;
 mod tasks;
 
-pub use tasks::yield_task::{yield_now, Yield};
-pub use tasks::JoinHandle;
+pub use tasks::{yield_task::{yield_now, Yield}, JoinHandle};
+
 
 // Thread-safe future that remains pinned to a heap address throughout its lifetime
 type SendFuture = Mutex<Pin<Box<dyn Future<Output = ()> + 'static + Send>>>;
 
 // Thread-safe static queue of events
-type EventQueue = Arc<SegQueue<Arc<Event>>>;
+type EventQueue = RwLock<VecDeque<Arc<Event>>>;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub struct EventId(u64);
@@ -41,16 +44,18 @@ struct Event {
     eid: EventId,
     pid: u32,
     future: SendFuture,
-    rewake_queue: EventQueue,
-    priority: usize,
+    rewake_queue: Arc<EventQueue>,
+    priority: AtomicUsize,
+    scheduled_clock: AtomicU64,
 }
 
 // Schedules and runs events within a single core
 struct EventRunner {
     event_queues: [EventQueue; NUM_EVENT_PRIORITIES],
-    rewake_queue: EventQueue,
+    rewake_queue: Arc<EventQueue>,
     pending_events: RwLock<BTreeSet<u64>>,
     current_event: Option<Arc<Event>>,
+    clock: u64,
 }
 
 // Global mapping of cores to events
@@ -67,26 +72,37 @@ pub unsafe fn run_loop(cpuid: u32) -> ! {
     (*runner).run_loop()
 }
 
-pub fn schedule(
+pub fn schedule_kernel(
     cpuid: u32,
     future: impl Future<Output = ()> + 'static + Send,
     priority_level: usize,
-    pid: u32, // 0 as kernel/sentinel
 ) {
     let runners = EVENT_RUNNERS.read();
     let mut runner = runners.get(&cpuid).expect("No runner found").write();
 
-    runner.schedule(future, priority_level, pid);
+    runner.schedule(future, priority_level, 0);
 }
 
-// still happens even if i lock process creation/running to only happen on cpu id 1
-// Something got messed-up in the merge fs
-// i guess you can do a diff :skull:
-pub fn register_event_runner(cpuid: u32) {
-    let runner = EventRunner::init();
-    let mut write_lock = EVENT_RUNNERS.write();
+pub fn schedule_process(
+    cpuid: u32,
+    future: impl Future<Output = ()> + 'static + Send,
+    pid: u32, // 0 as kernel/sentinel
+) {
+    without_interrupts(|| {
+        let runners = EVENT_RUNNERS.read();
+        let mut runner = runners.get(&cpuid).expect("No runner found").write();
 
-    write_lock.insert(cpuid, RwLock::new(runner));
+        runner.schedule(future, NUM_EVENT_PRIORITIES - 1, pid);
+    });
+}
+
+pub fn register_event_runner(cpuid: u32) {
+    without_interrupts(|| {
+        let runner = EventRunner::init();
+        let mut write_lock = EVENT_RUNNERS.write();
+
+        write_lock.insert(cpuid, RwLock::new(runner));
+    });
 }
 
 pub fn current_running_event_pid(cpuid: u32) -> u32 {
@@ -104,7 +120,7 @@ pub fn current_running_event_priority(cpuid: u32) -> usize {
     let runner = runners.get(&cpuid).expect("No runner found").write();
 
     match runner.current_running_event() {
-        Some(e) => e.priority,
+        Some(e) => e.priority.load(Ordering::Relaxed),
         None => NUM_EVENT_PRIORITIES - 1,
     }
 }
@@ -124,7 +140,7 @@ pub fn current_running_event_info(cpuid: u32) -> EventInfo {
 
     match runner.current_running_event() {
         Some(e) => EventInfo {
-            priority: e.priority,
+            priority: e.priority.load(Ordering::Relaxed),
             pid: e.pid,
         },
         None => EventInfo {
@@ -142,5 +158,5 @@ where
     let runners = EVENT_RUNNERS.read();
     let mut runner = runners.get(&cpuid).expect("No runner found").write();
 
-    runner.spawn(future, priority_level, allocate_pid())
+    runner.spawn(future, priority_level)
 }

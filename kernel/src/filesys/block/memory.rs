@@ -1,8 +1,7 @@
 //! In-memory block device implementation
 
 use crate::filesys::{BlockDevice, FsError};
-use alloc::vec;
-use alloc::vec::Vec;
+use alloc::{vec, vec::Vec};
 use core::result::Result;
 
 /// Block device that stores data in memory

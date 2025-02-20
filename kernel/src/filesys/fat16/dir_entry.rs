@@ -1,7 +1,6 @@
 //! FAT16 directory entry structure and operations
 
-use super::constants::*;
-use super::*;
+use super::{constants::*, *};
 
 /// 8.3 format directory entry (32 bytes)
 #[repr(C, packed)]

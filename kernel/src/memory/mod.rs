@@ -1,8 +1,14 @@
+//! The Virtual memory system
+//! Initializes a kernel heap and the frame allocators
+//! Provides an interface for paging and mapping frames of memory
+//! Implements TLB shootdowns
+
 pub mod bitmap_frame_allocator;
 pub mod boot_frame_allocator;
 pub mod frame_allocator;
 pub mod heap;
 pub mod paging;
+pub mod tlb;
 
 use boot_frame_allocator::BootIntoFrameAllocator;
 use frame_allocator::{GlobalFrameAllocator, FRAME_ALLOCATOR};
@@ -24,7 +30,9 @@ extern "C" {
 }
 
 lazy_static! {
+    // The kernel mapper
     pub static ref MAPPER: Mutex<OffsetPageTable<'static>> = Mutex::new(unsafe { paging::init() });
+    // Start of kernel virtual memory
     pub static ref HHDM_OFFSET: VirtAddr = VirtAddr::new(
         HHDM_REQUEST
             .get_response()
@@ -33,6 +41,9 @@ lazy_static! {
     );
 }
 
+/// Initializes the global frame allocator and kernel heap
+///
+/// * `cpu_id`: The CPU to initialize for. We only want to initialize a frame allocator for cpuid 0
 pub fn init(cpu_id: u32) {
     if cpu_id == 0 {
         unsafe {
@@ -42,11 +53,11 @@ pub fn init(cpu_id: u32) {
 
         unsafe {
             // Must be done after enabling long mode + paging
+            // Allows us to mark pages as unexecutable for security
             Efer::update(|flags| {
                 flags.insert(EferFlags::NO_EXECUTE_ENABLE);
             });
         }
-        let mut mapper = MAPPER.lock();
-        heap::init_heap(&mut *mapper).expect("Failed to initialize heap");
+        heap::init_heap().expect("Failed to initialize heap");
     }
 }

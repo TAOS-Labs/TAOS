@@ -1,6 +1,4 @@
-use alloc::boxed::Box;
-use alloc::string::String;
-use alloc::vec::Vec;
+use alloc::{boxed::Box, string::String, vec::Vec};
 use core::result::Result;
 
 pub mod block;

@@ -6,12 +6,11 @@
 //! - Timer masking/unmasking
 //! - End-of-interrupt (EOI) handling
 
-use crate::constants::idt::TIMER_VECTOR;
-use crate::constants::MAX_CORES;
+use crate::constants::{idt::TIMER_VECTOR, MAX_CORES};
 use core::sync::atomic::{AtomicU32, Ordering};
 use raw_cpuid::CpuId;
-use x86_64::instructions::port::Port;
-use x86_64::registers::model_specific::Msr;
+use spin::Mutex;
+use x86_64::{instructions::port::Port, registers::model_specific::Msr};
 
 /// MSR register addresses for x2APIC control
 const IA32_APIC_BASE_MSR: u32 = 0x1B;
@@ -63,6 +62,8 @@ pub enum PitError {
 static mut APIC_MANAGER: X2ApicManager = X2ApicManager::new();
 /// Stores calibrated timer count value shared between cores
 static CALIBRATED_TIMER_COUNT: AtomicU32 = AtomicU32::new(0);
+/// Global to manage what addresses to invalidate when shootdowns happen
+pub static TLB_SHOOTDOWN_ADDR: Mutex<[u64; MAX_CORES]> = Mutex::new([0; MAX_CORES]);
 
 /// Manages x2APIC instances for all CPU cores
 pub struct X2ApicManager {
@@ -105,6 +106,7 @@ impl X2ApicManager {
         unsafe {
             APIC_MANAGER.apics[id] = Some(apic);
         }
+
         Ok(())
     }
 
