@@ -1,24 +1,154 @@
 use crate::{
     constants::syscalls::{SYSCALL_EXIT, SYSCALL_PRINT},
-    events::{current_running_event_info, EventInfo},
+    events::{current_running_event_info, spawn, yield_now, EventInfo, JoinHandle},
+    interrupts::x2apic,
     processes::process::{clear_process_frames, ProcessState, PROCESS_TABLE},
     serial_println,
 };
+use alloc::{boxed::Box, collections::BTreeMap};
+use core::{
+    future::Future,
+    pin::Pin,
+    task::{Context, Poll, Waker},
+};
+use spin::RwLock;
 
-use crate::interrupts::x2apic;
+#[derive(Debug)]
+pub enum Error {
+    InvalidCall,
+    WouldBlock,
+    NamespaceError,
+}
+
+// Store the syscall state for a process
+struct SyscallState {
+    join_handle: JoinHandle<Result<usize, Error>>,
+    waker: Option<Waker>,
+}
+
+pub struct SyscallHandler {
+    // Map of PIDs to their syscall state
+    syscalls: RwLock<BTreeMap<u32, SyscallState>>,
+}
+
+impl SyscallHandler {
+    pub const fn new() -> Self {
+        Self {
+            syscalls: RwLock::new(BTreeMap::new()),
+        }
+    }
+
+    // Start a syscall and block the process
+    pub fn start_syscall(
+        &self,
+        pid: u32,
+        handle: JoinHandle<Result<usize, Error>>,
+    ) -> Poll<Result<usize, Error>> {
+        self.syscalls.write().insert(
+            pid,
+            SyscallState {
+                join_handle: handle,
+                waker: None,
+            },
+        );
+        Poll::Pending
+    }
+}
+
+static SYSCALL_HANDLER: SyscallHandler = SyscallHandler::new();
+
+// Future that waits for syscall completion
+struct SyscallFuture {
+    pid: u32,
+}
+
+impl Future for SyscallFuture {
+    type Output = Result<usize, Error>;
+
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        let mut syscalls = SYSCALL_HANDLER.syscalls.write();
+
+        if let Some(state) = syscalls.get_mut(&self.pid) {
+            // Poll the join handle
+            let result = Pin::new(&mut state.join_handle).poll(cx);
+
+            match result {
+                Poll::Ready(Ok(syscall_result)) => {
+                    // Syscall completed, remove state and return result
+                    syscalls.remove(&self.pid);
+                    Poll::Ready(syscall_result)
+                }
+                Poll::Ready(Err(_)) => {
+                    // Handle task error
+                    syscalls.remove(&self.pid);
+                    Poll::Ready(Err(Error::InvalidCall))
+                }
+                Poll::Pending => {
+                    // Store waker and keep waiting
+                    state.waker = Some(cx.waker().clone());
+                    Poll::Pending
+                }
+            }
+        } else {
+            Poll::Ready(Err(Error::InvalidCall))
+        }
+    }
+}
 
 #[no_mangle]
-extern "C" fn dispatch_syscall() {
-    let syscall_num: u32;
+pub extern "C" fn dispatch_syscall() {
+    let (syscall_num, arg1, arg2, arg3): (u32, usize, usize, usize);
+
     unsafe {
-        core::arch::asm!("mov {0:r}, rax", out(reg) syscall_num);
+        core::arch::asm!(
+            "mov {0:r}, rax",
+            "mov {1}, rdi",
+            "mov {2}, rsi",
+            "mov {3}, rdx",
+            out(reg) syscall_num,
+            out(reg) arg1,
+            out(reg) arg2,
+            out(reg) arg3,
+        );
     }
 
-    match syscall_num {
-        SYSCALL_EXIT => sys_exit(),
-        SYSCALL_PRINT => serial_println!("Hello world!"),
-        _ => panic!("Unknown syscall: {}", syscall_num),
+    let cpuid = x2apic::current_core_id() as u32;
+    let event = current_running_event_info(cpuid);
+    let pid = event.pid;
+
+    let handler = match syscall_num {
+        SYSCALL_PRINT => {
+            let fut: Pin<Box<dyn Future<Output = Result<usize, Error>> + Send>> =
+                Box::pin(handle_read(pid, arg1, arg2, arg3));
+            Some(fut)
+        }
+        SYSCALL_EXIT => {
+            sys_exit();
+            None
+        }
+        _ => None,
+    };
+
+    if let Some(handler) = handler {
+        // Spawn the handler and get join handle
+        let join_handle = spawn(cpuid, handler, 1);
+
+        // Start syscall and block process
+        let _ = SYSCALL_HANDLER.start_syscall(pid, join_handle);
+
+        // Create future to wait for completion
+        let syscall_future = SyscallFuture { pid };
+
+        // Spawn the waiting future
+        spawn(cpuid, syscall_future, 1);
     }
+
+    yield_now();
+}
+
+async fn handle_read(_: u32, _: usize, _: usize, _: usize) -> Result<usize, Error> {
+    serial_println!("Hello, world!");
+    Ok(0)
 }
 
 fn sys_exit() {

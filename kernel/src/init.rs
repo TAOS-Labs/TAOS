@@ -2,7 +2,8 @@
 //!
 //! Handles the initialization of kernel subsystems and CPU cores.
 
-use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use bytes::Bytes;
+use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use limine::{
     request::SmpRequest,
     smp::{Cpu, RequestFlags},
@@ -12,12 +13,15 @@ use limine::{
 use crate::{
     constants::processes::SYSCALL_BINARY,
     debug, devices,
-    events::{register_event_runner, run_loop, schedule_process},
+    events::{
+        register_event_runner, run_loop, schedule_kernel, schedule_process, spawn, yield_now,
+    },
     interrupts::{self, idt},
+    ipc::{messages::Message, mnt_manager, namespace::Namespace, responses::Rattach},
     logging,
     memory::{self},
     processes::process::{create_process, run_process_ring3},
-    trace,
+    serial_println, trace,
 };
 
 extern crate alloc;
@@ -57,8 +61,8 @@ pub fn init() -> u32 {
 
     register_event_runner(bsp_id);
     idt::enable();
-    let pid = create_process(SYSCALL_BINARY);
-    schedule_process(0, unsafe { run_process_ring3(pid) }, pid);
+
+    schedule_kernel(0, spawn_test(), 0);
     bsp_id
 }
 
@@ -121,4 +125,74 @@ fn wake_cores() -> u32 {
     debug!("All CPUs initialized");
 
     bsp_id
+}
+
+static TEST_MOUNT_ID: AtomicU32 = AtomicU32::new(0);
+
+async fn spawn_test() {
+    spawn(
+        1,
+        async move {
+            match mnt_manager.create_mount().await {
+                Ok((mount_id, server_rx, server_tx)) => {
+                    debug!("Server created mount: {:?}", mount_id);
+                    TEST_MOUNT_ID.store(mount_id.0, Ordering::Release);
+
+                    loop {
+                        yield_now().await;
+
+                        match server_rx.try_recv() {
+                            Ok(msg_bytes) => match Message::parse(msg_bytes) {
+                                Ok((msg, tag)) => {
+                                    debug!("Server got message: {:?}", msg);
+                                    let response = match msg {
+                                        Message::Tattach(..) => Message::Rattach(
+                                            Rattach::new(tag, Bytes::new()).unwrap(),
+                                        ),
+                                        _ => continue,
+                                    };
+
+                                    if let Ok(resp_bytes) = response.serialize() {
+                                        let _ = server_tx.send(resp_bytes).await;
+                                    }
+                                }
+                                Err(e) => debug!("Failed to parse message: {:?}", e),
+                            },
+                            Err(_) => (), // No message available, just continue loop
+                        }
+                    }
+                }
+                Err(e) => debug!("Failed to create mount: {:?}", e),
+            }
+        },
+        0,
+    );
+
+    spawn(
+        0,
+        async move {
+            debug!("Spawned client");
+            for _ in 0..1000 {
+                yield_now().await;
+            }
+
+            let mut ns = Namespace::new();
+            let mount_id = TEST_MOUNT_ID.load(Ordering::Acquire);
+
+            match ns.add_mount("/test", mount_id as usize).await {
+                Ok(()) => {
+                    debug!("Client added mount successfully");
+
+                    match ns.walk_path("/test/somefile").await {
+                        Ok(resolution) => {
+                            debug!("Walk succeeded: {:?}", resolution);
+                        }
+                        Err(e) => debug!("Walk failed: {:?}", e),
+                    }
+                }
+                Err(e) => debug!("Client failed to add mount: {:?}", e),
+            }
+        },
+        0,
+    );
 }

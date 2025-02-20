@@ -1,10 +1,11 @@
 use super::{
     error::Error,
     messages::Message,
-    mount_manager::{MountId, MountManager},
+    mnt_manager,
+    mount_manager::MountId,
     requests::{Tattach, Tclunk, Twalk},
 };
-use alloc::{collections::BTreeMap, string::String, sync::Arc, vec::Vec};
+use alloc::{collections::BTreeMap, string::String, vec::Vec};
 use bytes::Bytes;
 use core::sync::atomic::{AtomicU32, Ordering};
 
@@ -15,21 +16,22 @@ struct DirEntry {
     children: BTreeMap<String, DirEntry>,
 }
 
+#[derive(Debug)]
 pub struct PathResolution {
     pub mount_id: usize,
     pub fid: u32,
 }
 
+#[derive(Debug)]
 pub struct Namespace {
     root: DirEntry,
     next_fid: AtomicU32,
-    mount_manager: Arc<MountManager>, // Todo, change this to global?
 }
 
 const ROOTFID: u32 = 0;
 
 impl Namespace {
-    pub fn new(mount_manager: Arc<MountManager>) -> Self {
+    pub fn new() -> Self {
         Self {
             root: DirEntry {
                 name: "/".into(),
@@ -37,7 +39,6 @@ impl Namespace {
                 children: BTreeMap::new(),
             },
             next_fid: AtomicU32::new(1), // 0 is reserved for root
-            mount_manager,
         }
     }
 
@@ -71,8 +72,7 @@ impl Namespace {
                         Tattach::new(0, new_fid, 0, Bytes::new(), Bytes::new()).unwrap(),
                     );
 
-                    let response = self
-                        .mount_manager
+                    let response = mnt_manager
                         .send_request(MountId(mount_id as u32), new_fid, msg)
                         .await?;
 
@@ -94,8 +94,7 @@ impl Namespace {
                 v.push(Bytes::copy_from_slice(component.as_bytes()));
                 let msg = Message::Twalk(Twalk::new(0, current_fid, new_fid, v).unwrap());
 
-                let response = self
-                    .mount_manager
+                let response = mnt_manager
                     .send_request(MountId(mount_id as u32), new_fid, msg)
                     .await?;
 
@@ -163,8 +162,7 @@ impl Namespace {
         let fid = self.next_fid.fetch_add(1, Ordering::Relaxed);
         let msg = Message::Tattach(Tattach::new(0, fid, 0, Bytes::new(), Bytes::new()).unwrap());
 
-        let response = self
-            .mount_manager
+        let response = mnt_manager
             .send_request(MountId(mount_id as u32), fid, msg)
             .await?;
 
@@ -205,8 +203,7 @@ impl Namespace {
         // Send clunk for root fid
         let msg = Message::Tclunk(Tclunk::new(0, ROOTFID).unwrap());
 
-        let response = self
-            .mount_manager
+        let response = mnt_manager
             .send_request(MountId(mount_id as u32), ROOTFID, msg)
             .await?;
 
@@ -216,9 +213,7 @@ impl Namespace {
                 entry.mount_id = None;
 
                 // Clean up mount in manager
-                self.mount_manager
-                    .cleanup_mount(MountId(mount_id as u32))
-                    .await?;
+                mnt_manager.cleanup_mount(MountId(mount_id as u32)).await?;
 
                 Ok(())
             }

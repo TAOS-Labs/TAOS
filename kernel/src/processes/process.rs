@@ -3,6 +3,7 @@ extern crate alloc;
 use crate::{
     debug,
     interrupts::gdt,
+    ipc::namespace::Namespace,
     memory::{
         frame_allocator::{alloc_frame, with_generic_allocator},
         HHDM_OFFSET, MAPPER,
@@ -42,7 +43,8 @@ pub struct PCB {
     pub kernel_rsp: u64,
     pub kernel_rip: u64,
     pub registers: Registers,
-    pub pml4_frame: PhysFrame<Size4KiB>, // this process' page table
+    pub pml4_frame: PhysFrame<Size4KiB>, // this process' page table,
+    pub namespace: Namespace,
 }
 
 pub struct UnsafePCB {
@@ -140,6 +142,7 @@ pub fn create_process(elf_bytes: &[u8]) -> u32 {
             rflags: 0x202,
         },
         pml4_frame: process_pml4_frame,
+        namespace: Namespace::new(),
     }));
     let pid = unsafe { (*process.pcb.get()).pid };
     PROCESS_TABLE.write().insert(pid, Arc::clone(&process));

@@ -4,7 +4,10 @@ use super::{
     spsc::{Receiver, Sender},
     spsc_pool::ChannelPool,
 };
-use crate::events::{spawn, JoinHandle};
+use crate::{
+    events::{spawn, JoinHandle},
+    serial_println,
+};
 use alloc::{collections::BTreeMap, sync::Arc};
 use bytes::Bytes;
 use core::sync::atomic::{AtomicU16, AtomicU32, Ordering};

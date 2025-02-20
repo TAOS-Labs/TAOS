@@ -21,7 +21,7 @@ use super::{
 use crate::constants::events::NUM_EVENT_PRIORITIES;
 use spin::Mutex;
 
-use crate::{constants::events::PRIORITY_INC_DELAY, serial_println};
+use crate::constants::events::PRIORITY_INC_DELAY;
 
 impl EventRunner {
     pub fn init() -> EventRunner {
@@ -190,7 +190,6 @@ impl EventRunner {
 
                         e.priority.swap(i - 1, Ordering::Relaxed);
                         e.scheduled_clock.swap(self.clock, Ordering::Relaxed);
-                        serial_println!("{:?} priority {} -> {} @ {}", e.eid, i, i - 1, self.clock);
                     });
                 }
             });
