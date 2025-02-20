@@ -82,8 +82,12 @@ pub unsafe fn print_process_table(process_table: &PROCESS_TABLE) {
     serial_println!("========================");
 }
 
+pub fn allocate_pid() -> u32 {
+    NEXT_PID.fetch_add(1, Ordering::SeqCst)
+}
+
 pub fn create_process(elf_bytes: &[u8]) -> u32 {
-    let pid = NEXT_PID.fetch_add(1, Ordering::SeqCst);
+    let pid = allocate_pid();
 
     // Build a new process address space
     let (mut process_mapper, process_pml4_frame) = unsafe { create_process_page_table() };

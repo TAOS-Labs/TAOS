@@ -306,6 +306,7 @@ name = "taos"
 version = "0.1.0"
 dependencies = [
  "arrayvec",
+ "bitflags 2.8.0",
  "bytes",
  "crossbeam-queue",
  "futures",

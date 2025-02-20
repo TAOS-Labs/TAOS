@@ -36,3 +36,18 @@ impl core::fmt::Display for ProtocolError {
         }
     }
 }
+
+#[derive(Debug)]
+pub enum Error {
+    NoMount,
+    InvalidMount,
+    ChannelFull,
+    NoResponse,
+    Protocol,
+    BadFileDescriptor,
+    InvalidPath,
+    TooManyComponents,
+    NotFound,
+    AlreadyMounted,
+    NotMount,
+}

@@ -1,4 +1,4 @@
-use alloc::{boxed::Box, vec::Vec};
+use alloc::{boxed::Box, vec::Vec, sync::Arc};
 use core::cell::UnsafeCell;
 use core::future::Future;
 use core::mem::MaybeUninit;
@@ -11,8 +11,8 @@ pub const SPSC_DEFAULT_CAPACITY: usize = 32;
 pub struct SpscChannel<T> {
     buffer: Box<[UnsafeCell<MaybeUninit<T>>]>,
     capacity: usize,
-    head: AtomicUsize, // Consumer reads from head
-    tail: AtomicUsize, // Producer writes to tail
+    head: AtomicUsize,
+    tail: AtomicUsize,
     rx_waker: UnsafeCell<Option<Waker>>,
     tx_waker: UnsafeCell<Option<Waker>>,
     is_dropped: AtomicUsize,
@@ -26,11 +26,11 @@ unsafe impl<T: Send> Send for SpscChannel<T> {}
 unsafe impl<T: Send> Sync for SpscChannel<T> {}
 
 pub struct Sender<T> {
-    pub channel: *const SpscChannel<T>,
+    pub channel: Arc<SpscChannel<T>>,
 }
 
 pub struct Receiver<T> {
-    pub channel: *const SpscChannel<T>,
+    pub channel: Arc<SpscChannel<T>>,
 }
 
 unsafe impl<T: Send> Send for Sender<T> {}
@@ -74,22 +74,27 @@ impl<T> SpscChannel<T> {
     }
 
     pub fn split(self) -> (Sender<T>, Receiver<T>) {
-        let channel = Box::leak(Box::new(self));
-        (Sender { channel }, Receiver { channel })
+        let channel = Arc::new(self);
+        (
+            Sender {
+                channel: channel.clone(),
+            },
+            Receiver {
+                channel,
+            }
+        )
     }
 
     pub unsafe fn cleanup(&self) {
         let head = self.head.load(Ordering::Acquire);
         let tail = self.tail.load(Ordering::Acquire);
 
-        // Only cleanup elements between head and tail
         if head <= tail {
             for i in head..tail {
                 let idx = i % self.capacity;
                 (*self.buffer[idx].get()).assume_init_drop();
             }
         } else {
-            // Handle wrapping case: cleanup from head to capacity and 0 to tail
             for i in head..self.capacity {
                 (*self.buffer[i].get()).assume_init_drop();
             }
@@ -117,9 +122,8 @@ impl<T> SpscChannel<T> {
 
 impl<T> Sender<T> {
     pub fn try_send(&self, value: T) -> Result<(), SendError<T>> {
-        let channel = unsafe { &*self.channel };
+        let channel = &*self.channel;
 
-        // Check if receiver is dropped
         if channel.is_dropped.load(Ordering::Acquire) & RECEIVER_DROPPED != 0 {
             return Err(SendError::Disconnected(value));
         }
@@ -133,7 +137,6 @@ impl<T> Sender<T> {
             }
             channel.tail.store(tail.wrapping_add(1), Ordering::Release);
 
-            // Wake receiver if it's waiting
             if let Some(waker) = unsafe { (*channel.rx_waker.get()).take() } {
                 waker.wake();
             }
@@ -153,16 +156,16 @@ impl<T> Sender<T> {
 
 impl<T> Receiver<T> {
     pub fn try_recv(&self) -> Result<T, RecvError> {
-        let channel = unsafe { &*self.channel };
+        let channel = &*self.channel;
         let head = channel.head.load(Ordering::Acquire);
         let tail = channel.tail.load(Ordering::Acquire);
 
         if head != tail {
-            let value =
-                unsafe { (*channel.buffer[head % channel.capacity].get()).assume_init_read() };
+            let value = unsafe {
+                (*channel.buffer[head % channel.capacity].get()).assume_init_read()
+            };
             channel.head.store(head.wrapping_add(1), Ordering::Release);
 
-            // Wake sender if it's waiting
             if let Some(waker) = unsafe { (*channel.tx_waker.get()).take() } {
                 waker.wake();
             }
@@ -181,10 +184,8 @@ impl<T> Receiver<T> {
 
 impl<T> Drop for Sender<T> {
     fn drop(&mut self) {
-        let channel = unsafe { &*self.channel };
-        channel
-            .is_dropped
-            .fetch_or(SENDER_DROPPED, Ordering::AcqRel);
+        let channel = &*self.channel;
+        channel.is_dropped.fetch_or(SENDER_DROPPED, Ordering::AcqRel);
 
         if let Some(waker) = unsafe { (*channel.rx_waker.get()).take() } {
             waker.wake();
@@ -194,10 +195,8 @@ impl<T> Drop for Sender<T> {
 
 impl<T> Drop for Receiver<T> {
     fn drop(&mut self) {
-        let channel = unsafe { &*self.channel };
-        channel
-            .is_dropped
-            .fetch_or(RECEIVER_DROPPED, Ordering::AcqRel);
+        let channel = &*self.channel;
+        channel.is_dropped.fetch_or(RECEIVER_DROPPED, Ordering::AcqRel);
 
         if let Some(waker) = unsafe { (*channel.tx_waker.get()).take() } {
             waker.wake();
@@ -222,7 +221,6 @@ impl<'a, T> Future for SendFuture<'a, T> {
             Ok(()) => Poll::Ready(Ok(())),
             Err(SendError::Full(value)) => {
                 this.value = Some(value);
-
                 unsafe {
                     *(*this.sender.channel).tx_waker.get() = Some(cx.waker().clone());
                 }

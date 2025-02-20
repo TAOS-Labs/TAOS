@@ -10,13 +10,13 @@ use crossbeam_queue::SegQueue;
 
 use crate::constants::events::NUM_EVENT_PRIORITIES;
 use crate::processes::process::allocate_pid;
-use tasks::JoinHandle;
 
 mod event;
 mod event_runner;
 mod tasks;
 
 pub use tasks::yield_task::{yield_now, Yield};
+pub use tasks::JoinHandle;
 
 // Thread-safe future that remains pinned to a heap address throughout its lifetime
 type SendFuture = Mutex<Pin<Box<dyn Future<Output = ()> + 'static + Send>>>;

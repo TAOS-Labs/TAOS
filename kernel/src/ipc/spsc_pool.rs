@@ -1,5 +1,6 @@
 use super::spsc::{Receiver, Sender, SpscChannel, SPSC_DEFAULT_CAPACITY};
 use alloc::vec::Vec;
+use alloc::sync::Arc;
 use spin::Mutex;
 
 #[derive(Debug)]
@@ -19,7 +20,7 @@ struct ChannelState {
 }
 
 struct ChannelEntry<T> {
-    channel: SpscChannel<T>,
+    channel: Arc<SpscChannel<T>>,
     state: ChannelState,
 }
 
@@ -39,7 +40,7 @@ impl<T> ChannelPool<T> {
         let channels = (0..num_channels)
             .map(|_| {
                 Some(ChannelEntry {
-                    channel: SpscChannel::new(SPSC_DEFAULT_CAPACITY),
+                    channel: Arc::new(SpscChannel::new(SPSC_DEFAULT_CAPACITY)),
                     state: ChannelState::default(),
                 })
             })
@@ -65,7 +66,6 @@ impl<T> ChannelPool<T> {
         }
     }
 
-    // Helper functions remain the same
     fn find_first_set(word: usize, max_valid_bits: usize) -> Option<usize> {
         if word == 0 {
             return None;
@@ -154,13 +154,12 @@ impl<T> ChannelPool<T> {
         let (idx1, idx2) = Self::find_free_pair(&data).ok_or(PoolError::NoChannelsAvailable)?;
 
         // Get entries
-        // Validate both channels exist before mutating anything
         if data.channels[idx1].is_none() || data.channels[idx2].is_none() {
             return Err(PoolError::ChannelInUse);
         }
 
-        // Get channel pointers first - avoids multiple mutable borrows
-        let (channel1_ptr, channel2_ptr) = {
+        // Get channel references and create pairs
+        let (channel1, channel2) = {
             let entry1 = data.channels[idx1].as_ref().unwrap();
             let entry2 = data.channels[idx2].as_ref().unwrap();
 
@@ -171,13 +170,10 @@ impl<T> ChannelPool<T> {
                 entry2.channel.reset();
             }
 
-            (
-                &entry1.channel as *const SpscChannel<T>,
-                &entry2.channel as *const SpscChannel<T>,
-            )
+            (entry1.channel.clone(), entry2.channel.clone())
         };
 
-        // Now update states separately
+        // Update states
         if let Some(entry) = data.channels[idx1].as_mut() {
             entry.state.sender_out = true;
             entry.state.receiver_out = true;
@@ -191,12 +187,15 @@ impl<T> ChannelPool<T> {
         Self::mark_channel_used(&mut data, idx1);
         Self::mark_channel_used(&mut data, idx2);
 
-        let channel1 = channel1_ptr;
-        let channel2 = channel2_ptr;
-
         Ok((
-            (Sender { channel: channel1 }, Receiver { channel: channel1 }),
-            (Sender { channel: channel2 }, Receiver { channel: channel2 }),
+            (
+                Sender { channel: channel1.clone() },
+                Receiver { channel: channel1 },
+            ),
+            (
+                Sender { channel: channel2.clone() },
+                Receiver { channel: channel2 },
+            ),
         ))
     }
 

@@ -1,6 +1,9 @@
 pub mod channel;
 pub mod error;
+pub mod fd_table;
 pub mod messages;
+pub mod mount_manager;
+pub mod namespace;
 pub mod requests;
 pub mod responses;
 pub mod serialization;
