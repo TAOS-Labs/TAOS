@@ -1,7 +1,6 @@
-use super::error::ProtocolError;
+use super::{error::ProtocolError, requests, responses};
+use bytes::{Buf, Bytes};
 use core::convert::TryFrom;
-use super::{requests, responses};
-use bytes::{Bytes, Buf};
 
 pub const VERSION: &[u8] = b"9P2000";
 pub const MAX_MESSAGE_SIZE: u32 = 8192;
@@ -21,10 +20,10 @@ impl MessageHeader {
 
         // Parse size (4 bytes, little-endian)
         let size = bytes.get_u32_le();
-        
+
         // Parse message type (1 byte)
         let message_type = MessageType::try_from(bytes.get_u8())?;
-        
+
         // Parse tag (2 bytes, little-endian)
         let tag = bytes.get_u16_le();
 
@@ -34,7 +33,7 @@ impl MessageHeader {
                 message_type,
                 tag,
             },
-            bytes
+            bytes,
         ))
     }
 }
@@ -186,7 +185,7 @@ impl Message {
         match header.message_type {
             MessageType::Tversion => Ok(Message::Tversion(requests::Tversion::deserialize(data)?)),
             MessageType::Rversion => Ok(Message::Rversion(responses::Rversion::deserialize(data)?)),
-    
+
             MessageType::Tauth => Ok(Message::Tauth(requests::Tauth::deserialize(data)?)),
             MessageType::Rauth => Ok(Message::Rauth(responses::Rauth::deserialize(data)?)),
 
@@ -226,7 +225,9 @@ impl Message {
             MessageType::Rflush => Ok(Message::Rflush(responses::Rflush::deserialize(data)?)),
 
             // Terror shouldn't be received
-            MessageType::Terror => Err(ProtocolError::InvalidMessageType(MessageType::Terror as u8)),
+            MessageType::Terror => {
+                Err(ProtocolError::InvalidMessageType(MessageType::Terror as u8))
+            }
         }
     }
 

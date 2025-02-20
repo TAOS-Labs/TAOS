@@ -49,7 +49,6 @@ impl BitmapFrameAllocator {
         let mut true_end: usize = 0;
         for entry in memory_map.entries().iter() {
             if entry.entry_type == EntryType::USABLE {
-                serial_println!("start addr {:#X}, size is {:#X}", entry.base, entry.length);
                 let end_addr = entry.base + entry.length;
                 if end_addr as usize > true_end {
                     true_end = end_addr as usize;

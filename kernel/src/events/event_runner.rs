@@ -21,10 +21,7 @@ use super::{
 use crate::constants::events::NUM_EVENT_PRIORITIES;
 use spin::Mutex;
 
-use crate::{
-    constants::events::PRIORITY_INC_DELAY,
-    serial_println,
-};
+use crate::{constants::events::PRIORITY_INC_DELAY, serial_println};
 
 impl EventRunner {
     pub fn init() -> EventRunner {

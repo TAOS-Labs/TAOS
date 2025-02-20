@@ -1,5 +1,7 @@
-use super::error::ProtocolError;
-use super::messages::{MessageHeader, MessageType, MAX_MESSAGE_SIZE};
+use super::{
+    error::ProtocolError,
+    messages::{MessageHeader, MessageType, MAX_MESSAGE_SIZE},
+};
 use bytes::{Buf, BufMut, Bytes, BytesMut};
 
 pub struct MessageWriter {

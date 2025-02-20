@@ -1,10 +1,11 @@
-use super::cancel::CancellationToken;
-use super::error::TaskError;
+use super::{cancel::CancellationToken, error::TaskError};
 use crate::events::EventId;
 use alloc::sync::Arc;
-use core::future::Future;
-use core::pin::Pin;
-use core::task::{Context, Poll, Waker};
+use core::{
+    future::Future,
+    pin::Pin,
+    task::{Context, Poll, Waker},
+};
 use spin::Mutex;
 
 pub struct JoinHandle<T> {

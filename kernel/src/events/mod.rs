@@ -18,8 +18,10 @@ mod event;
 mod event_runner;
 mod tasks;
 
-pub use tasks::{yield_task::{yield_now, Yield}, JoinHandle};
-
+pub use tasks::{
+    yield_task::{yield_now, Yield},
+    JoinHandle,
+};
 
 // Thread-safe future that remains pinned to a heap address throughout its lifetime
 type SendFuture = Mutex<Pin<Box<dyn Future<Output = ()> + 'static + Send>>>;

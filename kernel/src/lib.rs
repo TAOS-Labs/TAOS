@@ -11,9 +11,8 @@
 extern crate alloc;
 
 use alloc::boxed::Box;
+use core::{future::Future, pin::Pin};
 use events::schedule_kernel;
-use core::future::Future;
-use core::pin::Pin;
 use x86_64::instructions::hlt;
 
 pub mod constants;

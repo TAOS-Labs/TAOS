@@ -1,8 +1,10 @@
 use alloc::sync::Arc;
-use core::future::Future;
-use core::pin::Pin;
-use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use core::task::{Context, Poll, Waker};
+use core::{
+    future::Future,
+    pin::Pin,
+    sync::atomic::{AtomicBool, AtomicUsize, Ordering},
+    task::{Context, Poll, Waker},
+};
 use crossbeam_queue::ArrayQueue;
 
 // Not in constants yet because debating about keeping it
@@ -358,8 +360,7 @@ fn spin_wait(spin_count: u32) {
 mod tests {
     use super::*;
     use alloc::vec::Vec;
-    use futures::future::join_all;
-    use futures::{join, FutureExt};
+    use futures::{future::join_all, join, FutureExt};
 
     async fn spin_future() {
         for _ in 0..1000 {

@@ -1,6 +1,5 @@
 use super::spsc::{Receiver, Sender, SpscChannel, SPSC_DEFAULT_CAPACITY};
-use alloc::vec::Vec;
-use alloc::sync::Arc;
+use alloc::{sync::Arc, vec::Vec};
 use spin::Mutex;
 
 #[derive(Debug)]
@@ -189,11 +188,15 @@ impl<T> ChannelPool<T> {
 
         Ok((
             (
-                Sender { channel: channel1.clone() },
+                Sender {
+                    channel: channel1.clone(),
+                },
                 Receiver { channel: channel1 },
             ),
             (
-                Sender { channel: channel2.clone() },
+                Sender {
+                    channel: channel2.clone(),
+                },
                 Receiver { channel: channel2 },
             ),
         ))

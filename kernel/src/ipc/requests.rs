@@ -1,6 +1,8 @@
-use super::error::ProtocolError;
-use super::messages::{MessageHeader, MessageType, MAX_MESSAGE_SIZE};
-use super::serialization::{MessageReader, MessageWriter};
+use super::{
+    error::ProtocolError,
+    messages::{MessageHeader, MessageType, MAX_MESSAGE_SIZE},
+    serialization::{MessageReader, MessageWriter},
+};
 use alloc::vec::Vec;
 use bytes::Bytes;
 

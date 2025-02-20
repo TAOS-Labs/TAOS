@@ -1,10 +1,12 @@
-use alloc::{boxed::Box, vec::Vec, sync::Arc};
-use core::cell::UnsafeCell;
-use core::future::Future;
-use core::mem::MaybeUninit;
-use core::pin::Pin;
-use core::sync::atomic::{AtomicUsize, Ordering};
-use core::task::{Context, Poll, Waker};
+use alloc::{boxed::Box, sync::Arc, vec::Vec};
+use core::{
+    cell::UnsafeCell,
+    future::Future,
+    mem::MaybeUninit,
+    pin::Pin,
+    sync::atomic::{AtomicUsize, Ordering},
+    task::{Context, Poll, Waker},
+};
 
 pub const SPSC_DEFAULT_CAPACITY: usize = 32;
 
@@ -79,9 +81,7 @@ impl<T> SpscChannel<T> {
             Sender {
                 channel: channel.clone(),
             },
-            Receiver {
-                channel,
-            }
+            Receiver { channel },
         )
     }
 
@@ -161,9 +161,8 @@ impl<T> Receiver<T> {
         let tail = channel.tail.load(Ordering::Acquire);
 
         if head != tail {
-            let value = unsafe {
-                (*channel.buffer[head % channel.capacity].get()).assume_init_read()
-            };
+            let value =
+                unsafe { (*channel.buffer[head % channel.capacity].get()).assume_init_read() };
             channel.head.store(head.wrapping_add(1), Ordering::Release);
 
             if let Some(waker) = unsafe { (*channel.tx_waker.get()).take() } {
@@ -185,7 +184,9 @@ impl<T> Receiver<T> {
 impl<T> Drop for Sender<T> {
     fn drop(&mut self) {
         let channel = &*self.channel;
-        channel.is_dropped.fetch_or(SENDER_DROPPED, Ordering::AcqRel);
+        channel
+            .is_dropped
+            .fetch_or(SENDER_DROPPED, Ordering::AcqRel);
 
         if let Some(waker) = unsafe { (*channel.rx_waker.get()).take() } {
             waker.wake();
@@ -196,7 +197,9 @@ impl<T> Drop for Sender<T> {
 impl<T> Drop for Receiver<T> {
     fn drop(&mut self) {
         let channel = &*self.channel;
-        channel.is_dropped.fetch_or(RECEIVER_DROPPED, Ordering::AcqRel);
+        channel
+            .is_dropped
+            .fetch_or(RECEIVER_DROPPED, Ordering::AcqRel);
 
         if let Some(waker) = unsafe { (*channel.tx_waker.get()).take() } {
             waker.wake();

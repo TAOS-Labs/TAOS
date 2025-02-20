@@ -83,9 +83,7 @@ impl FdTable {
     }
 
     pub fn get_offset(&self, fd: usize) -> Option<u64> {
-        self.fds
-            .get(&fd)
-            .map(|f| f.offset.load(Ordering::Relaxed))
+        self.fds.get(&fd).map(|f| f.offset.load(Ordering::Relaxed))
     }
 
     pub fn remove(&mut self, fd: usize) -> Option<FileDesc> {

@@ -1,8 +1,10 @@
 use super::TaskError;
 use alloc::sync::Arc;
-use core::future::Future;
-use core::pin::Pin;
-use core::task::{Context, Poll};
+use core::{
+    future::Future,
+    pin::Pin,
+    task::{Context, Poll},
+};
 use spin::Mutex;
 
 #[derive(Clone)]

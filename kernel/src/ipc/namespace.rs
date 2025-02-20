@@ -1,10 +1,10 @@
-use super::error::Error;
-use super::messages::Message;
-use super::mount_manager::{MountId, MountManager};
-use super::requests::{Tattach, Tclunk, Twalk};
-use alloc::collections::BTreeMap;
-use alloc::sync::Arc;
-use alloc::{string::String, vec::Vec};
+use super::{
+    error::Error,
+    messages::Message,
+    mount_manager::{MountId, MountManager},
+    requests::{Tattach, Tclunk, Twalk},
+};
+use alloc::{collections::BTreeMap, string::String, sync::Arc, vec::Vec};
 use bytes::Bytes;
 use core::sync::atomic::{AtomicU32, Ordering};
 
@@ -67,7 +67,9 @@ impl Namespace {
                 if let Some(mount_id) = current.mount_id {
                     // Need to attach to the new mount
                     let new_fid = self.next_fid.fetch_add(1, Ordering::Relaxed);
-                    let msg = Message::Tattach(Tattach::new(0, new_fid, 0, Bytes::new(), Bytes::new()).unwrap());
+                    let msg = Message::Tattach(
+                        Tattach::new(0, new_fid, 0, Bytes::new(), Bytes::new()).unwrap(),
+                    );
 
                     let response = self
                         .mount_manager
