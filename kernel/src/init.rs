@@ -62,13 +62,6 @@ pub fn init() -> u32 {
     register_event_runner(bsp_id);
     idt::enable();
 
-    schedule_kernel(
-        0,
-        async {
-            spawn_test().await;
-        },
-        2,
-    );
     bsp_id
 }
 
@@ -138,8 +131,7 @@ static TEST_MOUNT_ID: AtomicU32 = AtomicU32::new(0);
 pub async fn spawn_test() {
     serial_println!("Here");
 
-    // Create mount first, before spawning tasks
-    let (mount_id, server_rx, server_tx) = match mnt_manager.create_mount().await {
+    /*let (mount_id, server_rx, server_tx) = match mnt_manager.create_mount().await {
         Ok(mount) => {
             serial_println!("Created mount");
             mount
@@ -152,7 +144,6 @@ pub async fn spawn_test() {
 
     TEST_MOUNT_ID.store(mount_id.0, Ordering::Release);
 
-    // Now spawn server with known lifetime
     let server = spawn(
         1,
         async move {
@@ -185,7 +176,6 @@ pub async fn spawn_test() {
         0,
     );
 
-    // Give server time to start
     for _ in 0..10 {
         yield_now().await;
     }
@@ -214,8 +204,7 @@ pub async fn spawn_test() {
         0,
     );
 
-    // Wait for both to finish
     server.await.unwrap();
     client.await.unwrap();
-    serial_println!("Test complete");
+    serial_println!("Test complete");*/
 }

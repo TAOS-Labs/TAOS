@@ -8,7 +8,7 @@
 #![reexport_test_harness_main = "test_main"]
 
 use limine::request::{RequestsEndMarker, RequestsStartMarker};
-use taos::events::run_loop;
+use taos::events::{run_loop, schedule_kernel};
 
 extern crate alloc;
 use taos::debug;
@@ -36,6 +36,14 @@ extern "C" fn _start() -> ! {
     let bsp_id = taos::init::init();
     #[cfg(test)]
     test_main();
+
+    schedule_kernel(
+        0,
+        async {
+            taos::init::spawn_test().await;
+        },
+        2,
+    );
 
     debug!("BSP entering event loop");
 
