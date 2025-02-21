@@ -79,10 +79,12 @@ pub fn schedule_kernel(
     future: impl Future<Output = ()> + 'static + Send,
     priority_level: usize,
 ) {
-    let runners = EVENT_RUNNERS.read();
-    let mut runner = runners.get(&cpuid).expect("No runner found").write();
-
-    runner.schedule(future, priority_level, 0);
+    without_interrupts(|| {
+        let runners = EVENT_RUNNERS.read();
+        let mut runner = runners.get(&cpuid).expect("No runner found").write();
+    
+        runner.schedule(future, priority_level, 0);
+    });
 }
 
 pub fn schedule_process(
