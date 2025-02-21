@@ -174,9 +174,7 @@ impl EventRunner {
         queue.write().pop_front()
     }
 
-    fn enqueue(queue: &EventQueue, event: Arc<Event>) {
-        queue.write().push_back(event);
-    }
+    fn enqueue(queue: &EventQueue, event: Arc<Event>) {}
 
     fn reprioritize(&mut self) {
         for i in 1..NUM_EVENT_PRIORITIES {

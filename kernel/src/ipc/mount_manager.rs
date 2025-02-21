@@ -5,7 +5,7 @@ use super::{
     spsc_pool::ChannelPool,
 };
 use crate::{
-    events::{spawn, JoinHandle},
+    events::{spawn, yield_now, JoinHandle},
     serial_println,
 };
 use alloc::{collections::BTreeMap, sync::Arc};
@@ -37,17 +37,21 @@ impl Mount {
         let task = spawn(
             0,
             async move {
-                while let Ok(response) = rx.recv().await {
-                    match Message::parse(response) {
-                        Ok((msg, tag)) => {
-                            if let Some(pending_req) = pending_clone.lock().remove(&tag) {
-                                let _ = pending_req.response_tx.send(msg);
+                loop {
+                    yield_now().await;
+                    match rx.try_recv() {
+                        Ok(response) => match Message::parse(response) {
+                            Ok((msg, tag)) => {
+                                if let Some(pending_req) = pending_clone.lock().remove(&tag) {
+                                    let _ = pending_req.response_tx.send(msg);
+                                }
                             }
-                        }
-                        Err(e) => {
-                            log::error!("Failed to parse message: {:?}", e);
-                            continue;
-                        }
+                            Err(e) => {
+                                log::error!("Failed to parse message: {:?}", e);
+                                continue;
+                            }
+                        },
+                        Err(_) => continue,
                     }
                 }
             },
