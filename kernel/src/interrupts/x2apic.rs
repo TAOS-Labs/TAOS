@@ -86,6 +86,18 @@ impl Default for X2ApicManager {
     }
 }
 
+#[repr(C)]
+pub struct SyscallRegisters {
+    pub number: u64, // syscall number (originally in rax)
+    pub arg1: u64,   // originally in rdi
+    pub arg2: u64,   // originally in rsi
+    pub arg3: u64,   // originally in rdx
+    pub arg4: u64,   // originally in r10
+    pub arg5: u64,   // originally in r8
+    pub arg6: u64,   // originally in r9
+}
+
+
 #[naked]
 #[no_mangle]
 pub extern "C" fn syscall_han() -> ! {
@@ -96,27 +108,41 @@ pub extern "C" fn syscall_han() -> ! {
             "cli",
             // Optionally, save registers you intend to use
             // Set up your stack frame as needed
-            "mov rbx, rsp",
+            "mov r12, rcx",
+            "mov r13, r11",
+
             "mov rsp, 0xffffffff800c02f8",
 
-            "push r11",
-            "push rcx",
             "push rbx",
 
+            "sub rsp, 56",
 
-            // call handler w rax
-            "mov rdi, rax",
+            "mov [rsp + 0], rax",
+            // Argument 1 is in RDI.
+            "mov [rsp + 8], rdi",
+            // Argument 2 is in RSI.
+            "mov [rsp + 16], rsi",
+            // Argument 3 is in RDX.
+            "mov [rsp + 24], rdx",
+            // Argument 4 is in R10.
+            "mov [rsp + 32], r10",
+            // Argument 5 is in R8.
+            "mov [rsp + 40], r8",
+            // Argument 6 is in R9.
+            "mov [rsp + 48], r9",
+
+            "mov rdi, rsp",
+
             "call syscall_handler_impl",
 
+            "add rsp, 56",
+
             "pop rbx",
-            "pop rcx",
-            "pop r11",
 
-            "mov rsp, rbx",
+            "mov rcx, r12",
+            "mov r11, r13",
+
             "swapgs",
-
-            "xor rax, rax",
-            "mov rsp, 0x700000002000",
 
             // Prepare for sysretq to return to user space
             "sysretq",
@@ -126,8 +152,9 @@ pub extern "C" fn syscall_han() -> ! {
 }
 
 #[no_mangle]
-fn syscall_handler_impl(rsp: u64) {
-    serial_println!("HANDLER, {}", {rsp});
+fn syscall_handler_impl(regs: *const SyscallRegisters) {
+    let regs = unsafe { &*regs };
+    serial_println!("HANDLER, {}", { regs.number });
 }
 
 
