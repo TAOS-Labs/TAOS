@@ -33,7 +33,7 @@ impl Mount {
     fn new(mount_id: MountId, tx: Sender<Bytes>, rx: Receiver<Bytes>) -> Self {
         let pending = Arc::new(Mutex::new(BTreeMap::<u16, PendingRequest>::new()));
         let pending_clone = pending.clone();
-
+        serial_println!("Spawning task");
         let task = spawn(
             0,
             async move {
@@ -57,6 +57,7 @@ impl Mount {
             },
             1,
         );
+        serial_println!("Done");
 
         Mount {
             mount_id,
@@ -106,8 +107,11 @@ impl MountManager {
             .allocate_pair()
             .map_err(|_| Error::NoMount)?;
 
+        serial_println!("Got channels");
         let mount_id = MountId(self.next_mount_id.fetch_add(1, Ordering::Relaxed));
+        serial_println!("Added stuff");
         let mount = Mount::new(mount_id, client_tx, client_rx);
+        serial_println!("Mount spawned");
 
         self.mounts.lock().insert(mount_id, mount);
 

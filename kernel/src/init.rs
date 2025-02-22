@@ -129,16 +129,15 @@ fn wake_cores() -> u32 {
 static TEST_MOUNT_ID: AtomicU32 = AtomicU32::new(0);
 
 pub async fn spawn_test() {
+    serial_println!("Tryin'");
     let (mount_id, server_rx, server_tx) = match mnt_manager.create_mount().await {
-        Ok(mount) => {
-            serial_println!("Created mount");
-            mount
-        }
+        Ok(mount) => mount,
         Err(e) => {
             serial_println!("Failed to create mount: {:?}", e);
             return;
         }
     };
+    serial_println!("Created mount");
 
     TEST_MOUNT_ID.store(mount_id.0, Ordering::Release);
 

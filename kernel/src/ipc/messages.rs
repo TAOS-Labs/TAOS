@@ -234,6 +234,7 @@ impl Message {
     }
 
     pub fn parse(bytes: Bytes) -> Result<(Self, u16), ProtocolError> {
+        serial_println!("Gasp!");
         let (header, remaining) = MessageHeader::from_bytes(bytes)?;
         let tag = header.tag;
 

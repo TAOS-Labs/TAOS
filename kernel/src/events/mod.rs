@@ -83,7 +83,7 @@ pub fn schedule_kernel(
     without_interrupts(|| {
         let runners = EVENT_RUNNERS.read();
         let mut runner = runners.get(&cpuid).expect("No runner found").write();
-    
+
         runner.schedule(future, priority_level, 0);
     });
 }
