@@ -138,7 +138,7 @@ pub(crate) trait Clock {
     fn now(&self) -> u64;
 }
 
-/// Simple monotonic clock implementation
+/// Simple monotonic clock
 #[derive(Default)]
 pub(crate) struct MonotonicClock(AtomicU64);
 

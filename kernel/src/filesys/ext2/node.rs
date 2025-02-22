@@ -3,9 +3,11 @@ use core::cmp::min;
 use spin::Mutex;
 
 use super::{
+    allocator::{AllocError, Allocator},
     block_io::BlockError,
     cache::{block::CachedBlock, inode::CachedInode, Cache},
     structures::{DirectoryEntry, FileType},
+    get_current_time,
 };
 
 /// Error types specific to node operations
@@ -18,9 +20,177 @@ pub enum NodeError {
     IoError(BlockError),
     CacheError,
     NameTooLong,
+    NoSpace,
+    WriteError,
+    DirEntryTooLarge,
+    NotEmpty,
+    AlreadyExists,
+    ReadOnly,
+    NotFound,
+}
+
+impl From<AllocError> for NodeError {
+    fn from(err: AllocError) -> Self {
+        match err {
+            AllocError::NoSpace => NodeError::NoSpace,
+            _ => NodeError::WriteError,
+        }
+    }
 }
 
 pub type NodeResult<T> = Result<T, NodeError>;
+
+/// Write context for managing block allocation
+struct WriteContext<'a> {
+    node: &'a Node,
+    allocator: &'a Allocator,
+    offset: u64,
+    size: u64,
+}
+
+impl<'a> WriteContext<'a> {
+    fn new(node: &'a Node, allocator: &'a Allocator, offset: u64, size: u64) -> Self {
+        Self {
+            node,
+            allocator,
+            offset,
+            size,
+        }
+    }
+
+    /// Ensure all necessary blocks are allocated
+    fn prepare_blocks(&mut self) -> NodeResult<()> {
+        let start_block = self.offset / self.node.block_size as u64;
+        let end_block = (self.offset + self.size + self.node.block_size as u64 - 1) 
+            / self.node.block_size as u64;
+
+        for block_idx in start_block..end_block {
+            self.ensure_block_allocated(block_idx)?;
+        }
+
+        Ok(())
+    }
+
+    /// Ensure a specific block is allocated
+    fn ensure_block_allocated(&mut self, block_idx: u64) -> NodeResult<u32> {
+        if let Ok(block) = self.node.get_block_number_for_offset(block_idx * self.node.block_size as u64) {
+            return Ok(block);
+        }
+
+        // Need to allocate a new block
+        let new_block = self.allocator.allocate_block()?;
+        self.set_block_pointer(block_idx, new_block)?;
+        Ok(new_block)
+    }
+
+    /// Set a block pointer (direct, indirect, etc.)
+    fn set_block_pointer(&mut self, block_idx: u64, block: u32) -> NodeResult<()> {
+        let mut inode = self.node.inode.lock();
+        let inode = inode.inode_mut();
+
+        let ptrs_per_block = self.node.block_size as u64 / 4;
+
+        if block_idx < 12 {
+            // Direct block
+            inode.blocks[block_idx as usize] = block;
+            return Ok(());
+        }
+
+        let mut idx = block_idx - 12;
+
+        if idx < ptrs_per_block {
+            // Single indirect
+            if inode.blocks[12] == 0 {
+                inode.blocks[12] = self.allocator.allocate_block()?;
+            }
+            self.write_indirect_pointer(inode.blocks[12], idx as u32, block)?;
+            return Ok(());
+        }
+        idx -= ptrs_per_block;
+
+        if idx < ptrs_per_block * ptrs_per_block {
+            // Double indirect
+            if inode.blocks[13] == 0 {
+                inode.blocks[13] = self.allocator.allocate_block()?;
+            }
+
+            let indirect1 = inode.blocks[13];
+            let indirect1_idx = idx / ptrs_per_block;
+            let indirect2_idx = idx % ptrs_per_block;
+
+            // Ensure indirect block exists
+            let indirect2 = self.read_indirect_pointer(indirect1, indirect1_idx as u32)?;
+            let indirect2 = if indirect2 == 0 {
+                let new_block = self.allocator.allocate_block()?;
+                self.write_indirect_pointer(indirect1, indirect1_idx as u32, new_block)?;
+                new_block
+            } else {
+                indirect2
+            };
+
+            self.write_indirect_pointer(indirect2, indirect2_idx as u32, block)?;
+            return Ok(());
+        }
+        idx -= ptrs_per_block * ptrs_per_block;
+
+        // Triple indirect
+        if inode.blocks[14] == 0 {
+            inode.blocks[14] = self.allocator.allocate_block()?;
+        }
+
+        let indirect1 = inode.blocks[14];
+        let indirect1_idx = idx / (ptrs_per_block * ptrs_per_block);
+        let indirect2_idx = (idx / ptrs_per_block) % ptrs_per_block;
+        let indirect3_idx = idx % ptrs_per_block;
+
+        // Ensure first level indirect block exists
+        let indirect2 = self.read_indirect_pointer(indirect1, indirect1_idx as u32)?;
+        let indirect2 = if indirect2 == 0 {
+            let new_block = self.allocator.allocate_block()?;
+            self.write_indirect_pointer(indirect1, indirect1_idx as u32, new_block)?;
+            new_block
+        } else {
+            indirect2
+        };
+
+        // Ensure second level indirect block exists
+        let indirect3 = self.read_indirect_pointer(indirect2, indirect2_idx as u32)?;
+        let indirect3 = if indirect3 == 0 {
+            let new_block = self.allocator.allocate_block()?;
+            self.write_indirect_pointer(indirect2, indirect2_idx as u32, new_block)?;
+            new_block
+        } else {
+            indirect3
+        };
+
+        self.write_indirect_pointer(indirect3, indirect3_idx as u32, block)?;
+        Ok(())
+    }
+
+    /// Read an indirect block pointer
+    fn read_indirect_pointer(&self, block: u32, index: u32) -> NodeResult<u32> {
+        let cached = self.node.block_cache.get(block)
+            .map_err(|_| NodeError::WriteError)?;
+        let cached = cached.lock();
+        
+        Ok(unsafe {
+            *(cached.data().as_ptr().add(index as usize * 4) as *const u32)
+        })
+    }
+
+    /// Write an indirect block pointer
+    fn write_indirect_pointer(&self, block: u32, index: u32, value: u32) -> NodeResult<()> {
+        let cached = self.node.block_cache.get(block)
+            .map_err(|_| NodeError::WriteError)?;
+        let mut cached = cached.lock();
+        
+        unsafe {
+            *(cached.data_mut().as_mut_ptr().add(index as usize * 4) as *mut u32) = value;
+        }
+        
+        Ok(())
+    }
+}
 
 /// Directory entry with name
 #[derive(Debug, Clone)]
@@ -42,6 +212,7 @@ pub struct Node {
     block_size: u32,
     /// For symlinks: cached target path
     symlink_target: Option<String>,
+    allocator: Arc<Allocator>,
 }
 
 impl Node {
@@ -51,6 +222,7 @@ impl Node {
         inode: Arc<Mutex<CachedInode>>,
         block_cache: Arc<dyn Cache<u32, CachedBlock>>,
         block_size: u32,
+        allocator: Arc<Allocator>,
     ) -> Self {
         let mut node = Self {
             number,
@@ -58,6 +230,7 @@ impl Node {
             block_cache,
             block_size,
             symlink_target: None,
+            allocator,
         };
 
         // Cache symlink target if this is a symlink
@@ -96,6 +269,31 @@ impl Node {
     /// Get the number of hard links
     pub fn link_count(&self) -> u16 {
         self.inode.lock().inode().links_count
+    }
+
+    pub fn decrease_link_count(&self) -> NodeResult<bool> {
+        let mut inode = self.inode.lock();
+        let inode = inode.inode_mut();
+        inode.links_count -= 1;
+
+        // If no more links, mark for deletion
+        if inode.links_count == 0 {
+            inode.deletion_time = get_current_time();
+
+            // Free blocks
+            for i in 0..inode.blocks_count {
+                if let Ok(block) = self.get_block_number_for_offset(i as u64 * self.block_size as u64) {
+                    self.allocator.free_block(block)?;
+                }
+            }
+
+            // Free inode
+            self.allocator.free_inode(self.number)?;
+
+            Ok(true) // indicates inode was deleted 
+        } else {
+            Ok(false) // indicates inode still exists
+        }
     }
 
     /// Calculate which block contains the given byte offset
@@ -308,6 +506,212 @@ impl Node {
         }
 
         Ok(entries)
+    }
+
+    /// Write data to the file at the given offset
+    pub fn write_at(&self, offset: u64, buffer: &[u8]) -> NodeResult<usize> {
+        if !self.is_file() {
+            return Err(NodeError::NotFile);
+        }
+
+        let mut ctx = WriteContext::new(self, &self.allocator, offset, buffer.len() as u64);
+        ctx.prepare_blocks()?;
+
+        let mut bytes_written = 0;
+        let mut remaining = buffer.len();
+        let mut buf_offset = 0;
+        let mut file_offset = offset;
+
+        while remaining > 0 {
+            let block_offset = file_offset % self.block_size as u64;
+            let block = self.get_block_number_for_offset(file_offset)?;
+            
+            let cached = self.block_cache.get(block)
+                .map_err(|_| NodeError::WriteError)?;
+            let mut cached = cached.lock();
+            
+            let to_write = min(remaining, (self.block_size - block_offset as u32) as usize);
+            cached.data_mut()[block_offset as usize..][..to_write]
+                .copy_from_slice(&buffer[buf_offset..][..to_write]);
+
+            bytes_written += to_write;
+            buf_offset += to_write;
+            file_offset += to_write as u64;
+            remaining -= to_write;
+        }
+
+        // Update inode size if needed
+        let new_size = offset + bytes_written as u64;
+        let mut inode = self.inode.lock();
+        if new_size > inode.inode().size() {
+            inode.inode_mut().size_low = new_size as u32;
+        }
+
+        Ok(bytes_written)
+    }
+
+    /// Truncate the file to the given size
+    pub fn truncate(&self, size: u64) -> NodeResult<()> {
+        if !self.is_file() {
+            return Err(NodeError::NotFile);
+        }
+
+        let current_size = self.size();
+        if size >= current_size {
+            return Ok(());
+        }
+
+        // Free unnecessary blocks
+        let start_block = (size + self.block_size as u64 - 1) / self.block_size as u64;
+        let end_block = (current_size + self.block_size as u64 - 1) / self.block_size as u64;
+
+        for block_idx in start_block..end_block {
+            if let Ok(block) = self.get_block_number_for_offset(block_idx * self.block_size as u64) {
+                self.allocator.free_block(block)?;
+            }
+        }
+
+        // Update inode size
+        let mut inode = self.inode.lock();
+        inode.inode_mut().size_low = size as u32;
+
+        Ok(())
+    }
+
+    /// Add a directory entry
+    pub fn add_dir_entry(&self, name: &str, inode_no: u32, file_type: FileType) -> NodeResult<()> {
+        if !self.is_directory() {
+            return Err(NodeError::NotDirectory);
+        }
+
+        if name.len() > 255 {
+            return Err(NodeError::DirEntryTooLarge);
+        }
+
+        // Check if entry already exists
+        let entries = self.read_dir()?;
+        if entries.iter().any(|e| e.name == name) {
+            return Err(NodeError::AlreadyExists);
+        }
+
+        let entry_size = size_of::<DirectoryEntry>() + name.len();
+        let padded_size = (entry_size + 3) & !3; // Round up to 4-byte alignment
+
+        let mut offset = 0;
+        let mut last_entry_offset = 0;
+        let mut found_space = false;
+
+        while offset < self.size() {
+            let mut entry = DirectoryEntry {
+                inode: 0,
+                rec_len: 0,
+                name_len: 0,
+                file_type: 0,
+            };
+
+            self.read_at(offset, unsafe {
+                core::slice::from_raw_parts_mut(
+                    &mut entry as *mut _ as *mut u8,
+                    size_of::<DirectoryEntry>()
+                )
+            })?;
+
+            if entry.inode == 0 || offset + entry.rec_len as u64 >= self.size() {
+                // Found a free spot or end of directory
+                found_space = true;
+                break;
+            }
+
+            last_entry_offset = offset;
+            offset += entry.rec_len as u64;
+        }
+
+        if !found_space {
+            // Need to extend directory
+            let mut ctx = WriteContext::new(self, &self.allocator, self.size(), padded_size as u64);
+            ctx.prepare_blocks()?;
+        }
+
+        // Create new entry
+        let mut new_entry = DirectoryEntry {
+            inode: inode_no,
+            rec_len: padded_size as u16,
+            name_len: name.len() as u8,
+            file_type: file_type as u8,
+        };
+
+        // Write entry header
+        self.write_at(offset, unsafe {
+            core::slice::from_raw_parts(
+                &new_entry as *const _ as *const u8,
+                size_of::<DirectoryEntry>()
+            )
+        })?;
+
+        // Write name
+        self.write_at(
+            offset + size_of::<DirectoryEntry>() as u64,
+            name.as_bytes()
+        )?;
+
+        Ok(())
+    }
+
+    /// Remove a directory entry
+    pub fn remove_dir_entry(&self, name: &str) -> NodeResult<()> {
+        if !self.is_directory() {
+            return Err(NodeError::NotDirectory);
+        }
+
+        let mut offset = 0;
+        let mut prev_offset = 0;
+        let mut found = false;
+
+        while offset < self.size() {
+            let mut entry = DirectoryEntry {
+                inode: 0,
+                rec_len: 0,
+                name_len: 0,
+                file_type: 0,
+            };
+
+            self.read_at(offset, unsafe {
+                core::slice::from_raw_parts_mut(
+                    &mut entry as *mut _ as *mut u8,
+                    size_of::<DirectoryEntry>()
+                )
+            })?;
+
+            if entry.inode != 0 {
+                let mut entry_name = vec![0u8; entry.name_len as usize];
+                self.read_at(
+                    offset + size_of::<DirectoryEntry>() as u64,
+                    &mut entry_name
+                )?;
+
+                if name.as_bytes() == entry_name {
+                    // Found the entry to remove
+                    entry.inode = 0;
+                    self.write_at(offset, unsafe {
+                        core::slice::from_raw_parts(
+                            &entry as *const _ as *const u8,
+                            size_of::<DirectoryEntry>()
+                        )
+                    })?;
+                    found = true;
+                    break;
+                }
+            }
+
+            prev_offset = offset;
+            offset += entry.rec_len as u64;
+        }
+
+        if !found {
+            return Err(NodeError::NotFound);
+        }
+
+        Ok(())
     }
 }
 
