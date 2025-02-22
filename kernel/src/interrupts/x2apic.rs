@@ -15,6 +15,9 @@ use core::sync::atomic::{AtomicU32, Ordering};
 use raw_cpuid::CpuId;
 use spin::Mutex;
 use x86_64::{instructions::port::Port, registers::model_specific::Msr};
+use crate::{interrupts::gdt};
+use core::arch::naked_asm;
+
 
 // MSR register constants
 const IA32_APIC_BASE_MSR: u32 = 0x1B;
@@ -83,6 +86,33 @@ impl Default for X2ApicManager {
     }
 }
 
+#[naked]
+#[no_mangle]
+pub extern "C" fn syscall_han() -> ! {
+    unsafe {
+        core::arch::naked_asm!(
+            "swapgs",
+            // Disable interrupts, if needed
+            "cli",
+            // Optionally, save registers you intend to use
+            // Set up your stack frame as needed
+            
+            // Call your Rust handler or do your processing directly
+            "call {handler}",
+            
+            // Prepare for sysretq to return to user space
+            "sysretq",
+            handler = sym syscall_handler_impl,
+        );
+    }
+}
+
+#[no_mangle]
+fn syscall_handler_impl() {
+    serial_println!("HANDLER");
+}
+
+
 impl X2ApicManager {
     /// Creates a new x2APIC manager with empty APIC slots
     pub const fn new() -> Self {
@@ -112,6 +142,21 @@ impl X2ApicManager {
 
         unsafe {
             APIC_MANAGER.apics[id] = Some(apic);
+        }
+
+        let fmask: u64 = 1 << 9; // 0x200
+
+        let user_cs = gdt::GDT.1.user_code_selector.0 as u64;
+        let kernel_cs = gdt::GDT.1.code_selector.0 as u64;
+        let star: u64 = (kernel_cs << 32) | (user_cs << 48);
+
+        serial_println!("USER CS {}, KERNEL CS {}, STAR {}, FMASK {}", user_cs, kernel_cs, star, fmask);
+
+        // Set up MSRs for syscall
+        unsafe {
+            Msr::new(X2APIC_IA32_LSTAR).write(syscall_han as u64);
+            Msr::new(X2APIC_IA32_FMASK).write(fmask);
+            Msr::new(X2APIC_IA32_STAR).write(star);
         }
 
         Ok(())
