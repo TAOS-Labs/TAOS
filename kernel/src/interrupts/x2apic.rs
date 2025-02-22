@@ -14,7 +14,7 @@ use crate::{
 use core::sync::atomic::{AtomicU32, Ordering};
 use raw_cpuid::CpuId;
 use spin::Mutex;
-use x86_64::{instructions::port::Port, registers::model_specific::Msr};
+use x86_64::{instructions::port::Port, registers::{model_specific::{GsBase, KernelGsBase, Msr}, segmentation::{Segment, GS}}, VirtAddr};
 use crate::{interrupts::gdt};
 use core::arch::naked_asm;
 
@@ -96,20 +96,38 @@ pub extern "C" fn syscall_han() -> ! {
             "cli",
             // Optionally, save registers you intend to use
             // Set up your stack frame as needed
-            
-            // Call your Rust handler or do your processing directly
-            "call {handler}",
-            
+            "mov rbx, rsp",
+            "mov rsp, 0xffffffff800c02f8",
+
+            "push r11",
+            "push rcx",
+            "push rbx",
+
+
+            // call handler w rax
+            "mov rdi, rax",
+            "call syscall_handler_impl",
+
+            "pop rbx",
+            "pop rcx",
+            "pop r11",
+
+            "mov rsp, rbx",
+            "swapgs",
+
+            "xor rax, rax",
+            "mov rsp, 0x700000002000",
+
             // Prepare for sysretq to return to user space
             "sysretq",
-            handler = sym syscall_handler_impl,
-        );
-    }
+            // kernel_stack_top = const 16
+        )
+    };
 }
 
 #[no_mangle]
-fn syscall_handler_impl() {
-    serial_println!("HANDLER");
+fn syscall_handler_impl(rsp: u64) {
+    serial_println!("HANDLER, {}", {rsp});
 }
 
 
@@ -145,12 +163,20 @@ impl X2ApicManager {
         }
 
         let fmask: u64 = 1 << 9; // 0x200
-
         let user_cs = gdt::GDT.1.user_code_selector.0 as u64;
         let kernel_cs = gdt::GDT.1.code_selector.0 as u64;
         let star: u64 = (kernel_cs << 32) | (user_cs << 48);
 
+
         serial_println!("USER CS {}, KERNEL CS {}, STAR {}, FMASK {}", user_cs, kernel_cs, star, fmask);
+
+        for ele in 0..3 {
+            let var1 = TSSS[0].privilege_stack_table[ele];
+            let var2 = TSSS[1].privilege_stack_table[ele];
+            serial_println!("Value 1: {:x}", var1 + RING0_STACK_SIZE as u64);
+            serial_println!("Value 2: {:x}", var2);
+        }
+
 
         // Set up MSRs for syscall
         unsafe {
