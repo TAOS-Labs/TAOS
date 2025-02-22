@@ -37,13 +37,7 @@ extern "C" fn _start() -> ! {
     #[cfg(test)]
     test_main();
 
-    schedule_kernel(
-        0,
-        async {
-            taos::init::spawn_test().await;
-        },
-        2,
-    );
+    schedule_kernel(0, taos::init::spawn_test(), 2);
 
     debug!("BSP entering event loop");
 

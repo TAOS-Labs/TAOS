@@ -17,7 +17,13 @@ use crate::{
         register_event_runner, run_loop, schedule_kernel, schedule_process, spawn, yield_now,
     },
     interrupts::{self, idt},
-    ipc::{messages::Message, mnt_manager, namespace::Namespace, responses::Rattach},
+    ipc::{
+        messages::Message,
+        mnt_manager,
+        namespace::Namespace,
+        responses::Rattach,
+        spsc::{Receiver, Sender},
+    },
     logging,
     memory::{self},
     processes::process::{create_process, run_process_ring3},
@@ -128,8 +134,56 @@ fn wake_cores() -> u32 {
 
 static TEST_MOUNT_ID: AtomicU32 = AtomicU32::new(0);
 
+pub async fn run_server(server_rx: Receiver<Bytes>, server_tx: Sender<Bytes>) {
+    serial_println!("Server starting");
+    loop {
+        match server_rx.try_recv() {
+            Ok(msg_bytes) => match Message::parse(msg_bytes) {
+                Ok((msg, tag)) => {
+                    serial_println!("Server got message: {:?}", msg);
+                    let response = match msg {
+                        Message::Tattach(..) => {
+                            Message::Rattach(Rattach::new(tag, Bytes::new()).unwrap())
+                        }
+                        _ => continue,
+                    };
+
+                    if let Ok(resp_bytes) = response.serialize() {
+                        let _ = server_tx.send(resp_bytes).await;
+                    }
+                }
+                Err(e) => serial_println!("Failed to parse message: {:?}", e),
+            },
+            Err(_) => {
+                serial_println!("Got error");
+            }
+        }
+        yield_now().await;
+    }
+}
+
+pub async fn run_client(mount_id: u32) {
+    serial_println!("Client starting");
+    let mut ns = Namespace::new();
+
+    match ns.add_mount("/test", mount_id as usize).await {
+        Ok(()) => {
+            serial_println!("Client added mount successfully");
+            match ns.walk_path("/test/somefile").await {
+                Ok(resolution) => {
+                    serial_println!("Walk succeeded: {:?}", resolution);
+                }
+                Err(e) => serial_println!("Walk failed: {:?}", e),
+            }
+        }
+        Err(e) => serial_println!("Client failed to add mount: {:?}", e),
+    }
+    serial_println!("Client finished");
+}
+
 pub async fn spawn_test() {
-    serial_println!("Tryin'");
+    serial_println!("Starting test");
+
     let (mount_id, server_rx, server_tx) = match mnt_manager.create_mount().await {
         Ok(mount) => mount,
         Err(e) => {
@@ -141,62 +195,16 @@ pub async fn spawn_test() {
 
     TEST_MOUNT_ID.store(mount_id.0, Ordering::Release);
 
-    let server = spawn(
-        0,
-        async move {
-            serial_println!("Server starting");
-            loop {
-                match server_rx.try_recv() {
-                    Ok(msg_bytes) => match Message::parse(msg_bytes) {
-                        Ok((msg, tag)) => {
-                            serial_println!("Server got message: {:?}", msg);
-                            let response = match msg {
-                                Message::Tattach(..) => {
-                                    Message::Rattach(Rattach::new(tag, Bytes::new()).unwrap())
-                                }
-                                _ => continue,
-                            };
+    // Spawn server task
+    let server_handle = spawn(0, run_server(server_rx, server_tx), 0);
 
-                            if let Ok(resp_bytes) = response.serialize() {
-                                let _ = server_tx.send(resp_bytes).await;
-                            }
-                        }
-                        Err(e) => serial_println!("Failed to parse message: {:?}", e),
-                    },
-                    Err(_) => (),
-                }
-                yield_now().await;
-            }
-            //serial_println!("Server finished");
-        },
-        0,
-    );
+    yield_now().await;
 
-    let client = spawn(
-        0,
-        async move {
-            serial_println!("Client starting");
-            let mut ns = Namespace::new();
-            let mount_id = TEST_MOUNT_ID.load(Ordering::Acquire);
+    let client_handle = spawn(0, run_client(mount_id.0), 0);
 
-            match ns.add_mount("/test", mount_id as usize).await {
-                Ok(()) => {
-                    serial_println!("Client added mount successfully");
-                    match ns.walk_path("/test/somefile").await {
-                        Ok(resolution) => {
-                            serial_println!("Walk succeeded: {:?}", resolution);
-                        }
-                        Err(e) => serial_println!("Walk failed: {:?}", e),
-                    }
-                }
-                Err(e) => serial_println!("Client failed to add mount: {:?}", e),
-            }
-            serial_println!("Client finished");
-        },
-        0,
-    );
+    if let Err(e) = client_handle.await {
+        serial_println!("Client task failed: {:?}", e);
+    }
 
-    server.await.unwrap();
-    client.await.unwrap();
     serial_println!("Test complete");
 }
