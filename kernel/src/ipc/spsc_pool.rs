@@ -1,3 +1,5 @@
+use crate::serial_println;
+
 use super::spsc::{Receiver, Sender, SpscChannel, SPSC_DEFAULT_CAPACITY};
 use alloc::{sync::Arc, vec::Vec};
 use spin::Mutex;

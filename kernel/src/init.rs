@@ -129,9 +129,7 @@ fn wake_cores() -> u32 {
 static TEST_MOUNT_ID: AtomicU32 = AtomicU32::new(0);
 
 pub async fn spawn_test() {
-    serial_println!("Here");
-
-    /*let (mount_id, server_rx, server_tx) = match mnt_manager.create_mount().await {
+    let (mount_id, server_rx, server_tx) = match mnt_manager.create_mount().await {
         Ok(mount) => {
             serial_println!("Created mount");
             mount
@@ -145,12 +143,10 @@ pub async fn spawn_test() {
     TEST_MOUNT_ID.store(mount_id.0, Ordering::Release);
 
     let server = spawn(
-        1,
+        0,
         async move {
             serial_println!("Server starting");
-            // Run for a fixed number of iterations instead of forever
-            for _ in 0..2000 {
-                yield_now().await;
+            loop {
                 match server_rx.try_recv() {
                     Ok(msg_bytes) => match Message::parse(msg_bytes) {
                         Ok((msg, tag)) => {
@@ -170,15 +166,12 @@ pub async fn spawn_test() {
                     },
                     Err(_) => (),
                 }
+                yield_now().await;
             }
-            serial_println!("Server finished");
+            //serial_println!("Server finished");
         },
         0,
     );
-
-    for _ in 0..10 {
-        yield_now().await;
-    }
 
     let client = spawn(
         0,
@@ -206,5 +199,5 @@ pub async fn spawn_test() {
 
     server.await.unwrap();
     client.await.unwrap();
-    serial_println!("Test complete");*/
+    serial_println!("Test complete");
 }

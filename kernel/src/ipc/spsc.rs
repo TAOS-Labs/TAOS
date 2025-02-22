@@ -8,7 +8,7 @@ use core::{
     task::{Context, Poll, Waker},
 };
 
-pub const SPSC_DEFAULT_CAPACITY: usize = 32;
+pub const SPSC_DEFAULT_CAPACITY: usize = 6;
 
 pub struct SpscChannel<T> {
     buffer: Box<[UnsafeCell<MaybeUninit<T>>]>,

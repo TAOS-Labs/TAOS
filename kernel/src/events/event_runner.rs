@@ -6,7 +6,7 @@ use alloc::{
 };
 use futures::task::waker_ref;
 use spin::rwlock::RwLock;
-use x86_64::instructions::interrupts;
+use x86_64::instructions::interrupts::{self, without_interrupts};
 
 use core::{
     future::Future,
@@ -145,7 +145,9 @@ impl EventRunner {
         };
 
         // Schedule the wrapped future
-        self.schedule(wrapped_future, priority_level, 0);
+        without_interrupts(|| {
+            self.schedule(wrapped_future, priority_level, 0);
+        });
 
         JoinHandle {
             result,

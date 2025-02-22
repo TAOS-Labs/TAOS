@@ -1,3 +1,5 @@
+use crate::serial_println;
+
 use super::{error::ProtocolError, requests, responses};
 use bytes::{Buf, Bytes};
 use core::convert::TryFrom;
@@ -243,6 +245,7 @@ impl Message {
         if header.size > MAX_MESSAGE_SIZE {
             return Err(ProtocolError::MessageTooLarge);
         }
+        serial_println!("Got size: {}", header.size);
 
         let message = Self::from_bytes(header, remaining)?;
         Ok((message, tag))
