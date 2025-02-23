@@ -2,12 +2,14 @@ use alloc::{string::String, sync::Arc, vec, vec::Vec};
 use core::cmp::min;
 use spin::Mutex;
 
+use crate::serial_println;
+
 use super::{
     allocator::{AllocError, Allocator},
     block_io::BlockError,
     cache::{block::CachedBlock, inode::CachedInode, Cache},
-    structures::{DirectoryEntry, FileType},
     get_current_time,
+    structures::{DirectoryEntry, FileType},
 };
 
 /// Error types specific to node operations
@@ -61,7 +63,7 @@ impl<'a> WriteContext<'a> {
     /// Ensure all necessary blocks are allocated
     fn prepare_blocks(&mut self) -> NodeResult<()> {
         let start_block = self.offset / self.node.block_size as u64;
-        let end_block = (self.offset + self.size + self.node.block_size as u64 - 1) 
+        let end_block = (self.offset + self.size + self.node.block_size as u64 - 1)
             / self.node.block_size as u64;
 
         for block_idx in start_block..end_block {
@@ -73,13 +75,19 @@ impl<'a> WriteContext<'a> {
 
     /// Ensure a specific block is allocated
     fn ensure_block_allocated(&mut self, block_idx: u64) -> NodeResult<u32> {
-        if let Ok(block) = self.node.get_block_number_for_offset(block_idx * self.node.block_size as u64) {
+        if let Ok(block) = self
+            .node
+            .get_block_number_for_offset(block_idx * self.node.block_size as u64)
+        {
             return Ok(block);
         }
 
         // Need to allocate a new block
         let new_block = self.allocator.allocate_block()?;
         self.set_block_pointer(block_idx, new_block)?;
+        let mut inode = self.node.inode.lock();
+        let current_count = inode.inode().blocks_count;
+        inode.inode_mut().blocks_count = block_idx as u32 + 1;
         Ok(new_block)
     }
 
@@ -169,25 +177,29 @@ impl<'a> WriteContext<'a> {
 
     /// Read an indirect block pointer
     fn read_indirect_pointer(&self, block: u32, index: u32) -> NodeResult<u32> {
-        let cached = self.node.block_cache.get(block)
+        let cached = self
+            .node
+            .block_cache
+            .get(block)
             .map_err(|_| NodeError::WriteError)?;
         let cached = cached.lock();
-        
-        Ok(unsafe {
-            *(cached.data().as_ptr().add(index as usize * 4) as *const u32)
-        })
+
+        Ok(unsafe { *(cached.data().as_ptr().add(index as usize * 4) as *const u32) })
     }
 
     /// Write an indirect block pointer
     fn write_indirect_pointer(&self, block: u32, index: u32, value: u32) -> NodeResult<()> {
-        let cached = self.node.block_cache.get(block)
+        let cached = self
+            .node
+            .block_cache
+            .get(block)
             .map_err(|_| NodeError::WriteError)?;
         let mut cached = cached.lock();
-        
+
         unsafe {
             *(cached.data_mut().as_mut_ptr().add(index as usize * 4) as *mut u32) = value;
         }
-        
+
         Ok(())
     }
 }
@@ -282,7 +294,9 @@ impl Node {
 
             // Free blocks
             for i in 0..inode.blocks_count {
-                if let Ok(block) = self.get_block_number_for_offset(i as u64 * self.block_size as u64) {
+                if let Ok(block) =
+                    self.get_block_number_for_offset(i as u64 * self.block_size as u64)
+                {
                     self.allocator.free_block(block)?;
                 }
             }
@@ -290,7 +304,7 @@ impl Node {
             // Free inode
             self.allocator.free_inode(self.number)?;
 
-            Ok(true) // indicates inode was deleted 
+            Ok(true) // indicates inode was deleted
         } else {
             Ok(false) // indicates inode still exists
         }
@@ -381,12 +395,7 @@ impl Node {
         Ok(ptr3)
     }
 
-    /// Read data from the file at the given offset
-    pub fn read_at(&self, offset: u64, buffer: &mut [u8]) -> NodeResult<usize> {
-        if !self.is_file() {
-            return Err(NodeError::NotFile);
-        }
-
+    fn read_raw_at(&self, offset: u64, buffer: &mut [u8]) -> NodeResult<usize> {
         let size = self.size();
         if offset >= size {
             return Ok(0);
@@ -420,6 +429,14 @@ impl Node {
         Ok(bytes_read as usize)
     }
 
+    /// Read data from the file at the given offset
+    pub fn read_at(&self, offset: u64, buffer: &mut [u8]) -> NodeResult<usize> {
+        if !self.is_file() {
+            return Err(NodeError::NotFile);
+        }
+        self.read_raw_at(offset, buffer)
+    }
+
     /// Read the target of a symbolic link
     fn read_symlink(&self) -> NodeResult<String> {
         if !self.is_symlink() {
@@ -446,7 +463,7 @@ impl Node {
 
         // Regular file path
         let mut buffer = vec![0; size];
-        self.read_at(0, &mut buffer)
+        self.read_raw_at(0, &mut buffer)
             .map_err(|_| NodeError::IoError(BlockError::DeviceError))?;
 
         Ok(String::from_utf8_lossy(&buffer).into_owned())
@@ -471,7 +488,7 @@ impl Node {
             };
 
             // Read fixed part of directory entry
-            let bytes_read = self.read_at(offset, unsafe {
+            let bytes_read = self.read_raw_at(offset, unsafe {
                 core::slice::from_raw_parts_mut(
                     &mut entry as *mut _ as *mut u8,
                     core::mem::size_of::<DirectoryEntry>(),
@@ -484,7 +501,7 @@ impl Node {
 
             // Read name
             let mut name = vec![0; entry.name_len as usize];
-            self.read_at(
+            self.read_raw_at(
                 offset + core::mem::size_of::<DirectoryEntry>() as u64,
                 &mut name,
             )?;
@@ -508,12 +525,7 @@ impl Node {
         Ok(entries)
     }
 
-    /// Write data to the file at the given offset
-    pub fn write_at(&self, offset: u64, buffer: &[u8]) -> NodeResult<usize> {
-        if !self.is_file() {
-            return Err(NodeError::NotFile);
-        }
-
+    fn write_raw_at(&self, offset: u64, buffer: &[u8]) -> NodeResult<usize> {
         let mut ctx = WriteContext::new(self, &self.allocator, offset, buffer.len() as u64);
         ctx.prepare_blocks()?;
 
@@ -525,11 +537,13 @@ impl Node {
         while remaining > 0 {
             let block_offset = file_offset % self.block_size as u64;
             let block = self.get_block_number_for_offset(file_offset)?;
-            
-            let cached = self.block_cache.get(block)
+
+            let cached = self
+                .block_cache
+                .get(block)
                 .map_err(|_| NodeError::WriteError)?;
             let mut cached = cached.lock();
-            
+
             let to_write = min(remaining, (self.block_size - block_offset as u32) as usize);
             cached.data_mut()[block_offset as usize..][..to_write]
                 .copy_from_slice(&buffer[buf_offset..][..to_write]);
@@ -550,6 +564,14 @@ impl Node {
         Ok(bytes_written)
     }
 
+    /// Write data to the file at the given offset
+    pub fn write_at(&self, offset: u64, buffer: &[u8]) -> NodeResult<usize> {
+        if !self.is_file() {
+            return Err(NodeError::NotFile);
+        }
+        self.write_raw_at(offset, buffer)
+    }
+
     /// Truncate the file to the given size
     pub fn truncate(&self, size: u64) -> NodeResult<()> {
         if !self.is_file() {
@@ -566,7 +588,8 @@ impl Node {
         let end_block = (current_size + self.block_size as u64 - 1) / self.block_size as u64;
 
         for block_idx in start_block..end_block {
-            if let Ok(block) = self.get_block_number_for_offset(block_idx * self.block_size as u64) {
+            if let Ok(block) = self.get_block_number_for_offset(block_idx * self.block_size as u64)
+            {
                 self.allocator.free_block(block)?;
             }
         }
@@ -598,7 +621,6 @@ impl Node {
         let padded_size = (entry_size + 3) & !3; // Round up to 4-byte alignment
 
         let mut offset = 0;
-        let mut last_entry_offset = 0;
         let mut found_space = false;
 
         while offset < self.size() {
@@ -609,10 +631,10 @@ impl Node {
                 file_type: 0,
             };
 
-            self.read_at(offset, unsafe {
+            self.read_raw_at(offset, unsafe {
                 core::slice::from_raw_parts_mut(
                     &mut entry as *mut _ as *mut u8,
-                    size_of::<DirectoryEntry>()
+                    size_of::<DirectoryEntry>(),
                 )
             })?;
 
@@ -622,7 +644,6 @@ impl Node {
                 break;
             }
 
-            last_entry_offset = offset;
             offset += entry.rec_len as u64;
         }
 
@@ -633,7 +654,7 @@ impl Node {
         }
 
         // Create new entry
-        let mut new_entry = DirectoryEntry {
+        let new_entry = DirectoryEntry {
             inode: inode_no,
             rec_len: padded_size as u16,
             name_len: name.len() as u8,
@@ -641,18 +662,14 @@ impl Node {
         };
 
         // Write entry header
-        self.write_at(offset, unsafe {
+        self.write_raw_at(offset, unsafe {
             core::slice::from_raw_parts(
                 &new_entry as *const _ as *const u8,
-                size_of::<DirectoryEntry>()
+                size_of::<DirectoryEntry>(),
             )
         })?;
 
-        // Write name
-        self.write_at(
-            offset + size_of::<DirectoryEntry>() as u64,
-            name.as_bytes()
-        )?;
+        self.write_raw_at(offset + size_of::<DirectoryEntry>() as u64, name.as_bytes())?;
 
         Ok(())
     }
@@ -664,7 +681,6 @@ impl Node {
         }
 
         let mut offset = 0;
-        let mut prev_offset = 0;
         let mut found = false;
 
         while offset < self.size() {
@@ -675,27 +691,24 @@ impl Node {
                 file_type: 0,
             };
 
-            self.read_at(offset, unsafe {
+            self.read_raw_at(offset, unsafe {
                 core::slice::from_raw_parts_mut(
                     &mut entry as *mut _ as *mut u8,
-                    size_of::<DirectoryEntry>()
+                    size_of::<DirectoryEntry>(),
                 )
             })?;
 
             if entry.inode != 0 {
                 let mut entry_name = vec![0u8; entry.name_len as usize];
-                self.read_at(
-                    offset + size_of::<DirectoryEntry>() as u64,
-                    &mut entry_name
-                )?;
+                self.read_raw_at(offset + size_of::<DirectoryEntry>() as u64, &mut entry_name)?;
 
                 if name.as_bytes() == entry_name {
                     // Found the entry to remove
                     entry.inode = 0;
-                    self.write_at(offset, unsafe {
+                    self.write_raw_at(offset, unsafe {
                         core::slice::from_raw_parts(
                             &entry as *const _ as *const u8,
-                            size_of::<DirectoryEntry>()
+                            size_of::<DirectoryEntry>(),
                         )
                     })?;
                     found = true;
@@ -703,7 +716,6 @@ impl Node {
                 }
             }
 
-            prev_offset = offset;
             offset += entry.rec_len as u64;
         }
 
@@ -719,5 +731,258 @@ impl Drop for Node {
     fn drop(&mut self) {
         // Decrement inode reference count
         self.inode.lock().dec_ref();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        super::{
+            block_io::{BlockIO, MockDevice},
+            cache::{block::BlockCache, inode::CachedInode},
+            structures::{BlockGroupDescriptor, FileMode, Inode, Superblock},
+        },
+        *,
+    };
+
+    struct TestSetup {
+        device: Arc<MockDevice>,
+        block_cache: Arc<dyn Cache<u32, CachedBlock>>,
+        allocator: Arc<Allocator>,
+    }
+
+    impl TestSetup {
+        fn new() -> Self {
+            let device = MockDevice::new(1024, 1024 * 1024);
+            let device_as_block_io: Arc<dyn BlockIO> = device.clone();
+            let block_cache: Arc<dyn Cache<u32, CachedBlock>> =
+                Arc::new(BlockCache::new(device_as_block_io, 16));
+
+            let superblock = Arc::new(Superblock {
+                block_size_shift: 10, // 1024 bytes
+                blocks_per_group: 256,
+                inodes_per_group: 64,
+                num_blocks: 1024,
+                num_inodes: 256,
+                ..Default::default()
+            });
+
+            let bgdt: Arc<[BlockGroupDescriptor]> =
+                Arc::from(vec![BlockGroupDescriptor::new(0, 1, 2, 253, 64, 0)]);
+
+            let allocator = Arc::new(Allocator::new(superblock, bgdt, Arc::clone(&block_cache)));
+
+            Self {
+                device,
+                block_cache,
+                allocator,
+            }
+        }
+
+        fn create_inode(&self, mode: u16) -> (u32, Arc<Mutex<CachedInode>>) {
+            let inode = Inode {
+                mode,
+                size_low: 0,
+                links_count: 1,
+                blocks_count: 0,
+                ..Default::default()
+            };
+
+            let inode_no = 1;
+            let cached = CachedInode::new(inode, inode_no);
+            (inode_no, Arc::new(Mutex::new(cached)))
+        }
+
+        fn create_node(&self, mode: u16) -> Arc<Node> {
+            let (inode_no, cached_inode) = self.create_inode(mode);
+            Arc::new(Node::new(
+                inode_no,
+                cached_inode,
+                Arc::clone(&self.block_cache),
+                1024,
+                Arc::clone(&self.allocator),
+            ))
+        }
+    }
+
+    // Test file operations
+    #[test_case]
+    fn test_file_read_write() {
+        let setup = TestSetup::new();
+        let node = setup.create_node(FileMode::REG.bits());
+
+        // Write data
+        let data = b"Hello, World!";
+        assert_eq!(node.write_at(0, data).unwrap(), data.len());
+
+        // Read it back
+        let mut buffer = vec![0; data.len()];
+        assert_eq!(node.read_at(0, &mut buffer).unwrap(), data.len());
+        assert_eq!(&buffer, data);
+
+        // Size should be updated
+        assert_eq!(node.size(), data.len() as u64);
+    }
+
+    #[test_case]
+    fn test_file_append_and_sparse() {
+        let setup = TestSetup::new();
+        let node = setup.create_node(FileMode::REG.bits());
+
+        // Write at offset
+        let data = b"Offset data";
+        let offset = 1024;
+        assert_eq!(node.write_at(offset, data).unwrap(), data.len());
+
+        // Read sparse region
+        let mut buffer = vec![0; offset as usize];
+        assert_eq!(node.read_at(0, &mut buffer).unwrap(), offset as usize);
+        assert!(buffer.iter().all(|&b| b == 0));
+
+        // Read written data
+        let mut buffer = vec![0; data.len()];
+        assert_eq!(node.read_at(offset, &mut buffer).unwrap(), data.len());
+        assert_eq!(&buffer, data);
+    }
+
+    #[test_case]
+    fn test_file_truncate() {
+        let setup = TestSetup::new();
+        let node = setup.create_node(FileMode::REG.bits());
+
+        // Write some data
+        let data = b"Long data that will be truncated";
+        node.write_at(0, data).unwrap();
+
+        // Truncate
+        let new_size = 10;
+        node.truncate(new_size).unwrap();
+        assert_eq!(node.size(), new_size);
+
+        // Read truncated data
+        let mut buffer = vec![0; data.len()];
+        let read = node.read_at(0, &mut buffer).unwrap();
+        assert_eq!(read, new_size as usize);
+        assert_eq!(&buffer[..read], &data[..new_size as usize]);
+    }
+
+    // Test directory operations
+    #[test_case]
+    fn test_directory_entries() {
+        let setup = TestSetup::new();
+        let node = setup.create_node(FileMode::DIR.bits());
+
+        // Add entries
+        node.add_dir_entry("file1", 2, FileType::RegularFile)
+            .unwrap();
+        node.add_dir_entry("dir1", 3, FileType::Directory).unwrap();
+
+        // Read entries
+        let entries = node.read_dir().unwrap();
+        assert_eq!(entries.len(), 2);
+
+        let file_entry = entries.iter().find(|e| e.name == "file1").unwrap();
+        assert_eq!(file_entry.inode_no, 2);
+        assert_eq!(file_entry.file_type, FileType::RegularFile);
+
+        let dir_entry = entries.iter().find(|e| e.name == "dir1").unwrap();
+        assert_eq!(dir_entry.inode_no, 3);
+        assert_eq!(dir_entry.file_type, FileType::Directory);
+    }
+
+    #[test_case]
+    fn test_directory_entry_removal() {
+        let setup = TestSetup::new();
+        let node = setup.create_node(FileMode::DIR.bits());
+
+        // Add and remove entry
+        node.add_dir_entry("test", 2, FileType::RegularFile)
+            .unwrap();
+        node.remove_dir_entry("test").unwrap();
+
+        // Entry should be gone
+        let entries = node.read_dir().unwrap();
+        assert!(!entries.iter().any(|e| e.name == "test"));
+
+        // Removing non-existent entry should fail
+        assert!(matches!(
+            node.remove_dir_entry("nonexistent"),
+            Err(NodeError::NotFound)
+        ));
+    }
+
+    // Test symlink operations
+    #[test_case]
+    fn test_symlink() {
+        let setup = TestSetup::new();
+        let node = setup.create_node(FileMode::LINK.bits());
+
+        // Write target path
+        let target = "/path/to/target";
+        node.write_at(0, target.as_bytes()).unwrap();
+
+        // Read it back
+        let mut buffer = vec![0; target.len()];
+        node.read_at(0, &mut buffer).unwrap();
+        assert_eq!(String::from_utf8(buffer).unwrap(), target);
+    }
+
+    // Test block allocation
+    #[test_case]
+    fn test_block_allocation() {
+        let setup = TestSetup::new();
+        let node = setup.create_node(FileMode::REG.bits());
+
+        // Write enough data to force block allocation
+        let data = vec![42u8; 2048]; // Two blocks worth
+        node.write_at(0, &data).unwrap();
+
+        // Check blocks were allocated
+        let inode = node.inode.lock();
+        assert!(inode.inode().blocks_count >= 2);
+        // Typically block 0 is reserved for boot
+        // But you get this for free
+        // I.e, you read in state of system
+        // In our case, though, 0 being allocated is okay?
+        assert!(inode.inode().blocks[0] == 0); // Direct block
+        assert!(inode.inode().blocks[1] != 0); // Direct block
+    }
+
+    #[test_case]
+    fn test_indirect_blocks() {
+        let setup = TestSetup::new();
+        let node = setup.create_node(FileMode::REG.bits());
+
+        // Write enough data to force indirect block allocation
+        // 12 direct blocks + some indirect
+        let data = vec![42u8; 15 * 1024];
+        node.write_at(0, &data).unwrap();
+
+        let inode = node.inode.lock();
+        assert!(inode.inode().blocks[12] != 0); // Single indirect block
+    }
+
+    // Test error conditions
+    #[test_case]
+    fn test_error_conditions() {
+        let setup = TestSetup::new();
+
+        // Try to read directory as file
+        let dir_node = setup.create_node(FileMode::DIR.bits());
+        let mut buffer = vec![0; 10];
+        assert!(matches!(
+            dir_node.read_at(0, &mut buffer),
+            Err(NodeError::NotFile)
+        ));
+
+        // Try to read_dir on a file
+        let file_node = setup.create_node(FileMode::REG.bits());
+        assert!(matches!(file_node.read_dir(), Err(NodeError::NotDirectory)));
+
+        // Try to add directory entry to a file
+        assert!(matches!(
+            file_node.add_dir_entry("test", 1, FileType::RegularFile),
+            Err(NodeError::NotDirectory)
+        ));
     }
 }

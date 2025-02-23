@@ -1,4 +1,4 @@
-use alloc::{sync::Arc, vec, vec::Vec, string::String};
+use alloc::{string::String, sync::Arc, vec, vec::Vec};
 use core::sync::atomic::{AtomicBool, Ordering};
 use spin::Mutex;
 
@@ -6,9 +6,9 @@ use super::{
     allocator::Allocator,
     block_io::{BlockError, BlockIO},
     cache::{block::CachedBlock, BlockCache, Cache, CacheStats, InodeCache},
-    node::{DirEntry, Node, NodeError},
-    structures::{BlockGroupDescriptor, Superblock, EXT2_SIGNATURE, FileMode, FileType},
     get_current_time,
+    node::{DirEntry, Node, NodeError},
+    structures::{BlockGroupDescriptor, FileMode, FileType, Superblock, EXT2_SIGNATURE},
 };
 
 /// Error types for filesystem operations
@@ -496,11 +496,11 @@ impl Ext2 {
                     let block_idx = i / 4;
                     let byte_idx = i % 4;
                     let shift = byte_idx * 8;
-                    
+
                     // For each byte, we need to modify the correct u32 in blocks
                     // preserving the other bytes in that u32
-                    let mask = !(0xFF << shift);  // clear the byte we want to write
-                    let byte_shifted = (byte as u32) << shift;  // shift our byte into position
+                    let mask = !(0xFF << shift); // clear the byte we want to write
+                    let byte_shifted = (byte as u32) << shift; // shift our byte into position
                     inode.blocks[block_idx] = (inode.blocks[block_idx] & mask) | byte_shifted;
                 }
             } else {
@@ -567,7 +567,8 @@ impl Ext2 {
             .map_err(FilesystemError::NodeError)?;
 
         // Decrement link count
-        node.decrease_link_count().map_err(|e| FilesystemError::NodeError(e))?;
+        node.decrease_link_count()
+            .map_err(|e| FilesystemError::NodeError(e))?;
 
         Ok(())
     }
@@ -608,3 +609,237 @@ pub struct FilesystemStats {
     pub block_cache_stats: CacheStats,
     pub inode_cache_stats: CacheStats,
 }
+
+/*#[cfg(test)]
+mod tests {
+    use super::*;
+    use super::super::block_io::MockDevice;
+
+    struct TestSetup {
+        fs: Arc<Ext2>,
+    }
+
+    impl TestSetup {
+        fn new() -> Self {
+            // Create a 1MB device
+            let device = MockDevice::new(1024, 1024 * 1024);
+
+            // Initialize filesystem
+            let fs = Ext2::new(Arc::new(device));
+
+            // Format superblock and write it to device
+            unsafe {
+                let mut superblock = Superblock {
+                    signature: EXT2_SIGNATURE,
+                    version_major: 1,
+                    version_minor: 0,
+                    block_size_shift: 10, // 1024 bytes
+                    num_blocks: 1024,
+                    num_inodes: 256,
+                    blocks_per_group: 256,
+                    inodes_per_group: 64,
+                    mounts_since_check: 0,
+                    max_mounts_before_check: 20,
+                    ..Default::default()
+                };
+                let device = fs.device.clone();
+                device.write_block(2, core::slice::from_raw_parts(
+                    &superblock as *const _ as *const u8,
+                    core::mem::size_of::<Superblock>(),
+                )).unwrap();
+            }
+
+            Self { fs }
+        }
+
+        fn mount(&self) -> FilesystemResult<()> {
+            self.fs.mount()
+        }
+    }
+
+    // Basic mount/unmount tests
+    #[test_case]
+    fn test_mount_unmount() {
+        let setup = TestSetup::new();
+
+        // Test initial state
+        assert!(matches!(setup.fs.get_node("/"), Err(FilesystemError::NotMounted)));
+
+        // Test mounting
+        setup.mount().unwrap();
+        assert!(setup.fs.get_node("/").is_ok());
+
+        // Test unmounting
+        setup.fs.unmount().unwrap();
+        assert!(matches!(setup.fs.get_node("/"), Err(FilesystemError::NotMounted)));
+    }
+
+    // File operations tests
+    #[test_case]
+    fn test_file_operations() {
+        let setup = TestSetup::new();
+        setup.mount().unwrap();
+
+        // Create a file
+        let file_mode = FileMode::REG | FileMode::UREAD | FileMode::UWRITE;
+        let node = setup.fs.create_file("/test.txt", file_mode).unwrap();
+
+        // Write data
+        let data = b"Hello, World!";
+        setup.fs.write_file("/test.txt", data).unwrap();
+
+        // Read it back
+        let read_data = setup.fs.read_file("/test.txt").unwrap();
+        assert_eq!(&read_data, data);
+
+        // Remove file
+        setup.fs.remove("/test.txt").unwrap();
+        assert!(matches!(setup.fs.get_node("/test.txt"), Err(FilesystemError::NotFound)));
+    }
+
+    // Directory operations tests
+    #[test_case]
+    fn test_directory_operations() {
+        let setup = TestSetup::new();
+        setup.mount().unwrap();
+
+        // Create directory
+        let dir_mode = FileMode::DIR | FileMode::UREAD | FileMode::UWRITE | FileMode::UEXEC;
+        setup.fs.create_directory("/testdir", dir_mode).unwrap();
+
+        // Create file in directory
+        let file_mode = FileMode::REG | FileMode::UREAD | FileMode::UWRITE;
+        setup.fs.create_file("/testdir/file.txt", file_mode).unwrap();
+
+        // Read directory entries
+        let entries = setup.fs.read_dir("/testdir").unwrap();
+        assert_eq!(entries.len(), 2); // . and ..
+        assert!(entries.iter().any(|e| e.name == "file.txt"));
+
+        // Try to remove non-empty directory (should fail)
+        assert!(matches!(
+            setup.fs.remove("/testdir"),
+            Err(FilesystemError::NodeError(NodeError::NotEmpty))
+        ));
+
+        // Remove file first, then directory
+        setup.fs.remove("/testdir/file.txt").unwrap();
+        setup.fs.remove("/testdir").unwrap();
+    }
+
+    // Symlink tests
+    #[test_case]
+    fn test_symlink_operations() {
+        let setup = TestSetup::new();
+        setup.mount().unwrap();
+
+        // Create a target file
+        let file_mode = FileMode::REG | FileMode::UREAD | FileMode::UWRITE;
+        setup.fs.create_file("/target.txt", file_mode).unwrap();
+        setup.fs.write_file("/target.txt", b"Target content").unwrap();
+
+        // Create symlink
+        setup.fs.create_symlink("/link.txt", "target.txt").unwrap();
+
+        // Read symlink target
+        let target = setup.fs.read_link("/link.txt").unwrap();
+        assert_eq!(target, "target.txt");
+
+        // Remove symlink and target
+        setup.fs.remove("/link.txt").unwrap();
+        setup.fs.remove("/target.txt").unwrap();
+    }
+
+    // Fast symlink tests (target path <= 60 bytes)
+    #[test_case]
+    fn test_fast_symlink() {
+        let setup = TestSetup::new();
+        setup.mount().unwrap();
+
+        let short_path = "short.txt";
+        setup.fs.create_symlink("/short_link", short_path).unwrap();
+        assert_eq!(setup.fs.read_link("/short_link").unwrap(), short_path);
+
+        let long_path = "this/is/a/very/long/path/that/will/not/fit/in/fast/symlink/storage.txt";
+        setup.fs.create_symlink("/long_link", long_path).unwrap();
+        assert_eq!(setup.fs.read_link("/long_link").unwrap(), long_path);
+    }
+
+    // Path traversal and error handling tests
+    #[test_case]
+    fn test_path_handling() {
+        let setup = TestSetup::new();
+        setup.mount().unwrap();
+
+        // Create nested directories
+        let dir_mode = FileMode::DIR | FileMode::UREAD | FileMode::UWRITE | FileMode::UEXEC;
+        setup.fs.create_directory("/a", dir_mode).unwrap();
+        setup.fs.create_directory("/a/b", dir_mode).unwrap();
+        setup.fs.create_directory("/a/b/c", dir_mode).unwrap();
+
+        // Test path traversal
+        assert!(setup.fs.get_node("/a/b/c").is_ok());
+
+        // Test invalid paths
+        assert!(matches!(
+            setup.fs.get_node("/nonexistent"),
+            Err(FilesystemError::NotFound)
+        ));
+        assert!(matches!(
+            setup.fs.get_node(""),
+            Err(FilesystemError::InvalidPath)
+        ));
+
+        // Clean up
+        setup.fs.remove("/a/b/c").unwrap();
+        setup.fs.remove("/a/b").unwrap();
+        setup.fs.remove("/a").unwrap();
+    }
+
+    // Filesystem statistics tests
+    #[test_case]
+    fn test_filesystem_stats() {
+        let setup = TestSetup::new();
+        setup.mount().unwrap();
+
+        let stats = setup.fs.stats().unwrap();
+        assert_eq!(stats.block_size, 1024);
+        assert_eq!(stats.total_blocks, 1024);
+        assert!(stats.free_blocks > 0);
+        assert_eq!(stats.total_inodes, 256);
+        assert!(stats.free_inodes > 0);
+    }
+
+    // Error handling tests
+    #[test_case]
+    fn test_error_handling() {
+        let setup = TestSetup::new();
+        setup.mount().unwrap();
+
+        // Try operations on non-existent paths
+        assert!(matches!(
+            setup.fs.read_file("/nonexistent.txt"),
+            Err(FilesystemError::NotFound)
+        ));
+
+        // Try to create file with same name as existing one
+        let file_mode = FileMode::REG | FileMode::UREAD | FileMode::UWRITE;
+        setup.fs.create_file("/duplicate.txt", file_mode).unwrap();
+        assert!(matches!(
+            setup.fs.create_file("/duplicate.txt", file_mode),
+            Err(FilesystemError::NodeError(NodeError::AlreadyExists))
+        ));
+
+        // Try to read directory as file
+        let dir_mode = FileMode::DIR | FileMode::UREAD | FileMode::UWRITE | FileMode::UEXEC;
+        setup.fs.create_directory("/testdir", dir_mode).unwrap();
+        assert!(matches!(
+            setup.fs.read_file("/testdir"),
+            Err(FilesystemError::NodeError(NodeError::NotFile))
+        ));
+
+        // Clean up
+        setup.fs.remove("/duplicate.txt").unwrap();
+        setup.fs.remove("/testdir").unwrap();
+    }
+}*/

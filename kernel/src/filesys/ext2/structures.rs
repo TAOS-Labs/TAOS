@@ -99,6 +99,27 @@ pub struct BlockGroupDescriptor {
     _padding: [u8; 14],
 }
 
+impl BlockGroupDescriptor {
+    pub fn new(
+        block_bitmap_block: u32,
+        inode_bitmap_block: u32,
+        inode_table_block: u32,
+        unallocated_blocks: u16,
+        unallocated_inodes: u16,
+        directories_count: u16,
+    ) -> Self {
+        Self {
+            block_bitmap_block,
+            inode_bitmap_block,
+            inode_table_block,
+            unallocated_blocks,
+            unallocated_inodes,
+            directories_count,
+            _padding: [0; 14],
+        }
+    }
+}
+
 bitflags! {
     /// File type and permissions
     #[derive(Debug, Clone, Copy, PartialEq)]
@@ -144,7 +165,7 @@ bitflags! {
 
 /// Inode structure - must match disk layout
 #[repr(C, packed)]
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct Inode {
     pub mode: u16,
     pub uid: u16,
@@ -234,7 +255,9 @@ pub enum FileType {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use core::mem::size_of;
 
+    // Size and layout tests
     #[test_case]
     fn test_superblock_size() {
         assert_eq!(size_of::<Superblock>(), 84);
@@ -259,5 +282,98 @@ mod tests {
             file_type: FileType::Directory as u8,
         };
         assert_eq!(entry.total_size() % 4, 0);
+    }
+
+    // Superblock functionality tests
+    #[test_case]
+    fn test_superblock_validation() {
+        let mut sb = Superblock::default();
+        assert!(!sb.is_valid()); // Default should be invalid
+
+        sb.signature = EXT2_SIGNATURE;
+        sb.version_major = 1;
+        sb.block_size_shift = 1; // 2048 byte blocks
+        assert!(sb.is_valid());
+
+        sb.block_size_shift = 3; // 8192 byte blocks - too large
+        assert!(!sb.is_valid());
+    }
+
+    #[test_case]
+    fn test_superblock_block_size() {
+        let mut sb = Superblock::default();
+        sb.block_size_shift = 0; // 1024 bytes
+        assert_eq!(sb.block_size(), 1024);
+
+        sb.block_size_shift = 1; // 2048 bytes
+        assert_eq!(sb.block_size(), 2048);
+
+        sb.block_size_shift = 2; // 4096 bytes
+        assert_eq!(sb.block_size(), 4096);
+    }
+
+    #[test_case]
+    fn test_block_group_count() {
+        let mut sb = Superblock::default();
+        sb.num_blocks = 1000;
+        sb.blocks_per_group = 100;
+        sb.num_inodes = 250;
+        sb.inodes_per_group = 25;
+        assert_eq!(sb.block_group_count(), 10);
+    }
+
+    // Inode tests
+    #[test_case]
+    fn test_inode_file_types() {
+        let mut inode = Inode {
+            mode: FileMode::REG.bits(),
+            ..Default::default()
+        };
+        assert!(inode.is_file());
+        assert!(!inode.is_directory());
+        assert!(!inode.is_symlink());
+
+        inode.mode = FileMode::DIR.bits();
+        assert!(!inode.is_file());
+        assert!(inode.is_directory());
+        assert!(!inode.is_symlink());
+
+        inode.mode = FileMode::LINK.bits();
+        assert!(!inode.is_file());
+        assert!(!inode.is_directory());
+        assert!(inode.is_symlink());
+    }
+
+    #[test_case]
+    fn test_inode_size() {
+        let inode = Inode {
+            size_low: 1234,
+            ..Default::default()
+        };
+        assert_eq!(inode.size(), 1234);
+    }
+
+    // FileMode tests
+    #[test_case]
+    fn test_file_mode_permissions() {
+        let mode = FileMode::REG | FileMode::UREAD | FileMode::UWRITE;
+        assert!(mode.contains(FileMode::REG));
+        assert!(mode.contains(FileMode::UREAD));
+        assert!(mode.contains(FileMode::UWRITE));
+        assert!(!mode.contains(FileMode::UEXEC));
+    }
+
+    // DirectoryEntry tests
+    #[test_case]
+    fn test_directory_entry_sizes() {
+        let entry = DirectoryEntry {
+            inode: 1,
+            rec_len: 16,
+            name_len: 5,
+            file_type: FileType::RegularFile as u8,
+        };
+
+        assert_eq!(DirectoryEntry::fixed_size(), 8); // 4 + 2 + 1 + 1
+        assert_eq!(entry.total_size(), 16); // Aligned to 4 bytes
     }
 }

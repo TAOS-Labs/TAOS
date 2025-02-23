@@ -147,3 +147,84 @@ impl Clock for MonotonicClock {
         self.0.fetch_add(1, Ordering::Relaxed)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use alloc::{vec, vec::Vec};
+
+    // Mock cacheable item for testing base cache functionality
+    #[derive(Clone, Debug)]
+    struct MockItem {
+        data: Vec<u8>,
+        dirty: bool,
+    }
+
+    impl MockItem {
+        fn new(data: Vec<u8>) -> Self {
+            Self { data, dirty: false }
+        }
+    }
+
+    impl CacheableItem for MockItem {
+        fn is_dirty(&self) -> bool {
+            self.dirty
+        }
+
+        fn mark_clean(&mut self) {
+            self.dirty = false;
+        }
+
+        fn mark_dirty(&mut self) {
+            self.dirty = true;
+        }
+    }
+
+    // Test CacheEntry functionality
+    #[test_case]
+    fn test_cache_entry() {
+        let item = MockItem::new(vec![1, 2, 3]);
+        let mut entry = CacheEntry::new(item);
+
+        // Test initial state
+        assert_eq!(entry.access_count, 0);
+        assert_eq!(entry.last_access, 0);
+
+        // Test access counting
+        entry.touch(42);
+        assert_eq!(entry.access_count, 1);
+        assert_eq!(entry.last_access, 42);
+    }
+
+    // Test MonotonicClock
+    #[test_case]
+    fn test_monotonic_clock() {
+        let clock = MonotonicClock::default();
+
+        // Test monotonic increasing
+        let t1 = clock.now();
+        let t2 = clock.now();
+        let t3 = clock.now();
+
+        assert!(t2 > t1);
+        assert!(t3 > t2);
+    }
+
+    // Test CacheStats
+    #[test_case]
+    fn test_cache_stats() {
+        let mut stats = CacheStats::default();
+
+        // Test initial state
+        assert_eq!(stats.get(), (0, 0, 0, 0));
+        assert_eq!(stats.hit_rate(), 0.0);
+
+        // Test hit rate calculation
+        stats.hits = 3;
+        stats.misses = 1;
+        assert_eq!(stats.hit_rate(), 75.0);
+
+        // Test stats tuple
+        assert_eq!(stats.get(), (3, 1, 0, 0));
+    }
+}

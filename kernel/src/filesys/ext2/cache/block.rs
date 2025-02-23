@@ -67,10 +67,6 @@ pub struct BlockCache {
 
 impl BlockCache {
     /// Create a new block cache
-    ///
-    /// # Arguments
-    /// * `device` - The block device to cache
-    /// * `capacity` - Maximum number of blocks to cache
     pub fn new(device: Arc<dyn BlockIO>, capacity: usize) -> Self {
         Self {
             device,
@@ -81,10 +77,11 @@ impl BlockCache {
         }
     }
 
-    /// Find the least recently used entry
+    /// Find the least recently used entry that isn't currently in use
     fn find_lru_entry(&self, entries: &mut BTreeMap<u32, CacheEntry<CachedBlock>>) -> Option<u32> {
         entries
             .iter()
+            .filter(|(_, entry)| Arc::strong_count(&entry.value) == 1) // Only consider blocks we alone reference
             .min_by_key(|(_, entry)| (entry.last_access, entry.access_count))
             .map(|(block, _)| *block)
     }
@@ -92,11 +89,9 @@ impl BlockCache {
     /// Load a block from the device
     fn load_block(&self, block: u32) -> CacheResult<CachedBlock> {
         let mut cached = CachedBlock::new(self.device.block_size() as usize);
-
         self.device
             .read_block(block, &mut cached.data)
             .map_err(|_| CacheError::LoadError)?;
-
         Ok(cached)
     }
 
@@ -109,7 +104,6 @@ impl BlockCache {
         self.device
             .write_block(block, &cached.data)
             .map_err(|_| CacheError::WriteError)?;
-
         Ok(())
     }
 
@@ -125,9 +119,12 @@ impl BlockCache {
         if let Some(block) = self.find_lru_entry(entries) {
             let entry = entries.remove(&block).unwrap();
 
+            // We know we can lock this since ref_count = 1
+            let guard = entry.value.lock();
+
             // Write back if dirty
-            if entry.value.lock().is_dirty() {
-                self.write_block(block, &entry.value.lock())?;
+            if guard.is_dirty() {
+                self.write_block(block, &guard)?;
                 self.stats.lock().writebacks += 1;
             }
 
@@ -144,20 +141,16 @@ impl Cache<u32, CachedBlock> for BlockCache {
         let mut entries = self.entries.lock();
         let now = self.clock.now();
 
-        // Check if block is cached
         if let Some(entry) = entries.get_mut(&block) {
             entry.touch(now);
             self.stats.lock().hits += 1;
             return Ok(Arc::clone(&entry.value));
         }
 
-        // Need to load block
         self.stats.lock().misses += 1;
 
-        // Evict if needed
         self.evict_if_needed(&mut entries)?;
 
-        // Load and cache block
         let cached = self.load_block(block)?;
         let entry = CacheEntry::new(cached);
         let value = Arc::clone(&entry.value);
@@ -169,7 +162,6 @@ impl Cache<u32, CachedBlock> for BlockCache {
     fn insert(&self, block: u32, cached: CachedBlock) -> CacheResult<()> {
         let mut entries = self.entries.lock();
 
-        // Evict if needed
         self.evict_if_needed(&mut entries)?;
 
         // Add new entry
@@ -181,9 +173,10 @@ impl Cache<u32, CachedBlock> for BlockCache {
         let mut entries = self.entries.lock();
 
         if let Some(entry) = entries.remove(block) {
+            let guard = entry.value.lock();
             // Write back if dirty
-            if entry.value.lock().is_dirty() {
-                self.write_block(*block, &entry.value.lock())?;
+            if guard.is_dirty() {
+                self.write_block(*block, &guard)?;
                 self.stats.lock().writebacks += 1;
             }
         }
@@ -196,8 +189,9 @@ impl Cache<u32, CachedBlock> for BlockCache {
 
         // Write back all dirty blocks
         for (block, entry) in entries.iter() {
-            if entry.value.lock().is_dirty() {
-                self.write_block(*block, &entry.value.lock())?;
+            let guard = entry.value.lock();
+            if guard.is_dirty() {
+                self.write_block(*block, &guard)?;
                 self.stats.lock().writebacks += 1;
             }
         }
@@ -213,71 +207,161 @@ impl Cache<u32, CachedBlock> for BlockCache {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::{super::super::block_io::MockDevice, *};
     use alloc::sync::Arc;
 
-    // Mock block device for testing
-    struct MockDevice {
-        block_size: u32,
-        blocks: Mutex<BTreeMap<u32, Vec<u8>>>,
+    // Test CachedBlock functionality
+    #[test_case]
+    fn test_cached_block_basic() {
+        let mut block = CachedBlock::new(1024);
+        assert!(!block.is_dirty());
+
+        // Modify data should mark dirty
+        block.data_mut()[0] = 42;
+        assert!(block.is_dirty());
+
+        // Reading shouldn't affect dirty state
+        assert_eq!(block.data()[0], 42);
+        assert!(block.is_dirty());
+
+        block.mark_clean();
+        assert!(!block.is_dirty());
     }
 
-    impl MockDevice {
-        fn new(block_size: u32) -> Self {
-            Self {
-                block_size,
-                blocks: Mutex::new(BTreeMap::new()),
-            }
+    // Test BlockCache operations
+    #[test_case]
+    fn test_block_cache_basic_operations() {
+        let device: Arc<dyn BlockIO> = MockDevice::new(1024, 1024 * 1024); // 1MB device
+        let cache = BlockCache::new(Arc::clone(&device), 2); // Cache 2 blocks
+
+        // Write to a block
+        {
+            let block = cache.get(0).unwrap();
+            let mut block = block.lock();
+            block.data_mut()[0] = 42;
         }
+
+        // Read it back
+        {
+            let block = cache.get(0).unwrap();
+            let block = block.lock();
+            assert_eq!(block.data()[0], 42);
+        }
+
+        // Stats should show one hit, one miss
+        let stats = cache.stats();
+        assert_eq!(stats.hits, 1);
+        assert_eq!(stats.misses, 1);
     }
 
-    impl BlockIO for MockDevice {
-        fn block_size(&self) -> u32 {
-            self.block_size
-        }
-
-        fn size_in_bytes(&self) -> u32 {
-            u32::MAX
-        }
-
-        unsafe fn read_block(&self, block: u32, buffer: &mut [u8]) -> Result<(), BlockError> {
-            let blocks = self.blocks.lock();
-            if let Some(data) = blocks.get(&block) {
-                buffer.copy_from_slice(data);
-                Ok(())
-            } else {
-                buffer.fill(0);
-                Ok(())
-            }
-        }
-
-        unsafe fn write_block(&mut self, block: u32, buffer: &[u8]) -> Result<(), BlockError> {
-            let mut blocks = self.blocks.lock();
-            blocks.insert(block, buffer.to_vec());
-            Ok(())
-        }
-    }
-
-    #[test]
-    fn test_block_cache() {
-        let device = Arc::new(MockDevice::new(512));
+    #[test_case]
+    fn test_block_cache_eviction() {
+        let device: Arc<dyn BlockIO> = MockDevice::new(1024, 1024 * 1024);
         let cache = BlockCache::new(Arc::clone(&device), 2);
 
-        // Test reading uncached block
-        let block = cache.get(0).unwrap();
-        assert!(!block.lock().is_dirty());
+        // Fill cache but don't keep references
+        cache.get(0).unwrap();
+        cache.get(1).unwrap();
 
-        // Test modifying block
-        block.lock().data_mut()[0] = 42;
-        assert!(block.lock().is_dirty());
+        // Force eviction by getting third block
+        let block2 = cache.get(2).unwrap();
+        {
+            let mut block = block2.lock();
+            block.data_mut()[0] = 42;
+        }
 
-        // Test eviction
-        let _block1 = cache.get(1).unwrap();
-        let _block2 = cache.get(2).unwrap(); // Should evict block 0
-
-        // Stats should show hits and misses
         let stats = cache.stats();
-        assert!(stats.hits > 0);
-        assert!(stats.misses > 0);
+        assert!(stats.evictions > 0);
+    }
+
+    #[test_case]
+    fn test_block_cache_dirty_writeback() {
+        let device: Arc<dyn BlockIO> = MockDevice::new(1024, 1024 * 1024);
+        let cache = BlockCache::new(Arc::clone(&device), 2);
+
+        // Write to block and mark dirty
+        {
+            let block = cache.get(0).unwrap();
+            let mut block = block.lock();
+            block.data_mut()[0] = 42;
+        }
+
+        // Clear cache, forcing writeback
+        cache.clear().unwrap();
+
+        // Read back from device
+        let mut buffer = vec![0; 1024];
+        device.read_block(0, &mut buffer).unwrap();
+        assert_eq!(buffer[0], 42);
+
+        let stats = cache.stats();
+        assert!(stats.writebacks > 0);
+    }
+
+    #[test_case]
+    fn test_block_cache_concurrent_access() {
+        let device: Arc<dyn BlockIO> = MockDevice::new(1024, 1024 * 1024);
+        let cache = Arc::new(BlockCache::new(Arc::clone(&device), 4));
+
+        // Get same block multiple times
+        let block1 = cache.get(0).unwrap();
+        let block2 = cache.get(0).unwrap();
+
+        // Modify through one reference
+        {
+            let mut guard = block1.lock();
+            guard.data_mut()[0] = 42;
+        }
+
+        // Read through other reference
+        {
+            let guard = block2.lock();
+            assert_eq!(guard.data()[0], 42);
+        }
+    }
+
+    #[test_case]
+    fn test_block_cache_error_conditions() {
+        let device: Arc<dyn BlockIO> = MockDevice::new(1024, 1024 * 1024);
+        let cache = BlockCache::new(Arc::clone(&device), 1);
+
+        // Fill cache
+        let block = cache.get(0).unwrap();
+
+        // Keep strong reference to prevent eviction
+        let mut guard = block.lock();
+        guard.data_mut()[0] = 42;
+
+        // Try to get another block - should fail
+        assert!(matches!(cache.get(1), Err(CacheError::CacheFull)));
+    }
+
+    #[test_case]
+    fn test_block_cache_clear() {
+        let device: Arc<dyn BlockIO> = MockDevice::new(1024, 1024 * 1024);
+        let cache = BlockCache::new(Arc::clone(&device), 2);
+
+        // Add some blocks
+        {
+            let block = cache.get(0).unwrap();
+            let mut block = block.lock();
+            block.data_mut()[0] = 42;
+        }
+        {
+            let block = cache.get(1).unwrap();
+            let mut block = block.lock();
+            block.data_mut()[0] = 43;
+        }
+
+        // Clear cache
+        cache.clear().unwrap();
+
+        // Verify blocks were written back
+        let mut buffer = vec![0; 1024];
+        device.read_block(0, &mut buffer).unwrap();
+        assert_eq!(buffer[0], 42);
+
+        device.read_block(1, &mut buffer).unwrap();
+        assert_eq!(buffer[0], 43);
     }
 }

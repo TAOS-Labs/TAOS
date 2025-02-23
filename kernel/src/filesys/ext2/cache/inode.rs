@@ -24,7 +24,7 @@ pub struct CachedInode {
 }
 
 impl CachedInode {
-    fn new(inode: Inode, number: u32) -> Self {
+    pub fn new(inode: Inode, number: u32) -> Self {
         Self {
             inode,
             ref_count: Arc::new(AtomicU32::new(1)),
@@ -303,5 +303,210 @@ impl Cache<u32, CachedInode> for InodeCache {
 
     fn stats(&self) -> CacheStats {
         self.stats.lock().clone()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        super::{
+            super::block_io::MockDevice,
+            block::{BlockCache, CachedBlock},
+        },
+        *,
+    };
+    use alloc::{sync::Arc, vec};
+
+    // Test CachedInode functionality
+    #[test_case]
+    fn test_cached_inode_basic() {
+        let inode = Inode {
+            mode: 0,
+            uid: 0,
+            size_low: 1024,
+            links_count: 1,
+            blocks: [0; 15],
+            ..Default::default()
+        };
+
+        let mut cached = CachedInode::new(inode, 1);
+        assert_eq!(cached.ref_count(), 1);
+        assert!(!cached.is_dirty());
+
+        // Modify inode
+        {
+            let inode = cached.inode_mut();
+            inode.size_low = 2048;
+        }
+        assert!(cached.is_dirty());
+    }
+
+    #[test_case]
+    fn test_cached_inode_ref_counting() {
+        let inode = Inode {
+            links_count: 1,
+            blocks: [0; 15],
+            ..Default::default()
+        };
+        let cached = CachedInode::new(inode, 1);
+
+        assert_eq!(cached.ref_count(), 1);
+        cached.inc_ref();
+        assert_eq!(cached.ref_count(), 2);
+        assert_eq!(cached.dec_ref(), 2);
+        assert_eq!(cached.ref_count(), 1);
+    }
+
+    // Helper function to set up test environment
+    fn setup_test_cache(
+        capacity: usize,
+    ) -> (
+        Arc<dyn BlockIO>,
+        Arc<Superblock>,
+        Arc<[BlockGroupDescriptor]>,
+        Arc<dyn Cache<u32, CachedBlock>>,
+        InodeCache,
+    ) {
+        let device: Arc<dyn BlockIO> = MockDevice::new(1024, 1024 * 1024);
+
+        let superblock = Arc::new(Superblock {
+            block_size_shift: 10, // 1024 bytes
+            inodes_per_group: 8,
+            ..Default::default()
+        });
+
+        let bgdt: Arc<[BlockGroupDescriptor]> =
+            Arc::from(vec![BlockGroupDescriptor::new(0, 0, 1, 0, 0, 0)]);
+
+        let block_cache =
+            Arc::new(BlockCache::new(device.clone(), 8)) as Arc<dyn Cache<u32, CachedBlock>>;
+
+        let cache = InodeCache::new(
+            device.clone(),
+            superblock.clone(),
+            bgdt.clone(),
+            block_cache.clone(),
+            capacity,
+        );
+
+        (device, superblock, bgdt, block_cache, cache)
+    }
+
+    // Test InodeCache functionality
+    #[test_case]
+    fn test_inode_cache_basic() {
+        let (_device, _superblock, _bgdt, _block_cache, cache) = setup_test_cache(4);
+
+        // Get an inode
+        let inode = cache.get(1).unwrap();
+        assert_eq!(inode.lock().ref_count(), 1);
+    }
+
+    #[test_case]
+    fn test_inode_cache_eviction() {
+        let (_device, _superblock, _bgdt, _block_cache, cache) = setup_test_cache(2);
+
+        // Fill cache
+        {
+            let inode1 = cache.get(1).unwrap();
+            inode1.lock().dec_ref();
+        }
+        {
+            let inode2 = cache.get(2).unwrap();
+            inode2.lock().dec_ref();
+        }
+
+        // This should trigger eviction
+        let _inode3 = cache.get(3).unwrap();
+
+        let stats = cache.stats();
+        assert!(stats.evictions > 0);
+    }
+
+    #[test_case]
+    fn test_inode_cache_dirty_writeback() {
+        let (_device, _superblock, _bgdt, _block_cache, cache) = setup_test_cache(4);
+
+        // Modify an inode
+        {
+            let inode = cache.get(1).unwrap();
+            let mut guard = inode.lock();
+            guard.inode_mut().size_low = 1024;
+            guard.dec_ref();
+        }
+
+        // Clear cache should trigger writeback
+        cache.clear().unwrap();
+
+        let stats = cache.stats();
+        assert!(stats.writebacks > 0);
+    }
+
+    #[test_case]
+    fn test_inode_location_calculation() {
+        let device: Arc<dyn BlockIO> = MockDevice::new(1024, 1024 * 1024);
+
+        let superblock = Arc::new(Superblock {
+            block_size_shift: 10,
+            inodes_per_group: 8,
+            ..Default::default()
+        });
+
+        let bgdt: Arc<[BlockGroupDescriptor]> = Arc::from(vec![
+            BlockGroupDescriptor::new(0, 0, 10, 0, 0, 0),
+            BlockGroupDescriptor::new(0, 0, 20, 0, 0, 0),
+        ]);
+
+        let block_cache =
+            Arc::new(BlockCache::new(device.clone(), 8)) as Arc<dyn Cache<u32, CachedBlock>>;
+
+        let cache = InodeCache::new(device, superblock, bgdt, block_cache, 4);
+
+        // Test inode location calculation
+        let location = cache.get_inode_location(9); // Second group, first inode
+        assert_eq!(location.block_group, 1); // Should be in second group
+        assert_eq!(location.index, 0); // First inode in group
+        assert_eq!(location.block, 20);
+    }
+
+    #[test_case]
+    fn test_inode_cache_reference_handling() {
+        let (_device, _superblock, _bgdt, _block_cache, cache) = setup_test_cache(2);
+
+        // Get multiple references to same inode
+        {
+            let inode1 = cache.get(1).unwrap();
+            {
+                let inode2 = cache.get(1).unwrap();
+                {
+                    let guard = inode1.lock();
+                    assert_eq!(guard.ref_count(), 2);
+                    guard.dec_ref();
+                }
+
+                // Drop one reference
+                drop(inode1);
+
+                {
+                    let guard = inode2.lock();
+                    assert_eq!(guard.ref_count(), 1);
+                    guard.dec_ref();
+                }
+
+                // Try to evict - should not work while referenced
+                let inode3 = cache.get(2).unwrap();
+                {
+                    let guard = inode3.lock();
+                    guard.dec_ref();
+                }
+                let inode4 = cache.get(3).unwrap(); // Should not evict inode 1
+                {
+                    let guard = inode4.lock();
+                    guard.dec_ref();
+                }
+
+                assert!(cache.get(1).is_ok()); // Should still be in cache
+            }
+        }
     }
 }
