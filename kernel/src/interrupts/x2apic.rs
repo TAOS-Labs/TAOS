@@ -14,10 +14,14 @@ use crate::{
 use core::sync::atomic::{AtomicU32, Ordering};
 use raw_cpuid::CpuId;
 use spin::Mutex;
-use x86_64::{instructions::port::Port, registers::{model_specific::{GsBase, KernelGsBase, Msr}, segmentation::{Segment, GS}}, VirtAddr};
-use crate::{interrupts::gdt};
-use core::arch::naked_asm;
-
+use x86_64::{
+    instructions::port::Port,
+    registers::{
+        model_specific::{GsBase, KernelGsBase, Msr},
+        segmentation::{Segment, GS},
+    },
+    VirtAddr,
+};
 
 // MSR register constants
 const IA32_APIC_BASE_MSR: u32 = 0x1B;
@@ -86,78 +90,6 @@ impl Default for X2ApicManager {
     }
 }
 
-#[repr(C)]
-pub struct SyscallRegisters {
-    pub number: u64, // syscall number (originally in rax)
-    pub arg1: u64,   // originally in rdi
-    pub arg2: u64,   // originally in rsi
-    pub arg3: u64,   // originally in rdx
-    pub arg4: u64,   // originally in r10
-    pub arg5: u64,   // originally in r8
-    pub arg6: u64,   // originally in r9
-}
-
-
-#[naked]
-#[no_mangle]
-pub extern "C" fn syscall_han() -> ! {
-    unsafe {
-        core::arch::naked_asm!(
-            "swapgs",
-            // Disable interrupts, if needed
-            "cli",
-            // Optionally, save registers you intend to use
-            // Set up your stack frame as needed
-            "mov r12, rcx",
-            "mov r13, r11",
-
-            "mov rsp, 0xffffffff800c02f8",
-
-            "push rbx",
-
-            "sub rsp, 56",
-
-            "mov [rsp + 0], rax",
-            // Argument 1 is in RDI.
-            "mov [rsp + 8], rdi",
-            // Argument 2 is in RSI.
-            "mov [rsp + 16], rsi",
-            // Argument 3 is in RDX.
-            "mov [rsp + 24], rdx",
-            // Argument 4 is in R10.
-            "mov [rsp + 32], r10",
-            // Argument 5 is in R8.
-            "mov [rsp + 40], r8",
-            // Argument 6 is in R9.
-            "mov [rsp + 48], r9",
-
-            "mov rdi, rsp",
-
-            "call syscall_handler_impl",
-
-            "add rsp, 56",
-
-            "pop rbx",
-
-            "mov rcx, r12",
-            "mov r11, r13",
-
-            "swapgs",
-
-            // Prepare for sysretq to return to user space
-            "sysretq",
-            // kernel_stack_top = const 16
-        )
-    };
-}
-
-#[no_mangle]
-fn syscall_handler_impl(regs: *const SyscallRegisters) {
-    let regs = unsafe { &*regs };
-    serial_println!("HANDLER, {}", { regs.number });
-}
-
-
 impl X2ApicManager {
     /// Creates a new x2APIC manager with empty APIC slots
     pub const fn new() -> Self {
@@ -187,29 +119,6 @@ impl X2ApicManager {
 
         unsafe {
             APIC_MANAGER.apics[id] = Some(apic);
-        }
-
-        let fmask: u64 = 1 << 9; // 0x200
-        let user_cs = gdt::GDT.1.user_code_selector.0 as u64;
-        let kernel_cs = gdt::GDT.1.code_selector.0 as u64;
-        let star: u64 = (kernel_cs << 32) | (user_cs << 48);
-
-
-        serial_println!("USER CS {}, KERNEL CS {}, STAR {}, FMASK {}", user_cs, kernel_cs, star, fmask);
-
-        for ele in 0..3 {
-            let var1 = TSSS[0].privilege_stack_table[ele];
-            let var2 = TSSS[1].privilege_stack_table[ele];
-            serial_println!("Value 1: {:x}", var1 + RING0_STACK_SIZE as u64);
-            serial_println!("Value 2: {:x}", var2);
-        }
-
-
-        // Set up MSRs for syscall
-        unsafe {
-            Msr::new(X2APIC_IA32_LSTAR).write(syscall_han as u64);
-            Msr::new(X2APIC_IA32_FMASK).write(fmask);
-            Msr::new(X2APIC_IA32_STAR).write(star);
         }
 
         Ok(())
