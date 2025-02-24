@@ -14,14 +14,7 @@ use crate::{
 use core::sync::atomic::{AtomicU32, Ordering};
 use raw_cpuid::CpuId;
 use spin::Mutex;
-use x86_64::{
-    instructions::port::Port,
-    registers::{
-        model_specific::{GsBase, KernelGsBase, Msr},
-        segmentation::{Segment, GS},
-    },
-    VirtAddr,
-};
+use x86_64::{instructions::port::Port, registers::model_specific::Msr};
 
 // MSR register constants
 const IA32_APIC_BASE_MSR: u32 = 0x1B;

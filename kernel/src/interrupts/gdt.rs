@@ -15,10 +15,12 @@ use x86_64::{
     instructions::{
         segmentation::{Segment, CS, DS, ES, FS, GS, SS},
         tables::load_tss,
-    }, registers::{model_specific::{GsBase, KernelGsBase}, segmentation::Segment64}, structures::{
+    },
+    structures::{
         gdt::{Descriptor, GlobalDescriptorTable, SegmentSelector},
         tss::TaskStateSegment,
-    }, PrivilegeLevel, VirtAddr
+    },
+    PrivilegeLevel, VirtAddr,
 };
 
 use crate::{
@@ -130,10 +132,6 @@ pub fn init(cpu_id: u32) {
         SS::set_reg(GDT.1.data_selector);
         FS::set_reg(GDT.1.data_selector);
         GS::set_reg(GDT.1.data_selector);
-
-        let val = (TSSS[0].privilege_stack_table[0] + RING0_STACK_SIZE as u64);
-        KernelGsBase::write(val);
-        GsBase::write(val);
 
         load_tss(GDT.1.tss_selectors[cpu_id as usize]);
     }
