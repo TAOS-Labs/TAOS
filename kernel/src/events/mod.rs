@@ -1,9 +1,12 @@
 use crate::serial_println;
 use alloc::{
     boxed::Box,
-    collections::{btree_map::BTreeMap, btree_set::BTreeSet, vec_deque::VecDeque},
+    collections::{
+        binary_heap::BinaryHeap, btree_map::BTreeMap, btree_set::BTreeSet, vec_deque::VecDeque,
+    },
     sync::Arc,
 };
+use futures::Sleep;
 use spin::{mutex::Mutex, rwlock::RwLock};
 use x86_64::instructions::interrupts::without_interrupts;
 
@@ -13,10 +16,11 @@ use core::{
     sync::atomic::{AtomicU64, AtomicUsize, Ordering},
 };
 
-use crate::constants::events::NUM_EVENT_PRIORITIES;
+use crate::{constants::events::NUM_EVENT_PRIORITIES, interrupts::x2apic, processes::process::run_process_ring3};
 
 mod event;
 mod event_runner;
+mod futures;
 mod tasks;
 
 pub use tasks::{
@@ -49,16 +53,17 @@ struct Event {
     future: SendFuture,
     rewake_queue: Arc<EventQueue>,
     priority: AtomicUsize,
-    scheduled_clock: AtomicU64,
+    scheduled_timestamp: AtomicU64,
 }
 
 // Schedules and runs events within a single core
 struct EventRunner {
-    event_queues: [EventQueue; NUM_EVENT_PRIORITIES],
-    rewake_queue: Arc<EventQueue>,
+    event_queues: [Arc<EventQueue>; NUM_EVENT_PRIORITIES],
     pending_events: RwLock<BTreeSet<u64>>,
+    sleeping_events: BinaryHeap<Sleep>,
     current_event: Option<Arc<Event>>,
-    clock: u64,
+    event_clock: u64,
+    system_clock: u64,
 }
 
 // Global mapping of cores to events
@@ -76,10 +81,11 @@ pub unsafe fn run_loop(cpuid: u32) -> ! {
 }
 
 pub fn schedule_kernel(
-    cpuid: u32,
     future: impl Future<Output = ()> + 'static + Send,
     priority_level: usize,
 ) {
+    let cpuid = x2apic::current_core_id() as u32;
+
     without_interrupts(|| {
         let runners = EVENT_RUNNERS.read();
         let mut runner = runners.get(&cpuid).expect("No runner found").write();
@@ -89,19 +95,40 @@ pub fn schedule_kernel(
 }
 
 pub fn schedule_process(
-    cpuid: u32,
-    future: impl Future<Output = ()> + 'static + Send,
     pid: u32, // 0 as kernel/sentinel
 ) {
+    let cpuid = x2apic::current_core_id() as u32;
+
     without_interrupts(|| {
         let runners = EVENT_RUNNERS.read();
         let mut runner = runners.get(&cpuid).expect("No runner found").write();
 
-        runner.schedule(future, NUM_EVENT_PRIORITIES - 1, pid);
+        unsafe {
+            runner.schedule(run_process_ring3(pid), NUM_EVENT_PRIORITIES - 1, pid);
+        }
     });
 }
 
-pub fn register_event_runner(cpuid: u32) {
+pub fn schedule_blocked_process(
+    pid: u32, // 0 as kernel/sentinel
+) {
+    let cpuid = x2apic::current_core_id() as u32;
+
+    without_interrupts(|| {
+        let runners = EVENT_RUNNERS.read();
+        let mut runner = runners.get(&cpuid).expect("No runner found").write();
+
+        unsafe {
+            runner.schedule(run_process_ring3(pid), NUM_EVENT_PRIORITIES - 1, pid);
+        }
+    });
+
+    todo!();
+}
+
+pub fn register_event_runner() {
+    let cpuid = x2apic::current_core_id() as u32;
+
     without_interrupts(|| {
         let runner = EventRunner::init();
         let mut write_lock = EVENT_RUNNERS.write();
@@ -110,9 +137,10 @@ pub fn register_event_runner(cpuid: u32) {
     });
 }
 
-pub fn current_running_event_pid(cpuid: u32) -> u32 {
+pub fn current_running_event_pid() -> u32 {
+    let cpuid = x2apic::current_core_id() as u32;
     let runners = EVENT_RUNNERS.read();
-    let runner = runners.get(&cpuid).expect("No runner found").write();
+    let runner = runners.get(&cpuid).expect("No runner found").read();
 
     match runner.current_running_event() {
         Some(e) => e.pid,
@@ -120,14 +148,59 @@ pub fn current_running_event_pid(cpuid: u32) -> u32 {
     }
 }
 
-pub fn current_running_event_priority(cpuid: u32) -> usize {
+pub fn current_running_event_priority() -> usize {
+    let cpuid = x2apic::current_core_id() as u32;
     let runners = EVENT_RUNNERS.read();
-    let runner = runners.get(&cpuid).expect("No runner found").write();
+    let runner = runners.get(&cpuid).expect("No runner found").read();
 
     match runner.current_running_event() {
         Some(e) => e.priority.load(Ordering::Relaxed),
         None => NUM_EVENT_PRIORITIES - 1,
     }
+}
+
+pub fn inc_runner_clock() {
+    let cpuid = x2apic::current_core_id() as u32;
+    let runners = EVENT_RUNNERS.read();
+    let mut runner = runners.get(&cpuid).expect("No runner found").write();
+
+    runner.inc_system_clock();
+}
+
+pub fn runner_timestamp() -> u64 {
+    let cpuid = x2apic::current_core_id() as u32;
+
+    let runners = EVENT_RUNNERS.read();
+    let runner = runners.get(&cpuid).expect("No runner found").read();
+
+    runner.system_clock
+}
+
+pub fn nanosleep_current_event(nanos: u64) -> Option<Sleep> {
+    without_interrupts(|| {
+        let cpuid = x2apic::current_core_id() as u32;
+
+        let runners = EVENT_RUNNERS.read();
+        let mut runner = runners.get(&cpuid).expect("No runner found").write();
+    
+        runner.nanosleep_current_event(nanos)
+    })
+}
+
+pub fn nanosleep_current_process(
+    pid: u32, // 0 as kernel/sentinel
+    nanos: u64
+) {
+    let cpuid = x2apic::current_core_id() as u32;
+
+    without_interrupts(|| {
+        let runners = EVENT_RUNNERS.read();
+        let mut runner = runners.get(&cpuid).expect("No runner found").write();
+
+        unsafe {
+            runner.nanosleep_event(run_process_ring3(pid), NUM_EVENT_PRIORITIES - 1, pid, nanos);
+        }
+    });
 }
 
 #[derive(Debug)]
@@ -136,10 +209,9 @@ pub struct EventInfo {
     pub pid: u32,
 }
 
-// im gonna double check the place where i called create process, it might just be cpu id
+pub fn current_running_event_info() -> EventInfo {
+    let cpuid = x2apic::current_core_id() as u32;
 
-// most likely it isn't finding any event
-pub fn current_running_event_info(cpuid: u32) -> EventInfo {
     let runners = EVENT_RUNNERS.read();
     let runner = runners.get(&cpuid).expect("No runner found").write();
 

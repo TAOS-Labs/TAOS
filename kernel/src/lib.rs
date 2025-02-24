@@ -97,7 +97,7 @@ pub fn test_runner(tests: &[&(dyn Testable + Send + Sync)]) {
         exit_qemu(QemuExitCode::Success);
     };
 
-    schedule_kernel(0, future, 1);
+    schedule_kernel(future, 1);
 }
 
 pub fn test_panic_handler(info: &core::panic::PanicInfo) -> ! {

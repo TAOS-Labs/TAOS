@@ -1,63 +1,66 @@
-use crate::prelude::*;
-use core::task::{Context, Poll, Waker};
-use core::{future::Future, pin::Pin};
-use futures::future;
-use rand::rngs::SmallRng;
-use rand::{Rng, SeedableRng};
+use alloc::sync::Arc;
+use core::{
+    future::Future,
+    pin::Pin,
+    task::{Context, Poll},
+};
 
-// BELOW FOR TESTING/DEMONSTRATION PURPOSES
+use futures::task::ArcWake;
 
-struct RandomFuture {
-    prob: f64,
-    rng: SmallRng,
-    waker: Option<Waker>,
+use super::{runner_timestamp, Event};
+
+#[derive(Clone)]
+pub struct Sleep {
+    pub target_timestamp: u64,
+    event: Arc<Event>,
 }
 
-impl RandomFuture {
-  fn new(prob: f64, seed: u64) -> Self {
-      RandomFuture {
-        prob: prob,
-        rng: SmallRng::seed_from_u64(seed),
-        waker: None // Waker is created upon polling Pending
-      }
-  }
+impl Sleep {
+    pub(super) fn new(target_timestamp: u64, event: Arc<Event>) -> Sleep {
+        Sleep {
+            target_timestamp,
+            event,
+        }
+    }
+
+    pub fn awake(&self) {
+        self.event.clone().wake();
+    }
 }
 
-impl Future for RandomFuture {
+impl Ord for Sleep {
+    fn cmp(&self, other: &Self) -> core::cmp::Ordering {
+        self.target_timestamp
+            .cmp(&other.target_timestamp)
+            .reverse()
+            .then(self.event.eid.cmp(&other.event.eid))
+    }
+}
+
+impl PartialOrd for Sleep {
+    fn partial_cmp(&self, other: &Self) -> Option<core::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl PartialEq for Sleep {
+    fn eq(&self, other: &Self) -> bool {
+        self.target_timestamp == other.target_timestamp && self.event.eid == other.event.eid
+    }
+}
+
+impl Eq for Sleep {}
+
+impl Future for Sleep {
     type Output = ();
 
-  // Required method
-  fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-    let prob: f64 = self.prob;
-    let res = self.rng.gen_bool(prob);
+    fn poll(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<Self::Output> {
+        let system_time = runner_timestamp();
 
-    let poll = match res {
-      true => {
-        match &self.waker {
-          Some(waker) => {waker.wake_by_ref();}
-          None => ()
-        };
-        Poll::Ready(())
-      },
-      false => {
-        self.waker = Some(cx.waker().clone());
-        Poll::Pending
-      }
-    };
-
-    poll
-  }
-}
-
-async fn rand_delay(seed: u32) -> u32 {
-  serial_println!("Awaiting random delay");
-  let foo = RandomFuture::new(0.4, seed as u64);
-  foo.await;
-  seed
-}
-
-pub async fn print_nums_after_rand_delay(seed: u32) -> () {
-  let res= future::join(rand_delay(seed), rand_delay(seed*2)).await;
-
-    serial_println!("Random results: {} {}", res.0, res.1);
+        if self.target_timestamp <= system_time {
+            Poll::Ready(())
+        } else {
+            Poll::Pending
+        }
+    }
 }

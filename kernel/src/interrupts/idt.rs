@@ -6,6 +6,8 @@
 //! - Timer interrupt handling
 //! - Functions to enable/disable interrupts
 
+use core::arch::naked_asm;
+
 use lazy_static::lazy_static;
 use x86_64::{
     instructions::interrupts,
@@ -17,12 +19,16 @@ use x86_64::{
 };
 
 use crate::{
-    constants::idt::{SYSCALL_HANDLER, TIMER_VECTOR, TLB_SHOOTDOWN_VECTOR},
-    events::{current_running_event_info, schedule_process, EventInfo},
+    constants::{
+        idt::{SYSCALL_HANDLER, TIMER_VECTOR, TLB_SHOOTDOWN_VECTOR},
+        syscalls::{SYSCALL_EXIT, SYSCALL_NANOSLEEP, SYSCALL_PRINT},
+    },
+    events::inc_runner_clock,
     interrupts::x2apic::{self, current_core_id, TLB_SHOOTDOWN_ADDR},
     memory::{paging::create_mapping, HHDM_OFFSET},
     prelude::*,
-    processes::process::{run_process_ring3, ProcessState, PROCESS_TABLE},
+    processes::process::preempt_process,
+    syscalls::syscall_handlers::{sys_exit, sys_nanosleep},
 };
 
 lazy_static! {
@@ -41,7 +47,7 @@ lazy_static! {
         }
         idt[TIMER_VECTOR].set_handler_fn(naked_timer_handler);
         idt[SYSCALL_HANDLER]
-            .set_handler_fn(syscall_handler)
+            .set_handler_fn(naked_syscall_handler)
             .set_privilege_level(x86_64::PrivilegeLevel::Ring3);
         idt[TLB_SHOOTDOWN_VECTOR].set_handler_fn(tlb_shootdown_handler);
         idt
@@ -156,11 +162,83 @@ extern "x86-interrupt" fn page_fault_handler(
 }
 
 #[no_mangle]
-extern "x86-interrupt" fn syscall_handler(_: InterruptStackFrame) {
+#[naked]
+pub extern "x86-interrupt" fn naked_syscall_handler(_: InterruptStackFrame) {
     unsafe {
-        // I believe we need to save registers
-        core::arch::asm!("push rax", "call dispatch_syscall", "pop rax",);
+        naked_asm!(
+            // Push registers for potential yielding
+            "
+            push rbp
+            push r15
+            push r14
+            push r13
+            push r12
+            push r11
+            push r10
+            push r9
+            push r8
+            push rdi
+            push rsi
+            push rdx
+            push rcx
+            push rbx
+            push rax
+            ",
+            "mov  rdi, rsp",
+            // Call the syscall_handler
+            "call syscall_handler",
+
+            // Restore registers
+            "
+            pop rax
+            pop rbx
+            pop rcx
+            pop rdx
+            pop rsi
+            pop rdi
+            pop r8
+            pop r9
+            pop r10
+            pop r11
+            pop r12
+            pop r13
+            pop r14
+            pop r15
+            pop rbp
+            iretq
+            "
+        );
     }
+}
+
+// This is the actual syscall handler function that reads the registers from the stack
+#[no_mangle]
+#[allow(unused_variables, unused_assignments)]  // disable until args p2-6 are used
+fn syscall_handler(rsp: u64) {
+    let syscall_num: u64;
+    let p1: u64;
+    let p2: u64;
+    let p3: u64;
+    let p4: u64;
+    let p5: u64;
+    let p6: u64;
+    let stack_ptr: *const u64 = rsp as *const u64;
+    unsafe {
+        syscall_num = *stack_ptr.add(0);
+        p1 = *stack_ptr.add(5);
+        p2 = *stack_ptr.add(4);
+        p3 = *stack_ptr.add(3);
+        p4 = *stack_ptr.add(8);
+        p5 = *stack_ptr.add(6);
+        p6 = *stack_ptr.add(7);
+    }
+
+    match syscall_num as u32 {
+        SYSCALL_EXIT => sys_exit(),
+        SYSCALL_PRINT => serial_println!("Hello world!"),
+        SYSCALL_NANOSLEEP => sys_nanosleep(p1, rsp),
+        _ => panic!("Unknown syscall: {}", syscall_num),
+    };
 
     x2apic::send_eoi();
 }
@@ -214,70 +292,10 @@ extern "x86-interrupt" fn naked_timer_handler(_: InterruptStackFrame) {
 
 #[no_mangle]
 extern "C" fn timer_handler(rsp: u64) {
-    let cpuid: u32 = x2apic::current_core_id() as u32;
-    let event: EventInfo = current_running_event_info(cpuid);
-    if event.pid == 0 {
-        x2apic::send_eoi();
-        return;
-    }
+    inc_runner_clock();
 
-    // Get PCB from PID
-    let preemption_info = unsafe {
-        let mut process_table = PROCESS_TABLE.write();
-        let process = process_table
-            .get_mut(&event.pid)
-            .expect("Process not found");
-
-        let pcb = process.pcb.get();
-
-        if (*pcb).state != ProcessState::Running {
-            x2apic::send_eoi();
-            return;
-        }
-
-        // save registers to the PCB
-        let stack_ptr: *const u64 = rsp as *const u64;
-
-        (*pcb).registers.rax = *stack_ptr.add(0);
-        (*pcb).registers.rbx = *stack_ptr.add(1);
-        (*pcb).registers.rcx = *stack_ptr.add(2);
-        (*pcb).registers.rdx = *stack_ptr.add(3);
-        (*pcb).registers.rsi = *stack_ptr.add(4);
-        (*pcb).registers.rdi = *stack_ptr.add(5);
-        (*pcb).registers.r8 = *stack_ptr.add(6);
-        (*pcb).registers.r9 = *stack_ptr.add(7);
-        (*pcb).registers.r10 = *stack_ptr.add(8);
-        (*pcb).registers.r11 = *stack_ptr.add(9);
-        (*pcb).registers.r12 = *stack_ptr.add(10);
-        (*pcb).registers.r13 = *stack_ptr.add(11);
-        (*pcb).registers.r14 = *stack_ptr.add(12);
-        (*pcb).registers.r15 = *stack_ptr.add(13);
-        (*pcb).registers.rbp = *stack_ptr.add(14);
-        // saved from interrupt stack frame
-        (*pcb).registers.rsp = *stack_ptr.add(18);
-        (*pcb).registers.rip = *stack_ptr.add(15);
-        (*pcb).registers.rflags = *stack_ptr.add(17);
-
-        (*pcb).state = ProcessState::Blocked;
-
-        ((*pcb).kernel_rsp, (*pcb).kernel_rip)
-    };
-
-    unsafe {
-        schedule_process(cpuid, run_process_ring3(event.pid), event.pid);
-
-        // Restore kernel RSP + PC -> RIP from where it was stored in run/resume process
-        core::arch::asm!(
-            "mov rsp, {0}",
-            "push {1}",
-            in(reg) preemption_info.0,
-            in(reg) preemption_info.1
-        );
-
-        x2apic::send_eoi();
-
-        core::arch::asm!("ret");
-    }
+    preempt_process(rsp);
+    x2apic::send_eoi();
 }
 
 // TODO Technically, this design means that when TLB Shootdows happen, each core must sequentially

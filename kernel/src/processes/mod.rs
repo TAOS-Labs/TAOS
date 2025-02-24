@@ -8,10 +8,7 @@ mod tests {
         constants::processes::INFINITE_LOOP,
         events::schedule_process,
         interrupts::x2apic,
-        processes::{
-            process::{create_process, run_process_ring3},
-            registers::Registers,
-        },
+        processes::process::{create_process, run_process_ring3},
     };
 
     #[test_case]

@@ -11,22 +11,16 @@ use limine::{
 };
 
 use crate::{
-    constants::processes::SYSCALL_BINARY,
     debug, devices,
     events::{
-        register_event_runner, run_loop, schedule_kernel, schedule_process, spawn, yield_now,
+        register_event_runner, run_loop, spawn, yield_now,
     },
     interrupts::{self, idt},
     ipc::{
-        messages::Message,
-        mnt_manager,
-        namespace::Namespace,
-        responses::Rattach,
-        spsc::{Receiver, Sender},
+        messages::Message, mnt_manager, namespace::Namespace, responses::Rattach, spsc::{Receiver, Sender}
     },
     logging,
     memory::{self},
-    processes::process::{create_process, run_process_ring3},
     serial_println, trace,
 };
 
@@ -56,6 +50,7 @@ static CPU_COUNT: AtomicU64 = AtomicU64::new(0);
 pub fn init() -> u32 {
     assert!(BASE_REVISION.is_supported());
     interrupts::init(0);
+
     memory::init(0);
     devices::init(0);
     // Should be kept after devices in case logging gets complicated
@@ -65,7 +60,7 @@ pub fn init() -> u32 {
     debug!("Waking cores");
     let bsp_id = wake_cores();
 
-    register_event_runner(bsp_id);
+    register_event_runner();
     idt::enable();
 
     bsp_id
@@ -95,7 +90,7 @@ unsafe extern "C" fn secondary_cpu_main(cpu: &Cpu) -> ! {
         core::hint::spin_loop();
     }
 
-    register_event_runner(cpu.id);
+    register_event_runner();
     idt::enable();
 
     debug!("AP {} entering event loop", cpu.id);

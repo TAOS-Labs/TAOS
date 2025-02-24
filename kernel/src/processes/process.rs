@@ -1,15 +1,10 @@
 extern crate alloc;
 
 use crate::{
-    debug,
-    interrupts::gdt,
-    ipc::namespace::Namespace,
-    memory::{
+    constants::processes::PROCESS_NANOS, debug, events::{current_running_event_info, nanosleep_current_process, runner_timestamp, schedule_process, EventInfo}, interrupts::{gdt, x2apic::{self, nanos_to_ticks}}, ipc::namespace::Namespace, memory::{
         frame_allocator::{alloc_frame, with_generic_allocator},
         HHDM_OFFSET, MAPPER,
-    },
-    processes::{loader::load_elf, registers::Registers},
-    serial_println,
+    }, processes::{loader::load_elf, registers::Registers}, serial_println
 };
 use alloc::{collections::BTreeMap, sync::Arc};
 use core::{
@@ -42,6 +37,7 @@ pub struct PCB {
     pub state: ProcessState,
     pub kernel_rsp: u64,
     pub kernel_rip: u64,
+    pub next_preemption_time: u64,
     pub registers: Registers,
     pub pml4_frame: PhysFrame<Size4KiB>, // this process' page table,
     pub namespace: Namespace,
@@ -121,6 +117,7 @@ pub fn create_process(elf_bytes: &[u8]) -> u32 {
         state: ProcessState::New,
         kernel_rsp: 0,
         kernel_rip: 0,
+        next_preemption_time: 0,
         registers: Registers {
             rax: 0,
             rbx: 0,
@@ -253,6 +250,8 @@ pub async unsafe fn run_process_ring3(pid: u32) {
     // But not TCB
     let process = process.pcb.get();
 
+    (*process).next_preemption_time = runner_timestamp() + nanos_to_ticks(PROCESS_NANOS);
+
     Cr3::write((*process).pml4_frame, Cr3Flags::empty());
 
     let user_cs = gdt::GDT.1.user_code_selector.0 as u64;
@@ -363,4 +362,191 @@ unsafe fn return_process() {
         ",
         "ret", // return to event scheduler
     );
+}
+
+pub fn preempt_process(rsp: u64) {
+    let event: EventInfo = current_running_event_info();
+    if event.pid == 0 {
+        return;
+    }
+
+    // Get PCB from PID
+    let preemption_info = unsafe {
+        let mut process_table = PROCESS_TABLE.write();
+        let process = process_table
+            .get_mut(&event.pid)
+            .expect("Process not found");
+
+        let pcb = process.pcb.get();
+
+        // Don't preempt if conditions are not met
+        if (*pcb).state != ProcessState::Running 
+            || (*pcb).next_preemption_time <= runner_timestamp() {
+            return;
+        }
+
+        // save registers to the PCB
+        let stack_ptr: *const u64 = rsp as *const u64;
+
+        (*pcb).registers.rax = *stack_ptr.add(0);
+        (*pcb).registers.rbx = *stack_ptr.add(1);
+        (*pcb).registers.rcx = *stack_ptr.add(2);
+        (*pcb).registers.rdx = *stack_ptr.add(3);
+        (*pcb).registers.rsi = *stack_ptr.add(4);
+        (*pcb).registers.rdi = *stack_ptr.add(5);
+        (*pcb).registers.r8 = *stack_ptr.add(6);
+        (*pcb).registers.r9 = *stack_ptr.add(7);
+        (*pcb).registers.r10 = *stack_ptr.add(8);
+        (*pcb).registers.r11 = *stack_ptr.add(9);
+        (*pcb).registers.r12 = *stack_ptr.add(10);
+        (*pcb).registers.r13 = *stack_ptr.add(11);
+        (*pcb).registers.r14 = *stack_ptr.add(12);
+        (*pcb).registers.r15 = *stack_ptr.add(13);
+        (*pcb).registers.rbp = *stack_ptr.add(14);
+        // saved from interrupt stack frame
+        (*pcb).registers.rsp = *stack_ptr.add(18);
+        (*pcb).registers.rip = *stack_ptr.add(15);
+        (*pcb).registers.rflags = *stack_ptr.add(17);
+
+        (*pcb).state = ProcessState::Ready;
+
+        ((*pcb).kernel_rsp, (*pcb).kernel_rip)
+    };
+
+    unsafe {
+        schedule_process(event.pid);
+
+        // Restore kernel RSP + PC -> RIP from where it was stored in run/resume process
+        core::arch::asm!(
+            "mov rsp, {0}",
+            "push {1}",
+            in(reg) preemption_info.0,
+            in(reg) preemption_info.1
+        );
+
+        x2apic::send_eoi();
+
+        core::arch::asm!("ret");
+    }
+}
+
+
+pub fn block_process(rsp: u64) {
+    let event: EventInfo = current_running_event_info();
+    if event.pid == 0 {
+        return;
+    }
+
+    // Get PCB from PID
+    let preemption_info = unsafe {
+        let mut process_table = PROCESS_TABLE.write();
+        let process = process_table
+            .get_mut(&event.pid)
+            .expect("Process not found");
+
+        let pcb = process.pcb.get();
+
+        // save registers to the PCB
+        let stack_ptr: *const u64 = rsp as *const u64;
+
+        (*pcb).registers.rax = *stack_ptr.add(0);
+        (*pcb).registers.rbx = *stack_ptr.add(1);
+        (*pcb).registers.rcx = *stack_ptr.add(2);
+        (*pcb).registers.rdx = *stack_ptr.add(3);
+        (*pcb).registers.rsi = *stack_ptr.add(4);
+        (*pcb).registers.rdi = *stack_ptr.add(5);
+        (*pcb).registers.r8 = *stack_ptr.add(6);
+        (*pcb).registers.r9 = *stack_ptr.add(7);
+        (*pcb).registers.r10 = *stack_ptr.add(8);
+        (*pcb).registers.r11 = *stack_ptr.add(9);
+        (*pcb).registers.r12 = *stack_ptr.add(10);
+        (*pcb).registers.r13 = *stack_ptr.add(11);
+        (*pcb).registers.r14 = *stack_ptr.add(12);
+        (*pcb).registers.r15 = *stack_ptr.add(13);
+        (*pcb).registers.rbp = *stack_ptr.add(14);
+        // saved from interrupt stack frame
+        (*pcb).registers.rsp = *stack_ptr.add(18);
+        (*pcb).registers.rip = *stack_ptr.add(15);
+        (*pcb).registers.rflags = *stack_ptr.add(17);
+
+        (*pcb).state = ProcessState::Blocked;
+
+        ((*pcb).kernel_rsp, (*pcb).kernel_rip)
+    };
+
+    unsafe {
+        // TODO schedule blocked process
+
+        // Restore kernel RSP + PC -> RIP from where it was stored in run/resume process
+        core::arch::asm!(
+            "mov rsp, {0}",
+            "push {1}",
+            in(reg) preemption_info.0,
+            in(reg) preemption_info.1
+        );
+
+        x2apic::send_eoi();
+
+        core::arch::asm!("ret");
+    }
+}
+
+pub fn sleep_process(rsp: u64, nanos: u64) {
+    let event: EventInfo = current_running_event_info();
+    if event.pid == 0 {
+        return;
+    }
+
+    // Get PCB from PID
+    let preemption_info = unsafe {
+        let mut process_table = PROCESS_TABLE.write();
+        let process = process_table
+            .get_mut(&event.pid)
+            .expect("Process not found");
+
+        let pcb = process.pcb.get();
+
+        // save registers to the PCB
+        let stack_ptr: *const u64 = rsp as *const u64;
+
+        (*pcb).registers.rax = *stack_ptr.add(0);
+        (*pcb).registers.rbx = *stack_ptr.add(1);
+        (*pcb).registers.rcx = *stack_ptr.add(2);
+        (*pcb).registers.rdx = *stack_ptr.add(3);
+        (*pcb).registers.rsi = *stack_ptr.add(4);
+        (*pcb).registers.rdi = *stack_ptr.add(5);
+        (*pcb).registers.r8 = *stack_ptr.add(6);
+        (*pcb).registers.r9 = *stack_ptr.add(7);
+        (*pcb).registers.r10 = *stack_ptr.add(8);
+        (*pcb).registers.r11 = *stack_ptr.add(9);
+        (*pcb).registers.r12 = *stack_ptr.add(10);
+        (*pcb).registers.r13 = *stack_ptr.add(11);
+        (*pcb).registers.r14 = *stack_ptr.add(12);
+        (*pcb).registers.r15 = *stack_ptr.add(13);
+        (*pcb).registers.rbp = *stack_ptr.add(14);
+        // saved from interrupt stack frame
+        (*pcb).registers.rsp = *stack_ptr.add(18);
+        (*pcb).registers.rip = *stack_ptr.add(15);
+        (*pcb).registers.rflags = *stack_ptr.add(17);
+
+        (*pcb).state = ProcessState::Blocked;
+
+        ((*pcb).kernel_rsp, (*pcb).kernel_rip)
+    };
+
+    unsafe {
+        nanosleep_current_process(event.pid, nanos);
+
+        // Restore kernel RSP + PC -> RIP from where it was stored in run/resume process
+        core::arch::asm!(
+            "mov rsp, {0}",
+            "push {1}",
+            in(reg) preemption_info.0,
+            in(reg) preemption_info.1
+        );
+
+        x2apic::send_eoi();
+
+        core::arch::asm!("ret");
+    }
 }

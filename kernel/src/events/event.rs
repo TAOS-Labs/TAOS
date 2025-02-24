@@ -18,7 +18,7 @@ impl Event {
             future: Mutex::new(Box::pin(future)),
             rewake_queue,
             priority: priority.into(),
-            scheduled_clock: scheduled_clock.into(),
+            scheduled_timestamp: scheduled_clock.into(),
         }
     }
 }
