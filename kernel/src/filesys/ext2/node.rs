@@ -87,7 +87,8 @@ impl<'a> WriteContext<'a> {
         self.set_block_pointer(block_idx, new_block)?;
         let mut inode = self.node.inode.lock();
         let current_count = inode.inode().blocks_count;
-        inode.inode_mut().blocks_count = block_idx as u32 + 1;
+        let new_count = block_idx as u32 + 1;
+        inode.inode_mut().blocks_count = new_count;
         Ok(new_block)
     }
 
@@ -401,22 +402,60 @@ impl Node {
             return Ok(0);
         }
 
+        // Clear the entire buffer with zeros before we start reading
+        // This ensures sparse regions are properly filled with zeros
+        buffer.fill(0);
+
         let mut bytes_read = 0;
         let mut remaining = min(buffer.len() as u64, size - offset);
         let mut buf_offset = 0;
         let mut file_offset = offset;
 
         while remaining > 0 {
-            let block_offset = file_offset % self.block_size as u64;
-            let block = self.get_block_number_for_offset(file_offset)?;
+            // Calculate which block contains this offset
+            let block_index = file_offset / self.block_size as u64;
 
+            let block_result = self.get_block_number_for_offset(file_offset);
+            if let Err(NodeError::InvalidOffset) = block_result {
+                // This is a sparse region (block not allocated)
+                // Skip to the next allocated block or to the end of the request
+                let next_block_index = block_index + 1;
+                let next_block_offset = next_block_index * self.block_size as u64;
+
+                let bytes_to_skip = if next_block_offset <= file_offset + remaining {
+                    next_block_offset - file_offset
+                } else {
+                    remaining
+                };
+
+                // We've already zeroed the buffer, so just update our counters
+                bytes_read += bytes_to_skip;
+                buf_offset += bytes_to_skip as usize;
+                file_offset += bytes_to_skip;
+                remaining -= bytes_to_skip;
+                continue;
+            }
+
+            // Handle other errors from get_block_number_for_offset
+            let block = match block_result {
+                Ok(block) => block,
+                Err(e) => return Err(e),
+            };
+
+            // Get the block from cache
             let cached = self
                 .block_cache
                 .get(block)
                 .map_err(|_| NodeError::CacheError)?;
             let cached = cached.lock();
 
+            // Calculate offset within the block
+            let block_offset = file_offset % self.block_size as u64;
+
+            // Calculate how many bytes to copy from this block
             let to_copy = min(remaining, (self.block_size - block_offset as u32) as u64);
+
+            // Copy data from cache to buffer
             buffer[buf_offset..buf_offset + to_copy as usize]
                 .copy_from_slice(&cached.data()[block_offset as usize..][..to_copy as usize]);
 
@@ -477,8 +516,16 @@ impl Node {
 
         let mut entries = Vec::new();
         let size = self.size();
-        let mut offset = 0;
 
+        if size == 0 {
+            return Ok(entries);
+        }
+
+        let entry_header_size = size_of::<DirectoryEntry>();
+        let mut offset = 0;
+        let block_size = self.block_size as u64;
+
+        // Process all entries in the directory
         while offset < size {
             let mut entry = DirectoryEntry {
                 inode: 0,
@@ -487,37 +534,50 @@ impl Node {
                 file_type: 0,
             };
 
-            // Read fixed part of directory entry
+            // Read entry header
             let bytes_read = self.read_raw_at(offset, unsafe {
-                core::slice::from_raw_parts_mut(
-                    &mut entry as *mut _ as *mut u8,
-                    core::mem::size_of::<DirectoryEntry>(),
-                )
+                core::slice::from_raw_parts_mut(&mut entry as *mut _ as *mut u8, entry_header_size)
             })?;
 
-            if bytes_read == 0 || entry.inode == 0 {
+            if bytes_read < entry_header_size {
+                serial_println!("Partial read at offset {}, stopping", offset);
                 break;
             }
 
-            // Read name
-            let mut name = vec![0; entry.name_len as usize];
-            self.read_raw_at(
-                offset + core::mem::size_of::<DirectoryEntry>() as u64,
-                &mut name,
-            )?;
+            // Sanity checks
+            if entry.rec_len == 0 {
+                serial_println!("Zero rec_len at offset {}, skipping to next block", offset);
+                offset = ((offset / block_size) + 1) * block_size;
+                continue;
+            }
 
-            let name = String::from_utf8_lossy(&name).into_owned();
+            if entry.inode != 0 {
+                if entry.name_len > 0 && entry.name_len <= 255 {
+                    // Read name
+                    let mut name_buffer = vec![0u8; entry.name_len as usize];
+                    let name_bytes_read =
+                        self.read_raw_at(offset + entry_header_size as u64, &mut name_buffer)?;
 
-            entries.push(DirEntry {
-                inode_no: entry.inode,
-                name,
-                file_type: match entry.file_type {
-                    1 => FileType::RegularFile,
-                    2 => FileType::Directory,
-                    7 => FileType::SymbolicLink,
-                    _ => FileType::Unknown,
-                },
-            });
+                    if name_bytes_read == entry.name_len as usize {
+                        let name = String::from_utf8_lossy(&name_buffer).into_owned();
+
+                        entries.push(DirEntry {
+                            inode_no: entry.inode,
+                            name,
+                            file_type: match entry.file_type {
+                                1 => FileType::RegularFile,
+                                2 => FileType::Directory,
+                                7 => FileType::SymbolicLink,
+                                _ => FileType::Unknown,
+                            },
+                        });
+                    } else {
+                        serial_println!("Name read error at offset {}", offset);
+                    }
+                } else {
+                    serial_println!("Invalid name_len: {}", entry.name_len);
+                }
+            }
 
             offset += entry.rec_len as u64;
         }
@@ -528,7 +588,6 @@ impl Node {
     fn write_raw_at(&self, offset: u64, buffer: &[u8]) -> NodeResult<usize> {
         let mut ctx = WriteContext::new(self, &self.allocator, offset, buffer.len() as u64);
         ctx.prepare_blocks()?;
-
         let mut bytes_written = 0;
         let mut remaining = buffer.len();
         let mut buf_offset = 0;
@@ -608,7 +667,7 @@ impl Node {
         }
 
         if name.len() > 255 {
-            return Err(NodeError::DirEntryTooLarge);
+            return Err(NodeError::NameTooLong);
         }
 
         // Check if entry already exists
@@ -617,13 +676,52 @@ impl Node {
             return Err(NodeError::AlreadyExists);
         }
 
-        let entry_size = size_of::<DirectoryEntry>() + name.len();
+        // Calculate sizes
+        let entry_header_size = size_of::<DirectoryEntry>();
+        let entry_size = entry_header_size + name.len();
         let padded_size = (entry_size + 3) & !3; // Round up to 4-byte alignment
 
-        let mut offset = 0;
-        let mut found_space = false;
+        let dir_size = self.size();
+        let block_size = self.block_size as u64;
 
-        while offset < self.size() {
+        // If directory is empty, initialize the first block
+        if dir_size == 0 {
+            // Allocate first block
+            let mut ctx = WriteContext::new(self, &self.allocator, 0, block_size);
+            ctx.prepare_blocks()?;
+
+            // New entry will use the entire block
+            let new_entry = DirectoryEntry {
+                inode: inode_no,
+                rec_len: block_size as u16, // Use entire block
+                name_len: name.len() as u8,
+                file_type: file_type as u8,
+            };
+
+            // Write entry header
+            self.write_raw_at(0, unsafe {
+                core::slice::from_raw_parts(&new_entry as *const _ as *const u8, entry_header_size)
+            })?;
+
+            // Write name
+            self.write_raw_at(entry_header_size as u64, name.as_bytes())?;
+
+            // Update directory size
+            {
+                let mut inode = self.inode.lock();
+                inode.inode_mut().size_low = entry_size as u32;
+            }
+
+            return Ok(());
+        }
+
+        // Scan through existing entries to find space
+        let mut offset = 0;
+        let mut insert_pos = 0;
+        let mut found_space = false;
+        let mut current_rec_len = 0;
+
+        while offset < dir_size {
             let mut entry = DirectoryEntry {
                 inode: 0,
                 rec_len: 0,
@@ -631,45 +729,116 @@ impl Node {
                 file_type: 0,
             };
 
+            // Read current entry
             self.read_raw_at(offset, unsafe {
                 core::slice::from_raw_parts_mut(
-                    &mut entry as *mut _ as *mut u8,
-                    size_of::<DirectoryEntry>(),
+                    &mut entry as *mut _ as *const u8 as *mut u8,
+                    entry_header_size,
                 )
             })?;
 
-            if entry.inode == 0 || offset + entry.rec_len as u64 >= self.size() {
-                // Found a free spot or end of directory
+            // Check for invalid entries that might cause issues
+            if entry.rec_len == 0 {
+                // Invalid entry, skip to next block
+                offset = ((offset / block_size) + 1) * block_size;
+                continue;
+            }
+
+            current_rec_len = entry.rec_len;
+
+            // If entry is deleted, we can reuse its space
+            if entry.inode == 0 && entry.rec_len as usize >= padded_size {
+                insert_pos = offset;
                 found_space = true;
                 break;
             }
 
+            // Calculate actual size needed by this entry
+            let actual_size = entry_header_size + entry.name_len as usize;
+            let actual_padded_size = (actual_size + 3) & !3;
+
+            // If entry has extra padding we can use
+            if entry.rec_len as usize > actual_padded_size + 8
+                && entry.rec_len as usize - actual_padded_size >= padded_size
+            {
+                // We can split this entry
+                insert_pos = offset + actual_padded_size as u64;
+
+                // Adjust current entry's rec_len
+                let mut adjusted_entry = entry;
+                adjusted_entry.rec_len = actual_padded_size as u16;
+
+                // Write modified entry
+                self.write_raw_at(offset, unsafe {
+                    core::slice::from_raw_parts(
+                        &adjusted_entry as *const _ as *const u8,
+                        entry_header_size,
+                    )
+                })?;
+
+                found_space = true;
+                break;
+            }
+
+            // Move to next entry
             offset += entry.rec_len as u64;
         }
 
-        if !found_space {
-            // Need to extend directory
-            let mut ctx = WriteContext::new(self, &self.allocator, self.size(), padded_size as u64);
-            ctx.prepare_blocks()?;
+        // If we've reached the end of directory, append at the end
+        if !found_space && offset >= dir_size {
+            insert_pos = dir_size;
+
+            // Check if we need a new block
+            if (insert_pos / block_size) != ((insert_pos + padded_size as u64 - 1) / block_size) {
+                // Allocate a new block
+                let mut ctx = WriteContext::new(self, &self.allocator, insert_pos, block_size);
+                ctx.prepare_blocks()?;
+            }
         }
+
+        // If we still haven't found space, we need to allocate more blocks
+        if !found_space && insert_pos == 0 {
+            // Allocate new space
+            let mut ctx = WriteContext::new(self, &self.allocator, dir_size, padded_size as u64);
+            ctx.prepare_blocks()?;
+            insert_pos = dir_size;
+        }
+
+        // Calculate rec_len for the new entry
+        let block_offset = insert_pos % block_size;
+        let remaining_in_block = block_size - block_offset;
+
+        // If this is the last entry in the block, rec_len extends to end of block
+        let rec_len = if insert_pos + padded_size as u64 >= dir_size
+            && remaining_in_block >= padded_size as u64
+        {
+            remaining_in_block as u16
+        } else {
+            padded_size as u16
+        };
 
         // Create new entry
         let new_entry = DirectoryEntry {
             inode: inode_no,
-            rec_len: padded_size as u16,
+            rec_len,
             name_len: name.len() as u8,
             file_type: file_type as u8,
         };
 
         // Write entry header
-        self.write_raw_at(offset, unsafe {
-            core::slice::from_raw_parts(
-                &new_entry as *const _ as *const u8,
-                size_of::<DirectoryEntry>(),
-            )
+        self.write_raw_at(insert_pos, unsafe {
+            core::slice::from_raw_parts(&new_entry as *const _ as *const u8, entry_header_size)
         })?;
 
-        self.write_raw_at(offset + size_of::<DirectoryEntry>() as u64, name.as_bytes())?;
+        // Write name
+        self.write_raw_at(insert_pos + entry_header_size as u64, name.as_bytes())?;
+
+        // Update directory size if needed
+        let new_dir_size = insert_pos + padded_size as u64;
+        if new_dir_size > dir_size {
+            let mut inode = self.inode.lock();
+            inode.inode_mut().size_low = new_dir_size as u32;
+        }
 
         Ok(())
     }
@@ -879,6 +1048,7 @@ mod tests {
 
         // Read entries
         let entries = node.read_dir().unwrap();
+        serial_println!("Got here");
         assert_eq!(entries.len(), 2);
 
         let file_entry = entries.iter().find(|e| e.name == "file1").unwrap();
