@@ -319,33 +319,43 @@ impl Node {
         let block_size = self.block_size as u64;
         let block_index = offset / block_size;
 
-        if block_index >= inode.blocks_count as u64 {
-            return Err(NodeError::InvalidOffset);
-        }
-
-        // Direct blocks
         if block_index < 12 {
-            return Ok(inode.blocks[block_index as usize]);
+            let block_number = inode.blocks[block_index as usize];
+            // If block_number is 0, this is a sparse region
+            if block_number == 0 {
+                return Err(NodeError::InvalidOffset);
+            }
+            return Ok(block_number);
         }
 
-        // Indirect blocks
         let mut remaining = block_index - 12;
         let ptrs_per_block = block_size / 4;
 
-        // Single indirect
         if remaining < ptrs_per_block {
+            if inode.blocks[12] == 0 {
+                return Err(NodeError::InvalidOffset);
+            }
+
             let block = self
                 .block_cache
                 .get(inode.blocks[12])
                 .map_err(|_| NodeError::CacheError)?;
             let block = block.lock();
             let ptr = unsafe { *(block.data().as_ptr().add(remaining as usize * 4) as *const u32) };
+
+            if ptr == 0 {
+                return Err(NodeError::InvalidOffset);
+            }
+
             return Ok(ptr);
         }
         remaining -= ptrs_per_block;
 
-        // Double indirect
         if remaining < ptrs_per_block * ptrs_per_block {
+            if inode.blocks[13] == 0 {
+                return Err(NodeError::InvalidOffset);
+            }
+
             let index1 = remaining / ptrs_per_block;
             let index2 = remaining % ptrs_per_block;
 
@@ -356,6 +366,10 @@ impl Node {
             let block1 = block1.lock();
             let ptr1 = unsafe { *(block1.data().as_ptr().add(index1 as usize * 4) as *const u32) };
 
+            if ptr1 == 0 {
+                return Err(NodeError::InvalidOffset);
+            }
+
             let block2 = self
                 .block_cache
                 .get(ptr1)
@@ -363,11 +377,19 @@ impl Node {
             let block2 = block2.lock();
             let ptr2 = unsafe { *(block2.data().as_ptr().add(index2 as usize * 4) as *const u32) };
 
+            if ptr2 == 0 {
+                return Err(NodeError::InvalidOffset);
+            }
+
             return Ok(ptr2);
         }
         remaining -= ptrs_per_block * ptrs_per_block;
 
-        // Triple indirect
+        // Check if the triple indirect block is allocated
+        if inode.blocks[14] == 0 {
+            return Err(NodeError::InvalidOffset);
+        }
+
         let index1 = remaining / (ptrs_per_block * ptrs_per_block);
         let index2 = (remaining / ptrs_per_block) % ptrs_per_block;
         let index3 = remaining % ptrs_per_block;
@@ -379,6 +401,10 @@ impl Node {
         let block1 = block1.lock();
         let ptr1 = unsafe { *(block1.data().as_ptr().add(index1 as usize * 4) as *const u32) };
 
+        if ptr1 == 0 {
+            return Err(NodeError::InvalidOffset);
+        }
+
         let block2 = self
             .block_cache
             .get(ptr1)
@@ -386,12 +412,20 @@ impl Node {
         let block2 = block2.lock();
         let ptr2 = unsafe { *(block2.data().as_ptr().add(index2 as usize * 4) as *const u32) };
 
+        if ptr2 == 0 {
+            return Err(NodeError::InvalidOffset);
+        }
+
         let block3 = self
             .block_cache
             .get(ptr2)
             .map_err(|_| NodeError::CacheError)?;
         let block3 = block3.lock();
         let ptr3 = unsafe { *(block3.data().as_ptr().add(index3 as usize * 4) as *const u32) };
+
+        if ptr3 == 0 {
+            return Err(NodeError::InvalidOffset);
+        }
 
         Ok(ptr3)
     }
@@ -940,6 +974,10 @@ mod tests {
                 Arc::from(vec![BlockGroupDescriptor::new(0, 1, 2, 253, 64, 0)]);
 
             let allocator = Arc::new(Allocator::new(superblock, bgdt, Arc::clone(&block_cache)));
+            // Real file system allocates block 0 for boot sector
+            // For us, block 0 shall never be free
+            // This is because 0 is used as sentinel to detect unallocated blocks
+            allocator.allocate_block().unwrap();
 
             Self {
                 device,
@@ -1110,11 +1148,7 @@ mod tests {
         // Check blocks were allocated
         let inode = node.inode.lock();
         assert!(inode.inode().blocks_count >= 2);
-        // Typically block 0 is reserved for boot
-        // But you get this for free
-        // I.e, you read in state of system
-        // In our case, though, 0 being allocated is okay?
-        assert!(inode.inode().blocks[0] == 0); // Direct block
+        assert!(inode.inode().blocks[0] != 0); // Direct block
         assert!(inode.inode().blocks[1] != 0); // Direct block
     }
 
