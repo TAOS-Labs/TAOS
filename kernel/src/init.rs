@@ -13,7 +13,7 @@ use limine::{
 use crate::{
     debug, devices,
     events::{
-        register_event_runner, run_loop, spawn, yield_now,
+        register_event_runner, run_loop, spawn, yield_now
     },
     interrupts::{self, idt},
     ipc::{
@@ -129,6 +129,8 @@ fn wake_cores() -> u32 {
 
 static TEST_MOUNT_ID: AtomicU32 = AtomicU32::new(0);
 
+static mut PLOCK: bool = true;
+
 pub async fn run_server(server_rx: Receiver<Bytes>, server_tx: Sender<Bytes>) {
     serial_println!("Server starting");
     loop {
@@ -150,7 +152,14 @@ pub async fn run_server(server_rx: Receiver<Bytes>, server_tx: Sender<Bytes>) {
                 Err(e) => serial_println!("Failed to parse message: {:?}", e),
             },
             Err(_) => {
-                serial_println!("Got error");
+                unsafe {if PLOCK {
+                    serial_println!("Got error");
+                    PLOCK = false;
+                }}
+                // let sleep = nanosleep_current_event(2_000_000_000);
+                // if sleep.is_some() {
+                //     sleep.unwrap().await;
+                // }
             }
         }
         yield_now().await;

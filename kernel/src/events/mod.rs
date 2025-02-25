@@ -1,4 +1,3 @@
-use crate::serial_println;
 use alloc::{
     boxed::Box,
     collections::{
@@ -161,10 +160,13 @@ pub fn current_running_event_priority() -> usize {
 
 pub fn inc_runner_clock() {
     let cpuid = x2apic::current_core_id() as u32;
-    let runners = EVENT_RUNNERS.read();
-    let mut runner = runners.get(&cpuid).expect("No runner found").write();
 
-    runner.inc_system_clock();
+    without_interrupts(|| {
+        let runners = EVENT_RUNNERS.read();
+        let mut runner = runners.get(&cpuid).expect("No runner found").write();
+    
+        runner.inc_system_clock();
+    });
 }
 
 pub fn runner_timestamp() -> u64 {
@@ -213,7 +215,7 @@ pub fn current_running_event_info() -> EventInfo {
     let cpuid = x2apic::current_core_id() as u32;
 
     let runners = EVENT_RUNNERS.read();
-    let runner = runners.get(&cpuid).expect("No runner found").write();
+    let runner = runners.get(&cpuid).expect("No runner found").read();
 
     match runner.current_running_event() {
         Some(e) => EventInfo {
@@ -232,8 +234,11 @@ where
     F: Future<Output = T> + Send + 'static,
     T: Send + 'static,
 {
-    let runners = EVENT_RUNNERS.read();
-    let mut runner = runners.get(&cpuid).expect("No runner found").write();
-
-    runner.spawn(future, priority_level)
+    without_interrupts(|| {
+        let runners = EVENT_RUNNERS.read();
+        let mut runner = runners.get(&cpuid).expect("No runner found").write();
+    
+        let res = runner.spawn(future, priority_level);
+        res
+    })
 }

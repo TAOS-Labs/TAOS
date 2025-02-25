@@ -15,7 +15,7 @@ use core::{
 use super::{
     futures::Sleep, tasks::{CancellationToken, JoinHandle, TaskError}, Event, EventId, EventQueue, EventRunner
 };
-use crate::{constants::events::NUM_EVENT_PRIORITIES, interrupts::x2apic::nanos_to_ticks};
+use crate::{constants::events::NUM_EVENT_PRIORITIES, interrupts::x2apic::nanos_to_ticks, serial_println};
 use spin::Mutex;
 
 use crate::constants::events::PRIORITY_INC_DELAY;
@@ -59,15 +59,13 @@ impl EventRunner {
                     drop(future_guard);
 
                     if !ready {
-                        // let priority = event.priority.load(Ordering::Relaxed);
-
+                        let priority = event.priority.load(Ordering::Relaxed);
                         event
                             .scheduled_timestamp
                             .swap(self.event_clock, Ordering::Relaxed);
-                        // Self::enqueue(&self.event_queues[priority], event.clone());
+                        Self::enqueue(&self.event_queues[priority], event.clone());
                     } else {
-                        let mut write_lock = self.pending_events.write();
-                        write_lock.remove(&event.eid.0);
+                        self.pending_events.write().remove(&event.eid.0);
                     }
                 }
 
@@ -91,7 +89,7 @@ impl EventRunner {
         future: impl Future<Output = ()> + 'static + Send,
         priority_level: usize,
         pid: u32,
-    ) {
+    ) -> Option<EventId> {
         if priority_level >= NUM_EVENT_PRIORITIES {
             panic!("Invalid event priority: {}", priority_level);
         } else {
@@ -105,9 +103,12 @@ impl EventRunner {
 
             Self::enqueue(&self.event_queues[priority_level], event.clone());
 
-            let mut write_lock = self.pending_events.write();
+            self.pending_events.write().insert(event.eid.0);
 
-            write_lock.insert(event.eid.0);
+            serial_println!("Scheduled {}", event.eid.0);
+            serial_println!("{} pending", self.pending_events.read().len());
+
+            Some(event.eid)
         }
     }
 
@@ -166,9 +167,7 @@ impl EventRunner {
             let sleep = Sleep::new(self.system_clock + system_ticks, event.clone());
             self.sleeping_events.push(sleep.clone());
 
-            let mut write_lock = self.pending_events.write();
-
-            write_lock.insert(event.eid.0);
+            self.pending_events.write().insert(event.eid.0);
 
             Some(sleep)
         }
@@ -179,48 +178,50 @@ impl EventRunner {
         F: Future<Output = T> + Send + 'static,
         T: Send + 'static,
     {
-        let result: Arc<Mutex<Option<Result<T, TaskError>>>> = Arc::new(Mutex::new(None));
-        let waker: Arc<Mutex<Option<Waker>>> = Arc::new(Mutex::new(None));
-        let cancellation = CancellationToken::new();
-
-        // Wrap the future to store its result and handle cancellation
-        let wrapped_future = {
-            let result = result.clone();
-            let waker = waker.clone();
-            let cancellation = cancellation.clone();
-
-            async move {
-                let output = match future.await {
-                    output => {
-                        if cancellation.is_cancelled() {
-                            Err(TaskError::Cancelled)
-                        } else {
-                            Ok(output)
-                        }
-                    }
-                };
-
-                // Store the result
-                *result.lock() = Some(output);
-
-                // Wake up anyone waiting on the join handle
-                if let Some(waker) = waker.lock().take() {
-                    waker.wake();
-                }
-            }
-        };
-
-        // Schedule the wrapped future
         without_interrupts(|| {
-            self.schedule(wrapped_future, priority_level, 0);
-        });
-
-        JoinHandle {
-            result,
-            waker,
-            eid: EventId::init(),
-            cancellation,
-        }
+            let result: Arc<Mutex<Option<Result<T, TaskError>>>> = Arc::new(Mutex::new(None));
+            let waker: Arc<Mutex<Option<Waker>>> = Arc::new(Mutex::new(None));
+            let cancellation = CancellationToken::new();
+    
+            // Wrap the future to store its result and handle cancellation
+            let wrapped_future = {
+                let result = result.clone();
+                let waker = waker.clone();
+                let cancellation = cancellation.clone();
+    
+                async move {
+                    let output = match future.await {
+                        output => {
+                            if cancellation.is_cancelled() {
+                                Err(TaskError::Cancelled)
+                            } else {
+                                Ok(output)
+                            }
+                        }
+                    };
+    
+                    // Store the result
+                    *result.lock() = Some(output);
+    
+                    // Wake up anyone waiting on the join handle
+                    if let Some(waker) = waker.lock().take() {
+                        waker.wake();
+                    }
+                }
+            };
+    
+            // Schedule the wrapped future
+            let eid = without_interrupts(|| {
+                self.schedule(wrapped_future, priority_level, 0)
+            });
+            
+            JoinHandle {
+                result,
+                waker,
+                eid: eid.unwrap(),
+                cancellation,
+            }
+        })
     }
 
     fn have_pending_events(&self) -> bool {
