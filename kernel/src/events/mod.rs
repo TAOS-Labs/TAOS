@@ -51,6 +51,7 @@ struct Event {
     pid: u32,
     future: SendFuture,
     rewake_queue: Arc<EventQueue>,
+    blocked_events: Arc<RwLock<BTreeSet<u64>>>,
     priority: AtomicUsize,
     scheduled_timestamp: AtomicU64,
 }
@@ -59,6 +60,7 @@ struct Event {
 struct EventRunner {
     event_queues: [Arc<EventQueue>; NUM_EVENT_PRIORITIES],
     pending_events: RwLock<BTreeSet<u64>>,
+    blocked_events: Arc<RwLock<BTreeSet<u64>>>,
     sleeping_events: BinaryHeap<Sleep>,
     current_event: Option<Arc<Event>>,
     event_clock: u64,

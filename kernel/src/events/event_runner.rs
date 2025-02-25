@@ -25,6 +25,7 @@ impl EventRunner {
         EventRunner {
             event_queues: core::array::from_fn(|_| Arc::new(RwLock::new(VecDeque::new()))),
             pending_events: RwLock::new(BTreeSet::new()),
+            blocked_events: Arc::new(RwLock::new(BTreeSet::new())),
             sleeping_events: BinaryHeap::new(),
             current_event: None,
             event_clock: 0,
@@ -59,11 +60,13 @@ impl EventRunner {
                     drop(future_guard);
 
                     if !ready {
-                        let priority = event.priority.load(Ordering::Relaxed);
                         event
                             .scheduled_timestamp
                             .swap(self.event_clock, Ordering::Relaxed);
-                        Self::enqueue(&self.event_queues[priority], event.clone());
+                        if !self.blocked_events.read().contains(&event.eid.0) {
+                            let priority = event.priority.load(Ordering::Relaxed);
+                            Self::enqueue(&self.event_queues[priority], event.clone());
+                        }
                     } else {
                         self.pending_events.write().remove(&event.eid.0);
                     }
@@ -75,7 +78,7 @@ impl EventRunner {
             // TODO do a lil work-stealing
 
             // Must have pending, but blocked, events
-            if self.have_pending_events() {
+            if self.have_blocked_events() {
                 self.awake_next_sleeper();
             }
 
@@ -96,6 +99,7 @@ impl EventRunner {
             let event = Arc::new(Event::init(
                 future,
                 self.event_queues[priority_level].clone(),
+                self.blocked_events.clone(),
                 priority_level,
                 pid,
                 self.event_clock,
@@ -104,9 +108,6 @@ impl EventRunner {
             Self::enqueue(&self.event_queues[priority_level], event.clone());
 
             self.pending_events.write().insert(event.eid.0);
-
-            serial_println!("Scheduled {}", event.eid.0);
-            serial_println!("{} pending", self.pending_events.read().len());
 
             Some(event.eid)
         }
@@ -139,6 +140,7 @@ impl EventRunner {
 
             let sleep = Sleep::new(self.system_clock + system_ticks, (*e).clone());
             self.sleeping_events.push(sleep.clone());
+            self.blocked_events.write().insert(e.eid.0);
 
             sleep
         })
@@ -157,6 +159,7 @@ impl EventRunner {
             let event = Arc::new(Event::init(
                 future,
                 self.event_queues[priority_level].clone(),
+                self.blocked_events.clone(),
                 priority_level,
                 pid,
                 self.event_clock,
@@ -168,6 +171,7 @@ impl EventRunner {
             self.sleeping_events.push(sleep.clone());
 
             self.pending_events.write().insert(event.eid.0);
+            self.blocked_events.write().insert(event.eid.0);
 
             Some(sleep)
         }
@@ -224,8 +228,8 @@ impl EventRunner {
         })
     }
 
-    fn have_pending_events(&self) -> bool {
-        !self.pending_events.read().is_empty()
+    fn have_blocked_events(&self) -> bool {
+        !self.blocked_events.read().is_empty()
     }
 
     fn have_unblocked_events(&self) -> bool {
