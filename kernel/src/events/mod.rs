@@ -15,7 +15,10 @@ use core::{
     sync::atomic::{AtomicU64, AtomicUsize, Ordering},
 };
 
-use crate::{constants::events::NUM_EVENT_PRIORITIES, interrupts::x2apic, processes::process::run_process_ring3};
+use crate::{
+    constants::events::NUM_EVENT_PRIORITIES, interrupts::x2apic,
+    processes::process::run_process_ring3,
+};
 
 mod event;
 mod event_runner;
@@ -81,10 +84,7 @@ pub unsafe fn run_loop(cpuid: u32) -> ! {
     (*runner).run_loop()
 }
 
-pub fn schedule_kernel(
-    future: impl Future<Output = ()> + 'static + Send,
-    priority_level: usize,
-) {
+pub fn schedule_kernel(future: impl Future<Output = ()> + 'static + Send, priority_level: usize) {
     let cpuid = x2apic::current_core_id() as u32;
 
     without_interrupts(|| {
@@ -95,8 +95,7 @@ pub fn schedule_kernel(
     });
 }
 
-pub fn schedule_process(
-    pid: u32, // 0 as kernel/sentinel
+pub fn schedule_process(pid: u32, // 0 as kernel/sentinel
 ) {
     let cpuid = x2apic::current_core_id() as u32;
 
@@ -110,8 +109,7 @@ pub fn schedule_process(
     });
 }
 
-pub fn schedule_blocked_process(
-    pid: u32, // 0 as kernel/sentinel
+pub fn schedule_blocked_process(pid: u32, // 0 as kernel/sentinel
 ) {
     let cpuid = x2apic::current_core_id() as u32;
 
@@ -120,7 +118,7 @@ pub fn schedule_blocked_process(
         let mut runner = runners.get(&cpuid).expect("No runner found").write();
 
         unsafe {
-            runner.schedule(run_process_ring3(pid), NUM_EVENT_PRIORITIES - 1, pid);
+            runner.schedule_blocked(run_process_ring3(pid), NUM_EVENT_PRIORITIES - 1, pid);
         }
     });
 
@@ -166,7 +164,7 @@ pub fn inc_runner_clock() {
     without_interrupts(|| {
         let runners = EVENT_RUNNERS.read();
         let mut runner = runners.get(&cpuid).expect("No runner found").write();
-    
+
         runner.inc_system_clock();
     });
 }
@@ -186,14 +184,14 @@ pub fn nanosleep_current_event(nanos: u64) -> Option<Sleep> {
 
         let runners = EVENT_RUNNERS.read();
         let mut runner = runners.get(&cpuid).expect("No runner found").write();
-    
+
         runner.nanosleep_current_event(nanos)
     })
 }
 
 pub fn nanosleep_current_process(
     pid: u32, // 0 as kernel/sentinel
-    nanos: u64
+    nanos: u64,
 ) {
     let cpuid = x2apic::current_core_id() as u32;
 
@@ -239,7 +237,7 @@ where
     without_interrupts(|| {
         let runners = EVENT_RUNNERS.read();
         let mut runner = runners.get(&cpuid).expect("No runner found").write();
-    
+
         let res = runner.spawn(future, priority_level);
         res
     })

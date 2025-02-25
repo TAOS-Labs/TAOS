@@ -13,9 +13,11 @@ use core::{
 };
 
 use super::{
-    futures::Sleep, tasks::{CancellationToken, JoinHandle, TaskError}, Event, EventId, EventQueue, EventRunner
+    futures::Sleep,
+    tasks::{CancellationToken, JoinHandle, TaskError},
+    Event, EventId, EventQueue, EventRunner,
 };
-use crate::{constants::events::NUM_EVENT_PRIORITIES, interrupts::x2apic::nanos_to_ticks, serial_println};
+use crate::{constants::events::NUM_EVENT_PRIORITIES, interrupts::x2apic::nanos_to_ticks};
 use spin::Mutex;
 
 use crate::constants::events::PRIORITY_INC_DELAY;
@@ -63,6 +65,7 @@ impl EventRunner {
                         event
                             .scheduled_timestamp
                             .swap(self.event_clock, Ordering::Relaxed);
+
                         if !self.blocked_events.read().contains(&event.eid.0) {
                             let priority = event.priority.load(Ordering::Relaxed);
                             Self::enqueue(&self.event_queues[priority], event.clone());
@@ -73,6 +76,7 @@ impl EventRunner {
                 }
 
                 self.current_event = None;
+                interrupts::enable();
             }
 
             // TODO do a lil work-stealing
@@ -105,6 +109,8 @@ impl EventRunner {
                 self.event_clock,
             ));
 
+            // serial_println!("Created {:?}", event.eid);
+
             Self::enqueue(&self.event_queues[priority_level], event.clone());
 
             self.pending_events.write().insert(event.eid.0);
@@ -113,10 +119,37 @@ impl EventRunner {
         }
     }
 
+    // Schedules an event with a specified priority level [0, NUM_EVENT_PRIORITIES)
+    pub fn schedule_blocked(
+        &mut self,
+        future: impl Future<Output = ()> + 'static + Send,
+        priority_level: usize,
+        pid: u32,
+    ) -> Option<EventId> {
+        if priority_level >= NUM_EVENT_PRIORITIES {
+            panic!("Invalid event priority: {}", priority_level);
+        } else {
+            let event = Arc::new(Event::init(
+                future,
+                self.event_queues[priority_level].clone(),
+                self.blocked_events.clone(),
+                priority_level,
+                pid,
+                self.event_clock,
+            ));
+
+            // serial_println!("Created {:?}", event.eid);
+
+            self.pending_events.write().insert(event.eid.0);
+            self.blocked_events.write().insert(event.eid.0);
+
+            Some(event.eid)
+        }
+    }
+
     pub fn current_running_event(&self) -> Option<&Arc<Event>> {
         self.current_event.as_ref()
     }
-
 
     pub fn inc_system_clock(&mut self) {
         self.system_clock += 1;
@@ -129,6 +162,7 @@ impl EventRunner {
             let future = sleeper.unwrap();
             if future.target_timestamp <= self.system_clock {
                 future.awake();
+                self.blocked_events.write().remove(&future.get_id());
                 self.sleeping_events.pop();
             }
         }
@@ -147,11 +181,11 @@ impl EventRunner {
     }
 
     pub fn nanosleep_event(
-        &mut self, 
+        &mut self,
         future: impl Future<Output = ()> + 'static + Send,
         priority_level: usize,
         pid: u32,
-        nanos: u64
+        nanos: u64,
     ) -> Option<Sleep> {
         if priority_level >= NUM_EVENT_PRIORITIES {
             panic!("Invalid event priority: {}", priority_level);
@@ -164,6 +198,8 @@ impl EventRunner {
                 pid,
                 self.event_clock,
             ));
+
+            // serial_println!("Created {:?}", event.eid);
 
             let system_ticks = nanos_to_ticks(nanos);
 
@@ -186,13 +222,13 @@ impl EventRunner {
             let result: Arc<Mutex<Option<Result<T, TaskError>>>> = Arc::new(Mutex::new(None));
             let waker: Arc<Mutex<Option<Waker>>> = Arc::new(Mutex::new(None));
             let cancellation = CancellationToken::new();
-    
+
             // Wrap the future to store its result and handle cancellation
             let wrapped_future = {
                 let result = result.clone();
                 let waker = waker.clone();
                 let cancellation = cancellation.clone();
-    
+
                 async move {
                     let output = match future.await {
                         output => {
@@ -203,22 +239,20 @@ impl EventRunner {
                             }
                         }
                     };
-    
+
                     // Store the result
                     *result.lock() = Some(output);
-    
+
                     // Wake up anyone waiting on the join handle
                     if let Some(waker) = waker.lock().take() {
                         waker.wake();
                     }
                 }
             };
-    
+
             // Schedule the wrapped future
-            let eid = without_interrupts(|| {
-                self.schedule(wrapped_future, priority_level, 0)
-            });
-            
+            let eid = without_interrupts(|| self.schedule(wrapped_future, priority_level, 0));
+
             JoinHandle {
                 result,
                 waker,
@@ -270,8 +304,8 @@ impl EventRunner {
                     let event_to_move = Self::try_pop(&self.event_queues[i]);
                     event_to_move.inspect(|e| {
                         Self::enqueue(&self.event_queues[i - 1], e.clone());
-                        
-                        Self::change_priority(&e, i-1);
+
+                        Self::change_priority(&e, i - 1);
                         e.scheduled_timestamp
                             .swap(self.event_clock, Ordering::Relaxed);
                     });

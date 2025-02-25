@@ -12,12 +12,14 @@ use limine::{
 
 use crate::{
     debug, devices,
-    events::{
-        register_event_runner, run_loop, spawn, yield_now
-    },
+    events::{register_event_runner, run_loop, spawn, yield_now},
     interrupts::{self, idt},
     ipc::{
-        messages::Message, mnt_manager, namespace::Namespace, responses::Rattach, spsc::{Receiver, Sender}
+        messages::Message,
+        mnt_manager,
+        namespace::Namespace,
+        responses::Rattach,
+        spsc::{Receiver, Sender},
     },
     logging,
     memory::{self},
@@ -149,13 +151,15 @@ pub async fn run_server(server_rx: Receiver<Bytes>, server_tx: Sender<Bytes>) {
                         let _ = server_tx.send(resp_bytes).await;
                     }
                 }
-                Err(e) => serial_println!("Failed to parse message: {:?}", e),
+                Err(e) => serial_println!("(Server) Failed to parse message: {:?}", e),
             },
             Err(_) => {
-                unsafe {if PLOCK {
-                    serial_println!("Got error");
-                    PLOCK = false;
-                }}
+                unsafe {
+                    if PLOCK {
+                        serial_println!("Got error");
+                        PLOCK = false;
+                    }
+                }
                 // let sleep = nanosleep_current_event(2_000_000_000);
                 // if sleep.is_some() {
                 //     sleep.unwrap().await;

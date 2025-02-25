@@ -26,6 +26,10 @@ impl Sleep {
     pub fn awake(&self) {
         self.event.clone().wake();
     }
+
+    pub fn get_id(&self) -> u64 {
+        self.event.eid.0
+    }
 }
 
 impl Ord for Sleep {

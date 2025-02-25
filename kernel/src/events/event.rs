@@ -1,4 +1,3 @@
-
 use super::{Event, EventId, EventQueue};
 use alloc::{boxed::Box, collections::btree_set::BTreeSet, sync::Arc};
 use core::future::Future;
