@@ -365,5 +365,5 @@ pub fn unmask_timer() {
 
 #[inline(always)]
 pub fn nanos_to_ticks(nanos: u64) -> u64 {
-  (nanos * CPU_FREQUENCY as u64) / 1_000_000_000
+    (nanos * CPU_FREQUENCY as u64) / 1_000_000_000
 }

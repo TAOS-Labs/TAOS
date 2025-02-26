@@ -1,10 +1,22 @@
 extern crate alloc;
 
 use crate::{
-    constants::processes::PROCESS_NANOS, debug, events::{current_running_event_info, nanosleep_current_process, runner_timestamp, schedule_process, EventInfo}, interrupts::{gdt, x2apic::{self, nanos_to_ticks}}, memory::{
+    constants::processes::PROCESS_NANOS,
+    debug,
+    events::{
+        current_running_event_info, nanosleep_current_process, runner_timestamp, schedule_process,
+        EventInfo,
+    },
+    interrupts::{
+        gdt,
+        x2apic::{self, nanos_to_ticks},
+    },
+    memory::{
         frame_allocator::{alloc_frame, with_generic_allocator},
         HHDM_OFFSET, MAPPER,
-    }, processes::{loader::load_elf, registers::Registers}, serial_println
+    },
+    processes::{loader::load_elf, registers::Registers},
+    serial_println,
 };
 use alloc::{collections::BTreeMap, sync::Arc};
 use core::{
@@ -379,8 +391,9 @@ pub fn preempt_process(rsp: u64) {
         let pcb = process.pcb.get();
 
         // Don't preempt if conditions are not met
-        if (*pcb).state != ProcessState::Running 
-            || (*pcb).next_preemption_time <= runner_timestamp() {
+        if (*pcb).state != ProcessState::Running
+            || (*pcb).next_preemption_time <= runner_timestamp()
+        {
             return;
         }
 
@@ -428,7 +441,6 @@ pub fn preempt_process(rsp: u64) {
         core::arch::asm!("ret");
     }
 }
-
 
 pub fn block_process(rsp: u64) {
     let event: EventInfo = current_running_event_info();

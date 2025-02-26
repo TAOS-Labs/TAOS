@@ -1,12 +1,9 @@
 use crate::{
-    debug, events::{
-        current_running_event_info, 
-        EventInfo
-    }, interrupts::x2apic, processes::process::{
-        clear_process_frames, sleep_process, ProcessState, PROCESS_TABLE
-    }
+    debug,
+    events::{current_running_event_info, EventInfo},
+    interrupts::x2apic,
+    processes::process::{clear_process_frames, sleep_process, ProcessState, PROCESS_TABLE},
 };
-
 
 pub fn sys_exit() {
     // TODO handle hierarchy (parent processes), resources, threads, etc.

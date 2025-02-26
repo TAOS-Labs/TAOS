@@ -187,7 +187,6 @@ pub extern "x86-interrupt" fn naked_syscall_handler(_: InterruptStackFrame) {
             "mov  rdi, rsp",
             // Call the syscall_handler
             "call syscall_handler",
-
             // Restore registers
             "
             pop rax
@@ -213,7 +212,7 @@ pub extern "x86-interrupt" fn naked_syscall_handler(_: InterruptStackFrame) {
 
 // This is the actual syscall handler function that reads the registers from the stack
 #[no_mangle]
-#[allow(unused_variables, unused_assignments)]  // disable until args p2-6 are used
+#[allow(unused_variables, unused_assignments)] // disable until args p2-6 are used
 fn syscall_handler(rsp: u64) {
     let syscall_num: u64;
     let p1: u64;

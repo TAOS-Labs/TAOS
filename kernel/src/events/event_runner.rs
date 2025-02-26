@@ -14,7 +14,10 @@ use core::{
     task::{Context, Poll},
 };
 
-use crate::{constants::events::{NUM_EVENT_PRIORITIES, PRIORITY_INC_DELAY}, interrupts::x2apic::nanos_to_ticks};
+use crate::{
+    constants::events::{NUM_EVENT_PRIORITIES, PRIORITY_INC_DELAY},
+    interrupts::x2apic::nanos_to_ticks,
+};
 
 impl EventRunner {
     pub fn init() -> EventRunner {
@@ -29,8 +32,11 @@ impl EventRunner {
         }
     }
 
+    /// Continuously runs events/process on a core
     pub fn run_loop(&mut self) -> ! {
+        // Run -> halt -> run -> ... loop
         loop {
+            // Loop to run pending events
             loop {
                 if !self.have_unblocked_events() {
                     break;
@@ -43,6 +49,8 @@ impl EventRunner {
                     .as_ref()
                     .expect("Have pending events, but empty waiting queues.");
 
+                // If not contained, then event must've been completed and
+                // rescheduled (likely due to multiple wakes)
                 if self.contains_event(event.eid) {
                     self.event_clock += 1;
 
@@ -51,41 +59,54 @@ impl EventRunner {
 
                     let mut future_guard = event.future.lock();
 
+                    // Executes the event
                     let ready: bool = future_guard.as_mut().poll(&mut context) != Poll::Pending;
 
                     drop(future_guard);
 
                     if !ready {
+                        // Mark event as having been executed recently
                         event
                             .scheduled_timestamp
                             .swap(self.event_clock, Ordering::Relaxed);
 
+                        // Reschedule the event if it isn't blocked
                         if !self.blocked_events.read().contains(&event.eid.0) {
                             let priority = event.priority.load(Ordering::Relaxed);
                             Self::enqueue(&self.event_queues[priority], event.clone());
                         }
                     } else {
-                        let mut write_lock = self.pending_events.write();
-                        write_lock.remove(&event.eid.0);
+                        // Event is ready, go ahead and remove it
+                        self.pending_events.write().remove(&event.eid.0);
                     }
                 }
 
                 self.current_event = None;
+
+                // Explicitly re-enable interrupts once the current event is unmarked
+                // Helps with run_process_ring3(), which shouldn't be pre-empted
+                // TODO can maybe refactor and safely remove
                 interrupts::enable();
             }
-
-            // TODO do a lil work-stealing
 
             // Must have pending, but blocked, events
             if self.have_blocked_events() {
                 self.awake_next_sleeper();
             }
 
+            // TODO do a lil work-stealing
+
+            // Sleep until next interrupt
             interrupts::enable_and_hlt();
         }
     }
 
-    // Schedules an event with a specified priority level [0, NUM_EVENT_PRIORITIES)
+    /// Schedules an event with a specified priority level [0, NUM_EVENT_PRIORITIES)
+    ///
+    /// # Arguments
+    /// * `future` - The future to wrap in an Event
+    /// * `priority_level` - The priority level of the event to schedule
+    /// * `pid` - The pid of the event to schedule
     pub fn schedule(
         &mut self,
         future: impl Future<Output = ()> + 'static + Send,
@@ -106,14 +127,17 @@ impl EventRunner {
 
             Self::enqueue(&self.event_queues[priority_level], event.clone());
 
-            let mut write_lock = self.pending_events.write();
-
-            write_lock.insert(event.eid.0);
+            self.pending_events.write().insert(event.eid.0);
         }
     }
 
-    // Notifies runner of a blocked event
-    // Event MUST be awoken externally with .awake()
+    /// Notifies runner of a blocked event
+    /// Event MUST be awoken externally with .awake()
+    ///
+    /// # Arguments
+    /// * `future` - The future to wrap in an Event
+    /// * `priority_level` - The priority level of the event to schedule
+    /// * `pid` - The pid of the event to schedule
     pub fn schedule_blocked(
         &mut self,
         future: impl Future<Output = ()> + 'static + Send,
@@ -137,14 +161,19 @@ impl EventRunner {
         }
     }
 
+    /// Returns a reference to the currently running event
+    /// # Returns
+    /// * `Option<&Arc<Event>>` - A reference to the currently running event, if it exists
     pub fn current_running_event(&self) -> Option<&Arc<Event>> {
         self.current_event.as_ref()
     }
 
+    /// Increments the system timer (by one tick)
     pub fn inc_system_clock(&mut self) {
         self.system_clock += 1;
     }
 
+    /// Awakes the next sleeping event to be awoken, if it is time
     pub fn awake_next_sleeper(&mut self) {
         let sleeper = self.sleeping_events.peek();
 
@@ -158,6 +187,13 @@ impl EventRunner {
         }
     }
 
+    /// Sets the current event to sleep for a given number of nanoseconds.
+    ///
+    /// # Arguments
+    /// * `nanos` - The number of nanoseconds to sleep for
+    ///
+    /// # Returns
+    /// * `Option<Sleep>` - A sleep future that can be awaited on (if there is an event to sleep)
     pub fn nanosleep_current_event(&mut self, nanos: u64) -> Option<Sleep> {
         self.current_event.as_ref().map(|e| {
             let system_ticks = nanos_to_ticks(nanos);
@@ -170,12 +206,19 @@ impl EventRunner {
         })
     }
 
+    /// Creates a new event and immediately sets it to sleep
+    ///
+    /// # Arguments
+    /// * `future` - The future to wrap in an Event
+    /// * `priority_level` - The priority level of the event to schedule
+    /// * `pid` - The pid of the event to schedule
+    /// * `nanos` - The number of nanoseconds to sleep for
     pub fn nanosleep_event(
-        &mut self, 
+        &mut self,
         future: impl Future<Output = ()> + 'static + Send,
         priority_level: usize,
         pid: u32,
-        nanos: u64
+        nanos: u64,
     ) -> Option<Sleep> {
         if priority_level >= NUM_EVENT_PRIORITIES {
             panic!("Invalid event priority: {}", priority_level);
@@ -201,10 +244,14 @@ impl EventRunner {
         }
     }
 
+    /// # Returns
+    /// * `bool` - true if there are blocked events on this runner
     fn have_blocked_events(&self) -> bool {
         !self.blocked_events.read().is_empty()
     }
 
+    /// # Returns
+    /// * `bool` - true if there are ready events on this runner
     fn have_unblocked_events(&self) -> bool {
         for queue in self.event_queues.iter() {
             if !queue.read().is_empty() {
@@ -215,10 +262,22 @@ impl EventRunner {
         false
     }
 
+    /// # Arguments
+    /// * `eid` - the eid of the event to check
+    ///
+    /// # Returns
+    /// * `bool` - true if the event is pending on this runner
     fn contains_event(&self, eid: EventId) -> bool {
         self.pending_events.read().contains(&eid.0)
     }
 
+    /// Retrieves the timestamp the next event in this queue was scheduled at
+    ///
+    /// # Arguments
+    /// * `queue` - The queue to check
+    ///
+    /// # Returns
+    /// * `Option<u64>` - The timestamp (in units of events run), if this queue has events
     fn next_event_timestamp(queue: &EventQueue) -> Option<u64> {
         queue
             .read()
@@ -226,14 +285,27 @@ impl EventRunner {
             .map(|e| e.scheduled_timestamp.load(Ordering::Relaxed))
     }
 
+    /// Try to retrieve the next event from the queue
+    ///
+    /// # Arguments
+    /// * `queue` - The queue to check
+    ///
+    /// # Returns
+    /// * `Option<u64>` - The event to be run, if this queue has events
     fn try_pop(queue: &EventQueue) -> Option<Arc<Event>> {
         queue.write().pop_front()
     }
 
+    /// Adds an event to the queue
+    ///
+    /// # Arguments
+    /// * `queue` - The queue to check
+    /// * `event` - The event to add
     fn enqueue(queue: &EventQueue, event: Arc<Event>) {
         queue.write().push_back(event);
     }
 
+    /// Reprioritize events that have been waiting for a long time.
     fn reprioritize(&mut self) {
         for i in 1..NUM_EVENT_PRIORITIES {
             let scheduled_clock = Self::next_event_timestamp(&self.event_queues[i]);
@@ -243,8 +315,8 @@ impl EventRunner {
                     let event_to_move = Self::try_pop(&self.event_queues[i]);
                     event_to_move.inspect(|e| {
                         Self::enqueue(&self.event_queues[i - 1], e.clone());
-                        
-                        Self::change_priority(&e, i-1);
+
+                        Self::change_priority(e, i - 1);
                         e.scheduled_timestamp
                             .swap(self.event_clock, Ordering::Relaxed);
                     });
@@ -253,10 +325,19 @@ impl EventRunner {
         }
     }
 
+    /// Changes the priority of a given event
+    ///
+    /// # Arguments
+    /// * `event` - The event to modify
+    /// * `priority` - The priority to change to
     fn change_priority(event: &Event, priority: usize) {
         event.priority.swap(priority, Ordering::Relaxed);
     }
 
+    /// Finds the next event to be executed
+    ///
+    /// # Returns
+    /// * `Option<Arc<Event>>` - The next event to be executed, if there is one
     fn next_event(&mut self) -> Option<Arc<Event>> {
         self.awake_next_sleeper();
 

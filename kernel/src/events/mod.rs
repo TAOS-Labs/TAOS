@@ -15,23 +15,25 @@ use core::{
     sync::atomic::{AtomicU64, AtomicUsize, Ordering},
 };
 
-use crate::{constants::events::NUM_EVENT_PRIORITIES, interrupts::x2apic, processes::process::run_process_ring3};
+use crate::{
+    constants::events::NUM_EVENT_PRIORITIES, interrupts::x2apic,
+    processes::process::run_process_ring3,
+};
 
 mod event;
 mod event_runner;
 mod futures;
 
-// Thread-safe future that remains pinned to a heap address throughout its lifetime
+/// Thread-safe future that remains pinned to a heap address throughout its lifetime
 type SendFuture = Mutex<Pin<Box<dyn Future<Output = ()> + 'static + Send>>>;
 
-// Thread-safe static queue of events
+/// Thread-safe static queue of events
 type EventQueue = RwLock<VecDeque<Arc<Event>>>;
 
+/// Unique global ID for events.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 struct EventId(u64);
 
-// Unique global ID for events.
-// TODO this, like most globals, will likely need to change when distributed
 impl EventId {
     fn init() -> Self {
         static NEXT_ID: AtomicU64 = AtomicU64::new(0);
@@ -39,7 +41,7 @@ impl EventId {
     }
 }
 
-// Describes a future and its scheduling context
+/// Describes a future and its scheduling context
 struct Event {
     eid: EventId,
     pid: u32,
@@ -50,7 +52,7 @@ struct Event {
     scheduled_timestamp: AtomicU64,
 }
 
-// Schedules and runs events within a single core
+/// Schedules and runs events within a single core
 struct EventRunner {
     event_queues: [Arc<EventQueue>; NUM_EVENT_PRIORITIES],
     pending_events: RwLock<BTreeSet<u64>>,
@@ -61,13 +63,14 @@ struct EventRunner {
     system_clock: u64,
 }
 
-// Global mapping of cores to events
-// TODO will need to expand when distributed, like most globals
+/// Global mapping of cores to events
 static EVENT_RUNNERS: RwLock<BTreeMap<u32, RwLock<EventRunner>>> = RwLock::new(BTreeMap::new());
 
-/// # Safety
+/// Continuously schedules and runs events in loop
 ///
-/// TODO
+/// # Safety
+/// This function should only be run once per core.
+/// Invoking this function should be the final step of the boot process.
 pub unsafe fn run_loop(cpuid: u32) -> ! {
     let runners = EVENT_RUNNERS.read();
     let runner = runners.get(&cpuid).expect("No runner found").as_mut_ptr();
@@ -75,10 +78,10 @@ pub unsafe fn run_loop(cpuid: u32) -> ! {
     (*runner).run_loop()
 }
 
-pub fn schedule_kernel(
-    future: impl Future<Output = ()> + 'static + Send,
-    priority_level: usize,
-) {
+/// Schedules a kernel event
+///
+/// PID will always be 0
+pub fn schedule_kernel(future: impl Future<Output = ()> + 'static + Send, priority_level: usize) {
     let cpuid = x2apic::current_core_id() as u32;
 
     without_interrupts(|| {
@@ -89,8 +92,9 @@ pub fn schedule_kernel(
     });
 }
 
-pub fn schedule_process(
-    pid: u32, // 0 as kernel/sentinel
+/// Schedules a user process
+/// Starts with minimum priority
+pub fn schedule_process(pid: u32, // 0 as kernel/sentinel
 ) {
     let cpuid = x2apic::current_core_id() as u32;
 
@@ -104,8 +108,10 @@ pub fn schedule_process(
     });
 }
 
-pub fn schedule_blocked_process(
-    pid: u32, // 0 as kernel/sentinel
+/// Notifies runner of a user process,
+/// but does not immediately schedule for polling.
+/// Starts with minimum priority
+pub fn schedule_blocked_process(pid: u32, // 0 as kernel/sentinel
 ) {
     let cpuid = x2apic::current_core_id() as u32;
 
@@ -121,6 +127,7 @@ pub fn schedule_blocked_process(
     todo!();
 }
 
+/// Registers a new event runner to the current core
 pub fn register_event_runner() {
     let cpuid = x2apic::current_core_id() as u32;
 
@@ -132,6 +139,10 @@ pub fn register_event_runner() {
     });
 }
 
+/// Finds the PID of the current event running on this core
+///
+/// # Returns
+/// * `u32` - The PID of the event (0 for kernel tasks)
 pub fn current_running_event_pid() -> u32 {
     let cpuid = x2apic::current_core_id() as u32;
     let runners = EVENT_RUNNERS.read();
@@ -143,6 +154,10 @@ pub fn current_running_event_pid() -> u32 {
     }
 }
 
+/// Finds the priority of the current event running on this core
+///
+/// # Returns
+/// * `usize` - The priority of the event (0 for max priority)
 pub fn current_running_event_priority() -> usize {
     let cpuid = x2apic::current_core_id() as u32;
     let runners = EVENT_RUNNERS.read();
@@ -154,6 +169,7 @@ pub fn current_running_event_priority() -> usize {
     }
 }
 
+/// Increments the system time by one tick
 pub fn inc_runner_clock() {
     let cpuid = x2apic::current_core_id() as u32;
     let runners = EVENT_RUNNERS.read();
@@ -162,6 +178,10 @@ pub fn inc_runner_clock() {
     runner.inc_system_clock();
 }
 
+/// Gets the current system time (in ticks)
+///
+/// # Returns
+/// * `u64` - the current system time (in ticks)
 pub fn runner_timestamp() -> u64 {
     let cpuid = x2apic::current_core_id() as u32;
 
@@ -171,20 +191,33 @@ pub fn runner_timestamp() -> u64 {
     runner.system_clock
 }
 
+/// Sets the current event to sleep for a given number of nanoseconds.
+/// Use to sleep kernel events.
+///
+/// # Arguments
+/// * `nanos` - The number of nanoseconds to sleep for
+///
+/// # Returns
+/// * `Option<Sleep>` - A sleep future that can be awaited on (if there is an event to sleep)
 pub fn nanosleep_current_event(nanos: u64) -> Option<Sleep> {
     without_interrupts(|| {
         let cpuid = x2apic::current_core_id() as u32;
 
         let runners = EVENT_RUNNERS.read();
         let mut runner = runners.get(&cpuid).expect("No runner found").write();
-    
+
         runner.nanosleep_current_event(nanos)
     })
 }
 
+/// Sets the current process to sleep for a given number of nanoseconds.
+///
+/// # Arguments
+/// * `pid` - The pid of the process to sleep
+/// * `nanos` - The number of nanoseconds to sleep for
 pub fn nanosleep_current_process(
     pid: u32, // 0 as kernel/sentinel
-    nanos: u64
+    nanos: u64,
 ) {
     let cpuid = x2apic::current_core_id() as u32;
 
@@ -198,12 +231,17 @@ pub fn nanosleep_current_process(
     });
 }
 
+/// Event info publicly available outside events module
 #[derive(Debug)]
 pub struct EventInfo {
     pub priority: usize,
     pub pid: u32,
 }
 
+/// Retrieves information about the currently running event
+///
+/// # Returns
+/// * `EventInfo` - The priority and pid of the current running event
 pub fn current_running_event_info() -> EventInfo {
     let cpuid = x2apic::current_core_id() as u32;
 
