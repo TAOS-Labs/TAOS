@@ -79,7 +79,7 @@ unsafe fn set_page_table_cow_helper(
     let parent_table = unsafe { &mut *(parent_va as *mut PageTable) };
 
     // At intermediate level - need to populate intermediate frame with lower levels it points to
-    if level > 1 {
+    if level > 0 {
         let child_intermediate_frame: PhysFrame = alloc_frame().expect("Failed to allocate frame.");
         let child_va = child_intermediate_frame.start_address().as_u64() + HHDM_OFFSET.as_u64();
         let child_table = unsafe { &mut *(child_va as *mut PageTable) };
@@ -88,17 +88,14 @@ unsafe fn set_page_table_cow_helper(
             if entry.is_unused() {
                 continue;
             }
-            if (level == 1) {
+            if level == 1 {
                 let mut page_flags = entry.flags();
-                serial_println!("PAGE FLAGS BEFORE SETTING: {:#?}", page_flags);
                 if page_flags.contains(PageTableFlags::PRESENT) {
                     if page_flags.contains(PageTableFlags::WRITABLE) {
                         page_flags.set(PageTableFlags::BIT_9, true);
                         page_flags.set(PageTableFlags::WRITABLE, false);
                     }
                     entry.set_flags(page_flags);
-                    serial_println!("PAGE FLAGS AFTER SETTING: {:#?}", entry.flags());
-                    serial_println!("FRAME ADDRESS: {:#?}", entry.addr());
 
                     child_table[index].set_flags(page_flags);
                 }

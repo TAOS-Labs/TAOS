@@ -45,7 +45,7 @@ pub fn sys_exit(code: i64) -> Option<u64> {
         let pcb = process.pcb.get();
 
         (*pcb).state = ProcessState::Terminated;
-        clear_process_frames(&mut *pcb);
+        // clear_process_frames(&mut *pcb);
         with_bitmap_frame_allocator(|alloc| {
         alloc.print_bitmap_free_frames();
         });
