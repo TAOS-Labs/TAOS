@@ -353,3 +353,51 @@ impl stream_context {
         self.offset_2 & 0xFFFFFF
     }
 }
+
+#[repr(C, packed)]
+#[derive(Debug, Clone)]
+/// See section 6.2.5.1 of the xHCI specs.
+/// This structure should only be 32 bytes if Context Size field in the
+/// HCCPARAMS1 register is '0', otherwise it is 64 bytes with bytes 32
+/// to 64 reserved for the xHCI
+struct input_control_context {
+    offset_0: u32,
+    offset_1: u32,
+    offset_2: u32,
+    offset_3: u32,
+    offset_4: u32,
+    offset_5: u32,
+    offset_6: u32,
+    config_value: u8,
+    interface_number: u8,
+    alternate_setting: u8,
+    rsvdz: u8
+}
+
+impl input_control_context {
+    /// Retrieves the value of the Drop Context flag of the bit at the index
+    /// bit position. Index must be > 1 and < 32.
+    fn get_drop_flag(&self, index: u32) -> u32 {
+        (self.offset_0 >> index) & 1
+    }
+
+    /// Sets the Drop Context flag at the index bit position to value.
+    /// index must be > 1 and < 32.
+    /// value is expected to be 1 bit.
+    fn set_drop_flag(&mut self, index: u32, value: u32) {
+        self.offset_0 = (self.offset_0 & !(1 << index)) | (value << index);
+    }
+
+    /// Retrieves the value of the Add Context flag of the bit at the index
+    /// bit position. Index must be >= 0 and < 32.
+    fn get_add_flag(&self, index: u32) -> u32 {
+        (self.offset_0 >> index) & 1
+    }
+
+    /// Sets the Add Context flag at the index bit position to value.
+    /// index must be >= 0 and < 32.
+    /// value is expected to be 1 bit.
+    fn set_add_flag(&mut self, index: u32, value: u32) {
+        self.offset_0 = (self.offset_0 & !(1 << index)) | (value << index);
+    }
+}
