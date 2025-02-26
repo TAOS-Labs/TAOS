@@ -1,14 +1,18 @@
-use core::sync::atomic::Ordering;
+use core::{ptr, sync::atomic::Ordering};
 
 use alloc::sync::Arc;
-use x86_64::structures::paging::{OffsetPageTable, PageTable, PageTableFlags, PhysFrame};
+use x86_64::{
+    structures::paging::{OffsetPageTable, Page, PageTable, PageTableFlags, PhysFrame},
+    VirtAddr,
+};
 
 use crate::{
-    events::current_running_event_info,
+    constants::memory::PAGE_SIZE,
+    events::{current_running_event_info, schedule_process},
     interrupts::x2apic,
-    memory::{frame_allocator::alloc_frame, HHDM_OFFSET},
+    memory::{frame_allocator::alloc_frame, paging::get_page_flags, HHDM_OFFSET},
     processes::process::{
-        ProcessState, UnsafePCB, NEXT_PID, PROCESS_TABLE, READY_QUEUE,
+        run_process_ring3, ProcessState, UnsafePCB, NEXT_PID, PCB, PROCESS_TABLE,
     },
     serial_println,
 };
@@ -37,93 +41,78 @@ pub fn sys_fork() -> u64 {
         (*child_pcb.pcb.get()).state = ProcessState::Ready;
     }
 
-    let mut mapper = unsafe { (*parent_pcb).create_mapper() };
-    let child_pml4_frame =
-        duplicate_page_table_recursive(unsafe { (*parent_pcb).pml4_frame }, 4, &mut mapper);
-
-    unsafe { (*child_pcb.pcb.get()).pml4_frame = child_pml4_frame };
+    set_page_table_cow(unsafe { &mut *child_pcb.pcb.get() }, unsafe {
+        &mut *parent_pcb
+    });
 
     {
         PROCESS_TABLE.write().insert(child_pid, child_pcb);
     }
 
-    let mut q = READY_QUEUE.lock();
-    q.push_back(child_pid);
-    drop(q);
+    schedule_process(cpuid, unsafe { run_process_ring3(child_pid) }, child_pid);
 
     return child_pid as u64;
 }
 
-/// Recursively duplicate a page table.
-///
-/// # Arguments
-/// * `parent_frame` - reference to parent page tables
-/// * `level` - 4 for PML4, 3 for PDPT, 2 for PD, and 1 for PT
-/// * `mapper` - new mapper
-///
-/// # Return
-/// Returns a PhysFrame that represents the new pml4 frame for child
-fn duplicate_page_table_recursive(
-    parent_frame: PhysFrame,
-    level: u8,
-    mapper: &mut OffsetPageTable,
-) -> PhysFrame {
-    // Allocate a new frame for this level’s table.
-    let child_frame = alloc_frame().expect("Frame allocation failed");
-    // Map it into our address space using HHDM_OFFSET.
-    let child_table_ptr =
-        (HHDM_OFFSET.as_u64() + child_frame.start_address().as_u64()) as *mut PageTable;
+fn set_page_table_cow(child_pcb: &mut PCB, parent_pcb: &mut PCB) {
+    let mut child_mapper = unsafe { child_pcb.create_mapper() };
+    let mut parent_mapper = unsafe { parent_pcb.create_mapper() };
 
-    unsafe { (*child_table_ptr).zero() };
-
-    // Obtain a pointer to the parent table.
-    let parent_table_ptr =
-        (HHDM_OFFSET.as_u64() + parent_frame.start_address().as_u64()) as *mut PageTable;
-    
-    let parent_table = unsafe { &mut *parent_table_ptr };
-    let child_table = unsafe { &mut *child_table_ptr };
-
-    // Iterate over all 512 entries.
-    for (i, parent_entry) in parent_table.iter_mut().enumerate() {
-        if parent_entry.is_unused() {
+    for i in 0..256 {
+        let entry = &parent_mapper.level_4_table()[i];
+        if entry.is_unused() {
             continue;
         }
-
-        // For the PML4 level, you might want to share kernel mappings.
-        if level == 4 && i >= 256 {
-            // For kernel space, simply copy the parent's entry.
-            child_table[i].set_addr(parent_entry.addr(), parent_entry.flags());
-            continue;
-        }
-
-        if level > 1 {
-            // For intermediate tables, recursively duplicate the lower-level table.
-            let new_child_lower_frame = duplicate_page_table_recursive(
-                PhysFrame::containing_address(parent_entry.addr()),
-                level - 1,
-                mapper,
-            );
-            child_table[i].set_addr(new_child_lower_frame.start_address(), parent_entry.flags());
-        } else {
-            let mut flags = parent_entry.flags();
-            // If the page was originally writable, mark it as copy-on-write:
-            
-            if flags.contains(PageTableFlags::PRESENT) {
-                if flags.contains(PageTableFlags::WRITABLE) {
-                    flags.set(PageTableFlags::BIT_9, true);
-                    flags.set(PageTableFlags::WRITABLE, false);
-                }
-                parent_entry.set_addr(parent_entry.addr(), flags);
-                
-                child_table[i].set_addr(parent_entry.addr(), flags);
-            }
-            
-        }
+        let pdpt_frame = PhysFrame::containing_address(entry.addr());
+        // set as copy on write
+        unsafe { set_page_table_cow_helper(pdpt_frame, 3, &mut child_mapper, &mut parent_mapper) };
     }
-
-    child_frame
 }
 
+unsafe fn set_page_table_cow_helper(
+    parent_frame: PhysFrame,
+    level: u8,
+    child_mapper: &mut OffsetPageTable,
+    parent_mapper: &mut OffsetPageTable,
+) {
+    let parent_va = HHDM_OFFSET.as_u64() + parent_frame.start_address().as_u64();
+    let parent_table = unsafe { &mut *(parent_va as *mut PageTable) };
+
+    // At intermediate level - need to populate intermediate frame with lower levels it points to
+    if level > 1 {
+        let child_intermediate_frame: PhysFrame = alloc_frame().expect("Failed to allocate frame.");
+        let child_va = child_intermediate_frame.start_address().as_u64() + HHDM_OFFSET.as_u64();
+        let child_table = unsafe { &mut *(child_va as *mut PageTable) };
+        for (index, entry) in parent_table.iter_mut().enumerate() {
+            child_table[index] = entry.clone();
+            if entry.is_unused() {
+                continue;
+            }
+            if (level == 1) {
+                let mut page_flags = entry.flags();
+                serial_println!("PAGE FLAGS BEFORE SETTING: {:#?}", page_flags);
+                if page_flags.contains(PageTableFlags::PRESENT) {
+                    if page_flags.contains(PageTableFlags::WRITABLE) {
+                        page_flags.set(PageTableFlags::BIT_9, true);
+                        page_flags.set(PageTableFlags::WRITABLE, false);
+                    }
+                    entry.set_flags(page_flags);
+                    serial_println!("PAGE FLAGS AFTER SETTING: {:#?}", entry.flags());
+                    serial_println!("FRAME ADDRESS: {:#?}", entry.addr());
+
+                    child_table[index].set_flags(page_flags);
+                }
+            } else {
+                set_page_table_cow_helper(
+                    entry.frame().expect("Could not get frame from table"),
+                    level - 1,
+                    child_mapper,
+                    parent_mapper,
+                );
+            }
+        }
+    }
+}
 
 #[cfg(test)]
 mod tests {
@@ -215,7 +204,7 @@ mod tests {
     #[test_case]
     fn test_simple_fork() {
         use crate::{
-            constants::processes::{FORK_SIMPLE},
+            constants::processes::FORK_SIMPLE,
             events::schedule_process,
             processes::process::{create_process, print_process_table, run_process_ring3},
         };
@@ -264,5 +253,3 @@ mod tests {
         }
     }
 }
-
-

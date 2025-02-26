@@ -13,7 +13,7 @@ use x86_64::{
     instructions::interrupts,
     structures::{
         idt::{InterruptDescriptorTable, InterruptStackFrame, PageFaultErrorCode},
-        paging::{OffsetPageTable, Page, PageTable, PageTableFlags},
+        paging::{OffsetPageTable, Page, PageTable, PageTableFlags, Translate},
     },
     VirtAddr,
 };
@@ -23,21 +23,15 @@ use crate::{
         idt::{SYSCALL_HANDLER, TIMER_VECTOR, TLB_SHOOTDOWN_VECTOR},
         memory::PAGE_SIZE,
         syscalls::{SYSCALL_EXIT, SYSCALL_FORK, SYSCALL_MMAP, SYSCALL_PRINT},
-    },
-    events::{current_running_event_info, schedule_process, EventInfo},
-    interrupts::x2apic::{self, current_core_id, TLB_SHOOTDOWN_ADDR},
-    memory::{
+    }, events::{current_running_event_info, schedule_process, EventInfo}, interrupts::x2apic::{self, current_core_id, TLB_SHOOTDOWN_ADDR}, memory::{
         frame_allocator::alloc_frame,
         paging::{create_mapping, get_page_flags, update_mapping},
         HHDM_OFFSET,
-    },
-    prelude::*,
-    processes::process::{get_current_pid, run_process_ring3, ProcessState, PROCESS_TABLE},
-    syscalls::{
+    }, prelude::*, processes::process::{get_current_pid, run_process_ring3, ProcessState, PROCESS_TABLE}, serial, syscalls::{
         fork::sys_fork,
         mmap::sys_mmap,
         syscall_handlers::{sys_exit, sys_print},
-    },
+    }
 };
 
 lazy_static! {
@@ -160,6 +154,8 @@ extern "x86-interrupt" fn page_fault_handler(
     );
 
     let page = Page::containing_address(VirtAddr::new(faulting_address));
+    let frame = mapper.translate_addr(VirtAddr::new(faulting_address));
+    serial_print!("Frame mapped to this VA is {:#?}", frame);
     let mut flags: PageTableFlags =
         get_page_flags(page, &mut mapper).expect("Could not get page flags");
 
@@ -172,6 +168,7 @@ extern "x86-interrupt" fn page_fault_handler(
     // If error code was caused by write and permissions of PTE are for COW
     if cow && caused_by_write && read_only && present {
         // before we update mapping, we save data
+        serial_print!("In page fault handler for COW");
         let start = page.start_address();
         let src_ptr = start.as_mut_ptr();
 
@@ -290,22 +287,7 @@ fn syscall_handler(rsp: u64) {
         p6 = *stack_ptr.add(0);
     }
 
-    // temporarily, just print the parameter registers
-    // serial_println!("Parameter 1: {}", p1);
-    // serial_println!("Parameter 2: {}", p2);
-    // serial_println!("Parameter 3: {}", p3);
-    // serial_println!("Parameter 4: {}", p4);
-    // serial_println!("Parameter 5: {}", p5 as i64);
-    // serial_println!("Parameter 6: {}", p6);
-
     x2apic::send_eoi();
-
-    // match syscall_num as u32 {
-    //     SYSCALL_EXIT => sys_exit(p1),
-    //     SYSCALL_PRINT => sys_print(p1 as *const u8),
-    //     SYSCALL_MMAP => sys_mmap(p1, p2, p3, p4, p5 as i64, p6),
-    //     _ => panic!("Unknown syscall: {}", syscall_num),
-    // }
 
     if syscall_num == SYSCALL_EXIT {
         sys_exit(p1 as i64);
@@ -318,7 +300,7 @@ fn syscall_handler(rsp: u64) {
             )
         }
     } else if syscall_num == SYSCALL_PRINT {
-        let val = sys_print(/*p1 as *const u8*/).unwrap();
+        let val = sys_print(p1 as *const u8).unwrap();
         unsafe {
             core::arch::asm!(
                 "mov rax, {0}",
@@ -429,7 +411,7 @@ extern "C" fn timer_handler(rsp: u64) {
         (*pcb).registers.rip = *stack_ptr.add(15);
         (*pcb).registers.rflags = *stack_ptr.add(17);
 
-        (*pcb).state = ProcessState::Ready;
+        (*pcb).state = ProcessState::Blocked;
 
         ((*pcb).kernel_rsp, (*pcb).kernel_rip)
     };

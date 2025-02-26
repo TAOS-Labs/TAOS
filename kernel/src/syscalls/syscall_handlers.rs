@@ -1,9 +1,7 @@
 use core::ffi::CStr;
 
 use crate::{
-    events::{current_running_event_info, schedule_process, EventInfo},
-    processes::process::{clear_process_frames, run_process_ring3, ProcessState, PROCESS_TABLE, READY_QUEUE},
-    serial_println,
+    events::{current_running_event_info, EventInfo}, memory::frame_allocator::with_bitmap_frame_allocator, processes::process::{clear_process_frames, ProcessState, PROCESS_TABLE}, serial_println
 };
 
 use crate::interrupts::x2apic;
@@ -47,7 +45,11 @@ pub fn sys_exit(code: i64) -> Option<u64> {
         let pcb = process.pcb.get();
 
         (*pcb).state = ProcessState::Terminated;
-        // clear_process_frames(&mut *pcb);
+        clear_process_frames(&mut *pcb);
+        with_bitmap_frame_allocator(|alloc| {
+        alloc.print_bitmap_free_frames();
+        });
+ 
         process_table.remove(&event.pid);
         ((*pcb).kernel_rsp, (*pcb).kernel_rip)
     };
@@ -64,13 +66,6 @@ pub fn sys_exit(code: i64) -> Option<u64> {
         );
     }
 
-    let mut q = READY_QUEUE.lock();
-    let next = q.pop_front().unwrap_or(0);
-
-    if next != 0 {
-        unsafe { schedule_process(0, run_process_ring3(next), next) };
-    }
-
     if code == -1 {
         panic!("Bad error code!");
     }
@@ -83,13 +78,10 @@ pub fn sys_exit(code: i64) -> Option<u64> {
 }
 
 // Not a real system call, but useful for testing
-pub fn sys_print(/*buffer: *const u8*/) -> Option<u64> {
-    // let c_str = unsafe { CStr::from_ptr(buffer as *const i8) };
-    // let str_slice = c_str.to_str().expect("Invalid UTF-8 string");
-    // serial_println!("Buffer: {}", str_slice);
-    let cpuid: u32 = x2apic::current_core_id() as u32;
-    let event: EventInfo = current_running_event_info(cpuid);
-    serial_println!("Hello world, called from PID {}", event.pid);
+pub fn sys_print(buffer: *const u8) -> Option<u64> {
+    let c_str = unsafe { CStr::from_ptr(buffer as *const i8) };
+    let str_slice = c_str.to_str().expect("Invalid UTF-8 string");
+    serial_println!("Buffer: {}", str_slice);
 
     Some(3)
 }

@@ -6,14 +6,18 @@ use crate::{
     events::{current_running_event_info, EventInfo},
     interrupts::{gdt, x2apic},
     memory::{
-        frame_allocator::{alloc_frame, with_generic_allocator},
+        frame_allocator::{alloc_frame, with_bitmap_frame_allocator, with_generic_allocator},
         HHDM_OFFSET, KERNEL_MAPPER,
     },
     processes::{loader::load_elf, registers::Registers},
     serial_println,
     syscalls::mmap::MmapCall,
 };
-use alloc::{collections::{vec_deque::VecDeque, BTreeMap}, sync::Arc, vec::Vec};
+use alloc::{
+    collections::{vec_deque::VecDeque, BTreeMap},
+    sync::Arc,
+    vec::Vec,
+};
 use core::{
     arch::naked_asm,
     cell::UnsafeCell,
@@ -28,8 +32,6 @@ use x86_64::{
 // process counter must be thread-safe
 // PID 0 will ONLY be used for errors/PID not found
 pub static NEXT_PID: AtomicU32 = AtomicU32::new(1);
-
-pub static READY_QUEUE: Mutex<VecDeque<u32>> = Mutex::new(VecDeque::new());
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ProcessState {
@@ -163,7 +165,9 @@ pub fn create_placeholder_process() -> u32 {
 
 pub fn create_process(elf_bytes: &[u8]) -> u32 {
     let pid = NEXT_PID.fetch_add(1, Ordering::SeqCst);
-
+    with_bitmap_frame_allocator(|alloc| {
+        alloc.print_bitmap_free_frames();
+    });
     // Build a new process address space
     let process_pml4_frame = unsafe { create_process_page_table() };
     let mut mapper = unsafe {
