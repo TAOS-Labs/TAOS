@@ -8,13 +8,10 @@
 #![reexport_test_harness_main = "test_main"]
 
 use limine::request::{RequestsEndMarker, RequestsStartMarker};
-use taos::{
-    constants::processes::{LONG_LOOP, PRINT_AND_SLEEP},
-    events::{nanosleep_current_event, run_loop, schedule_kernel, schedule_process},
-};
+use taos::events::run_loop;
 
 extern crate alloc;
-use taos::{debug, processes::process::create_process, serial_println};
+use taos::{debug, serial_println};
 
 /// Marks the start of Limine boot protocol requests.
 #[used]
@@ -41,36 +38,6 @@ extern "C" fn _start() -> ! {
     test_main();
 
     debug!("BSP entering event loop");
-
-    let pid = create_process(PRINT_AND_SLEEP);
-    schedule_process(pid);
-
-    schedule_kernel(
-        async move {
-            serial_println!("Sleeping");
-            let sleep = nanosleep_current_event(10_000_000_000);
-            if sleep.is_some() {
-                sleep.unwrap().await;
-            }
-            serial_println!("Woke up");
-        },
-        0,
-    );
-
-    schedule_kernel(
-        async move {
-            serial_println!("Sleeping 2");
-            let sleep = nanosleep_current_event(5_000_000_000);
-            if sleep.is_some() {
-                sleep.unwrap().await;
-            }
-            serial_println!("Woke up 2");
-        },
-        0,
-    );
-
-    let pid2 = create_process(LONG_LOOP);
-    schedule_process(pid2);
 
     unsafe { run_loop(bsp_id) }
 }
