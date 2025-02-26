@@ -15,7 +15,6 @@ pub mod pci;
 pub mod sd_card;
 pub mod serial;
 pub mod xhci;
-pub mod context;
 
 /// Framebuffer request to the bootloader.
 /// Used to get access to video output capabilities.

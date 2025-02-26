@@ -13,9 +13,11 @@ use super::{
 };
 
 const MAX_USB_DEVICES: u8 = 4;
+const MAX_USB_DEVICES_SIZE: usize = 4;
 
 /// See section 5.3 of the xHCI spec
 #[derive(Debug, Clone, Copy)]
+#[allow(dead_code)]
 struct XHCICapabilities {
     /// Contains the offset to add to register base to find the beginning of the operational register space
     register_length: u8,
@@ -36,8 +38,14 @@ struct XHCICapabilities {
     /// Defines optional capabilities of this host controller
     capability_paramaters_2: u32,
 }
+
+#[derive(Debug, Clone)]
+#[allow(dead_code)]
 struct XHCIInfo {
-    address: u64,
+    base_address: u64,
+    capablities: XHCICapabilities,
+    operational_register_address: u64,
+    base_address_array: [u64; MAX_USB_DEVICES_SIZE],
 }
 
 bitflags! {
@@ -115,11 +123,18 @@ pub fn initalize_xhci_hub(device: &Arc<Mutex<DeviceInfo>>, mapper: &mut OffsetPa
 
     debug_println!("Full bar = 0x{full_bar:X}");
     let address = mmio::map_page_as_uncacheable(full_bar, mapper).unwrap();
-    let _info = XHCIInfo { address };
     let capablities = get_host_controller_cap_regs(address);
     let extended_reg_length: u64 = capablities.register_length.into();
     let operational_start = address + extended_reg_length;
     reset_xchi_controller(operational_start);
+    let base_address_array: [u64; MAX_USB_DEVICES_SIZE] = [0; MAX_USB_DEVICES_SIZE];
+    let info = XHCIInfo {
+        base_address: address,
+        capablities,
+        operational_register_address: operational_start,
+        base_address_array,
+    };
+    initalize_reset_xhci_controller(&info);
     debug_println!("0x{address:X} {capablities:?}");
 }
 
@@ -201,11 +216,21 @@ fn reset_xchi_controller(operational_registers: u64) {
     }
 }
 
-fn initalize_reset_xhci_controller(operational_registers: u64, capablities: XHCICapabilities) {
+fn initalize_reset_xhci_controller(info: &XHCIInfo) {
     // Program max device device slots
-    let config_reg_addr = (operational_registers + 0x38) as *mut u32;
+    let config_reg_addr = (info.operational_register_address + 0x38) as *mut u32;
     // Extract the max device slots from the capability parameters 1 register
-    let mut max_devices: u32 = capablities.capability_paramaters_1 & 0xFF;
+    let mut max_devices: u32 = info.capablities.capability_paramaters_1 & 0xFF;
     max_devices = min(max_devices, MAX_USB_DEVICES.into());
     unsafe { core::ptr::write_volatile(config_reg_addr, max_devices) }
+    // set DCBAAP
+    let dcbaap_addr_tmp = &raw const info.base_address_array;
+    let dcbaap_addr: u64 = dcbaap_addr_tmp
+        .addr()
+        .try_into()
+        .expect("To be on 32 bit system");
+    let dcbaap_reg_addr = (info.operational_register_address + 0x30) as *mut u64;
+    unsafe {
+        core::ptr::write_volatile(dcbaap_reg_addr, dcbaap_addr);
+    }
 }
