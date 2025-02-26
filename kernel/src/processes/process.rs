@@ -1,22 +1,29 @@
 extern crate alloc;
 
 use crate::{
+    constants::{processes::MAX_FILES, syscalls::START_MMAP_ADDRESS},
     debug,
-    interrupts::gdt,
+    events::{current_running_event_info, EventInfo},
+    interrupts::{gdt, x2apic},
     memory::{
-        frame_allocator::{alloc_frame, with_generic_allocator},
-        HHDM_OFFSET, MAPPER,
+        frame_allocator::{alloc_frame, with_bitmap_frame_allocator, with_generic_allocator},
+        HHDM_OFFSET, KERNEL_MAPPER,
     },
     processes::{loader::load_elf, registers::Registers},
     serial_println,
+    syscalls::mmap::MmapCall,
 };
-use alloc::{collections::BTreeMap, sync::Arc};
+use alloc::{
+    collections::{vec_deque::VecDeque, BTreeMap},
+    sync::Arc,
+    vec::Vec,
+};
 use core::{
     arch::naked_asm,
     cell::UnsafeCell,
     sync::atomic::{AtomicU32, Ordering},
 };
-use spin::rwlock::RwLock;
+use spin::{rwlock::RwLock, Mutex};
 use x86_64::{
     instructions::interrupts,
     structures::paging::{FrameDeallocator, OffsetPageTable, PageTable, PhysFrame, Size4KiB},
@@ -24,7 +31,7 @@ use x86_64::{
 
 // process counter must be thread-safe
 // PID 0 will ONLY be used for errors/PID not found
-static NEXT_PID: AtomicU32 = AtomicU32::new(1);
+pub static NEXT_PID: AtomicU32 = AtomicU32::new(1);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ProcessState {
@@ -35,7 +42,7 @@ pub enum ProcessState {
     Terminated,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct PCB {
     pub pid: u32,
     pub state: ProcessState,
@@ -43,13 +50,17 @@ pub struct PCB {
     pub kernel_rip: u64,
     pub registers: Registers,
     pub pml4_frame: PhysFrame<Size4KiB>, // this process' page table
+    pub mmaps: Vec<MmapCall>,
+    pub mmap_address: u64,
+    pub fd_table: [u64; MAX_FILES],
 }
 
 pub struct UnsafePCB {
     pub pcb: UnsafeCell<PCB>,
 }
+
 impl UnsafePCB {
-    fn init(pcb: PCB) -> Self {
+    pub fn new(pcb: PCB) -> Self {
         UnsafePCB {
             pcb: UnsafeCell::new(pcb),
         }
@@ -73,6 +84,17 @@ impl PCB {
         let virt = *HHDM_OFFSET + self.pml4_frame.start_address().as_u64();
         let ptr = virt.as_mut_ptr::<PageTable>();
         OffsetPageTable::new(unsafe { &mut *ptr }, *HHDM_OFFSET)
+    }
+}
+
+pub fn get_current_pid() -> u32 {
+    let cpuid: u32 = x2apic::current_core_id() as u32;
+    let event: EventInfo = current_running_event_info(cpuid);
+    let process_table = PROCESS_TABLE.read();
+    if process_table.contains_key(&event.pid) {
+        event.pid
+    } else {
+        0
     }
 }
 
@@ -103,9 +125,49 @@ pub unsafe fn print_process_table(process_table: &PROCESS_TABLE) {
     serial_println!("========================");
 }
 
+pub fn create_placeholder_process() -> u32 {
+    // Build a new process address space
+    let pid = 0;
+    let process_pml4_frame = unsafe { create_process_page_table() };
+    let process = Arc::new(UnsafePCB::new(PCB {
+        pid,
+        state: ProcessState::New,
+        kernel_rsp: 0,
+        kernel_rip: 0,
+        registers: Registers {
+            rax: 0,
+            rbx: 0,
+            rcx: 0,
+            rdx: 0,
+            rsi: 0,
+            rdi: 0,
+            r8: 0,
+            r9: 0,
+            r10: 0,
+            r11: 0,
+            r12: 0,
+            r13: 0,
+            r14: 0,
+            r15: 0,
+            rbp: 0,
+            rsp: 0,
+            rip: 0,
+            rflags: 0x0,
+        },
+        pml4_frame: process_pml4_frame,
+        mmaps: Vec::new(),
+        mmap_address: START_MMAP_ADDRESS,
+        fd_table: [0; MAX_FILES],
+    }));
+    PROCESS_TABLE.write().insert(pid, Arc::clone(&process));
+    pid
+}
+
 pub fn create_process(elf_bytes: &[u8]) -> u32 {
     let pid = NEXT_PID.fetch_add(1, Ordering::SeqCst);
-
+    with_bitmap_frame_allocator(|alloc| {
+        alloc.print_bitmap_free_frames();
+    });
     // Build a new process address space
     let process_pml4_frame = unsafe { create_process_page_table() };
     let mut mapper = unsafe {
@@ -113,9 +175,9 @@ pub fn create_process(elf_bytes: &[u8]) -> u32 {
         let ptr = virt.as_mut_ptr::<PageTable>();
         OffsetPageTable::new(&mut *ptr, *HHDM_OFFSET)
     };
-    let (stack_top, entry_point) = load_elf(elf_bytes, &mut mapper, &mut MAPPER.lock());
+    let (stack_top, entry_point) = load_elf(elf_bytes, &mut mapper, &mut KERNEL_MAPPER.lock());
 
-    let process = Arc::new(UnsafePCB::init(PCB {
+    let process = Arc::new(UnsafePCB::new(PCB {
         pid,
         state: ProcessState::New,
         kernel_rsp: 0,
@@ -141,8 +203,10 @@ pub fn create_process(elf_bytes: &[u8]) -> u32 {
             rflags: 0x202,
         },
         pml4_frame: process_pml4_frame,
+        mmaps: Vec::new(),
+        mmap_address: START_MMAP_ADDRESS,
+        fd_table: [0; MAX_FILES],
     }));
-    let pid = unsafe { (*process.pcb.get()).pid };
     PROCESS_TABLE.write().insert(pid, Arc::clone(&process));
     debug!("Created process with PID: {}", pid);
     // schedule process (call from main)
@@ -158,7 +222,7 @@ unsafe fn create_process_page_table() -> PhysFrame<Size4KiB> {
     let ptr = virt.as_mut_ptr::<PageTable>();
 
     // Initialize and copy kernel mappings
-    let mapper = MAPPER.lock();
+    let mapper = KERNEL_MAPPER.lock();
     unsafe {
         (*ptr).zero();
         let kernel_pml4 = mapper.level_4_table();
@@ -237,6 +301,8 @@ use x86_64::registers::control::{Cr3, Cr3Flags};
 #[no_mangle]
 pub async unsafe fn run_process_ring3(pid: u32) {
     interrupts::disable();
+
+    serial_println!("Process {} is being scheduled", pid);
 
     let process = {
         let process_table = PROCESS_TABLE.read();

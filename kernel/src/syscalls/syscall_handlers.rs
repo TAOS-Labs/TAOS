@@ -1,22 +1,39 @@
+use core::ffi::CStr;
+
 use crate::{
-    events::{current_running_event_info, EventInfo},
-    processes::process::{clear_process_frames, ProcessState, PROCESS_TABLE},
-    serial_println,
+    events::{current_running_event_info, EventInfo}, memory::frame_allocator::with_bitmap_frame_allocator, processes::process::{clear_process_frames, ProcessState, PROCESS_TABLE}, serial_println
 };
 
 use crate::interrupts::x2apic;
 
-pub fn sys_exit() {
+#[repr(C)]
+#[derive(Debug)]
+pub struct SyscallRegisters {
+    pub number: u64, // syscall number (originally in rax)
+    pub arg1: u64,
+    pub arg2: u64,
+    pub arg3: u64,
+    pub arg4: u64,
+    pub arg5: u64,
+    pub arg6: u64,
+}
+
+pub fn sys_exit(code: i64) -> Option<u64> {
     // TODO handle hierarchy (parent processes), resources, threads, etc.
     // TODO recursive page table walk to handle cleaning up process memory
     let cpuid: u32 = x2apic::current_core_id() as u32;
     let event: EventInfo = current_running_event_info(cpuid);
 
+    // This is for testing; this way, we can write binaries that conditionally fail tests
+    if code == -1 {
+        panic!("Unknown exit code, something went wrong")
+    }
+
     if event.pid == 0 {
         panic!("Calling exit from outside of process");
     }
 
-    serial_println!("Process {} exit", event.pid);
+    serial_println!("Process {} exitted with code {}", event.pid, code);
 
     // Get PCB from PID
     let preemption_info = unsafe {
@@ -28,7 +45,11 @@ pub fn sys_exit() {
         let pcb = process.pcb.get();
 
         (*pcb).state = ProcessState::Terminated;
-        clear_process_frames(&mut *pcb);
+        // clear_process_frames(&mut *pcb);
+        with_bitmap_frame_allocator(|alloc| {
+        alloc.print_bitmap_free_frames();
+        });
+ 
         process_table.remove(&event.pid);
         ((*pcb).kernel_rsp, (*pcb).kernel_rip)
     };
@@ -39,9 +60,28 @@ pub fn sys_exit() {
             "mov rsp, {0}",
             "push {1}",
             "stc",          // Use carry flag as sentinel to run_process that we're exiting
-            "ret",
+            // "ret",
             in(reg) preemption_info.0,
             in(reg) preemption_info.1
         );
     }
+
+    if code == -1 {
+        panic!("Bad error code!");
+    }
+
+    unsafe {
+        core::arch::asm!("ret");
+    }
+
+    Some(code as u64)
+}
+
+// Not a real system call, but useful for testing
+pub fn sys_print(buffer: *const u8) -> Option<u64> {
+    let c_str = unsafe { CStr::from_ptr(buffer as *const i8) };
+    let str_slice = c_str.to_str().expect("Invalid UTF-8 string");
+    serial_println!("Buffer: {}", str_slice);
+
+    Some(3)
 }

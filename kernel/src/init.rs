@@ -10,14 +10,10 @@ use limine::{
 };
 
 use crate::{
-    constants::processes::SYSCALL_BINARY,
-    debug, devices,
-    events::{register_event_runner, run_loop, schedule_process},
-    interrupts::{self, idt},
-    logging,
-    memory::{self},
-    processes::process::{create_process, run_process_ring3},
-    trace,
+    constants::processes::{FORK_SIMPLE, MMAP_ANON_SIMPLE}, debug, devices, events::{register_event_runner, run_loop, schedule_process}, interrupts::{self, idt, x2apic}, logging, memory::{self}, processes::{
+        self,
+        process::{create_process, print_process_table, run_process_ring3, PROCESS_TABLE},
+    }, serial_println, trace
 };
 
 extern crate alloc;
@@ -52,18 +48,50 @@ pub fn init() -> u32 {
     // Should be kept after devices in case logging gets complicated
     // Right now log writes to serial, but if it were to switch to VGA, this would be important
     logging::init(0);
+    processes::init(0);
 
     debug!("Waking cores");
     let bsp_id = wake_cores();
 
     register_event_runner(bsp_id);
     idt::enable();
+    // let addr = sys_mmap(
+    //     0x1000,
+    //     0x5000,
+    //     ProtFlags::PROT_WRITE | ProtFlags::PROT_READ,
+    //     MmapFlags::MAP_ANONYMOUS,
+    //     -1,
+    //     0,
+    // );
+    let parent_pid = create_process(FORK_SIMPLE);
+    let cpuid: u32 = x2apic::current_core_id() as u32;
+    schedule_process(cpuid, unsafe { run_process_ring3(parent_pid) }, parent_pid);
 
-    let pid = create_process(SYSCALL_BINARY);
-    unsafe {
-        schedule_process(bsp_id, run_process_ring3(pid), pid);
-    }
 
+
+        // since no other processes are running or being created we assume that
+        // the child pid is one more than the child pid
+        // let process_table = PROCESS_TABLE.read();
+        // unsafe {
+        //     print_process_table(&PROCESS_TABLE);
+        // }
+        // assert!(process_table.contains_key(&child_pid), "Child process not found in table");
+
+        // let parent_pcb = process_table.get(&parent_pid).expect("Could not get parent pcb from process table").pcb.get();
+        // let child_pcb = process_table.get(&child_pid).expect("Could not get child pcb from process table").pcb.get();
+
+        // // check that some of the fields are equivalent
+        // unsafe {
+        // assert_eq!((*parent_pcb).fd_table, (*child_pcb).fd_table);
+        // assert_eq!((*parent_pcb).kernel_rip, (*child_pcb).kernel_rip);
+        // assert_eq!((*parent_pcb).kernel_rsp, (*child_pcb).kernel_rsp);
+        // assert_eq!((*parent_pcb).registers, (*child_pcb).registers);
+        // }
+
+        // // check that the pml4 frame is set correctly
+        // unsafe {
+        // verify_page_table_walk(&mut *parent_pcb, &mut *child_pcb);
+        // }
     bsp_id
 }
 
@@ -83,6 +111,7 @@ unsafe extern "C" fn secondary_cpu_main(cpu: &Cpu) -> ! {
     interrupts::init(cpu.id);
     memory::init(cpu.id);
     logging::init(cpu.id);
+    processes::init(cpu.id);
 
     debug!("AP {} initialized", cpu.id);
 

@@ -4,7 +4,9 @@
 
 use x86_64::{
     structures::paging::{
-        Mapper, OffsetPageTable, Page, PageTable, PageTableFlags, PhysFrame, Size4KiB,
+        mapper::{MappedFrame, TranslateResult},
+        page_table::PageTableEntry,
+        Mapper, OffsetPageTable, Page, PageTable, PageTableFlags, PhysFrame, Size4KiB, Translate,
     },
     VirtAddr,
 };
@@ -17,9 +19,17 @@ use crate::{
     },
 };
 
+use crate::serial_println;
+
 use super::HHDM_OFFSET;
 
 static mut NEXT_EPH_OFFSET: u64 = 0;
+
+#[derive(Debug)]
+/// Represents errors that can occur during SD card operation or initalization
+pub enum PagingError {
+    PageNotMappedErr,
+}
 
 /// initializes vmem system. activates pml4 and sets up page tables
 ///
@@ -95,8 +105,16 @@ pub fn create_mapping(
 /// * `page` - a Page that we want to map, must already be mapped
 /// * `mapper` - anything that implements a the Mapper trait
 /// * `frame` - the PhysFrame<Size4KiB> to map to
-pub fn update_mapping(page: Page, mapper: &mut impl Mapper<Size4KiB>, frame: PhysFrame<Size4KiB>) {
-    let flags = PageTableFlags::PRESENT | PageTableFlags::WRITABLE;
+pub fn update_mapping(
+    page: Page,
+    mapper: &mut impl Mapper<Size4KiB>,
+    frame: PhysFrame<Size4KiB>,
+    flags: Option<PageTableFlags>,
+) {
+    let mut flags = flags.unwrap_or(PageTableFlags::WRITABLE);
+    flags.set(PageTableFlags::PRESENT, true);
+
+    update_permissions(page, mapper, flags);
 
     let (old_frame, _) = mapper
         .unmap(page)
@@ -148,6 +166,24 @@ pub fn remove_mapped_frame(page: Page, mapper: &mut impl Mapper<Size4KiB>) {
     tlb_shootdown(page.start_address());
 }
 
+pub fn get_page_flags(
+    page: Page,
+    mapper: &mut OffsetPageTable,
+) -> Result<PageTableFlags, PagingError> {
+    let translate_result = mapper.translate(page.start_address());
+    match translate_result {
+        TranslateResult::Mapped {
+            frame,
+            offset: _,
+            flags,
+        } => match frame {
+            MappedFrame::Size4KiB(_) => return Result::Ok(flags),
+            _ => Result::Err(PagingError::PageNotMappedErr),
+        },
+        _ => Result::Err(PagingError::PageNotMappedErr),
+    }
+}
+
 /// Mappes a frame to kernel pages
 /// Used for loading
 ///
@@ -187,6 +223,29 @@ pub fn map_kernel_frame(
     }
 
     temp_virt
+}
+
+/// Creates a mapping to a frame that page faults on first access
+///
+/// # Arguments
+/// * `page` - a virtual page
+/// * `mapper` - anything that implements the mapper trait
+/// * `flags` - the flags we want initially, will always not include PRESENT
+pub fn create_not_present_mapping(
+    page: Page,
+    mapper: &mut impl Mapper<Size4KiB>,
+    flags: Option<PageTableFlags>,
+) {
+    let frame = create_mapping(page, mapper, flags);
+    dealloc_frame(frame);
+
+    let mut flags = flags.unwrap_or(PageTableFlags::WRITABLE);
+
+    if flags.contains(PageTableFlags::PRESENT) {
+        flags.remove(PageTableFlags::PRESENT);
+    }
+
+    update_permissions(page, mapper, flags);
 }
 
 /// Update permissions for a specific page
@@ -257,9 +316,18 @@ mod tests {
     };
 
     use super::*;
-    use crate::{constants::memory::PAGE_SIZE, events::schedule_kernel, memory::MAPPER};
+    use crate::{
+        constants::{memory::PAGE_SIZE, processes::SYSCALL_MMAP_MEMORY},
+        events::schedule_kernel,
+        memory::KERNEL_MAPPER,
+        processes::process::create_process,
+    };
     use alloc::vec::Vec;
-    use x86_64::structures::paging::mapper::TranslateError;
+    use bitflags::Flags;
+    use x86_64::structures::paging::{
+        mapper::{MappedFrame, TranslateError, TranslateResult},
+        Translate,
+    };
 
     // used for tlb shootdown testcases
     static PRE_READ: AtomicU64 = AtomicU64::new(0);
@@ -278,8 +346,8 @@ mod tests {
     // Test basic remove, as removing and then translating should fail
     #[test_case]
     fn test_remove_mapped_frame() {
-        let mut mapper = MAPPER.lock();
-        let page: Page = Page::containing_address(VirtAddr::new(0x500000000));
+        let mut mapper = KERNEL_MAPPER.lock();
+        let page: Page = Page::containing_address(VirtAddr::new(0x400000000));
         let _ = create_mapping(page, &mut *mapper, None);
 
         remove_mapped_frame(page, &mut *mapper);
@@ -295,10 +363,10 @@ mod tests {
     // Test basic translation after map returns correct frame
     #[test_case]
     fn test_basic_map_and_translate() {
-        let mut mapper = MAPPER.lock();
+        let mut mapper = KERNEL_MAPPER.lock();
 
         // random test virtual page
-        let page: Page = Page::containing_address(VirtAddr::new(0x500000000));
+        let page: Page = Page::containing_address(VirtAddr::new(0x400001000));
         let frame: PhysFrame = create_mapping(page, &mut *mapper, None);
 
         let translate_frame = mapper.translate_page(page).expect("Translation failed");
@@ -311,16 +379,16 @@ mod tests {
     // Test that permissions are updated correctly
     #[test_case]
     fn test_update_permissions() {
-        let mut mapper = MAPPER.lock();
+        let mut mapper = KERNEL_MAPPER.lock();
 
-        let page: Page = Page::containing_address(VirtAddr::new(0x500000000));
+        let page: Page = Page::containing_address(VirtAddr::new(0x400002000));
         let _ = create_mapping(page, &mut *mapper, None);
 
         let flags = PageTableFlags::PRESENT;
 
         update_permissions(page, &mut *mapper, flags);
 
-        let pte = unsafe { get_page_table_entry(page, &mut *mapper) }.expect("Getting PTE Failed");
+        let pte = unsafe { get_page_table_entry(page, &mapper) }.expect("Getting PTE Failed");
 
         assert!(pte.flags().contains(PageTableFlags::PRESENT));
         assert!(!pte.flags().contains(PageTableFlags::WRITABLE));
@@ -328,13 +396,46 @@ mod tests {
         remove_mapped_frame(page, &mut *mapper);
     }
 
+    #[test_case]
+    fn test_copy_on_write() {
+        let mut mapper = KERNEL_MAPPER.lock();
+
+        const TEST_VALUE: u64 = 0x42;
+
+        let page = Page::containing_address(VirtAddr::new(0x400003000));
+        let init_frame = create_mapping(
+            page,
+            &mut *mapper,
+            Some(PageTableFlags::PRESENT | PageTableFlags::BIT_9),
+        );
+
+        // should trigger a Copy on write page fault
+        unsafe {
+            page.start_address()
+                .as_mut_ptr::<u64>()
+                .write_volatile(TEST_VALUE);
+        }
+
+        let frame = mapper
+            .translate_page(page)
+            .expect("Translation after COW failed");
+
+        assert_ne!(init_frame, frame);
+
+        let read_value = unsafe { page.start_address().as_ptr::<u64>().read_volatile() };
+
+        assert_eq!(read_value, TEST_VALUE);
+
+        remove_mapped_frame(page, &mut *mapper);
+    }
+
     // Test that contiguous mappings work correctly. Allocates 8 pages in a row.
     #[test_case]
     fn test_contiguous_mapping() {
-        let mut mapper = MAPPER.lock();
+        let mut mapper = KERNEL_MAPPER.lock();
 
         // Define a contiguous region spanning 8 pages.
-        let start_page: Page = Page::containing_address(VirtAddr::new(0x500000000));
+        let start_page: Page = Page::containing_address(VirtAddr::new(0x400004000));
         let num_pages = 8;
         let flags = PageTableFlags::PRESENT | PageTableFlags::WRITABLE;
 
@@ -371,10 +472,10 @@ mod tests {
         const PID: u32 = 0;
 
         // create mapping and set value on current core to cache page
-        let page: Page = Page::containing_address(VirtAddr::new(0x500000000));
+        let page: Page = Page::containing_address(VirtAddr::new(0x400010000));
 
         {
-            let mut mapper = MAPPER.lock();
+            let mut mapper = KERNEL_MAPPER.lock();
             let _ = create_mapping(page, &mut *mapper, None);
             unsafe {
                 page.start_address()
@@ -393,11 +494,16 @@ mod tests {
         }
 
         {
-            let mut mapper = MAPPER.lock();
+            let mut mapper = KERNEL_MAPPER.lock();
             let new_frame = alloc_frame().expect("Could not find a new frame");
 
             // could say page already mapped, which would be really dumb
-            update_mapping(page, &mut *mapper, new_frame);
+            update_mapping(
+                page,
+                &mut *mapper,
+                new_frame,
+                Some(PageTableFlags::PRESENT | PageTableFlags::WRITABLE),
+            );
 
             unsafe {
                 page.start_address()
@@ -415,7 +521,7 @@ mod tests {
 
         assert_eq!(POST_READ.load(Ordering::SeqCst), 0x42);
 
-        let mut mapper = MAPPER.lock();
+        let mut mapper = KERNEL_MAPPER.lock();
         remove_mapped_frame(page, &mut *mapper);
     }
 }

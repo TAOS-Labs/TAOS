@@ -31,7 +31,7 @@ extern "C" {
 
 lazy_static! {
     // The kernel mapper
-    pub static ref MAPPER: Mutex<OffsetPageTable<'static>> = Mutex::new(unsafe { paging::init() });
+    pub static ref KERNEL_MAPPER: Mutex<OffsetPageTable<'static>> = Mutex::new(unsafe { paging::init() });
     // Start of kernel virtual memory
     pub static ref HHDM_OFFSET: VirtAddr = VirtAddr::new(
         HHDM_REQUEST

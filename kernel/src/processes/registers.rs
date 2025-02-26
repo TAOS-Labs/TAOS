@@ -24,7 +24,7 @@ macro_rules! push_registers {
     }};
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 #[repr(C)]
 pub struct Registers {
     pub rax: u64,

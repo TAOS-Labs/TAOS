@@ -3,7 +3,7 @@
 
 use crate::{
     constants::memory::{HEAP_SIZE, HEAP_START},
-    memory::{frame_allocator::FRAME_ALLOCATOR, paging::create_mapping, MAPPER},
+    memory::{frame_allocator::FRAME_ALLOCATOR, paging::create_mapping, KERNEL_MAPPER},
     serial_println,
 };
 use talc::{ClaimOnOom, Span, Talc, Talck};
@@ -34,7 +34,7 @@ pub fn init_heap() -> Result<(), MapToError<Size4KiB>> {
     };
 
     for page in page_range {
-        create_mapping(page, &mut *MAPPER.lock(), None);
+        create_mapping(page, &mut *KERNEL_MAPPER.lock(), None);
     }
 
     switch_allocator();
