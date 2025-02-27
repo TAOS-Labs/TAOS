@@ -21,6 +21,12 @@ pub struct SyscallRegisters {
 pub fn sys_exit(code: i64) -> Option<u64> {
     // TODO handle hierarchy (parent processes), resources, threads, etc.
     // TODO recursive page table walk to handle cleaning up process memory
+
+    // Used for testing
+    if code == -1 {
+        panic!("Exitted with code -1");
+    }
+
     let event: EventInfo = current_running_event_info();
 
     // This is for testing; this way, we can write binaries that conditionally fail tests
@@ -85,7 +91,18 @@ pub fn sys_print(buffer: *const u8) -> Option<u64> {
     Some(3)
 }
 
-pub fn sys_nanosleep(nanos: u64, rsp: u64) {
+// Not a real system call, but useful for testing
+pub fn sys_print(buffer: *const u8) -> u64 {
+    let c_str = unsafe { CStr::from_ptr(buffer as *const i8) };
+    let str_slice = c_str.to_str().expect("Invalid UTF-8 string");
+    serial_println!("Buffer: {}", str_slice);
+
+    0
+}
+
+pub fn sys_nanosleep(nanos: u64, rsp: u64) -> u64 {
     sleep_process(rsp, nanos);
     x2apic::send_eoi();
+
+    0
 }

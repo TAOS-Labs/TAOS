@@ -487,7 +487,7 @@ mod tests {
         // mapping exists now and is cached for first core
 
         // tell core 1 to read the value (to TLB cache) and wait until it's done
-        schedule_kernel(AP, async move { pre_read(page).await }, PRIORITY);
+        schedule_kernel_on(AP, async move { pre_read(page).await }, PRIORITY);
 
         while PRE_READ.load(Ordering::SeqCst) == 0 {
             core::hint::spin_loop();
@@ -513,7 +513,7 @@ mod tests {
         }
 
         // back on core 1, read the value and see if it has changed
-        schedule_kernel(AP, async move { post_read(page).await }, PRIORITY);
+        schedule_kernel_on(AP, async move { post_read(page).await }, PRIORITY);
 
         while POST_READ.load(Ordering::SeqCst) == 0 {
             core::hint::spin_loop();

@@ -124,6 +124,7 @@ unsafe extern "C" fn secondary_cpu_main(cpu: &Cpu) -> ! {
     idt::enable();
 
     debug!("AP {} entering event loop", cpu.id);
+
     run_loop(cpu.id)
 }
 

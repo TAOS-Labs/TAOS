@@ -28,7 +28,7 @@ use crate::{
     memory::{paging::create_mapping, HHDM_OFFSET},
     prelude::*,
     processes::process::preempt_process,
-    syscalls::syscall_handlers::{sys_exit, sys_nanosleep},
+    syscalls::syscall_handlers::{sys_exit, sys_nanosleep, sys_print},
 };
 
 lazy_static! {
