@@ -58,7 +58,6 @@ pub fn init() -> u32 {
 
     register_event_runner();
     idt::enable();
-    
     bsp_id
 }
 

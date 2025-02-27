@@ -130,9 +130,7 @@ pub fn sys_exit(code: i64) {
 
         (*pcb).state = ProcessState::Terminated;
         clear_process_frames(&mut *pcb);
-        serial_println!("EVENT PID {}", event.pid);
         process_table.remove(&event.pid);
-        serial_println!("SUCCESSFULLY REMOVED");
         ((*pcb).kernel_rsp, (*pcb).kernel_rip)
     };
 
