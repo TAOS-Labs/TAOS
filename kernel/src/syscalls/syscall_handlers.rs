@@ -1,9 +1,11 @@
-use core::{ffi::CStr, ptr::read_unaligned};
-
-use x86_64::registers::{model_specific::{GsBase, KernelGsBase}, segmentation::{Segment64, GS}};
+use core::ffi::CStr;
 
 use crate::{
-    constants::{gdt::RING0_STACK_SIZE, syscalls::*}, events::{current_running_event_info, EventInfo}, interrupts::{gdt::TSSS, x2apic::current_core_id}, processes::process::{clear_process_frames, sleep_process, ProcessState, PROCESS_TABLE}, serial_println
+    constants::syscalls::*,
+    events::{current_running_event_info, EventInfo},
+    interrupts::{gdt::TSSS, x2apic::current_core_id},
+    processes::process::{clear_process_frames, sleep_process, ProcessState, PROCESS_TABLE},
+    serial_println,
 };
 
 #[warn(unused)]
@@ -26,8 +28,7 @@ pub struct SyscallRegisters {
 #[no_mangle]
 fn get_ring_0_rsp() -> u64 {
     let core = current_core_id();
-    let rsp =  ((TSSS[core].privilege_stack_table[0]).as_u64() + RING0_STACK_SIZE as u64) & !15;
-    serial_println!("RSP is {:#x}", rsp);
+    let rsp = ((TSSS[core].privilege_stack_table[0]).as_u64()) & !15;
     rsp
 }
 
@@ -35,8 +36,6 @@ fn get_ring_0_rsp() -> u64 {
 #[no_mangle]
 pub extern "C" fn syscall_handler_64_naked() {
     unsafe {
-
-
         core::arch::naked_asm!(
             "swapgs",
             "cli", // disables interrupts, unsure if needed
@@ -81,21 +80,37 @@ pub extern "C" fn syscall_handler_64_naked() {
 }
 
 #[no_mangle]
-pub fn syscall_handler_impl(syscall: *const SyscallRegisters) {
+pub extern "C" fn syscall_handler_impl(syscall: *const SyscallRegisters) -> u64 {
     let syscall = unsafe { &*syscall };
     serial_println!("Syscall num: {}", syscall.number);
     match syscall.number as u32 {
-        SYSCALL_EXIT => sys_exit(syscall.arg1),
-        SYSCALL_PRINT => sys_print(syscall.arg1 as *const u8),
+        SYSCALL_EXIT => {
+            sys_exit(syscall.arg1 as i64);
+            unreachable!("sys_exit does not return");
+        }
+        SYSCALL_PRINT => {
+            let success = sys_print(syscall.arg1 as *const u8);
+            success
+        }
+        SYSCALL_NANOSLEEP => {
+            let success = sys_nanosleep(syscall.arg1, syscall.arg2);
+            success
+        }
         _ => {
             panic!("Unknown syscall, {}", syscall.number);
         }
     }
 }
 
-pub fn sys_exit(code: u64) {
+pub fn sys_exit(code: i64) {
     // TODO handle hierarchy (parent processes), resources, threads, etc.
     // TODO recursive page table walk to handle cleaning up process memory
+
+    // Used for testing
+    if code == -1 {
+        panic!("Exitted with code -1");
+    }
+
     let event: EventInfo = current_running_event_info();
 
     serial_println!("Process {} exitted with code {}", event.pid, code);
@@ -115,9 +130,7 @@ pub fn sys_exit(code: u64) {
 
         (*pcb).state = ProcessState::Terminated;
         clear_process_frames(&mut *pcb);
-        serial_println!("EVENT PID {}", event.pid);
         process_table.remove(&event.pid);
-        serial_println!("SUCCESSFULLY REMOVED");
         ((*pcb).kernel_rsp, (*pcb).kernel_rip)
     };
 
@@ -134,14 +147,17 @@ pub fn sys_exit(code: u64) {
 }
 
 // Not a real system call, but useful for testing
-pub fn sys_print(buffer: *const u8) {
-    // let c_str = unsafe { CStr::from_ptr(buffer as *const i8) };
-    // let str_slice = c_str.to_str().expect("Invalid UTF-8 string");
-    // serial_println!("Buffer: {}", str_slice);
+pub fn sys_print(buffer: *const u8) -> u64 {
+    let c_str = unsafe { CStr::from_ptr(buffer as *const i8) };
+    let str_slice = c_str.to_str().expect("Invalid UTF-8 string");
+    serial_println!("Buffer: {}", str_slice);
 
-    serial_println!("Hello World!");
+    0
 }
-pub fn sys_nanosleep(nanos: u64, rsp: u64) {
+
+pub fn sys_nanosleep(nanos: u64, rsp: u64) -> u64 {
     sleep_process(rsp, nanos);
     x2apic::send_eoi();
+
+    0
 }

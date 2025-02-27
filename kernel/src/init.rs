@@ -10,7 +10,14 @@ use limine::{
 };
 
 use crate::{
-    constants::processes::{SYSCALL_64BIT_TEST, SYSCALL_PRINT}, debug, devices, events::{register_event_runner, run_loop, schedule_process}, interrupts::{self, idt}, logging, memory::{self}, processes::process::create_process, trace
+    constants::processes::SYSCALL_64BIT_TEST,
+    debug, devices,
+    events::{register_event_runner, run_loop, schedule_process},
+    interrupts::{self, idt},
+    logging,
+    memory::{self},
+    processes::process::create_process,
+    trace,
 };
 
 extern crate alloc;
@@ -51,8 +58,7 @@ pub fn init() -> u32 {
 
     register_event_runner();
     idt::enable();
-    let pid = create_process(SYSCALL_64BIT_TEST);
-    schedule_process(pid);
+
     bsp_id
 }
 
@@ -84,6 +90,7 @@ unsafe extern "C" fn secondary_cpu_main(cpu: &Cpu) -> ! {
     idt::enable();
 
     debug!("AP {} entering event loop", cpu.id);
+
     run_loop(cpu.id)
 }
 

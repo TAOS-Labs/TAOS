@@ -7,11 +7,10 @@
 //! - End-of-interrupt (EOI) handling
 
 use crate::{
-    constants::{idt::TIMER_VECTOR, MAX_CORES},
+    constants::{idt::TIMER_VECTOR, x2apic::CPU_FREQUENCY, MAX_CORES},
     interrupts::gdt,
     syscalls::syscall_handlers::syscall_handler_64_naked,
 };
-use crate::constants::x2apic::CPU_FREQUENCY;
 use core::sync::atomic::{AtomicU32, Ordering};
 use raw_cpuid::CpuId;
 use spin::Mutex;
@@ -150,7 +149,7 @@ impl X2ApicManager {
     /// Configures the syscall for the current CPU core
     #[inline(always)]
     pub fn configure_syscall_current_core() -> Result<(), X2ApicError> {
-        let fmask: u64 = 1 << 9; // 0x200
+        let fmask: u64 = 0x200;
         let user_cs = gdt::GDT.1.user_code_selector.0 as u64;
         let kernel_cs = gdt::GDT.1.code_selector.0 as u64;
         let star: u64 = (kernel_cs << 32) | (user_cs << 48);
@@ -235,6 +234,7 @@ impl X2ApicManager {
         let count = CALIBRATED_TIMER_COUNT.load(Ordering::Acquire);
         Self::initialize_current_core()?;
         Self::configure_timer_current_core(count)?;
+        Self::configure_syscall_current_core()?;
         Ok(())
     }
 }
