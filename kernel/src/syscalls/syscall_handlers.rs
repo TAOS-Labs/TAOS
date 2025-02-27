@@ -28,8 +28,7 @@ pub struct SyscallRegisters {
 #[no_mangle]
 fn get_ring_0_rsp() -> u64 {
     let core = current_core_id();
-    let rsp = ((TSSS[core].privilege_stack_table[0]).as_u64()) & !15;
-    rsp
+    ((TSSS[core].privilege_stack_table[0]).as_u64()) & !15
 }
 
 #[naked]
@@ -79,8 +78,15 @@ pub extern "C" fn syscall_handler_64_naked() {
     };
 }
 
+/// Function that routes to different syscalls
+///
+/// # Arguments
+/// * `syscall` - A pointer to a strut containing syscall_num, arg1...arg6 as u64
+///
+/// # Safety
+/// This function is unsafe as it must dereference `syscall` to get args
 #[no_mangle]
-pub extern "C" fn syscall_handler_impl(syscall: *const SyscallRegisters) -> u64 {
+pub unsafe extern "C" fn syscall_handler_impl(syscall: *const SyscallRegisters) -> u64 {
     let syscall = unsafe { &*syscall };
     serial_println!("Syscall num: {}", syscall.number);
     match syscall.number as u32 {
@@ -88,14 +94,8 @@ pub extern "C" fn syscall_handler_impl(syscall: *const SyscallRegisters) -> u64 
             sys_exit(syscall.arg1 as i64);
             unreachable!("sys_exit does not return");
         }
-        SYSCALL_PRINT => {
-            let success = sys_print(syscall.arg1 as *const u8);
-            success
-        }
-        SYSCALL_NANOSLEEP => {
-            let success = sys_nanosleep(syscall.arg1, syscall.arg2);
-            success
-        }
+        SYSCALL_PRINT => sys_print(syscall.arg1 as *const u8),
+        SYSCALL_NANOSLEEP => sys_nanosleep(syscall.arg1, syscall.arg2),
         _ => {
             panic!("Unknown syscall, {}", syscall.number);
         }

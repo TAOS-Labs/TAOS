@@ -154,10 +154,12 @@ impl X2ApicManager {
         let kernel_cs = gdt::GDT.1.code_selector.0 as u64;
         let star: u64 = (kernel_cs << 32) | (user_cs << 48);
 
+        let sys_addr = syscall_handler_64_naked as usize;
+
         // Set up MSRs for syscall
         unsafe {
             Msr::new(X2APIC_IA32_EFER).write(Msr::new(X2APIC_IA32_EFER).read() | 1);
-            Msr::new(X2APIC_IA32_LSTAR).write(syscall_handler_64_naked as u64);
+            Msr::new(X2APIC_IA32_LSTAR).write(sys_addr.try_into().unwrap());
             Msr::new(X2APIC_IA32_FMASK).write(fmask);
             Msr::new(X2APIC_IA32_STAR).write(star);
         }
