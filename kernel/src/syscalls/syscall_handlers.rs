@@ -3,7 +3,7 @@ use core::{ffi::CStr, ptr::read_unaligned};
 use x86_64::registers::{model_specific::{GsBase, KernelGsBase}, segmentation::{Segment64, GS}};
 
 use crate::{
-    constants::syscalls::*, events::{current_running_event_info, EventInfo}, interrupts::gdt::TSSS, processes::process::{clear_process_frames, sleep_process, ProcessState, PROCESS_TABLE}, serial_println, interrupts::x2apic::current_core_id
+    constants::{gdt::RING0_STACK_SIZE, syscalls::*}, events::{current_running_event_info, EventInfo}, interrupts::{gdt::TSSS, x2apic::current_core_id}, processes::process::{clear_process_frames, sleep_process, ProcessState, PROCESS_TABLE}, serial_println
 };
 
 #[warn(unused)]
@@ -26,92 +26,15 @@ pub struct SyscallRegisters {
 #[no_mangle]
 fn get_ring_0_rsp() -> u64 {
     let core = current_core_id();
-    return (TSSS[core].privilege_stack_table[0]).as_u64();
+    let rsp =  ((TSSS[core].privilege_stack_table[0]).as_u64() + RING0_STACK_SIZE as u64) & !15;
+    serial_println!("RSP is {:#x}", rsp);
+    rsp
 }
 
 #[naked]
 #[no_mangle]
 pub extern "C" fn syscall_handler_64_naked() {
     unsafe {
-        // core::arch::naked_asm!(
-        //     "
-        //     swapgs
-        //     cli // disables interrupts, unsure if needed
-        //     mov r12, rcx
-        //     mov r13, r11
-        //     mov r14, rax
-        //     mov r15, rsp
-        //     push rdi
-        //     push rsi
-        //     push rdx
-        //     push r10
-        //     push r8
-        //     push r9
-        //     call get_ring_0_rsp
-        //     pop r9
-        //     pop r8
-        //     pop r10
-        //     pop rdx
-        //     pop rsi
-        //     pop rdi
-        //     mov rsp, rax
-        //     mov rax, r14
-        //     ",
-        //     // gets num and args
-        //     "
-        //     push rbx
-        //     push r9
-        //     push r8
-        //     push r10
-        //     push rdx
-        //     push rsi
-        //     push rdi
-        //     push rax
-        //     mov rdi, rsp
-        //     call syscall_handler_impl
-        //     pop rax
-        //     pop rdi
-        //     pop rsi
-        //     pop rdx
-        //     pop r10
-        //     pop r8
-        //     pop r9
-        //     pop rbx
-            
-        //     mov rcx, r12
-        //     mov r11, r13
-        //     mov rsp, r15
-        //     swapgs
-        //     sti
-        //     sysretq
-        //     "
-        // )
-
-        // core::arch::naked_asm!(
-        //     "swapgs",
-        //     "cli", // disables interrupts, unsure if needed
-        //     "mov r12, rcx",
-        //     "mov r13, r11",
-        //     "mov rsp, 0xffffffff800c02f8", // this is fine for now as it wont change
-        //     "push rbx",
-        //     "sub rsp, 56",
-        //     // gets num and args
-        //     "mov [rsp + 0], rax",
-        //     "mov [rsp + 8], rdi",
-        //     "mov [rsp + 16], rsi",
-        //     "mov [rsp + 24], rdx",
-        //     "mov [rsp + 32], r10",
-        //     "mov [rsp + 40], r8",
-        //     "mov [rsp + 48], r9",
-        //     "mov rdi, rsp",
-        //     "call syscall_handler_impl",
-        //     "add rsp, 56",
-        //     "pop rbx",
-        //     "mov rcx, r12",
-        //     "mov r11, r13",
-        //     "swapgs",
-        //     "sysretq",
-        // )
 
 
         core::arch::naked_asm!(
