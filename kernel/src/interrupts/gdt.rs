@@ -56,11 +56,13 @@ lazy_static! {
                 let stack_start = VirtAddr::from_ptr(&DF_STACKS[i]);
                 serial_println!("Stack start: {:#x}", stack_start);
                 let stack_end = stack_start + IST_STACK_SIZE as u64;
+                serial_println!("Stack end: {:#x}", stack_end);
 
                 let priv_stack_start = VirtAddr::from_ptr(&PRIV_STACKS[i]);
                 serial_println!("Priv stack start: {:#x}", priv_stack_start);
 
                 let priv_stack_end = priv_stack_start + RING0_STACK_SIZE as u64;
+                serial_println!("Priv Stack end: {:#x}", priv_stack_end);
 
                 tss.interrupt_stack_table[DOUBLE_FAULT_IST_INDEX as usize] = stack_end;
                 tss.privilege_stack_table[0] = priv_stack_end;
