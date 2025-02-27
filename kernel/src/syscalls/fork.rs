@@ -2,7 +2,9 @@ use core::{ptr, sync::atomic::Ordering};
 
 use alloc::sync::Arc;
 use x86_64::{
-    structures::paging::{OffsetPageTable, Page, PageTable, PageTableFlags, PhysFrame},
+    structures::paging::{
+        page_table::PageTableEntry, OffsetPageTable, Page, PageTable, PageTableFlags, PhysFrame,
+    },
     VirtAddr,
 };
 
@@ -42,9 +44,7 @@ pub fn sys_fork() -> u64 {
         (*child_pcb.pcb.get()).state = ProcessState::Ready;
     }
 
-    let mut mapper = unsafe { (*parent_pcb).create_mapper() };
-    let child_pml4_frame =
-        duplicate_page_table_recursive(unsafe { (*parent_pcb).pml4_frame }, 4);
+    let child_pml4_frame = duplicate_page_table(unsafe { (*parent_pcb).pml4_frame }, 4);
     unsafe { (*child_pcb.pcb.get()).pml4_frame = child_pml4_frame };
 
     {
@@ -53,72 +53,85 @@ pub fn sys_fork() -> u64 {
 
     schedule_process(cpuid, unsafe { run_process_ring3(child_pid) }, child_pid);
 
-    return child_pid as u64;
+    child_pid as u64
 }
 
-
-/// Recursively duplicate a page table.
+/// Recursively duplicate a page table starting at the specified level.
 ///
 /// # Arguments
-/// * parent_frame - reference to parent page tables
-/// * level - 4 for PML4, 3 for PDPT, 2 for PD, and 1 for PT
-/// * mapper - new mapper
+/// * parent_frame - Physical frame of the parent page table
+/// * level - Page table level (4 for PML4, 3 for PDPT, 2 for PD, 1 for PT)
 ///
-/// # Return
-/// Returns a PhysFrame that represents the new pml4 frame for child
-fn duplicate_page_table_recursive(
-    parent_frame: PhysFrame,
-    level: u8,
-) -> PhysFrame {
-    // Allocate a new frame for this level’s table.
-    let child_frame = alloc_frame().expect("Frame allocation failed");
-    // Map it into our address space using HHDM_OFFSET.
-    let child_table_ptr =
-        (HHDM_OFFSET.as_u64() + child_frame.start_address().as_u64()) as *mut PageTable;
+/// # Returns
+/// Newly allocated page table frame containing the duplicated structure
+pub fn duplicate_page_table(parent_frame: PhysFrame, level: u8) -> PhysFrame {
+    // Allocate and initialize new page table frame
+    let child_frame = alloc_frame().expect("Failed to allocate frame");
+    let child_table = get_table_mut(child_frame);
+    child_table.zero();
+    let parent_table = get_table_mut(parent_frame);
 
-    unsafe { (*child_table_ptr).zero() };
-
-    // Obtain a pointer to the parent table.
-    let parent_table_ptr =
-        (HHDM_OFFSET.as_u64() + parent_frame.start_address().as_u64()) as *mut PageTable;
-
-    let parent_table = unsafe { &mut *parent_table_ptr };
-    let child_table: &mut PageTable = unsafe { &mut *child_table_ptr };
-    // Iterate over all 512 entries.
-    for (i, parent_entry) in parent_table.iter_mut().enumerate() {
-        if parent_entry.is_unused() {
-            continue;
-        }
-    
-        // Copy over kernel mappings
-        if level == 4 && i >= 256 {
-            child_table[i].set_addr(parent_entry.addr(), parent_entry.flags());
-            continue;
-        }
-
-        if level > 1 {
-            let new_child_lower_frame = duplicate_page_table_recursive(
-                PhysFrame::containing_address(parent_entry.addr()),
-                level - 1);
-            child_table[i].set_addr(new_child_lower_frame.start_address(), parent_entry.flags());
-        } else {
-            let mut flags = parent_entry.flags();
-            // Mark as COW if originally writable
-            if flags.contains(PageTableFlags::PRESENT) {
-                if flags.contains(PageTableFlags::WRITABLE) {
-                    flags.set(PageTableFlags::BIT_9, true);
-                    flags.set(PageTableFlags::WRITABLE, false);
-                }
-                parent_entry.set_addr(parent_entry.addr(), flags);
-
-                child_table[i].set_addr(parent_entry.addr(), flags);
-            }
-        }
-    }
+    // Process entries recursively
+    duplicate_entries(parent_table, child_table, level);
 
     child_frame
 }
 
+/// Helper function to process entries recursively
+fn duplicate_entries(parent: &mut PageTable, child: &mut PageTable, level: u8) {
+    for (index, parent_entry) in parent.iter_mut().enumerate() {
+        if parent_entry.is_unused() {
+            continue;
+        }
+
+        // Preserve kernel mappings on higher half
+        if level == 4 && index >= 256 {
+            child[index].set_addr(parent_entry.addr(), parent_entry.flags());
+            continue;
+        }
+
+        match level {
+            2..=4 => handle_upper_level(parent_entry, child, index, level),
+            1 => handle_leaf_level(parent_entry, &mut child[index]),
+            _ => unreachable!("Invalid page table level"),
+        }
+    }
+}
+
+/// Handle intermediate page table entries
+fn handle_upper_level(
+    parent_entry: &mut PageTableEntry,
+    child_table: &mut PageTable,
+    index: usize,
+    level: u8,
+) {
+    let child_lower_frame = duplicate_page_table(
+        PhysFrame::containing_address(parent_entry.addr()),
+        level - 1,
+    );
+    child_table[index].set_addr(child_lower_frame.start_address(), parent_entry.flags());
+}
+
+/// Handle leaf page table entries
+fn handle_leaf_level(parent_entry: &mut PageTableEntry, child_entry: &mut PageTableEntry) {
+    let mut flags = parent_entry.flags();
+
+    if flags.contains(PageTableFlags::PRESENT) {
+        if flags.contains(PageTableFlags::WRITABLE) {
+            flags.set(PageTableFlags::BIT_9, true); // COW flag
+            flags.remove(PageTableFlags::WRITABLE);
+        }
+        parent_entry.set_flags(flags);
+        child_entry.set_addr(parent_entry.addr(), flags);
+    }
+}
+
+/// Helper to get mutable reference to a page table from a physical frame
+fn get_table_mut(frame: PhysFrame) -> &'static mut PageTable {
+    let phys_addr = frame.start_address();
+    let virt_addr = HHDM_OFFSET.as_u64() + phys_addr.as_u64();
+    unsafe { &mut *(virt_addr as *mut PageTable) }
+}
 
 #[cfg(test)]
 mod tests {
@@ -127,8 +140,8 @@ mod tests {
 
     fn verify_page_table_walk(parent_pcb: &mut PCB, child_pcb: &mut PCB) {
         assert_eq!(
-            (*parent_pcb).pml4_frame.start_address(),
-            (*child_pcb).pml4_frame.start_address()
+            parent_pcb.pml4_frame.start_address(),
+            child_pcb.pml4_frame.start_address()
         );
         let mut parent_mapper = unsafe { parent_pcb.create_mapper() };
         let mut child_mapper = unsafe { child_pcb.create_mapper() };
