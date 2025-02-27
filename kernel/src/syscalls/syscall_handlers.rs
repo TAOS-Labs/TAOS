@@ -1,4 +1,4 @@
-use core::{ffi::CStr, ptr::read_unaligned};
+use core::ffi::CStr;
 
 use crate::{
     constants::syscalls::*,

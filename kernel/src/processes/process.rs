@@ -268,8 +268,6 @@ pub async unsafe fn run_process_ring3(pid: u32) {
     let user_cs = gdt::GDT.1.user_code_selector.0 as u64;
     let user_ds = gdt::GDT.1.user_data_selector.0 as u64;
 
-    serial_println!("USER CS WHEN PROCESS MADE: {}", user_cs);
-
     let registers = &(*process).registers.clone();
 
     (*process).kernel_rip = return_process as usize as u64;
