@@ -3,7 +3,7 @@ use core::ffi::CStr;
 use x86_64::registers::{model_specific::{GsBase, KernelGsBase}, segmentation::{Segment64, GS}};
 
 use crate::{
-    constants::{gdt::RING0_STACK_SIZE, syscalls::*}, debug, events::{current_running_event_info, EventInfo}, interrupts::gdt::TSSS, processes::process::{clear_process_frames, ProcessState, PROCESS_TABLE}, serial_println
+    constants::{gdt::RING0_STACK_SIZE, syscalls::*}, debug, events::{current_running_event_info, EventInfo}, interrupts::gdt::TSSS, processes::process::{clear_process_frames, sleep_process, ProcessState, PROCESS_TABLE}, serial_println
 };
 
 #[warn(unused)]
@@ -70,8 +70,8 @@ pub fn syscall_handler_impl(syscall: *const SyscallRegisters) {
 
 pub fn sys_exit(code: u64) {
     // TODO handle hierarchy (parent processes), resources, threads, etc.
-    let cpuid: u32 = x2apic::current_core_id() as u32;
-    let event: EventInfo = current_running_event_info(cpuid);
+    // TODO recursive page table walk to handle cleaning up process memory
+    let event: EventInfo = current_running_event_info();
 
     serial_println!("Process {} exitted with code {}", event.pid, code);
 
@@ -99,7 +99,6 @@ pub fn sys_exit(code: u64) {
         core::arch::asm!(
             "mov rsp, {0}",
             "push {1}",
-            "stc",          // Use carry flag as sentinel to run_process that we're exiting
             "ret",
             in(reg) preemption_info.0,
             in(reg) preemption_info.1
@@ -112,4 +111,8 @@ pub fn sys_print(buffer: *const u8) {
     let c_str = unsafe { CStr::from_ptr(buffer as *const i8) };
     let str_slice = c_str.to_str().expect("Invalid UTF-8 string");
     serial_println!("Buffer: {}", str_slice);
+}
+pub fn sys_nanosleep(nanos: u64, rsp: u64) {
+    sleep_process(rsp, nanos);
+    x2apic::send_eoi();
 }

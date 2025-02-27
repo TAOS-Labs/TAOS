@@ -10,5 +10,5 @@ _start:
     mov r9, 0x69
     mov r10, 0x420
     mov r15, 0xdeadbeef
-    mov rax, 1 ; EXIT
+    mov rax, 60 ; EXIT
     int 0x80 ; do syscall
