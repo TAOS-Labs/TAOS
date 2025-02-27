@@ -5,10 +5,8 @@ pub mod registers;
 #[cfg(test)]
 mod tests {
     use crate::{
-        constants::processes::INFINITE_LOOP,
-        events::schedule_process,
-        interrupts::x2apic,
-        processes::process::{create_process, run_process_ring3},
+        constants::processes::INFINITE_LOOP, events::schedule_process, interrupts::x2apic,
+        processes::process::create_process,
     };
 
     #[test_case]
@@ -16,9 +14,7 @@ mod tests {
         let cpuid = x2apic::current_core_id() as u32;
 
         let pid = create_process(INFINITE_LOOP);
-        unsafe {
-            schedule_process(pid);
-        }
+        schedule_process(pid);
 
         assert!(matches!(cpuid, 0));
     }
