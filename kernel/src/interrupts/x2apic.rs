@@ -6,7 +6,7 @@
 //! - Timer masking/unmasking
 //! - End-of-interrupt (EOI) handling
 
-use crate::constants::{idt::TIMER_VECTOR, MAX_CORES};
+use crate::constants::{idt::TIMER_VECTOR, x2apic::CPU_FREQUENCY, MAX_CORES};
 use core::sync::atomic::{AtomicU32, Ordering};
 use raw_cpuid::CpuId;
 use spin::Mutex;
@@ -361,4 +361,9 @@ pub fn mask_timer() {
 #[inline(always)]
 pub fn unmask_timer() {
     X2ApicManager::unmask_timer().expect("Failed to unmask timer");
+}
+
+#[inline(always)]
+pub fn nanos_to_ticks(nanos: u64) -> u64 {
+    (nanos * CPU_FREQUENCY as u64) / 1_000_000_000
 }

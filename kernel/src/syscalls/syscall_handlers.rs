@@ -1,22 +1,20 @@
 use crate::{
+    debug,
     events::{current_running_event_info, EventInfo},
-    processes::process::{clear_process_frames, ProcessState, PROCESS_TABLE},
-    serial_println,
+    interrupts::x2apic,
+    processes::process::{clear_process_frames, sleep_process, ProcessState, PROCESS_TABLE},
 };
-
-use crate::interrupts::x2apic;
 
 pub fn sys_exit() {
     // TODO handle hierarchy (parent processes), resources, threads, etc.
     // TODO recursive page table walk to handle cleaning up process memory
-    let cpuid: u32 = x2apic::current_core_id() as u32;
-    let event: EventInfo = current_running_event_info(cpuid);
+    let event: EventInfo = current_running_event_info();
 
     if event.pid == 0 {
         panic!("Calling exit from outside of process");
     }
 
-    serial_println!("Process {} exit", event.pid);
+    debug!("Process {} exit", event.pid);
 
     // Get PCB from PID
     let preemption_info = unsafe {
@@ -38,10 +36,14 @@ pub fn sys_exit() {
         core::arch::asm!(
             "mov rsp, {0}",
             "push {1}",
-            "stc",          // Use carry flag as sentinel to run_process that we're exiting
             "ret",
             in(reg) preemption_info.0,
             in(reg) preemption_info.1
         );
     }
+}
+
+pub fn sys_nanosleep(nanos: u64, rsp: u64) {
+    sleep_process(rsp, nanos);
+    x2apic::send_eoi();
 }

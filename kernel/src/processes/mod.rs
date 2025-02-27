@@ -17,7 +17,7 @@ mod tests {
 
         let pid = create_process(INFINITE_LOOP);
         unsafe {
-            schedule_process(cpuid, run_process_ring3(pid), pid);
+            schedule_process(pid);
         }
 
         assert!(matches!(cpuid, 0));
