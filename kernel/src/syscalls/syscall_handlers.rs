@@ -21,8 +21,7 @@ pub struct SyscallRegisters {
 pub fn sys_exit(code: i64) -> Option<u64> {
     // TODO handle hierarchy (parent processes), resources, threads, etc.
     // TODO recursive page table walk to handle cleaning up process memory
-    let cpuid: u32 = x2apic::current_core_id() as u32;
-    let event: EventInfo = current_running_event_info(cpuid);
+    let event: EventInfo = current_running_event_info();
 
     // This is for testing; this way, we can write binaries that conditionally fail tests
     if code == -1 {
@@ -84,4 +83,9 @@ pub fn sys_print(buffer: *const u8) -> Option<u64> {
     serial_println!("Buffer: {}", str_slice);
 
     Some(3)
+}
+
+pub fn sys_nanosleep(nanos: u64, rsp: u64) {
+    sleep_process(rsp, nanos);
+    x2apic::send_eoi();
 }

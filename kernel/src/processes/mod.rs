@@ -25,7 +25,7 @@ mod tests {
 
         let pid = create_process(RAND_REGS_EXIT);
         unsafe {
-            schedule_process(cpuid, run_process_ring3(pid), pid);
+            schedule_process(pid);
         }
 
         assert!(matches!(cpuid, 0));

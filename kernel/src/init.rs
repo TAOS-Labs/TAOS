@@ -53,7 +53,7 @@ pub fn init() -> u32 {
     debug!("Waking cores");
     let bsp_id = wake_cores();
 
-    register_event_runner(bsp_id);
+    register_event_runner();
     idt::enable();
     // let addr = sys_mmap(
     //     0x1000,
@@ -120,7 +120,7 @@ unsafe extern "C" fn secondary_cpu_main(cpu: &Cpu) -> ! {
         core::hint::spin_loop();
     }
 
-    register_event_runner(cpu.id);
+    register_event_runner();
     idt::enable();
 
     debug!("AP {} entering event loop", cpu.id);
