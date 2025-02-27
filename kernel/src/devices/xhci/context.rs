@@ -12,7 +12,7 @@ struct slot_contex {
     offset_4: u32,
     offset_5: u32,
     offset_6: u32,
-    offset_7: u32
+    offset_7: u32,
 }
 
 impl slot_contex {
@@ -28,7 +28,7 @@ impl slot_contex {
     /// This field is 4 bits wide indicates the speed of the device.
     /// This field is deprecated and should be reserved.
     fn get_speed(&self) -> u32 {
-        (self.offset_0 >> 20) & 0xF 
+        (self.offset_0 >> 20) & 0xF
     }
 
     /// Retrieves the multi-tt bit from the slot context.
@@ -151,7 +151,7 @@ struct endpoint_context {
     offset_4: u32,
     offset_5: u32,
     offset_6: u32,
-    offset_7: u32
+    offset_7: u32,
 }
 
 impl endpoint_context {
@@ -313,7 +313,7 @@ struct stream_context {
     offset_0: u32,
     offset_1: u32,
     offset_2: u32,
-    offset_3: u32
+    offset_3: u32,
 }
 
 impl stream_context {
@@ -371,7 +371,7 @@ struct input_control_context {
     config_value: u8,
     interface_number: u8,
     alternate_setting: u8,
-    rsvdz: u8
+    rsvdz: u8,
 }
 
 impl input_control_context {

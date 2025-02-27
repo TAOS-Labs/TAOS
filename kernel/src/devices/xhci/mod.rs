@@ -3,12 +3,14 @@ pub mod transfer_ring_block;
 
 use core::cmp::min;
 
+use crate::{debug_println, memory::frame_allocator::FRAME_ALLOCATOR};
 use alloc::{sync::Arc, vec::Vec};
 use bitflags::bitflags;
 use spin::Mutex;
-use x86_64::structures::paging::{FrameAllocator, OffsetPageTable};
-
-use crate::{debug_println, memory::frame_allocator::FRAME_ALLOCATOR};
+use x86_64::{
+    structures::paging::{FrameAllocator, OffsetPageTable, Page},
+    VirtAddr,
+};
 
 use super::{
     mmio,
@@ -16,7 +18,6 @@ use super::{
 };
 
 const MAX_USB_DEVICES: u8 = 4;
-const MAX_USB_DEVICES_SIZE: usize = 4;
 
 /// See section 5.3 of the xHCI spec
 #[derive(Debug, Clone, Copy)]
@@ -48,7 +49,8 @@ struct XHCIInfo {
     base_address: u64,
     capablities: XHCICapabilities,
     operational_register_address: u64,
-    base_address_array: [u64; MAX_USB_DEVICES_SIZE],
+    base_address_array: u64,
+    command_ring_base: u64,
 }
 
 #[derive(Debug)]
@@ -121,7 +123,10 @@ pub fn find_xhci_inferface(
 }
 
 /// Initalizes an xhci_hub
-pub fn initalize_xhci_hub(device: &Arc<Mutex<DeviceInfo>>, mapper: &mut OffsetPageTable)  -> Result<(), XHCIError>{
+pub fn initalize_xhci_hub(
+    device: &Arc<Mutex<DeviceInfo>>,
+    mapper: &mut OffsetPageTable,
+) -> Result<(), XHCIError> {
     let device_lock = device.clone();
     let xhci_device = device_lock.lock();
     let bar_0: u64 =
@@ -131,20 +136,20 @@ pub fn initalize_xhci_hub(device: &Arc<Mutex<DeviceInfo>>, mapper: &mut OffsetPa
     let full_bar = (bar_1 << 32) | bar_0;
 
     debug_println!("Full bar = 0x{full_bar:X}");
-    let address = mmio::map_page_as_uncacheable(full_bar, mapper).unwrap();
-    let capablities = get_host_controller_cap_regs(address);
-    let extended_reg_length: u64 = capablities.register_length.into();
-    let operational_start = address + extended_reg_length;
-    reset_xchi_controller(operational_start);
-    let base_address_array: [u64; MAX_USB_DEVICES_SIZE] = [0; MAX_USB_DEVICES_SIZE];
-    let info = XHCIInfo {
-        base_address: address,
-        capablities,
-        operational_register_address: operational_start,
-        base_address_array,
-    };
-    initalize_reset_xhci_controller(&info)?;
-    debug_println!("0x{address:X} {capablities:?}");
+
+    let info = initalize_xhciinfo(full_bar, mapper)?;
+    // Turn on device
+
+    let command_register_address = info.operational_register_address as *mut u32;
+    let mut command_data = CommandRegister::from_bits_retain(unsafe {
+        core::ptr::read_volatile(command_register_address)
+    });
+    command_data = command_data.union(CommandRegister::RunHostControler);
+    unsafe {
+        core::ptr::write_volatile(command_register_address, command_data.bits());
+    }
+
+    debug_println!("0x{:X} {:?}", { info.base_address }, { info.capablities });
     Result::Ok(())
 }
 
@@ -195,6 +200,9 @@ fn reset_xchi_controller(operational_registers: u64) {
     });
     // Turn off the host controller
     command_data.remove(CommandRegister::RunHostControler);
+    unsafe {
+        core::ptr::write_volatile(command_register_address, command_data.bits());
+    }
     // Wait for it to take
     let status_register_address = (operational_registers + 0x4) as *mut u32;
     let mut status_data = StatusRegister::from_bits_retain(unsafe {
@@ -226,24 +234,59 @@ fn reset_xchi_controller(operational_registers: u64) {
     }
 }
 
-fn initalize_reset_xhci_controller(info: &XHCIInfo) -> Result<(), XHCIError> {
+fn initalize_xhciinfo(full_bar: u64, mapper: &mut OffsetPageTable) -> Result<XHCIInfo, XHCIError> {
+    let address = mmio::map_page_as_uncacheable(full_bar, mapper).unwrap();
+    let capablities = get_host_controller_cap_regs(address);
+    let extended_reg_length: u64 = capablities.register_length.into();
+    let operational_start = address + extended_reg_length;
+    reset_xchi_controller(operational_start);
+
     // Program max device device slots
-    let config_reg_addr = (info.operational_register_address + 0x38) as *mut u32;
+    let config_reg_addr = (operational_start + 0x38) as *mut u32;
     // Extract the max device slots from the capability parameters 1 register
-    let mut max_devices: u32 = info.capablities.capability_paramaters_1 & 0xFF;
+    let mut max_devices: u32 = capablities.capability_paramaters_1 & 0xFF;
     max_devices = min(max_devices, MAX_USB_DEVICES.into());
     unsafe { core::ptr::write_volatile(config_reg_addr, max_devices) }
     // Allocate space for DCBAAP (Device Context Base Array Pointer Register)
     let mut allator_tmp = FRAME_ALLOCATOR.lock();
     let allocator = allator_tmp.as_mut().ok_or(XHCIError::NoFrameAllocator)?;
-    let frame = allocator.allocate_frame().ok_or(XHCIError::MemoryAllocationFailure)?;
-    // We need to zero out shit
-    // TODO!
-    // set DCBAAP (Device Context Base Array Pointer Register)
+    let frame = allocator
+        .allocate_frame()
+        .ok_or(XHCIError::MemoryAllocationFailure)?;
+    let virtual_adddr = mmio::map_page_as_uncacheable(frame.start_address().as_u64(), mapper)
+        .map_err(|_| XHCIError::MemoryAllocationFailure)?;
 
-    let dcbaap_reg_addr = (info.operational_register_address + 0x30) as *mut u64;
+    // We need to zero out shit
+    mmio::zero_out_page(Page::containing_address(VirtAddr::new(virtual_adddr)));
+
+    // set DCBAAP (Device Context Base Array Pointer Register)
+    let dcbaap_reg_addr = (operational_start + 0x30) as *mut u64;
     unsafe {
         core::ptr::write_volatile(dcbaap_reg_addr, frame.start_address().as_u64());
     }
-    Result::Ok(())
+
+    // Allocate space for the Command Ring.
+    let cmd_frame = allocator
+        .allocate_frame()
+        .ok_or(XHCIError::MemoryAllocationFailure)?;
+    let cmd_vaddr = mmio::map_page_as_uncacheable(cmd_frame.start_address().as_u64(), mapper)
+        .map_err(|_| XHCIError::MemoryAllocationFailure)?;
+
+    // We need to zero out this page as well
+    mmio::zero_out_page(Page::containing_address(VirtAddr::new(cmd_vaddr)));
+
+    // set Command Ring Control reg to starting addr of command ring.
+    let crcreg_addr = (operational_start + 0x18) as *mut u64;
+    let crcreg_value = cmd_frame.start_address().as_u64() | 1;
+    unsafe {
+        core::ptr::write_volatile(crcreg_addr, crcreg_value);
+    }
+
+    Result::Ok(XHCIInfo {
+        base_address: address,
+        capablities,
+        operational_register_address: operational_start,
+        base_address_array: frame.start_address().as_u64(),
+        command_ring_base: cmd_frame.start_address().as_u64(),
+    })
 }

@@ -11,6 +11,8 @@ base_args = [
     "-smp", "2", 
     "-cpu", "Conroe-v1,+x2apic,+invtsc",
 
+    "-enable-kvm",
+    
     # USB
     "-device", "qemu-xhci",
 
