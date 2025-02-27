@@ -87,15 +87,56 @@ pub extern "C" fn syscall_handler_64_naked() {
         //     "
         // )
 
+        // core::arch::naked_asm!(
+        //     "swapgs",
+        //     "cli", // disables interrupts, unsure if needed
+        //     "mov r12, rcx",
+        //     "mov r13, r11",
+        //     "mov rsp, 0xffffffff800c02f8", // this is fine for now as it wont change
+        //     "push rbx",
+        //     "sub rsp, 56",
+        //     // gets num and args
+        //     "mov [rsp + 0], rax",
+        //     "mov [rsp + 8], rdi",
+        //     "mov [rsp + 16], rsi",
+        //     "mov [rsp + 24], rdx",
+        //     "mov [rsp + 32], r10",
+        //     "mov [rsp + 40], r8",
+        //     "mov [rsp + 48], r9",
+        //     "mov rdi, rsp",
+        //     "call syscall_handler_impl",
+        //     "add rsp, 56",
+        //     "pop rbx",
+        //     "mov rcx, r12",
+        //     "mov r11, r13",
+        //     "swapgs",
+        //     "sysretq",
+        // )
+
+
         core::arch::naked_asm!(
             "swapgs",
             "cli", // disables interrupts, unsure if needed
             "mov r12, rcx",
             "mov r13, r11",
-            "mov rsp, 0xffffffff800c02f8", // this is fine for now as it wont change
-            "push rbx",
+            "mov r14, rax", // syscall num
+            "mov r15, rsp",
+            "push rdi",
+            "push rsi",
+            "push rdx",
+            "push r10",
+            "push r8",
+            "push r9",
+            "call get_ring_0_rsp", // call
+            "pop r9",
+            "pop r8",
+            "pop r10",
+            "pop rdx",
+            "pop rsi",
+            "pop rdi",
+            "mov rsp, rax", // rax has return from get_ring_0_rsp, mov rsp
+            "mov rax, r14", // return rax (syscall_number) back
             "sub rsp, 56",
-            // gets num and args
             "mov [rsp + 0], rax",
             "mov [rsp + 8], rdi",
             "mov [rsp + 16], rsi",
@@ -109,6 +150,7 @@ pub extern "C" fn syscall_handler_64_naked() {
             "pop rbx",
             "mov rcx, r12",
             "mov r11, r13",
+            "mov rsp, r15",
             "swapgs",
             "sysretq",
         )
