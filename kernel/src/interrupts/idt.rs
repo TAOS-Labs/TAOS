@@ -155,7 +155,7 @@ extern "x86-interrupt" fn page_fault_handler(
 
     let page = Page::containing_address(VirtAddr::new(faulting_address));
     let frame = mapper.translate_addr(VirtAddr::new(faulting_address));
-    serial_print!("Frame mapped to this VA is {:#?}", frame);
+    serial_println!("Frame mapped to this VA is {:#?}", frame);
     let mut flags: PageTableFlags =
         get_page_flags(page, &mut mapper).expect("Could not get page flags");
 
@@ -168,7 +168,7 @@ extern "x86-interrupt" fn page_fault_handler(
     // If error code was caused by write and permissions of PTE are for COW
     if cow && caused_by_write && read_only && present {
         // before we update mapping, we save data
-        serial_print!("In page fault handler for COW");
+        serial_println!("In page fault handler for COW");
         let start = page.start_address();
         let src_ptr = start.as_mut_ptr();
 
@@ -342,7 +342,7 @@ extern "x86-interrupt" fn naked_timer_handler(_: InterruptStackFrame) {
 
             cld
             mov	rdi, rsp
-            call timer_handler
+            // call timer_handler
 
             pop rax
             pop rbx
