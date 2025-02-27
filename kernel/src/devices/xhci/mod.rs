@@ -5,9 +5,9 @@ use core::cmp::min;
 use alloc::{sync::Arc, vec::Vec};
 use bitflags::bitflags;
 use spin::Mutex;
-use x86_64::structures::paging::OffsetPageTable;
+use x86_64::structures::paging::{FrameAllocator, OffsetPageTable};
 
-use crate::debug_println;
+use crate::{debug_println, memory::frame_allocator::FRAME_ALLOCATOR};
 
 use super::{
     mmio,
@@ -48,6 +48,12 @@ struct XHCIInfo {
     capablities: XHCICapabilities,
     operational_register_address: u64,
     base_address_array: [u64; MAX_USB_DEVICES_SIZE],
+}
+
+#[derive(Debug)]
+pub enum XHCIError {
+    MemoryAllocationFailure,
+    NoFrameAllocator,
 }
 
 bitflags! {
@@ -114,7 +120,7 @@ pub fn find_xhci_inferface(
 }
 
 /// Initalizes an xhci_hub
-pub fn initalize_xhci_hub(device: &Arc<Mutex<DeviceInfo>>, mapper: &mut OffsetPageTable) {
+pub fn initalize_xhci_hub(device: &Arc<Mutex<DeviceInfo>>, mapper: &mut OffsetPageTable)  -> Result<(), XHCIError>{
     let device_lock = device.clone();
     let xhci_device = device_lock.lock();
     let bar_0: u64 =
@@ -136,8 +142,9 @@ pub fn initalize_xhci_hub(device: &Arc<Mutex<DeviceInfo>>, mapper: &mut OffsetPa
         operational_register_address: operational_start,
         base_address_array,
     };
-    initalize_reset_xhci_controller(&info);
+    initalize_reset_xhci_controller(&info)?;
     debug_println!("0x{address:X} {capablities:?}");
+    Result::Ok(())
 }
 
 /// Determines the capablities of a given host controller
@@ -218,21 +225,24 @@ fn reset_xchi_controller(operational_registers: u64) {
     }
 }
 
-fn initalize_reset_xhci_controller(info: &XHCIInfo) {
+fn initalize_reset_xhci_controller(info: &XHCIInfo) -> Result<(), XHCIError> {
     // Program max device device slots
     let config_reg_addr = (info.operational_register_address + 0x38) as *mut u32;
     // Extract the max device slots from the capability parameters 1 register
     let mut max_devices: u32 = info.capablities.capability_paramaters_1 & 0xFF;
     max_devices = min(max_devices, MAX_USB_DEVICES.into());
     unsafe { core::ptr::write_volatile(config_reg_addr, max_devices) }
-    // set DCBAAP
-    let dcbaap_addr_tmp = &raw const info.base_address_array;
-    let dcbaap_addr: u64 = dcbaap_addr_tmp
-        .addr()
-        .try_into()
-        .expect("To be on 32 bit system");
+    // Allocate space for DCBAAP (Device Context Base Array Pointer Register)
+    let mut allator_tmp = FRAME_ALLOCATOR.lock();
+    let allocator = allator_tmp.as_mut().ok_or(XHCIError::NoFrameAllocator)?;
+    let frame = allocator.allocate_frame().ok_or(XHCIError::MemoryAllocationFailure)?;
+    // We need to zero out shit
+    // TODO!
+    // set DCBAAP (Device Context Base Array Pointer Register)
+
     let dcbaap_reg_addr = (info.operational_register_address + 0x30) as *mut u64;
     unsafe {
-        core::ptr::write_volatile(dcbaap_reg_addr, dcbaap_addr);
+        core::ptr::write_volatile(dcbaap_reg_addr, frame.start_address().as_u64());
     }
+    Result::Ok(())
 }

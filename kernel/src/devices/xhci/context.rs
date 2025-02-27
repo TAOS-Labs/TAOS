@@ -33,13 +33,13 @@ impl slot_contex {
 
     /// Retrieves the multi-tt bit from the slot context.
     /// This bit is 1 if multiple transaction translators (TTs) are needed.
-    fn get_MTT(&self) -> u32 {
+    fn get_mtt(&self) -> u32 {
         (self.offset_0 >> 25) & 1
     }
 
     /// Sets the MTT field to value.
     /// value is expected to be one bit.
-    fn set_MTT(&mut self, value: u32) {
+    fn set_mtt(&mut self, value: u32) {
         self.offset_0 = (self.offset_0 & !0x2000000) | value << 25;
     }
 
@@ -257,7 +257,7 @@ impl endpoint_context {
     /// Sets the Max Packet Size field of the endpoint context to value.
     /// value is expected to be 16 bits wide.
     fn set_max_packet_size(&mut self, value: u32) {
-        self.offset_1 = (self.offset_1 & 0xFFFFFFFF) | value << 16;
+        self.offset_1 = (self.offset_1 & 0x0000FFFF) | value << 16;
     }
 
     /// Retrieves the Dequeue Cycle State field of from the endpoint context.
