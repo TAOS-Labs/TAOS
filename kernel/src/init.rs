@@ -58,6 +58,10 @@ pub fn init() -> u32 {
 
     register_event_runner();
     idt::enable();
+
+    let pid = create_process(SYSCALL_64BIT_TEST);
+    schedule_process(pid);
+
     bsp_id
 }
 
