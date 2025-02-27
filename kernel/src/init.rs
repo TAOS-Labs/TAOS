@@ -79,12 +79,13 @@ unsafe extern "C" fn secondary_cpu_main(cpu: &Cpu) -> ! {
 
     debug!("AP {} initialized", cpu.id);
 
+    register_event_runner();
+
     // Wait for all cores to complete initialization
     while !BOOT_COMPLETE.load(Ordering::SeqCst) {
         core::hint::spin_loop();
     }
 
-    register_event_runner();
     idt::enable();
 
     debug!("AP {} entering event loop", cpu.id);
