@@ -1,5 +1,5 @@
 pub mod context;
-pub mod transfer_ring_block;
+pub mod ring_buffer;
 
 use core::cmp::min;
 
