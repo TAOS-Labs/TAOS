@@ -22,7 +22,7 @@ use crate::{
 };
 
 use super::{
-    bitmap_frame_allocator::with_frame_ref_count, frame_allocator::with_bitmap_frame_allocator,
+    frame_allocator::with_bitmap_frame_allocator,
     HHDM_OFFSET,
 };
 
@@ -63,43 +63,6 @@ pub unsafe fn active_level_4_table() -> &'static mut PageTable {
     &mut *page_table_ptr
 }
 
-/// Creates a mapping before frame reference tracking
-///
-/// # Arguments
-/// * `page` - a Page that we want to map
-/// * `mapper` - anything that implements a the Mapper trait
-/// * `flags` - Optional flags, can be None
-///
-/// # Returns
-/// Returns the frame allocated
-pub fn create_mapping_heap(
-    page: Page,
-    mapper: &mut impl Mapper<Size4KiB>,
-    flags: Option<PageTableFlags>,
-) -> PhysFrame {
-    let frame = alloc_frame().expect("no more frames");
-
-    let _ = unsafe {
-        mapper
-            .map_to(
-                page,
-                frame,
-                flags.unwrap_or(
-                    PageTableFlags::PRESENT
-                        | PageTableFlags::WRITABLE
-                        | PageTableFlags::USER_ACCESSIBLE,
-                ),
-                FRAME_ALLOCATOR
-                    .lock()
-                    .as_mut()
-                    .expect("Global allocator not initialized"),
-            )
-            .expect("Mapping failed")
-    };
-
-    frame
-}
-
 /// Creates a mapping
 /// Default flags: PRESENT | WRITABLE
 ///
@@ -116,12 +79,7 @@ pub fn create_mapping(
     flags: Option<PageTableFlags>,
 ) -> PhysFrame {
     // TODO: Add proper failure handling (ref count increased but page not mapped)
-
-    let frame = with_frame_ref_count(|frc| {
-        let frame = alloc_frame().expect("no more frames");
-        frc.inc(frame);
-        frame
-    });
+    let frame = alloc_frame().expect("no more frames");
 
     let _ = unsafe {
         mapper
@@ -162,7 +120,7 @@ pub fn update_mapping(
     flags.set(PageTableFlags::PRESENT, true);
 
     let frame_is_used = with_bitmap_frame_allocator(|alloc| {
-        return alloc.is_frame_used(frame);
+        alloc.is_frame_used(frame)
     });
 
     update_permissions(page, mapper, flags);
@@ -184,15 +142,15 @@ pub fn update_mapping(
             )
         };
 
-        with_frame_ref_count(|frc| {
-            if frc.get(old_frame) > 0 {
-                frc.dec(frame);
+        with_bitmap_frame_allocator(|alloc| {
+            if alloc.frame_ref_count.get(old_frame) > 0 {
+                alloc.frame_ref_count.dec(old_frame);
             }
-
             if frame_is_used {
-                frc.inc(frame);
+                alloc.frame_ref_count.inc(frame);
             }
         });
+
 
         tlb_shootdown(page.start_address());
     }
@@ -223,10 +181,7 @@ pub fn remove_mapping(page: Page, mapper: &mut impl Mapper<Size4KiB>) -> PhysFra
 /// * `mapper` - anything that implements a the Mapper trait
 pub fn remove_mapped_frame(page: Page, mapper: &mut impl Mapper<Size4KiB>) {
     let (frame, _) = mapper.unmap(page).expect("map_to failed");
-    with_frame_ref_count(|frc| {
-        dealloc_frame(frame);
-        frc.dec(frame);
-    });
+    dealloc_frame(frame);
     tlb_shootdown(page.start_address());
 }
 
@@ -301,10 +256,7 @@ pub fn create_not_present_mapping(
     flags: Option<PageTableFlags>,
 ) {
     let frame = create_mapping(page, mapper, flags);
-    with_frame_ref_count(|frc| {
-        dealloc_frame(frame);
-        frc.dec(frame);
-    });
+    dealloc_frame(frame);
 
     let mut flags = flags.unwrap_or(PageTableFlags::WRITABLE);
 
@@ -493,10 +445,6 @@ mod tests {
 
         assert_eq!(read_value, TEST_VALUE);
 
-        with_frame_ref_count(|frc| {
-            serial_println!("Frame ref count: {}", frc.get(frame));
-        });
-
         remove_mapped_frame(page, &mut *mapper);
     }
 
@@ -567,11 +515,7 @@ mod tests {
         {
             let mut mapper = KERNEL_MAPPER.lock();
 
-            let new_frame = with_frame_ref_count(|frc| {
-                let new_frame = alloc_frame().expect("Could not find a new frame");
-                frc.inc(new_frame);
-                new_frame
-            });
+            let new_frame = alloc_frame().expect("Could not find a new frame");
 
             // could say page already mapped, which would be really dumb
             update_mapping(

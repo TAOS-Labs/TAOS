@@ -15,7 +15,7 @@ use crate::{
         x2apic::{self, nanos_to_ticks},
     },
     memory::{
-        bitmap_frame_allocator::with_frame_ref_count, frame_allocator::{alloc_frame, with_bitmap_frame_allocator, with_generic_allocator}, HHDM_OFFSET, KERNEL_MAPPER
+        frame_allocator::{alloc_frame, with_bitmap_frame_allocator, with_generic_allocator}, HHDM_OFFSET, KERNEL_MAPPER
     },
     processes::{loader::load_elf, registers::Registers},
     serial_println,
@@ -228,11 +228,7 @@ pub fn create_process(elf_bytes: &[u8]) -> u32 {
 ///
 /// TODO
 unsafe fn create_process_page_table() -> PhysFrame<Size4KiB> {
-    let frame = with_frame_ref_count(|frc| {
-        let frame = alloc_frame().expect("Failed to allocate PML4 frame");
-        frc.inc(frame);
-        frame
-    });
+    let frame = alloc_frame().expect("Failed to allocate PML4 frame");
 
     let virt = *HHDM_OFFSET + frame.start_address().as_u64();
     let ptr = virt.as_mut_ptr::<PageTable>();
@@ -271,12 +267,7 @@ pub fn clear_process_frames(pcb: &mut PCB) {
             }
         }
         unsafe {
-            with_frame_ref_count(|frc| {
-                if frc.get(pml4_frame) == 1 {
-                    frc.dec(pml4_frame);
-                    deallocator.deallocate_frame(pml4_frame);
-                }
-            });
+            deallocator.deallocate_frame(pml4_frame);
         };
     });
 }
@@ -307,26 +298,12 @@ unsafe fn free_page_table(
         } else {
             // Free level one page
             let page_frame = PhysFrame::containing_address(entry.addr());
-            with_frame_ref_count(|frc| {
-                let val = frc.get(frame);
-                serial_println!("Frame count: {}, frame {:#?}", val, frame);
-                if frc.get(page_frame) == 1 {
-                    frc.dec(page_frame);
-                    deallocator.deallocate_frame(page_frame);
-                }
-            });
+            deallocator.deallocate_frame(page_frame);
         }
         entry.set_unused();
     }
 
-    with_frame_ref_count(|frc| {
-        let val = frc.get(frame);
-                serial_println!("Frame count: {}, frame {:#?}", val, frame);
-        if frc.get(frame) == 1 {
-            frc.dec(frame);
-            deallocator.deallocate_frame(frame);
-        }
-    });
+    deallocator.deallocate_frame(frame);
 }
 
 use core::arch::asm;

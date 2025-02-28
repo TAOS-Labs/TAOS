@@ -24,7 +24,7 @@ use crate::{
     },
     events::inc_runner_clock,
     interrupts::x2apic::{self, current_core_id, TLB_SHOOTDOWN_ADDR},
-    memory::{bitmap_frame_allocator::with_frame_ref_count, frame_allocator::alloc_frame, paging::{create_mapping, get_page_flags, update_mapping}, HHDM_OFFSET},
+    memory::{frame_allocator::alloc_frame, paging::{create_mapping, get_page_flags, update_mapping}, HHDM_OFFSET},
     prelude::*,
     processes::process::{get_current_pid, preempt_process, PROCESS_TABLE},
     syscalls::{fork::sys_fork, mmap::sys_mmap, syscall_handlers::{sys_exit, sys_nanosleep, sys_print}},
@@ -177,11 +177,7 @@ extern "x86-interrupt" fn page_fault_handler(
         flags.set(PageTableFlags::BIT_9, false);
         flags.set(PageTableFlags::WRITABLE, true);
 
-        let frame = with_frame_ref_count(|frc| {
-            let frame = alloc_frame().expect("Allocation failed");
-            frc.inc(frame);
-            frame
-        });
+        let frame = alloc_frame().expect("Allocation failed");
         update_mapping(page, &mut mapper, frame, Some(flags));
         unsafe {
             ptr::copy_nonoverlapping(buffer.as_mut_ptr(), src_ptr, PAGE_SIZE);
@@ -207,11 +203,8 @@ extern "x86-interrupt" fn page_fault_handler(
         if entry.contains(faulting_address) {
             serial_println!("Entry start: {}", entry.start);
             let index = ((faulting_address - entry.start) / PAGE_SIZE as u64) as usize;
-            let frame = with_frame_ref_count(|frc| {
-                let frame = alloc_frame().expect("Could not allocate frame");
-                frc.inc(frame);
-                frame
-            });
+            let frame = alloc_frame().expect("Could not allocate frame");
+
             entry.loaded[index] = true;
             update_mapping(
                 page,

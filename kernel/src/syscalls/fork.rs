@@ -12,7 +12,11 @@ use crate::{
     constants::memory::PAGE_SIZE,
     events::{current_running_event_info, schedule_process},
     interrupts::x2apic,
-    memory::{bitmap_frame_allocator::with_frame_ref_count, frame_allocator::alloc_frame, paging::get_page_flags, HHDM_OFFSET},
+    memory::{
+        frame_allocator::{alloc_frame, with_bitmap_frame_allocator},
+        paging::get_page_flags,
+        HHDM_OFFSET,
+    },
     processes::process::{
         run_process_ring3, ProcessState, UnsafePCB, NEXT_PID, PCB, PROCESS_TABLE,
     },
@@ -68,11 +72,7 @@ pub fn sys_fork() -> u64 {
 /// Newly allocated page table frame containing the duplicated structure
 pub fn duplicate_page_table(parent_frame: PhysFrame, level: u8) -> PhysFrame {
     // Allocate and initialize new page table frame
-    let child_frame = with_frame_ref_count(|frc| {
-        let child_frame = alloc_frame().expect("Failed to allocate frame");
-        frc.inc(child_frame);
-        child_frame
-    });
+    let child_frame = alloc_frame().expect("Failed to allocate frame");
     let child_table = get_table_mut(child_frame);
     child_table.zero();
     let parent_table = get_table_mut(parent_frame);
@@ -92,10 +92,11 @@ fn duplicate_entries(parent: &mut PageTable, child: &mut PageTable, level: u8) {
 
         // Preserve kernel mappings on higher half
         if level == 4 && index >= 256 {
-            with_frame_ref_count(|frc| {
-                let frame = PhysFrame::from_start_address(parent_entry.addr()).expect("Address not aligned");
+            with_bitmap_frame_allocator(|frc| {
+                let frame = PhysFrame::from_start_address(parent_entry.addr())
+                    .expect("Address not aligned");
                 child[index].set_addr(parent_entry.addr(), parent_entry.flags());
-                frc.inc(frame);
+                frc.frame_ref_count.inc(frame);
             });
             continue;
         }
@@ -133,11 +134,11 @@ fn handle_leaf_level(parent_entry: &mut PageTableEntry, child_entry: &mut PageTa
         }
         parent_entry.set_flags(flags);
 
-        with_frame_ref_count(|frc| {
-            let frame = PhysFrame::from_start_address(parent_entry.addr()).expect("Address not aligned");
-            serial_println!("Fork made this frame {:#?}", frame);
+        with_bitmap_frame_allocator(|frc| {
+            let frame =
+                PhysFrame::from_start_address(parent_entry.addr()).expect("Address not aligned");
             child_entry.set_addr(parent_entry.addr(), flags);
-            frc.inc(frame);
+            frc.frame_ref_count.inc(frame);
         });
     }
 }
@@ -234,19 +235,18 @@ fn recursive_walk(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::processes::process::PCB;
 
     #[test_case]
     fn test_simple_fork() {
         use crate::{
             constants::processes::FORK_SIMPLE,
             events::schedule_process,
-            processes::process::{create_process, print_process_table, run_process_ring3},
+            processes::process::create_process,
         };
 
         let parent_pid = create_process(FORK_SIMPLE);
         schedule_process(parent_pid);
-        for i in 0..1000000000_u64 {}
+        for _ in 0..1000000000_u64 {}
         let child_pid = parent_pid + 1;
 
         serial_println!("PARENT PID {}", parent_pid);
