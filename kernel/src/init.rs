@@ -62,7 +62,7 @@ pub fn init() -> u32 {
     //     -1,
     //     0,
     // );
-    let parent_pid = create_process(TEST_SYSCALL_PRINT);
+    let parent_pid = create_process(FORK_SIMPLE);
     schedule_process(parent_pid);
 
         // since no other processes are running or being created we assume that
@@ -115,7 +115,7 @@ unsafe extern "C" fn secondary_cpu_main(cpu: &Cpu) -> ! {
     while !BOOT_COMPLETE.load(Ordering::SeqCst) {
         core::hint::spin_loop();
     }
-
+    register_event_runner();
     idt::enable();
 
     debug!("AP {} entering event loop", cpu.id);

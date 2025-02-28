@@ -173,6 +173,7 @@ pub fn sys_print(buffer: *const u8) -> u64 {
     0
 }
 
+// hey gang
 pub fn sys_nanosleep(nanos: u64, rsp: u64) -> u64 {
     sleep_process(rsp, nanos);
     x2apic::send_eoi();
