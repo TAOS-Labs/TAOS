@@ -29,8 +29,9 @@ pub struct Fat16File {
     pub entry_position: u64,
 }
 
+#[async_trait]
 impl File for Fat16File {
-    fn read_with_device(
+    async fn read_with_device(
         &mut self,
         device: &mut dyn BlockDevice,
         buf: &mut [u8],
@@ -54,7 +55,7 @@ impl File for Fat16File {
             let sectors_per_cluster = self.cluster_size / SECTOR_SIZE;
             for i in 0..sectors_per_cluster {
                 let mut sector_data = vec![0u8; SECTOR_SIZE];
-                device.read_block(sector + i as u64, &mut sector_data)?;
+                device.read_block(sector + i as u64, &mut sector_data).await?;
                 let start = i * SECTOR_SIZE;
                 cluster_data[start..start + SECTOR_SIZE].copy_from_slice(&sector_data);
             }
@@ -67,7 +68,7 @@ impl File for Fat16File {
             self.position += chunk_size as u64;
 
             if cluster_offset + chunk_size == self.cluster_size {
-                let next_cluster = self.read_fat_entry(device, self.current_cluster)?;
+                let next_cluster = self.read_fat_entry(device, self.current_cluster).await?;
                 if next_cluster.is_end_of_chain() {
                     break;
                 }
@@ -78,7 +79,7 @@ impl File for Fat16File {
         Ok(bytes_read)
     }
 
-    fn write_with_device(
+    async fn write_with_device(
         &mut self,
         device: &mut dyn BlockDevice,
         buf: &[u8],
@@ -97,7 +98,7 @@ impl File for Fat16File {
             let sectors_per_cluster = self.cluster_size / SECTOR_SIZE;
             for i in 0..sectors_per_cluster {
                 let mut sector_data = vec![0u8; SECTOR_SIZE];
-                device.read_block(sector + i as u64, &mut sector_data)?;
+                device.read_block(sector + i as u64, &mut sector_data).await?;
                 let start = i * SECTOR_SIZE;
                 cluster_data[start..start + SECTOR_SIZE].copy_from_slice(&sector_data);
             }
@@ -107,7 +108,7 @@ impl File for Fat16File {
 
             for i in 0..sectors_per_cluster {
                 let start = i * SECTOR_SIZE;
-                device.write_block(sector + i as u64, &cluster_data[start..start + SECTOR_SIZE])?;
+                device.write_block(sector + i as u64, &cluster_data[start..start + SECTOR_SIZE]).await?;
             }
 
             bytes_written += chunk_size;
@@ -116,16 +117,16 @@ impl File for Fat16File {
             self.size = max(self.size, self.position);
 
             if cluster_offset + chunk_size == self.cluster_size {
-                let fat_entry = self.read_fat_entry(device, self.current_cluster)?;
+                let fat_entry = self.read_fat_entry(device, self.current_cluster).await?;
                 if fat_entry.is_end_of_chain() {
-                    let new_cluster = self.allocate_cluster(device)?;
+                    let new_cluster = self.allocate_cluster(device).await?;
                     self.write_fat_entry(
                         device,
                         self.current_cluster,
                         FatEntry {
                             cluster: new_cluster,
                         },
-                    )?;
+                    ).await?;
                     self.current_cluster = new_cluster;
                 } else {
                     self.current_cluster = fat_entry.cluster;
@@ -133,7 +134,7 @@ impl File for Fat16File {
             }
         }
 
-        self.update_directory_entry(device, self.size)?;
+        self.update_directory_entry(device, self.size).await?;
         Ok(bytes_written)
     }
 
@@ -183,7 +184,7 @@ impl File for Fat16File {
 
 impl Fat16File {
     /// Reads FAT entry for given cluster
-    pub fn read_fat_entry(
+    pub async fn read_fat_entry(
         &self,
         device: &mut dyn BlockDevice,
         cluster: u16,
@@ -193,7 +194,7 @@ impl Fat16File {
         let sector_offset = (offset % SECTOR_SIZE as u64) as usize;
 
         let mut sector_data = vec![0u8; SECTOR_SIZE];
-        device.read_block(sector, &mut sector_data)?;
+        device.read_block(sector, &mut sector_data).await?;
 
         let entry =
             u16::from_le_bytes([sector_data[sector_offset], sector_data[sector_offset + 1]]);
@@ -202,7 +203,7 @@ impl Fat16File {
     }
 
     /// Writes FAT entry for given cluster
-    pub fn write_fat_entry(
+    pub async fn write_fat_entry(
         &self,
         device: &mut dyn BlockDevice,
         cluster: u16,
@@ -213,19 +214,19 @@ impl Fat16File {
         let sector_offset = (offset % SECTOR_SIZE as u64) as usize;
 
         let mut sector_data = vec![0u8; SECTOR_SIZE];
-        device.read_block(sector, &mut sector_data)?;
+        device.read_block(sector, &mut sector_data).await?;
 
         let bytes = entry.cluster.to_le_bytes();
         sector_data[sector_offset] = bytes[0];
         sector_data[sector_offset + 1] = bytes[1];
 
-        device.write_block(sector, &sector_data)?;
+        device.write_block(sector, &sector_data).await?;
 
         Ok(())
     }
 
     /// Updates size in directory entry
-    pub fn update_directory_entry(
+    pub async fn update_directory_entry(
         &self,
         device: &mut dyn BlockDevice,
         new_size: u64,
@@ -234,24 +235,24 @@ impl Fat16File {
         let offset = self.entry_position % SECTOR_SIZE as u64;
 
         let mut sector_buffer = vec![0u8; SECTOR_SIZE];
-        device.read_block(sector, &mut sector_buffer)?;
+        device.read_block(sector, &mut sector_buffer).await?;
 
         let entry =
             unsafe { &mut *(sector_buffer.as_mut_ptr().add(offset as usize) as *mut DirEntry83) };
         entry.file_size = new_size as u32;
 
-        device.write_block(sector, &sector_buffer)?;
+        device.write_block(sector, &sector_buffer).await?;
         Ok(())
     }
 
     /// Finds and allocates a free cluster
-    pub fn allocate_cluster(&self, device: &mut dyn BlockDevice) -> Result<u16, FsError> {
+    pub async fn allocate_cluster(&self, device: &mut dyn BlockDevice) -> Result<u16, FsError> {
         let total_clusters = (self.data_start as usize) / self.cluster_size;
 
         for cluster in 2..total_clusters as u16 {
-            let entry = self.read_fat_entry(device, cluster)?;
+            let entry = self.read_fat_entry(device, cluster).await?;
             if entry.is_free() {
-                self.write_fat_entry(device, cluster, FatEntry { cluster: 0xFFFF })?;
+                self.write_fat_entry(device, cluster, FatEntry { cluster: 0xFFFF }).await?;
                 return Ok(cluster);
             }
         }

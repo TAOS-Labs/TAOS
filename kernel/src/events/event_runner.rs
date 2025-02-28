@@ -1,4 +1,4 @@
-use super::{futures::Sleep, Event, EventId, EventQueue, EventRunner};
+use super::{futures::sleep::Sleep, Event, EventId, EventQueue, EventRunner};
 
 use alloc::{
     collections::{binary_heap::BinaryHeap, btree_set::BTreeSet, vec_deque::VecDeque},
@@ -16,7 +16,7 @@ use core::{
 
 use crate::{
     constants::events::{NUM_EVENT_PRIORITIES, PRIORITY_INC_DELAY},
-    interrupts::x2apic::nanos_to_ticks,
+    interrupts::x2apic::nanos_to_ticks, serial_println,
 };
 
 impl EventRunner {
@@ -171,6 +171,11 @@ impl EventRunner {
     /// Increments the system timer (by one tick)
     pub fn inc_system_clock(&mut self) {
         self.system_clock += 1;
+    }
+
+    /// Increments the system timer (by one tick)
+    pub fn get_system_time(&self) -> u64 {
+        self.system_clock
     }
 
     /// Awakes the next sleeping event to be awoken, if it is time

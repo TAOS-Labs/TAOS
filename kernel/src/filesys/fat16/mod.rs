@@ -39,7 +39,7 @@ pub struct Fat16<'a> {
 }
 
 impl<'a> Fat16<'a> {
-    pub fn format(mut device: Box<dyn BlockDevice + 'a>) -> Result<Self, FsError> {
+    pub async fn format(mut device: Box<dyn BlockDevice + 'a>) -> Result<Self, FsError> {
         let total_blocks = device.total_blocks();
         let block_size = device.block_size();
 
@@ -96,7 +96,7 @@ impl<'a> Fat16<'a> {
         block_buf[..boot_sector_bytes.len()].copy_from_slice(boot_sector_bytes);
         block_buf[510] = 0x55; // Boot signature
         block_buf[511] = 0xAA;
-        device.write_block(0, &block_buf)?;
+        device.write_block(0, &block_buf).await?;
 
         let mut fat_block = vec![0u8; block_size];
         // First two FAT entries are reserved
@@ -108,7 +108,7 @@ impl<'a> Fat16<'a> {
         // Write first sector of each FAT
         for i in 0..fat_count {
             let fat_start = reserved_sectors as u64 + (i as u64 * sectors_per_fat as u64);
-            device.write_block(fat_start, &fat_block)?;
+            device.write_block(fat_start, &fat_block).await?;
         }
 
         // Clear the rest of the FAT tables
@@ -116,21 +116,21 @@ impl<'a> Fat16<'a> {
         for i in 0..fat_count {
             let fat_start = reserved_sectors as u64 + (i as u64 * sectors_per_fat as u64);
             for j in 1..sectors_per_fat {
-                device.write_block(fat_start + j as u64, &zero_block)?;
+                device.write_block(fat_start + j as u64, &zero_block).await?;
             }
         }
 
         // Initialize empty root directory
         let root_dir_start = reserved_sectors as u64 + (fat_count as u64 * sectors_per_fat as u64);
         for i in 0..root_dir_sectors {
-            device.write_block(root_dir_start + i as u64, &zero_block)?;
+            device.write_block(root_dir_start + i as u64, &zero_block).await?;
         }
-        Fat16::new(device)
+        Fat16::new(device).await
     }
 
-    pub fn new(device: Box<dyn BlockDevice + 'a>) -> Result<Self, FsError> {
+    pub async fn new(device: Box<dyn BlockDevice + 'a>) -> Result<Self, FsError> {
         let mut boot_sector_data = vec![0u8; SECTOR_SIZE];
-        device.read_block(0, &mut boot_sector_data)?;
+        device.read_block(0, &mut boot_sector_data).await?;
 
         let boot_sector =
             unsafe { core::ptr::read(boot_sector_data.as_ptr() as *const BootSector) };
@@ -158,13 +158,13 @@ impl<'a> Fat16<'a> {
         })
     }
 
-    fn read_fat_entry(&self, cluster: u16) -> Result<FatEntry, FsError> {
+    async fn read_fat_entry(&self, cluster: u16) -> Result<FatEntry, FsError> {
         let offset = cluster as u64 * FAT_ENTRY_SIZE as u64;
         let sector = self.fat_start + (offset / SECTOR_SIZE as u64);
         let sector_offset = (offset % SECTOR_SIZE as u64) as usize;
 
         let mut sector_data = vec![0u8; SECTOR_SIZE];
-        self.device.read_block(sector, &mut sector_data)?;
+        self.device.read_block(sector, &mut sector_data).await?;
 
         let entry =
             u16::from_le_bytes([sector_data[sector_offset], sector_data[sector_offset + 1]]);
@@ -172,30 +172,30 @@ impl<'a> Fat16<'a> {
         Ok(FatEntry { cluster: entry })
     }
 
-    fn write_fat_entry(&mut self, cluster: u16, entry: FatEntry) -> Result<(), FsError> {
+    async fn write_fat_entry(&mut self, cluster: u16, entry: FatEntry) -> Result<(), FsError> {
         let offset = cluster as u64 * FAT_ENTRY_SIZE as u64;
         let sector = self.fat_start + (offset / SECTOR_SIZE as u64);
         let sector_offset = (offset % SECTOR_SIZE as u64) as usize;
 
         let mut sector_data = vec![0u8; SECTOR_SIZE];
-        self.device.read_block(sector, &mut sector_data)?;
+        self.device.read_block(sector, &mut sector_data).await?;
 
         let bytes = entry.cluster.to_le_bytes();
         sector_data[sector_offset] = bytes[0];
         sector_data[sector_offset + 1] = bytes[1];
 
-        self.device.write_block(sector, &sector_data)?;
+        self.device.write_block(sector, &sector_data).await?;
 
         // Write to second FAT table if it exists
         if self.boot_sector.fat_count > 1 {
             let second_fat_sector = sector + self.boot_sector.sectors_per_fat as u64;
-            self.device.write_block(second_fat_sector, &sector_data)?;
+            self.device.write_block(second_fat_sector, &sector_data).await?;
         }
 
         Ok(())
     }
 
-    fn write_dir_entry(&mut self, dir_cluster: u16, entry: &DirEntry83) -> Result<(), FsError> {
+    async fn write_dir_entry(&mut self, dir_cluster: u16, entry: &DirEntry83) -> Result<(), FsError> {
         let entries_per_sector = SECTOR_SIZE / core::mem::size_of::<DirEntry83>();
         let mut sector_buffer = vec![0u8; SECTOR_SIZE];
 
@@ -212,7 +212,7 @@ impl<'a> Fat16<'a> {
 
         for sector_offset in 0..num_sectors {
             self.device
-                .read_block(start_sector + sector_offset, &mut sector_buffer)?;
+                .read_block(start_sector + sector_offset, &mut sector_buffer).await?;
 
             for i in 0..entries_per_sector {
                 let entry_ptr = unsafe {
@@ -225,7 +225,7 @@ impl<'a> Fat16<'a> {
                 if entry_ptr.is_free() || entry_ptr.is_deleted() {
                     *entry_ptr = *entry;
                     self.device
-                        .write_block(start_sector + sector_offset, &sector_buffer)?;
+                        .write_block(start_sector + sector_offset, &sector_buffer).await?;
                     return Ok(());
                 }
             }
@@ -237,7 +237,7 @@ impl<'a> Fat16<'a> {
         Err(FsError::NotSupported)
     }
 
-    fn init_directory(&mut self, cluster: u16, parent_cluster: u16) -> Result<(), FsError> {
+    async fn init_directory(&mut self, cluster: u16, parent_cluster: u16) -> Result<(), FsError> {
         let dot_entry = DirEntry83::new_directory(".", cluster);
         let dotdot_entry = DirEntry83::new_directory("..", parent_cluster);
 
@@ -251,25 +251,25 @@ impl<'a> Fat16<'a> {
                 .add(core::mem::size_of::<DirEntry83>()) as *mut DirEntry83) = dotdot_entry;
         }
 
-        self.device.write_block(sector, &sector_data)?;
+        self.device.write_block(sector, &sector_data).await?;
         sector_data.fill(0);
 
         for i in 1..self.boot_sector.sectors_per_cluster {
-            self.device.write_block(sector + i as u64, &sector_data)?;
+            self.device.write_block(sector + i as u64, &sector_data).await?;
         }
 
         Ok(())
     }
 
-    fn allocate_cluster(&mut self) -> Result<u16, FsError> {
+    async fn allocate_cluster(&mut self) -> Result<u16, FsError> {
         let total_clusters = (self.boot_sector.total_sectors_16 as usize
             - self.data_start as usize)
             / self.boot_sector.sectors_per_cluster as usize;
 
         for cluster in 2..total_clusters as u16 {
-            let entry = self.read_fat_entry(cluster)?;
+            let entry = self.read_fat_entry(cluster).await?;
             if entry.is_free() {
-                self.write_fat_entry(cluster, FatEntry { cluster: 0xFFFF })?;
+                self.write_fat_entry(cluster, FatEntry { cluster: 0xFFFF }).await?;
                 return Ok(cluster);
             }
         }
@@ -282,7 +282,7 @@ impl<'a> Fat16<'a> {
         self.data_start + ((cluster as u64 - 2) * self.boot_sector.sectors_per_cluster as u64)
     }
 
-    fn find_entry(&self, path: &str) -> Result<(DirEntry83, u64), FsError> {
+    async fn find_entry(&self, path: &str) -> Result<(DirEntry83, u64), FsError> {
         let mut current_dir_cluster = 0;
         let components: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
 
@@ -292,7 +292,7 @@ impl<'a> Fat16<'a> {
 
         let mut i = 0;
         while i < components.len() - 1 {
-            let entry = self.find_entry_in_dir(current_dir_cluster, components[i])?;
+            let entry = self.find_entry_in_dir(current_dir_cluster, components[i]).await?;
             if !entry.0.is_directory() {
                 return Err(FsError::NotFound);
             }
@@ -300,11 +300,11 @@ impl<'a> Fat16<'a> {
             i += 1;
         }
 
-        self.find_entry_in_dir(current_dir_cluster, components[components.len() - 1])
+        self.find_entry_in_dir(current_dir_cluster, components[components.len() - 1]).await
     }
 
-    fn remove_entry(&mut self, path: &str, is_dir: bool) -> Result<(), FsError> {
-        let (entry, entry_pos) = self.find_entry(path)?;
+    async fn remove_entry(&mut self, path: &str, is_dir: bool) -> Result<(), FsError> {
+        let (entry, entry_pos) = self.find_entry(path).await?;
 
         if entry.is_directory() != is_dir {
             return Err(FsError::NotSupported);
@@ -314,27 +314,27 @@ impl<'a> Fat16<'a> {
         let sector = entry_pos / SECTOR_SIZE as u64;
         let offset = entry_pos % SECTOR_SIZE as u64;
 
-        self.device.read_block(sector, &mut sector_buffer)?;
+        self.device.read_block(sector, &mut sector_buffer).await?;
         sector_buffer[offset as usize] = DELETED_ENTRY_MARKER;
-        self.device.write_block(sector, &sector_buffer)?;
+        self.device.write_block(sector, &sector_buffer).await?;
 
         let mut cluster = entry.start_cluster;
-        while !self.read_fat_entry(cluster)?.is_end_of_chain() {
-            let next_cluster = self.read_fat_entry(cluster)?.cluster;
-            self.write_fat_entry(cluster, FatEntry { cluster: 0 })?;
+        while !self.read_fat_entry(cluster).await?.is_end_of_chain() {
+            let next_cluster = self.read_fat_entry(cluster).await?.cluster;
+            self.write_fat_entry(cluster, FatEntry { cluster: 0 }).await?;
             cluster = next_cluster;
         }
-        self.write_fat_entry(cluster, FatEntry { cluster: 0 })?;
+        self.write_fat_entry(cluster, FatEntry { cluster: 0 }).await?;
 
         Ok(())
     }
 
-    fn is_directory_empty(&mut self, dir_cluster: u16) -> Result<bool, FsError> {
+    async fn is_directory_empty(&mut self, dir_cluster: u16) -> Result<bool, FsError> {
         let entries_per_sector = SECTOR_SIZE / core::mem::size_of::<DirEntry83>();
         let mut sector_buffer = vec![0u8; SECTOR_SIZE];
 
         let sector = self.cluster_to_sector(dir_cluster);
-        self.device.read_block(sector, &mut sector_buffer)?;
+        self.device.read_block(sector, &mut sector_buffer).await?;
 
         for i in 0..entries_per_sector {
             let entry = unsafe {
@@ -359,7 +359,7 @@ impl<'a> Fat16<'a> {
         Ok(true)
     }
 
-    fn find_entry_in_dir(
+    async fn find_entry_in_dir(
         &self,
         dir_cluster: u64,
         name: &str,
@@ -380,7 +380,7 @@ impl<'a> Fat16<'a> {
 
         for sector_offset in 0..num_sectors {
             self.device
-                .read_block(start_sector + sector_offset, &mut sector_buffer)?;
+                .read_block(start_sector + sector_offset, &mut sector_buffer).await?;
 
             for i in 0..entries_per_sector {
                 let entry = unsafe {
@@ -407,8 +407,9 @@ impl<'a> Fat16<'a> {
     }
 }
 
+#[async_trait]
 impl FileSystem for Fat16<'_> {
-    fn create_file(&mut self, path: &str) -> Result<(), FsError> {
+    async fn create_file(&mut self, path: &str) -> Result<(), FsError> {
         let (parent_path, name) = match path.rfind('/') {
             Some(pos) => (&path[..pos], &path[pos + 1..]),
             None => ("", path),
@@ -423,26 +424,26 @@ impl FileSystem for Fat16<'_> {
             None => (name, ""),
         };
 
-        if self.find_entry(path).is_ok() {
+        if self.find_entry(path).await.is_ok() {
             return Err(FsError::AlreadyExists);
         }
 
-        let cluster = self.allocate_cluster()?;
+        let cluster = self.allocate_cluster().await?;
 
         let entry = DirEntry83::new_file(base_name, extension, cluster);
 
         let parent_cluster = if parent_path.is_empty() || parent_path == "/" {
             0
         } else {
-            self.find_entry(parent_path)?.0.start_cluster
+            self.find_entry(parent_path).await?.0.start_cluster
         };
 
-        self.write_dir_entry(parent_cluster, &entry)?;
+        self.write_dir_entry(parent_cluster, &entry).await?;
 
         Ok(())
     }
 
-    fn create_dir(&mut self, path: &str) -> Result<(), FsError> {
+    async fn create_dir(&mut self, path: &str) -> Result<(), FsError> {
         let (parent_path, name) = match path.rfind('/') {
             Some(pos) => (&path[..pos], &path[pos + 1..]),
             None => ("", path),
@@ -452,47 +453,47 @@ impl FileSystem for Fat16<'_> {
             return Err(FsError::InvalidName);
         }
 
-        if self.find_entry(path).is_ok() {
+        if self.find_entry(path).await.is_ok() {
             return Err(FsError::AlreadyExists);
         }
 
-        let cluster = self.allocate_cluster()?;
+        let cluster = self.allocate_cluster().await?;
 
         let entry = DirEntry83::new_directory(name, cluster);
 
         let parent_cluster = if parent_path.is_empty() || parent_path == "/" {
             0
         } else {
-            self.find_entry(parent_path)?.0.start_cluster
+            self.find_entry(parent_path).await?.0.start_cluster
         };
 
-        self.init_directory(cluster, parent_cluster)?;
+        self.init_directory(cluster, parent_cluster).await?;
 
-        self.write_dir_entry(parent_cluster, &entry)?;
+        self.write_dir_entry(parent_cluster, &entry).await?;
 
         Ok(())
     }
 
-    fn remove_file(&mut self, path: &str) -> Result<(), FsError> {
-        self.remove_entry(path, false)
+    async fn remove_file(&mut self, path: &str) -> Result<(), FsError> {
+        self.remove_entry(path, false).await
     }
 
-    fn remove_dir(&mut self, path: &str) -> Result<(), FsError> {
-        let (entry, _) = self.find_entry(path)?;
+    async fn remove_dir(&mut self, path: &str) -> Result<(), FsError> {
+        let (entry, _) = self.find_entry(path).await?;
 
         if !entry.is_directory() {
             return Err(FsError::NotSupported);
         }
 
-        if !self.is_directory_empty(entry.start_cluster)? {
+        if !self.is_directory_empty(entry.start_cluster).await? {
             return Err(FsError::DirectoryNotEmpty);
         }
 
-        self.remove_entry(path, true)
+        self.remove_entry(path, true).await
     }
 
-    fn open_file(&mut self, path: &str) -> Result<usize, FsError> {
-        let (entry, entry_pos) = self.find_entry(path)?;
+    async fn open_file(&mut self, path: &str) -> Result<usize, FsError> {
+        let (entry, entry_pos) = self.find_entry(path).await?;
 
         if entry.is_directory() {
             return Err(FsError::NotSupported);
@@ -540,7 +541,7 @@ impl FileSystem for Fat16<'_> {
         self.reuse_fds.push(fd);
     }
 
-    fn write_file(&mut self, fd: usize, buf: &[u8]) -> Result<usize, FsError> {
+    async fn write_file(&mut self, fd: usize, buf: &[u8]) -> Result<usize, FsError> {
         let mut bytes_written = 0;
         let mut buf_offset = 0;
 
@@ -558,7 +559,7 @@ impl FileSystem for Fat16<'_> {
             for i in 0..sectors_per_cluster {
                 let mut sector_data = vec![0u8; SECTOR_SIZE];
                 self.device
-                    .read_block(sector + i as u64, &mut sector_data)?;
+                    .read_block(sector + i as u64, &mut sector_data).await?;
                 let start = i * SECTOR_SIZE;
                 cluster_data[start..start + SECTOR_SIZE].copy_from_slice(&sector_data);
             }
@@ -569,7 +570,7 @@ impl FileSystem for Fat16<'_> {
             for i in 0..sectors_per_cluster {
                 let start = i * SECTOR_SIZE;
                 self.device
-                    .write_block(sector + i as u64, &cluster_data[start..start + SECTOR_SIZE])?;
+                    .write_block(sector + i as u64, &cluster_data[start..start + SECTOR_SIZE]).await?;
             }
 
             bytes_written += chunk_size;
@@ -578,16 +579,16 @@ impl FileSystem for Fat16<'_> {
             file.size = max(file.size, file.position);
 
             if cluster_offset + chunk_size == file.cluster_size {
-                let fat_entry = file.read_fat_entry(&mut *self.device, file.current_cluster)?;
+                let fat_entry = file.read_fat_entry(&mut *self.device, file.current_cluster).await?;
                 if fat_entry.is_end_of_chain() {
-                    let new_cluster = file.allocate_cluster(&mut *self.device)?;
+                    let new_cluster = file.allocate_cluster(&mut *self.device).await?;
                     file.write_fat_entry(
                         &mut *self.device,
                         file.current_cluster,
                         FatEntry {
                             cluster: new_cluster,
                         },
-                    )?;
+                    ).await?;
                     file.current_cluster = new_cluster;
                 } else {
                     file.current_cluster = fat_entry.cluster;
@@ -595,7 +596,7 @@ impl FileSystem for Fat16<'_> {
             }
         }
 
-        file.update_directory_entry(&mut *self.device, file.size)?;
+        file.update_directory_entry(&mut *self.device, file.size).await?;
         Ok(bytes_written)
     }
 
@@ -636,7 +637,7 @@ impl FileSystem for Fat16<'_> {
         Ok(new_pos)
     }
 
-    fn read_file(&mut self, fd: usize, buf: &mut [u8]) -> Result<usize, FsError> {
+    async fn read_file(&mut self, fd: usize, buf: &mut [u8]) -> Result<usize, FsError> {
         let file: &mut Fat16File = self.fd_table.get_mut(fd).expect("Invalid file descriptor.");
 
         if file.position >= file.size {
@@ -659,7 +660,7 @@ impl FileSystem for Fat16<'_> {
             for i in 0..sectors_per_cluster {
                 let mut sector_data = vec![0u8; SECTOR_SIZE];
                 self.device
-                    .read_block(sector + i as u64, &mut sector_data)?;
+                    .read_block(sector + i as u64, &mut sector_data).await?;
                 let start = i * SECTOR_SIZE;
                 cluster_data[start..start + SECTOR_SIZE].copy_from_slice(&sector_data);
             }
@@ -672,7 +673,7 @@ impl FileSystem for Fat16<'_> {
             file.position += chunk_size as u64;
 
             if cluster_offset + chunk_size == file.cluster_size {
-                let next_cluster = file.read_fat_entry(&mut *self.device, file.current_cluster)?;
+                let next_cluster = file.read_fat_entry(&mut *self.device, file.current_cluster).await?;
                 if next_cluster.is_end_of_chain() {
                     break;
                 }
@@ -683,7 +684,7 @@ impl FileSystem for Fat16<'_> {
         Ok(bytes_read)
     }
 
-    fn read_dir(&self, path: &str) -> Result<Vec<DirEntry>, FsError> {
+    async fn read_dir(&self, path: &str) -> Result<Vec<DirEntry>, FsError> {
         let (entry, _) = if path.is_empty() || path == "/" {
             // Root directory - return entry with dummy position
             (
@@ -700,7 +701,7 @@ impl FileSystem for Fat16<'_> {
                 0,
             )
         } else {
-            self.find_entry(path)?
+            self.find_entry(path).await?
         };
 
         if !entry.is_directory() {
@@ -724,7 +725,7 @@ impl FileSystem for Fat16<'_> {
 
         for sector_offset in 0..num_sectors {
             self.device
-                .read_block(start_sector + sector_offset, &mut sector_buffer)?;
+                .read_block(start_sector + sector_offset, &mut sector_buffer).await?;
 
             for i in 0..entries_per_sector {
                 let fat_entry = unsafe {
@@ -760,8 +761,8 @@ impl FileSystem for Fat16<'_> {
         Ok(result)
     }
 
-    fn metadata(&self, path: &str) -> Result<FileMetadata, FsError> {
-        let (entry, _) = self.find_entry(path)?;
+    async fn metadata(&self, path: &str) -> Result<FileMetadata, FsError> {
+        let (entry, _) = self.find_entry(path).await?;
 
         Ok(FileMetadata {
             size: entry.file_size as u64,
@@ -776,10 +777,10 @@ impl FileSystem for Fat16<'_> {
         })
     }
 
-    fn rename(&mut self, from: &str, to: &str) -> Result<(), FsError> {
-        let (src_entry, src_pos) = self.find_entry(from)?;
+    async fn rename(&mut self, from: &str, to: &str) -> Result<(), FsError> {
+        let (src_entry, src_pos) = self.find_entry(from).await?;
 
-        if self.find_entry(to).is_ok() {
+        if self.find_entry(to).await.is_ok() {
             return Err(FsError::AlreadyExists);
         }
 
@@ -813,7 +814,7 @@ impl FileSystem for Fat16<'_> {
         let dest_dir_cluster = if parent_path.is_empty() || parent_path == "/" {
             0
         } else {
-            self.find_entry(parent_path)?.0.start_cluster
+            self.find_entry(parent_path).await?.0.start_cluster
         };
 
         let (start_sector, num_sectors) = if dest_dir_cluster == 0 {
@@ -830,7 +831,7 @@ impl FileSystem for Fat16<'_> {
         let mut found_pos = None;
         'outer: for sector_offset in 0..num_sectors {
             self.device
-                .read_block(start_sector + sector_offset, &mut sector_buffer)?;
+                .read_block(start_sector + sector_offset, &mut sector_buffer).await?;
 
             for i in 0..entries_per_sector {
                 let entry_offset = i * core::mem::size_of::<DirEntry83>();
@@ -846,17 +847,17 @@ impl FileSystem for Fat16<'_> {
 
         let (dest_sector, dest_offset) = found_pos.ok_or(FsError::NotSupported)?;
 
-        self.device.read_block(dest_sector, &mut sector_buffer)?;
+        self.device.read_block(dest_sector, &mut sector_buffer).await?;
         unsafe {
             *(sector_buffer.as_mut_ptr().add(dest_offset) as *mut DirEntry83) = new_entry;
         }
-        self.device.write_block(dest_sector, &sector_buffer)?;
+        self.device.write_block(dest_sector, &sector_buffer).await?;
 
         self.device
-            .read_block(src_pos / SECTOR_SIZE as u64, &mut sector_buffer)?;
+            .read_block(src_pos / SECTOR_SIZE as u64, &mut sector_buffer).await?;
         sector_buffer[(src_pos % SECTOR_SIZE as u64) as usize] = DELETED_ENTRY_MARKER;
         self.device
-            .write_block(src_pos / SECTOR_SIZE as u64, &sector_buffer)?;
+            .write_block(src_pos / SECTOR_SIZE as u64, &sector_buffer).await?;
 
         Ok(())
     }

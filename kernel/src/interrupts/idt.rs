@@ -292,7 +292,6 @@ extern "x86-interrupt" fn naked_timer_handler(_: InterruptStackFrame) {
 #[no_mangle]
 extern "C" fn timer_handler(rsp: u64) {
     inc_runner_clock();
-
     preempt_process(rsp);
     x2apic::send_eoi();
 }

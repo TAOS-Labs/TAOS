@@ -5,7 +5,7 @@ use alloc::{
     },
     sync::Arc,
 };
-use futures::Sleep;
+use futures::sleep::Sleep;
 use spin::{mutex::Mutex, rwlock::RwLock};
 use x86_64::instructions::interrupts::without_interrupts;
 
@@ -16,13 +16,14 @@ use core::{
 };
 
 use crate::{
-    constants::events::NUM_EVENT_PRIORITIES, interrupts::x2apic,
+    constants::events::NUM_EVENT_PRIORITIES, interrupts::x2apic::{self, nanos_to_ticks},
     processes::process::run_process_ring3,
 };
 
 mod event;
 mod event_runner;
-mod futures;
+
+pub mod futures;
 
 /// Thread-safe future that remains pinned to a heap address throughout its lifetime
 type SendFuture = Mutex<Pin<Box<dyn Future<Output = ()> + 'static + Send>>>;
@@ -42,7 +43,7 @@ impl EventId {
 }
 
 /// Describes a future and its scheduling context
-struct Event {
+pub struct Event {
     eid: EventId,
     pid: u32,
     future: SendFuture,
@@ -139,6 +140,14 @@ pub fn register_event_runner() {
     });
 }
 
+pub fn current_running_event() -> Option<Arc<Event>> {
+    let cpuid = x2apic::current_core_id() as u32;
+    let runners = EVENT_RUNNERS.read();
+    let runner = runners.get(&cpuid).expect("No runner found").read();
+
+    runner.current_running_event().cloned()
+}
+
 /// Finds the PID of the current event running on this core
 ///
 /// # Returns
@@ -176,6 +185,14 @@ pub fn inc_runner_clock() {
     let mut runner = runners.get(&cpuid).expect("No runner found").write();
 
     runner.inc_system_clock();
+}
+
+pub fn get_runner_time(offset_nanos: u64) -> u64 {
+    let cpuid = x2apic::current_core_id() as u32;
+    let runners = EVENT_RUNNERS.read();
+    let runner = runners.get(&cpuid).expect("No runner found").read();
+
+    runner.get_system_time() + nanos_to_ticks(offset_nanos)
 }
 
 /// Gets the current system time (in ticks)

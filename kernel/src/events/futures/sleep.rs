@@ -7,7 +7,7 @@ use core::{
 
 use futures::task::ArcWake;
 
-use super::{runner_timestamp, Event};
+use crate::events::{runner_timestamp, Event};
 
 /// Future to sleep an event until a target timestamp (in system ticks)
 #[derive(Clone)]
@@ -17,7 +17,7 @@ pub struct Sleep {
 }
 
 impl Sleep {
-    pub(super) fn new(target_timestamp: u64, event: Arc<Event>) -> Sleep {
+    pub(in crate::events) fn new(target_timestamp: u64, event: Arc<Event>) -> Sleep {
         Sleep {
             target_timestamp,
             event,
