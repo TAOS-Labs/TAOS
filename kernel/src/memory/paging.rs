@@ -21,7 +21,7 @@ use crate::{
 
 use crate::serial_println;
 
-use super::HHDM_OFFSET;
+use super::{frame_allocator::with_bitmap_frame_allocator, HHDM_OFFSET};
 
 static mut NEXT_EPH_OFFSET: u64 = 0;
 
@@ -76,7 +76,7 @@ pub fn create_mapping(
     flags: Option<PageTableFlags>,
 ) -> PhysFrame {
     let frame = alloc_frame().expect("no more frames");
-
+    
     let _ = unsafe {
         mapper
             .map_to(
@@ -114,6 +114,9 @@ pub fn update_mapping(
     let mut flags = flags.unwrap_or(PageTableFlags::WRITABLE);
     flags.set(PageTableFlags::PRESENT, true);
 
+    let frame_is_used = with_bitmap_frame_allocator(|alloc| {
+        return alloc.is_frame_used(frame);        
+    });
     update_permissions(page, mapper, flags);
 
     let (old_frame, _) = mapper
@@ -132,7 +135,16 @@ pub fn update_mapping(
                     .expect("Global allocator not initialized"),
             )
         };
-
+        with_bitmap_frame_allocator(|alloc| {
+            // handle logic for decrementing ref count if there were initally multiple mappings to same page
+            if alloc.frame_ref_count.get(old_frame) > 1 {
+                alloc.frame_ref_count.dec(frame);
+            }
+            // If the frame was already previously in use, increment the ref count
+            if frame_is_used {
+                alloc.frame_ref_count.inc(frame);
+            }
+        });
         tlb_shootdown(page.start_address());
     }
 }

@@ -77,6 +77,8 @@ pub struct BitmapFrameAllocator {
     allocate_count: usize,
     // Counter for total amount of frees done by allocator
     free_count: usize,
+    // Reference count for each frame
+    pub frame_ref_count: FrameRefCount,
 }
 
 impl BitmapFrameAllocator {
@@ -109,6 +111,7 @@ impl BitmapFrameAllocator {
         let bitmap_size = total_frames.div_ceil(BITMAP_ENTRY_SIZE);
         serial_println!("The bitmap size in bytes is: {}", { bitmap_size });
         let bitmap = vec![FULL_BITMAP_ENTRY; bitmap_size].into_boxed_slice();
+        let frame_ref_count = FrameRefCount::new(total_frames);  
         let mut allocator = Self {
             total_frames,
             free_frames: 0,
@@ -116,6 +119,7 @@ impl BitmapFrameAllocator {
             bitmap,
             allocate_count: 0,
             free_count: 0,
+            frame_ref_count,
         };
 
         for entry in memory_map.entries().iter() {
@@ -254,12 +258,12 @@ impl BitmapFrameAllocator {
         serial_println!("Bitmap: {:?}", self.bitmap);
     }
 
-    /// Prints the total number of allocations
+    /// Returns the total number of allocations
     pub fn get_allocate_count(&self) -> usize {
         self.allocate_count
     }
 
-    /// Prints the total number of frees
+    /// Returns the total number of frees
     pub fn get_free_count(&self) -> usize {
         self.free_count
     }
@@ -281,6 +285,7 @@ unsafe impl FrameAllocator<Size4KiB> for BitmapFrameAllocator {
                 let addr = self.to_allocate * FRAME_SIZE;
                 self.to_allocate = (self.to_allocate + 1) % self.total_frames;
                 self.allocate_count += 1;
+                self.frame_ref_count.inc(PhysFrame::containing_address(PhysAddr::new(addr as u64)));
                 return Some(PhysFrame::containing_address(PhysAddr::new(addr as u64)));
             }
 
@@ -299,6 +304,7 @@ impl FrameDeallocator<Size4KiB> for BitmapFrameAllocator {
     /// Deallocating memory must be an unsafe operation
     unsafe fn deallocate_frame(&mut self, frame: PhysFrame<Size4KiB>) {
         self.free_count += 1;
+        self.frame_ref_count.dec(frame);
         self.mark_frame_free(frame);
     }
 }
