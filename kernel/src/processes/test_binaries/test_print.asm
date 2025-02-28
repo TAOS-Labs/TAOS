@@ -11,7 +11,7 @@ _start:
     syscall           ; invoke the syscall
 
     ; Now exit cleanly:
-    mov rax, 1       ; syscall number for exit
+    mov rax, 60       ; syscall number for exit
     xor rdi, rdi      ; exit code 0
     syscall
 

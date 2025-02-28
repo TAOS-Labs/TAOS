@@ -172,8 +172,7 @@ pub fn sys_mmap(addr: u64, len: u64, prot: u64, flags: u64, fd: i64, offset: u64
         // return something
     }
     serial_println!("Fd is {}", fd);
-    let cpuid: u32 = x2apic::current_core_id() as u32;
-    let event: EventInfo = current_running_event_info(cpuid);
+    let event: EventInfo = current_running_event_info();
     let pid = event.pid;
     // for testing we hardcode to one for now
     let process_table = PROCESS_TABLE.write();
@@ -279,7 +278,7 @@ mod tests {
         let pcb = p.1;
         unsafe {
             let mmap_addr_before: u64 = (*pcb).mmap_address;
-            schedule_process(0, run_process_ring3(pid), pid);
+            schedule_process(pid);
             assert!(true);
         }
     }
@@ -292,8 +291,8 @@ mod tests {
         unsafe {
             let mmap_addr_before: u64 = (*pcb).mmap_address;
 
-            schedule_process(0, unsafe { run_process_ring3(pid) }, pid);
-            schedule_process(0, unsafe { run_process_ring3(pid) }, pid);
+            schedule_process(pid);
+            schedule_process(pid);
         }
         assert!(true);
     }

@@ -22,8 +22,7 @@ use crate::{
 /// Creates a new child process, Copy-on-write
 pub fn sys_fork() -> u64 {
     let child_pid = NEXT_PID.fetch_add(1, Ordering::SeqCst);
-    let cpuid: u32 = x2apic::current_core_id() as u32;
-    let parent_pid = current_running_event_info(cpuid).pid;
+    let parent_pid = current_running_event_info().pid;
 
     let process = {
         // clone the arc - the first reference is dropped out of this scope and we use the cloned one
@@ -51,7 +50,7 @@ pub fn sys_fork() -> u64 {
         PROCESS_TABLE.write().insert(child_pid, child_pcb);
     }
 
-    schedule_process(cpuid, unsafe { run_process_ring3(child_pid) }, child_pid);
+    schedule_process(child_pid);
 
     child_pid as u64
 }
@@ -229,8 +228,7 @@ mod tests {
         };
 
         let parent_pid = create_process(FORK_SIMPLE);
-        let cpuid: u32 = x2apic::current_core_id() as u32;
-        schedule_process(cpuid, unsafe { run_process_ring3(parent_pid) }, parent_pid);
+        schedule_process(parent_pid);
         for i in 0..1000000000_u64 {}
         let child_pid = parent_pid + 1;
 

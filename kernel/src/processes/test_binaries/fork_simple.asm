@@ -14,7 +14,7 @@ _start:
     mov rbx, buffer
     mov rax, 0x3
     int 0x80
-    mov rax, 0x1
+    mov rax, 60
     mov rbx, rcx
     int 0x80
 
@@ -23,6 +23,6 @@ _child:
     mov rbx, buffer
     mov rax, 0x3
     int 0x80
-    mov rax, 0x1
+    mov rax, 60
     mov rbx, rcx
     int 0x80

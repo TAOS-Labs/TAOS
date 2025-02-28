@@ -1,10 +1,10 @@
 extern crate alloc;
 
 use crate::{
-    constants::{processes::MAX_FILES, syscalls::START_MMAP_ADDRESS},
+    constants::{processes::{MAX_FILES, PROCESS_NANOS}, syscalls::START_MMAP_ADDRESS},
     debug,
-    events::{current_running_event_info, EventInfo},
-    interrupts::{gdt, x2apic},
+    events::{current_running_event_info, nanosleep_current_process, runner_timestamp, schedule_process, EventInfo},
+    interrupts::{gdt, x2apic::{self, nanos_to_ticks}},
     memory::{
         frame_allocator::{alloc_frame, with_bitmap_frame_allocator, with_generic_allocator},
         HHDM_OFFSET, KERNEL_MAPPER,
@@ -19,9 +19,7 @@ use alloc::{
     vec::Vec,
 };
 use core::{
-    arch::naked_asm,
-    cell::UnsafeCell,
-    sync::atomic::{AtomicU32, Ordering},
+    arch::naked_asm, cell::UnsafeCell, fmt::write, sync::atomic::{AtomicU32, Ordering}
 };
 use spin::{rwlock::RwLock, Mutex};
 use x86_64::{
@@ -89,8 +87,7 @@ impl PCB {
 }
 
 pub fn get_current_pid() -> u32 {
-    let cpuid: u32 = x2apic::current_core_id() as u32;
-    let event: EventInfo = current_running_event_info(cpuid);
+    let event: EventInfo = current_running_event_info();
     let process_table = PROCESS_TABLE.read();
     if process_table.contains_key(&event.pid) {
         event.pid
@@ -159,6 +156,7 @@ pub fn create_placeholder_process() -> u32 {
         mmaps: Vec::new(),
         mmap_address: START_MMAP_ADDRESS,
         fd_table: [0; MAX_FILES],
+        next_preemption_time: 0
     }));
     PROCESS_TABLE.write().insert(pid, Arc::clone(&process));
     pid

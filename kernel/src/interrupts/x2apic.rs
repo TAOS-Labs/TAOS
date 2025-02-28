@@ -237,6 +237,7 @@ impl X2ApicManager {
         Self::initialize_current_core()?;
         Self::configure_timer_current_core(count)?;
         Self::configure_syscall_current_core()?;
+
         Ok(())
     }
 }
