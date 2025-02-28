@@ -2,13 +2,14 @@
 //!
 //! - Another allocator kernel switches into once kernel heap is initialized
 //! - Represents each frame in physical memory as a bit and stores metadata to check against memory leaks
-use core::sync::atomic::{AtomicU16, Ordering};
+use core::{ptr::null_mut, sync::atomic::{AtomicU16, Ordering}};
 
 use crate::{
     constants::memory::{BITMAP_ENTRY_SIZE, FRAME_SIZE, FULL_BITMAP_ENTRY, PAGE_SIZE},
     serial_println,
 };
 use limine::{memory_map::EntryType, response::MemoryMapResponse};
+use spin::Mutex;
 use x86_64::{
     structures::paging::{FrameAllocator, FrameDeallocator, PhysFrame, Size4KiB},
     PhysAddr,
@@ -16,9 +17,8 @@ use x86_64::{
 
 use alloc::{boxed::Box, vec, vec::Vec};
 
-
 pub struct FrameRefCount {
-    counts: Box<[AtomicU16]>
+    counts: Box<[AtomicU16]>,
 }
 
 impl FrameRefCount {
@@ -63,6 +63,25 @@ impl FrameRefCount {
     }
 }
 
+// Global frame ref count stored behind a Mutex and an Option,
+// so that we can initialize it dynamically.
+static FRAME_REF_COUNT_ALLOC: Mutex<Option<FrameRefCount>> = Mutex::new(None);
+
+/// Initialize the global frame ref count table.
+/// Must be called exactly once when total_frames is known.
+pub fn init_frame_ref_count_allocator(total_frames: usize) {
+    let mut guard = FRAME_REF_COUNT_ALLOC.lock();
+    *guard = Some(FrameRefCount::new(total_frames));
+}
+
+pub fn with_frame_ref_count<F, R>(f: F) -> R
+where
+    F: FnOnce(&mut FrameRefCount) -> R,
+{
+    let mut guard = FRAME_REF_COUNT_ALLOC.lock();
+    let frc = guard.as_mut().expect("FrameRefCount is not initialized");
+    f(frc)
+}
 // Holds bitmap and metadata for allocator
 pub struct BitmapFrameAllocator {
     // Total frames usable in physical memory
@@ -77,8 +96,6 @@ pub struct BitmapFrameAllocator {
     allocate_count: usize,
     // Counter for total amount of frees done by allocator
     free_count: usize,
-    // Reference count for each frame
-    pub frame_ref_count: FrameRefCount,
 }
 
 impl BitmapFrameAllocator {
@@ -94,8 +111,6 @@ impl BitmapFrameAllocator {
         memory_map: &'static MemoryMapResponse,
         initial_frames: impl Iterator<Item = PhysFrame>,
     ) -> Self {
-        let initial_frames_vec: Vec<PhysFrame> = initial_frames.collect();
-
         // get the total number of frames (top of usable memory)
         let mut true_end: usize = 0;
         for entry in memory_map.entries().iter() {
@@ -106,12 +121,13 @@ impl BitmapFrameAllocator {
                 }
             }
         }
-        serial_println!("The top of physmem is: {}", { true_end });
         let total_frames = true_end.div_ceil(FRAME_SIZE);
+        init_frame_ref_count_allocator(total_frames);
+
+        let initial_frames_vec: Vec<PhysFrame> = initial_frames.collect();
         let bitmap_size = total_frames.div_ceil(BITMAP_ENTRY_SIZE);
         serial_println!("The bitmap size in bytes is: {}", { bitmap_size });
         let bitmap = vec![FULL_BITMAP_ENTRY; bitmap_size].into_boxed_slice();
-        let frame_ref_count = FrameRefCount::new(total_frames);  
         let mut allocator = Self {
             total_frames,
             free_frames: 0,
@@ -119,8 +135,8 @@ impl BitmapFrameAllocator {
             bitmap,
             allocate_count: 0,
             free_count: 0,
-            frame_ref_count,
         };
+    
 
         for entry in memory_map.entries().iter() {
             if entry.entry_type == EntryType::USABLE {
@@ -281,12 +297,13 @@ unsafe impl FrameAllocator<Size4KiB> for BitmapFrameAllocator {
         }
         loop {
             if !self.is_bit_set(self.to_allocate) {
-                self.set_bit(self.to_allocate);
                 let addr = self.to_allocate * FRAME_SIZE;
                 self.to_allocate = (self.to_allocate + 1) % self.total_frames;
+                let frame = PhysFrame::containing_address(PhysAddr::new(addr as u64));
                 self.allocate_count += 1;
-                self.frame_ref_count.inc(PhysFrame::containing_address(PhysAddr::new(addr as u64)));
-                return Some(PhysFrame::containing_address(PhysAddr::new(addr as u64)));
+                self.set_bit(self.to_allocate);
+
+                return Some(frame);
             }
 
             self.to_allocate = (self.to_allocate + 1) % self.total_frames;
@@ -304,7 +321,6 @@ impl FrameDeallocator<Size4KiB> for BitmapFrameAllocator {
     /// Deallocating memory must be an unsafe operation
     unsafe fn deallocate_frame(&mut self, frame: PhysFrame<Size4KiB>) {
         self.free_count += 1;
-        self.frame_ref_count.dec(frame);
         self.mark_frame_free(frame);
     }
 }

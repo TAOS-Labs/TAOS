@@ -1,7 +1,7 @@
 use core::ffi::CStr;
 
 use crate::{
-    constants::syscalls::*, events::{current_running_event_info, EventInfo}, interrupts::{gdt::TSSS, x2apic::current_core_id}, memory::frame_allocator::with_bitmap_frame_allocator, processes::process::{sleep_process, ProcessState, PROCESS_TABLE}, serial_println
+    constants::syscalls::*, events::{current_running_event_info, EventInfo}, interrupts::{gdt::TSSS, x2apic::current_core_id}, memory::frame_allocator::with_bitmap_frame_allocator, processes::process::{clear_process_frames, sleep_process, ProcessState, PROCESS_TABLE}, serial_println
 };
 
 #[warn(unused)]
@@ -131,7 +131,7 @@ pub fn sys_exit(code: i64) -> Option<u64> {
         let pcb = process.pcb.get();
 
         (*pcb).state = ProcessState::Terminated;
-        // clear_process_frames(&mut *pcb);
+        clear_process_frames(&mut *pcb);
         with_bitmap_frame_allocator(|alloc| {
             alloc.print_bitmap_free_frames();
         });

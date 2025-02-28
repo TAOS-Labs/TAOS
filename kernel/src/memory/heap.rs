@@ -3,12 +3,12 @@
 
 use crate::{
     constants::memory::{HEAP_SIZE, HEAP_START},
-    memory::{frame_allocator::FRAME_ALLOCATOR, paging::create_mapping, KERNEL_MAPPER},
+    memory::{bitmap_frame_allocator::with_frame_ref_count, frame_allocator::FRAME_ALLOCATOR, paging::{create_mapping, create_mapping_heap}, KERNEL_MAPPER},
     serial_println,
 };
 use talc::{ClaimOnOom, Span, Talc, Talck};
 use x86_64::{
-    structures::paging::{mapper::MapToError, Page, Size4KiB},
+    structures::paging::{mapper::MapToError, Mapper, Page, Size4KiB, Translate},
     VirtAddr,
 };
 
@@ -34,10 +34,17 @@ pub fn init_heap() -> Result<(), MapToError<Size4KiB>> {
     };
 
     for page in page_range {
-        create_mapping(page, &mut *KERNEL_MAPPER.lock(), None);
+        create_mapping_heap(page, &mut *KERNEL_MAPPER.lock(), None);
     }
 
     switch_allocator();
+
+    for page in page_range {
+        with_frame_ref_count(|frc| {
+            let frame = KERNEL_MAPPER.lock().translate_page(page).expect("Translation failed");
+            frc.inc(frame);
+        });
+    }
 
     serial_println!("Allocator switched to bitmap allocator");
 

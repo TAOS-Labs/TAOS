@@ -1,13 +1,21 @@
 extern crate alloc;
 
 use crate::{
-    constants::{processes::{MAX_FILES, PROCESS_NANOS}, syscalls::START_MMAP_ADDRESS},
+    constants::{
+        processes::{MAX_FILES, PROCESS_NANOS},
+        syscalls::START_MMAP_ADDRESS,
+    },
     debug,
-    events::{current_running_event_info, nanosleep_current_process, runner_timestamp, schedule_process, EventInfo},
-    interrupts::{gdt, x2apic::{self, nanos_to_ticks}},
+    events::{
+        current_running_event_info, nanosleep_current_process, runner_timestamp, schedule_process,
+        EventInfo,
+    },
+    interrupts::{
+        gdt,
+        x2apic::{self, nanos_to_ticks},
+    },
     memory::{
-        frame_allocator::{alloc_frame, with_bitmap_frame_allocator, with_generic_allocator},
-        HHDM_OFFSET, KERNEL_MAPPER,
+        bitmap_frame_allocator::with_frame_ref_count, frame_allocator::{alloc_frame, with_bitmap_frame_allocator, with_generic_allocator}, HHDM_OFFSET, KERNEL_MAPPER
     },
     processes::{loader::load_elf, registers::Registers},
     serial_println,
@@ -19,7 +27,10 @@ use alloc::{
     vec::Vec,
 };
 use core::{
-    arch::naked_asm, cell::UnsafeCell, fmt::write, sync::atomic::{AtomicU32, Ordering}
+    arch::naked_asm,
+    cell::UnsafeCell,
+    fmt::write,
+    sync::atomic::{AtomicU32, Ordering},
 };
 use spin::{rwlock::RwLock, Mutex};
 use x86_64::{
@@ -156,7 +167,7 @@ pub fn create_placeholder_process() -> u32 {
         mmaps: Vec::new(),
         mmap_address: START_MMAP_ADDRESS,
         fd_table: [0; MAX_FILES],
-        next_preemption_time: 0
+        next_preemption_time: 0,
     }));
     PROCESS_TABLE.write().insert(pid, Arc::clone(&process));
     pid
@@ -217,7 +228,12 @@ pub fn create_process(elf_bytes: &[u8]) -> u32 {
 ///
 /// TODO
 unsafe fn create_process_page_table() -> PhysFrame<Size4KiB> {
-    let frame = alloc_frame().expect("Failed to allocate PML4 frame");
+    let frame = with_frame_ref_count(|frc| {
+        let frame = alloc_frame().expect("Failed to allocate PML4 frame");
+        frc.inc(frame);
+        frame
+    });
+
     let virt = *HHDM_OFFSET + frame.start_address().as_u64();
     let ptr = virt.as_mut_ptr::<PageTable>();
 
@@ -241,7 +257,7 @@ pub fn clear_process_frames(pcb: &mut PCB) {
     let pml4_frame = pcb.pml4_frame;
     let mapper = unsafe { pcb.create_mapper() };
 
-    with_generic_allocator(|deallocator| {
+    with_bitmap_frame_allocator(|deallocator| {
         // Iterate over first 256 entries (user space)
         for i in 0..256 {
             let entry = &mapper.level_4_table()[i];
@@ -254,7 +270,14 @@ pub fn clear_process_frames(pcb: &mut PCB) {
                 free_page_table(pdpt_frame, 3, deallocator, HHDM_OFFSET.as_u64());
             }
         }
-        unsafe { deallocator.deallocate_frame(pml4_frame) };
+        unsafe {
+            with_frame_ref_count(|frc| {
+                if frc.get(pml4_frame) == 1 {
+                    frc.dec(pml4_frame);
+                    deallocator.deallocate_frame(pml4_frame);
+                }
+            });
+        };
     });
 }
 
@@ -284,11 +307,22 @@ unsafe fn free_page_table(
         } else {
             // Free level one page
             let page_frame = PhysFrame::containing_address(entry.addr());
-            deallocator.deallocate_frame(page_frame);
+            with_frame_ref_count(|frc| {
+                if frc.get(page_frame) == 1 {
+                    frc.dec(page_frame);
+                    deallocator.deallocate_frame(page_frame);
+                }
+            });
         }
         entry.set_unused();
     }
-    deallocator.deallocate_frame(frame);
+
+    with_frame_ref_count(|frc| {
+        if frc.get(frame) == 1 {
+            frc.dec(frame);
+            deallocator.deallocate_frame(frame);
+        }
+    });
 }
 
 use core::arch::asm;

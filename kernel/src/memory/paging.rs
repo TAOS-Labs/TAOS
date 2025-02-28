@@ -2,10 +2,11 @@
 // however it could be used in a plethora of places later so I am keeping it for now
 #![allow(dead_code)]
 
+use core::ptr::null;
+
 use x86_64::{
     structures::paging::{
         mapper::{MappedFrame, TranslateResult},
-        page_table::PageTableEntry,
         Mapper, OffsetPageTable, Page, PageTable, PageTableFlags, PhysFrame, Size4KiB, Translate,
     },
     VirtAddr,
@@ -17,11 +18,13 @@ use crate::{
         frame_allocator::{alloc_frame, dealloc_frame, FRAME_ALLOCATOR},
         tlb::tlb_shootdown,
     },
+    serial_println,
 };
 
-use crate::serial_println;
-
-use super::{frame_allocator::with_bitmap_frame_allocator, HHDM_OFFSET};
+use super::{
+    bitmap_frame_allocator::with_frame_ref_count, frame_allocator::with_bitmap_frame_allocator,
+    HHDM_OFFSET,
+};
 
 static mut NEXT_EPH_OFFSET: u64 = 0;
 
@@ -60,8 +63,7 @@ pub unsafe fn active_level_4_table() -> &'static mut PageTable {
     &mut *page_table_ptr
 }
 
-/// Creates a mapping
-/// Default flags: PRESENT | WRITABLE
+/// Creates a mapping before frame reference tracking
 ///
 /// # Arguments
 /// * `page` - a Page that we want to map
@@ -69,14 +71,14 @@ pub unsafe fn active_level_4_table() -> &'static mut PageTable {
 /// * `flags` - Optional flags, can be None
 ///
 /// # Returns
-/// Returns the frame that was allocated and mapped to this page
-pub fn create_mapping(
+/// Returns the frame allocated
+pub fn create_mapping_heap(
     page: Page,
     mapper: &mut impl Mapper<Size4KiB>,
     flags: Option<PageTableFlags>,
 ) -> PhysFrame {
     let frame = alloc_frame().expect("no more frames");
-    
+
     let _ = unsafe {
         mapper
             .map_to(
@@ -94,6 +96,51 @@ pub fn create_mapping(
             )
             .expect("Mapping failed")
     };
+
+    frame
+}
+
+/// Creates a mapping
+/// Default flags: PRESENT | WRITABLE
+///
+/// # Arguments
+/// * `page` - a Page that we want to map
+/// * `mapper` - anything that implements a the Mapper trait
+/// * `flags` - Optional flags, can be None
+///
+/// # Returns
+/// Returns the frame that was allocated and mapped to this page
+pub fn create_mapping(
+    page: Page,
+    mapper: &mut impl Mapper<Size4KiB>,
+    flags: Option<PageTableFlags>,
+) -> PhysFrame {
+    // TODO: Add proper failure handling (ref count increased but page not mapped)
+
+    let frame = with_frame_ref_count(|frc| {
+        let frame = alloc_frame().expect("no more frames");
+        frc.inc(frame);
+        frame
+    });
+
+    let _ = unsafe {
+        mapper
+            .map_to(
+                page,
+                frame,
+                flags.unwrap_or(
+                    PageTableFlags::PRESENT
+                        | PageTableFlags::WRITABLE
+                        | PageTableFlags::USER_ACCESSIBLE,
+                ),
+                FRAME_ALLOCATOR
+                    .lock()
+                    .as_mut()
+                    .expect("Global allocator not initialized"),
+            )
+            .expect("Mapping failed")
+    };
+
     frame
 }
 
@@ -115,8 +162,9 @@ pub fn update_mapping(
     flags.set(PageTableFlags::PRESENT, true);
 
     let frame_is_used = with_bitmap_frame_allocator(|alloc| {
-        return alloc.is_frame_used(frame);        
+        return alloc.is_frame_used(frame);
     });
+
     update_permissions(page, mapper, flags);
 
     let (old_frame, _) = mapper
@@ -135,16 +183,17 @@ pub fn update_mapping(
                     .expect("Global allocator not initialized"),
             )
         };
-        with_bitmap_frame_allocator(|alloc| {
-            // handle logic for decrementing ref count if there were initally multiple mappings to same page
-            if alloc.frame_ref_count.get(old_frame) > 1 {
-                alloc.frame_ref_count.dec(frame);
+
+        with_frame_ref_count(|frc| {
+            if frc.get(old_frame) > 0 {
+                frc.dec(frame);
             }
-            // If the frame was already previously in use, increment the ref count
+
             if frame_is_used {
-                alloc.frame_ref_count.inc(frame);
+                frc.inc(frame);
             }
         });
+
         tlb_shootdown(page.start_address());
     }
 }
@@ -174,7 +223,10 @@ pub fn remove_mapping(page: Page, mapper: &mut impl Mapper<Size4KiB>) -> PhysFra
 /// * `mapper` - anything that implements a the Mapper trait
 pub fn remove_mapped_frame(page: Page, mapper: &mut impl Mapper<Size4KiB>) {
     let (frame, _) = mapper.unmap(page).expect("map_to failed");
-    dealloc_frame(frame);
+    with_frame_ref_count(|frc| {
+        dealloc_frame(frame);
+        frc.dec(frame);
+    });
     tlb_shootdown(page.start_address());
 }
 
@@ -249,7 +301,10 @@ pub fn create_not_present_mapping(
     flags: Option<PageTableFlags>,
 ) {
     let frame = create_mapping(page, mapper, flags);
-    dealloc_frame(frame);
+    with_frame_ref_count(|frc| {
+        dealloc_frame(frame);
+        frc.dec(frame);
+    });
 
     let mut flags = flags.unwrap_or(PageTableFlags::WRITABLE);
 
@@ -330,7 +385,7 @@ mod tests {
     use super::*;
     use crate::{
         constants::{memory::PAGE_SIZE, processes::SYSCALL_MMAP_MEMORY},
-        events::schedule_kernel,
+        events::{schedule_kernel, schedule_kernel_on},
         memory::KERNEL_MAPPER,
         processes::process::create_process,
     };
@@ -438,6 +493,10 @@ mod tests {
 
         assert_eq!(read_value, TEST_VALUE);
 
+        with_frame_ref_count(|frc| {
+            serial_println!("Frame ref count: {}", frc.get(frame));
+        });
+
         remove_mapped_frame(page, &mut *mapper);
     }
 
@@ -507,7 +566,12 @@ mod tests {
 
         {
             let mut mapper = KERNEL_MAPPER.lock();
-            let new_frame = alloc_frame().expect("Could not find a new frame");
+
+            let new_frame = with_frame_ref_count(|frc| {
+                let new_frame = alloc_frame().expect("Could not find a new frame");
+                frc.inc(new_frame);
+                new_frame
+            });
 
             // could say page already mapped, which would be really dumb
             update_mapping(

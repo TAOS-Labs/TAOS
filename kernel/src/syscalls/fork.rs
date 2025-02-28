@@ -12,7 +12,7 @@ use crate::{
     constants::memory::PAGE_SIZE,
     events::{current_running_event_info, schedule_process},
     interrupts::x2apic,
-    memory::{frame_allocator::alloc_frame, paging::get_page_flags, HHDM_OFFSET},
+    memory::{bitmap_frame_allocator::with_frame_ref_count, frame_allocator::alloc_frame, paging::get_page_flags, HHDM_OFFSET},
     processes::process::{
         run_process_ring3, ProcessState, UnsafePCB, NEXT_PID, PCB, PROCESS_TABLE,
     },
@@ -68,7 +68,11 @@ pub fn sys_fork() -> u64 {
 /// Newly allocated page table frame containing the duplicated structure
 pub fn duplicate_page_table(parent_frame: PhysFrame, level: u8) -> PhysFrame {
     // Allocate and initialize new page table frame
-    let child_frame = alloc_frame().expect("Failed to allocate frame");
+    let child_frame = with_frame_ref_count(|frc| {
+        let child_frame = alloc_frame().expect("Failed to allocate frame");
+        frc.inc(child_frame);
+        child_frame
+    });
     let child_table = get_table_mut(child_frame);
     child_table.zero();
     let parent_table = get_table_mut(parent_frame);
