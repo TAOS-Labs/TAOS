@@ -92,7 +92,11 @@ fn duplicate_entries(parent: &mut PageTable, child: &mut PageTable, level: u8) {
 
         // Preserve kernel mappings on higher half
         if level == 4 && index >= 256 {
-            child[index].set_addr(parent_entry.addr(), parent_entry.flags());
+            with_frame_ref_count(|frc| {
+                let frame = PhysFrame::from_start_address(parent_entry.addr()).expect("Address not aligned");
+                child[index].set_addr(parent_entry.addr(), parent_entry.flags());
+                frc.inc(frame);
+            });
             continue;
         }
 
@@ -128,7 +132,13 @@ fn handle_leaf_level(parent_entry: &mut PageTableEntry, child_entry: &mut PageTa
             flags.remove(PageTableFlags::WRITABLE);
         }
         parent_entry.set_flags(flags);
-        child_entry.set_addr(parent_entry.addr(), flags);
+
+        with_frame_ref_count(|frc| {
+            let frame = PhysFrame::from_start_address(parent_entry.addr()).expect("Address not aligned");
+            serial_println!("Fork made this frame {:#?}", frame);
+            child_entry.set_addr(parent_entry.addr(), flags);
+            frc.inc(frame);
+        });
     }
 }
 

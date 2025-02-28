@@ -321,6 +321,7 @@ impl FrameDeallocator<Size4KiB> for BitmapFrameAllocator {
     /// Deallocating memory must be an unsafe operation
     unsafe fn deallocate_frame(&mut self, frame: PhysFrame<Size4KiB>) {
         self.free_count += 1;
+        serial_println!("Deallocating frame");
         self.mark_frame_free(frame);
     }
 }

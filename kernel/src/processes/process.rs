@@ -308,6 +308,8 @@ unsafe fn free_page_table(
             // Free level one page
             let page_frame = PhysFrame::containing_address(entry.addr());
             with_frame_ref_count(|frc| {
+                let val = frc.get(frame);
+                serial_println!("Frame count: {}, frame {:#?}", val, frame);
                 if frc.get(page_frame) == 1 {
                     frc.dec(page_frame);
                     deallocator.deallocate_frame(page_frame);
@@ -318,6 +320,8 @@ unsafe fn free_page_table(
     }
 
     with_frame_ref_count(|frc| {
+        let val = frc.get(frame);
+                serial_println!("Frame count: {}, frame {:#?}", val, frame);
         if frc.get(frame) == 1 {
             frc.dec(frame);
             deallocator.deallocate_frame(frame);
