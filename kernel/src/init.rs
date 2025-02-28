@@ -83,6 +83,7 @@ unsafe extern "C" fn secondary_cpu_main(cpu: &Cpu) -> ! {
         core::hint::spin_loop();
     }
 
+    register_event_runner();
     idt::enable();
 
     debug!("AP {} entering event loop", cpu.id);
