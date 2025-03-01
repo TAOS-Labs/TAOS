@@ -12,6 +12,7 @@ pub const FORK_SIMPLE: &[u8] = include_bytes!("../processes/test_binaries/fork_s
 pub const TEST_64_SIMPLE_EXIT: &[u8] = include_bytes!("../processes/test_binaries/test_64_simple_exit");
 pub const TEST_64_PRINT_EXIT: &[u8] = include_bytes!("../processes/test_binaries/test_64_print_exit");
 pub const TEST_64_FORK_EXIT: &[u8] = include_bytes!("../processes/test_binaries/test_64_fork_simple");
+pub const TEST_64_FORK_COW: &[u8] = include_bytes!("../processes/test_binaries/test_64_fork_cow");
 
 pub const STACK_START: u64 = 0x7000_0000_0000;
 pub const STACK_SIZE: usize = 2 * 4096; // 2 pages for the stack
