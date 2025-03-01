@@ -7,11 +7,7 @@ use x86_64::{
     PhysAddr, VirtAddr,
 };
 
-use crate::{constants::memory::PAGE_SIZE, debug_println, memory::paging};
-
-struct NonAllignedPage {
-    data: [u8; PAGE_SIZE],
-}
+use crate::memory::paging;
 
 /// An error occured when setting up a frame as uncacheable
 #[derive(Debug)]
