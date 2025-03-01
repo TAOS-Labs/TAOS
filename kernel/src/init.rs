@@ -10,13 +10,11 @@ use limine::{
 };
 
 use crate::{
-    constants::processes::SYSCALL_BINARY,
     debug, devices,
-    events::{register_event_runner, run_loop, schedule_process},
+    events::{register_event_runner, run_loop},
     interrupts::{self, idt},
     logging,
     memory::{self},
-    processes::process::{create_process, run_process_ring3},
     trace,
 };
 
@@ -56,13 +54,7 @@ pub fn init() -> u32 {
     debug!("Waking cores");
     let bsp_id = wake_cores();
 
-    register_event_runner(bsp_id);
     idt::enable();
-
-    let pid = create_process(SYSCALL_BINARY);
-    unsafe {
-        schedule_process(bsp_id, run_process_ring3(pid), pid);
-    }
 
     bsp_id
 }
@@ -91,10 +83,11 @@ unsafe extern "C" fn secondary_cpu_main(cpu: &Cpu) -> ! {
         core::hint::spin_loop();
     }
 
-    register_event_runner(cpu.id);
+    register_event_runner();
     idt::enable();
 
     debug!("AP {} entering event loop", cpu.id);
+
     run_loop(cpu.id)
 }
 
@@ -120,6 +113,7 @@ fn wake_cores() -> u32 {
     while CPU_COUNT.load(Ordering::SeqCst) < cpu_count - 1 {
         core::hint::spin_loop();
     }
+    register_event_runner();
 
     BOOT_COMPLETE.store(true, Ordering::SeqCst);
 
