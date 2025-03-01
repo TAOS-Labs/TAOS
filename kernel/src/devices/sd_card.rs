@@ -228,6 +228,7 @@ impl BlockDevice for SDCardInfo {
         .map_err(|_| FsError::IOError)?;
         Result::Ok(())
     }
+    
     fn block_size(&self) -> usize {
         SD_BLOCK_SIZE.try_into().expect("To be on 64 bit system")
     }

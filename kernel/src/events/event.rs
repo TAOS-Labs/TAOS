@@ -1,6 +1,6 @@
 use super::{Event, EventId, EventQueue};
 use alloc::{boxed::Box, collections::btree_set::BTreeSet, sync::Arc};
-use core::future::Future;
+use core::{future::Future, sync::atomic::AtomicBool};
 use futures::task::ArcWake;
 use spin::{Mutex, RwLock};
 
@@ -21,6 +21,7 @@ impl Event {
             blocked_events,
             priority: priority.into(),
             scheduled_timestamp: scheduled_clock.into(),
+            completed: AtomicBool::new(false),
         }
     }
 }

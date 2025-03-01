@@ -16,7 +16,7 @@ use core::{
 
 use crate::{
     constants::events::{NUM_EVENT_PRIORITIES, PRIORITY_INC_DELAY},
-    interrupts::x2apic::nanos_to_ticks, serial_println,
+    interrupts::x2apic::nanos_to_ticks,
 };
 
 impl EventRunner {
@@ -77,6 +77,7 @@ impl EventRunner {
                         }
                     } else {
                         // Event is ready, go ahead and remove it
+                        event.completed.swap(true, Ordering::Relaxed);
                         self.pending_events.write().remove(&event.eid.0);
                     }
                 }

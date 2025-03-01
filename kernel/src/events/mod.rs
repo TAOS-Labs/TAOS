@@ -12,7 +12,7 @@ use x86_64::instructions::interrupts::without_interrupts;
 use core::{
     future::Future,
     pin::Pin,
-    sync::atomic::{AtomicU64, AtomicUsize, Ordering},
+    sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
 };
 
 use crate::{
@@ -51,6 +51,7 @@ pub struct Event {
     blocked_events: Arc<RwLock<BTreeSet<u64>>>,
     priority: AtomicUsize,
     scheduled_timestamp: AtomicU64,
+    completed: AtomicBool
 }
 
 /// Schedules and runs events within a single core
