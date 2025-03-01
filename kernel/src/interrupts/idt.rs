@@ -303,15 +303,16 @@ fn syscall_handler(rsp: u64) {
                 in (reg) val,
             )
         }
-    } else if syscall_num == SYSCALL_FORK {
-        let val = sys_fork();
-        unsafe {
-            core::arch::asm!(
-                "mov rax, {0}",
-                in (reg) val,
-            )
-        }
     }
+    // } else if syscall_num == SYSCALL_FORK {
+    //     let val = sys_fork();
+    //     unsafe {
+    //         core::arch::asm!(
+    //             "mov rax, {0}",
+    //             in (reg) val,
+    //         )
+    //     }
+    // }
 }
 
 #[naked]

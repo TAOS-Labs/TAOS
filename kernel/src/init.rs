@@ -62,7 +62,7 @@ pub fn init() -> u32 {
     //     -1,
     //     0,
     // );
-    let parent_pid = create_process(TEST_64_SIMPLE_EXIT);
+    let parent_pid = create_process(FORK_SIMPLE);
     schedule_process(parent_pid);
 
         // since no other processes are running or being created we assume that

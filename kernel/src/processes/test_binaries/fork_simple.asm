@@ -6,23 +6,23 @@ global _start
 
 _start:
     mov rax, 0x5
-    int 0x80
-    mov rcx, rax
+    syscall
+    mov r12, rax
     cmp rax, 0x0
     je _child  
-    mov byte [buffer], 'X'
-    mov rbx, buffer
-    mov rax, 0x3
-    int 0x80
+    ;mov byte [buffer], 'X'
+    ;mov rdi, buffer
+    ;mov rax, 0x3
+    ;syscall
     mov rax, 60
-    mov rbx, rcx
-    int 0x80
+    mov rdi, r12
+    syscall
 
 _child:
-    mov byte [buffer], 'B'
-    mov rbx, buffer
-    mov rax, 0x3
-    int 0x80
+    ;mov byte [buffer], 'B'
+    ;mov rdi, buffer
+    ;mov rax, 0x3
+    ;syscall
     mov rax, 60
-    mov rbx, rcx
-    int 0x80
+    mov rdi, r12
+    syscall
