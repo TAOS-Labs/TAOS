@@ -6,7 +6,7 @@ use x86_64::structures::paging::{
 };
 
 use crate::{
-    events::{current_running_event_info, schedule_process},
+    events::{current_running_event_info, schedule_process, schedule_process_on},
     memory::{
         frame_allocator::{alloc_frame, with_bitmap_frame_allocator},
         HHDM_OFFSET,
@@ -51,7 +51,7 @@ pub fn sys_fork() -> u64 {
         PROCESS_TABLE.write().insert(child_pid, child_pcb);
     }
 
-    schedule_process(child_pid);
+    schedule_process_on(1, child_pid);
 
     child_pid as u64
 }

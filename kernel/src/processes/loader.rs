@@ -6,7 +6,7 @@ use crate::{
     memory::{
         frame_allocator::with_generic_allocator,
         paging::{create_mapping, update_permissions},
-    },
+    }, serial_println,
 };
 use core::ptr::{copy_nonoverlapping, write_bytes};
 use goblin::{

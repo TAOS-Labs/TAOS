@@ -338,7 +338,7 @@ extern "x86-interrupt" fn naked_timer_handler(_: InterruptStackFrame) {
 
             cld
             mov	rdi, rsp
-            // call timer_handler
+            call timer_handler
 
             pop rax
             pop rbx

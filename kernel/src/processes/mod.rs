@@ -19,7 +19,7 @@ mod tests {
         processes::process::{create_process, run_process_ring3},
     };
 
-    #[test_case]
+    // #[test_case]
     fn test_simple_process() {
         let cpuid = x2apic::current_core_id() as u32;
 

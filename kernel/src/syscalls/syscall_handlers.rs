@@ -1,7 +1,7 @@
 use core::{ffi::CStr, i64, sync::atomic::AtomicI64};
 
 use crate::{
-    constants::syscalls::*, events::{current_running_event_info, EventInfo}, exit_qemu, interrupts::{gdt::TSSS, x2apic::current_core_id}, memory::frame_allocator::with_bitmap_frame_allocator, processes::process::{clear_process_frames, sleep_process, ProcessState, PROCESS_TABLE}, serial_println, QemuExitCode
+    constants::syscalls::*, events::{current_running_event_info, EventInfo}, exit_qemu, interrupts::{gdt::TSSS, x2apic::current_core_id}, memory::frame_allocator::with_bitmap_frame_allocator, processes::process::{clear_process_frames, sleep_process, ProcessState, PROCESS_TABLE}, serial_println, syscalls::fork::sys_fork, QemuExitCode
 };
 
 #[warn(unused)]
@@ -95,6 +95,7 @@ pub unsafe extern "C" fn syscall_handler_impl(syscall: *const SyscallRegisters) 
         }
         SYSCALL_PRINT => sys_print(syscall.arg1 as *const u8),
         SYSCALL_NANOSLEEP => sys_nanosleep(syscall.arg1, syscall.arg2),
+        SYSCALL_FORK => sys_fork(),
         _ => {
             panic!("Unknown syscall, {}", syscall.number);
         }
@@ -103,7 +104,6 @@ pub unsafe extern "C" fn syscall_handler_impl(syscall: *const SyscallRegisters) 
 
 pub fn sys_exit(code: i64) -> Option<u64> {
     // TODO handle hierarchy (parent processes), resources, threads, etc.
-    // TODO recursive page table walk to handle cleaning up process memory
 
     // Used for testing
     if code == -1 {
@@ -142,6 +142,11 @@ pub fn sys_exit(code: i64) -> Option<u64> {
         ((*pcb).kernel_rsp, (*pcb).kernel_rip)
     };
 
+    #[cfg(test)]
+    {
+        TEST_EXIT_CODE.store(code, core::sync::atomic::Ordering::SeqCst);
+    }
+
     unsafe {
         // Restore kernel RSP + PC -> RIP from where it was stored in run/resume process
         core::arch::asm!(
@@ -156,13 +161,6 @@ pub fn sys_exit(code: i64) -> Option<u64> {
 
     if code == -1 {
         panic!("Bad error code!");
-    }
-
-    serial_println!("Stored value");
-    #[cfg(test)]
-    {
-        serial_println!("Stored value");
-        TEST_EXIT_CODE.store(code, core::sync::atomic::Ordering::SeqCst);
     }
 
     unsafe {
@@ -185,7 +183,7 @@ pub fn sys_print(buffer: *const u8) -> u64 {
 // hey gang
 pub fn sys_nanosleep(nanos: u64, rsp: u64) -> u64 {
     sleep_process(rsp, nanos);
-    x2apic::send_eoi();
+    // x2apic::send_eoi();
 
     0
 }

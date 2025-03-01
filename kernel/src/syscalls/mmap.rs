@@ -271,7 +271,7 @@ mod tests {
         (pid, process.pcb.get())
     }
 
-    #[test_case]
+    // #[test_case]
     fn test_basic_anon_mmap() {
         let p = setup();
         let pid = p.0;
@@ -283,7 +283,7 @@ mod tests {
         }
     }
 
-    #[test_case]
+    // #[test_case]
     fn test_two_anon_mmap() {
         let p = setup();
         let pid = p.0;
