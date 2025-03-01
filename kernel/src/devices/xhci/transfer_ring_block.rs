@@ -9,7 +9,7 @@ pub enum TransferRingTypes {
     Link,
     EventData,
     NoOp,
-    Disallowed
+    Disallowed,
 }
 
 /// The list of types that are allowed on the command ring
@@ -31,7 +31,7 @@ pub enum CommandRingTypes {
     ForceHeaderCmd,
     NoOpCmd,
     GetExtendedPropCmd,
-    SetExtendedPropCmd
+    SetExtendedPropCmd,
 }
 
 /// The list of types that are allowed on the event ring
@@ -43,7 +43,7 @@ pub enum EventRingType {
     DoorbellEvent,
     HcEvent,
     DeviceNotifEvent,
-    MfindexWrapEvent
+    MfindexWrapEvent,
 }
 
 #[repr(C, packed)]

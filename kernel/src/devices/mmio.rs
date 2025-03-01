@@ -7,7 +7,11 @@ use x86_64::{
     PhysAddr, VirtAddr,
 };
 
-use crate::memory::paging;
+use crate::{constants::memory::PAGE_SIZE, debug_println, memory::paging};
+
+struct NonAllignedPage {
+    data: [u8; PAGE_SIZE],
+}
 
 /// An error occured when setting up a frame as uncacheable
 #[derive(Debug)]
@@ -82,32 +86,66 @@ pub fn map_page_as_uncacheable(
 }
 
 pub fn zero_out_page(page: Page) {
-    let va: *mut u64 = page.start_address().as_mut_ptr();
+    let mut va: *mut u8 = page.start_address().as_mut_ptr();
     let mut n = 0;
     while n < page.size() {
         unsafe {
             core::ptr::write_volatile(va, 0);
+            va = va.add(1);
         }
         // TODO: Test (allocate 3 pages, middle should be unchanged)
-        n += 8;
+        n += 1;
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use core::ptr::copy_nonoverlapping;
+
+    use x86_64::structures::paging::FrameAllocator;
+
     use super::*;
     use crate::memory::{frame_allocator::FRAME_ALLOCATOR, MAPPER};
 
     #[test_case]
     fn test_zero_out_page_4kib() {
         let mut mapper = MAPPER.lock();
-        let mut allator_tmp = FRAME_ALLOCATOR.lock();
-        let allocator = allator_tmp.as_mut();
-        let frame1 = allocator.allocate_frame();
-        let frame2 = allocator.allocate_frame();
-        let frame3 = allocator.allocate_frame();
-        let addr_1 = map_page_as_uncacheable(frame1.start_address().as_u64(), &mut mapper);
-        map_page_as_uncacheable(frame2.start_address().as_u64(), &mut mapper);
-        let addr_3 = map_page_as_uncacheable(frame3.start_address().as_u64(), &mut mapper);
+        let mut allocator_tmp = FRAME_ALLOCATOR.lock();
+        let mut frames: [Option<PhysFrame>; 3] = [Option::None; 3];
+        match *allocator_tmp {
+            Option::Some(ref mut new_allocator) => {
+                frames[0] = new_allocator.allocate_frame();
+                frames[1] = new_allocator.allocate_frame();
+                frames[2] = new_allocator.allocate_frame();
+            }
+            _ => panic!("We shoould have a frame allocator at this point"),
+        };
+        let addr_1 =
+            map_page_as_uncacheable(frames[0].unwrap().start_address().as_u64(), &mut mapper)
+                .unwrap();
+        let addr_2 =
+            map_page_as_uncacheable(frames[1].unwrap().start_address().as_u64(), &mut mapper)
+                .unwrap();
+        let addr_3 =
+            map_page_as_uncacheable(frames[2].unwrap().start_address().as_u64(), &mut mapper)
+                .unwrap();
+
+        let page: [u8; PAGE_SIZE] = [255; PAGE_SIZE];
+        let page_actual = Page::containing_address(VirtAddr::new(addr_2));
+        let addr_1_ptr = addr_1 as *mut u8;
+        let addr_2_ptr = addr_2 as *mut u8;
+        let addr_3_ptr = addr_3 as *mut u8;
+        unsafe { copy_nonoverlapping(page.as_ptr(), addr_1_ptr, PAGE_SIZE) };
+        unsafe { copy_nonoverlapping(page.as_ptr(), addr_2_ptr, PAGE_SIZE) };
+        unsafe { copy_nonoverlapping(page.as_ptr(), addr_3_ptr, PAGE_SIZE) };
+
+        let mut verify_buff: [u8; PAGE_SIZE] = [0; PAGE_SIZE];
+        zero_out_page(page_actual);
+        unsafe { copy_nonoverlapping(addr_1_ptr, verify_buff.as_mut_ptr(), PAGE_SIZE) };
+        assert!(verify_buff == [255; PAGE_SIZE]);
+        unsafe { copy_nonoverlapping(addr_2_ptr, verify_buff.as_mut_ptr(), PAGE_SIZE) };
+        assert!(verify_buff == [0; PAGE_SIZE]);
+        unsafe { copy_nonoverlapping(addr_3_ptr, verify_buff.as_mut_ptr(), PAGE_SIZE) };
+        assert!(verify_buff == [255; PAGE_SIZE]);
     }
 }
