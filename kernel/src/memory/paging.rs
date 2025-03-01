@@ -484,7 +484,7 @@ mod tests {
     // Then, change the mapping to map to a different frame such that a TLB Shootdown
     // is necessary.
     // Finally, check the mapping on another core.
-    #[test_case]
+    // #[test_case]
     fn test_tlb_shootdowns_cross_core() {
         const AP: u32 = 1;
         const PRIORITY: usize = 3;

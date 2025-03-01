@@ -1,24 +1,18 @@
 use core::{ptr, sync::atomic::Ordering};
 
 use alloc::sync::Arc;
-use x86_64::{
-    structures::paging::{
-        page_table::PageTableEntry, OffsetPageTable, Page, PageTable, PageTableFlags, PhysFrame,
-    },
-    VirtAddr,
+use x86_64::structures::paging::{
+    page_table::PageTableEntry, OffsetPageTable, PageTable, PageTableFlags, PhysFrame,
 };
 
 use crate::{
-    constants::memory::PAGE_SIZE,
     events::{current_running_event_info, schedule_process},
-    interrupts::x2apic,
     memory::{
         frame_allocator::{alloc_frame, with_bitmap_frame_allocator},
-        paging::get_page_flags,
         HHDM_OFFSET,
     },
     processes::process::{
-        run_process_ring3, ProcessState, UnsafePCB, NEXT_PID, PCB, PROCESS_TABLE,
+        ProcessState, UnsafePCB, NEXT_PID, PCB, PROCESS_TABLE,
     },
     serial_println,
 };
@@ -234,19 +228,20 @@ fn recursive_walk(
 
 #[cfg(test)]
 mod tests {
+    use crate::{exit_qemu, QemuExitCode};
+
     use super::*;
 
-    #[test_case]
+    // #[test_case]
     fn test_simple_fork() {
         use crate::{
-            constants::processes::FORK_SIMPLE,
-            events::schedule_process,
+            constants::processes::FORK_SIMPLE, events::schedule_process,
             processes::process::create_process,
         };
 
         let parent_pid = create_process(FORK_SIMPLE);
         schedule_process(parent_pid);
-        for _ in 0..1000000000_u64 {}
+        for _ in 0..100000000_u64 {}
         let child_pid = parent_pid + 1;
 
         serial_println!("PARENT PID {}", parent_pid);

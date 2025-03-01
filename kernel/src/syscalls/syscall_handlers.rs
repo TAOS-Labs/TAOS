@@ -1,13 +1,15 @@
-use core::ffi::CStr;
+use core::{ffi::CStr, i64, sync::atomic::AtomicI64};
 
 use crate::{
-    constants::syscalls::*, events::{current_running_event_info, EventInfo}, interrupts::{gdt::TSSS, x2apic::current_core_id}, memory::frame_allocator::with_bitmap_frame_allocator, processes::process::{clear_process_frames, sleep_process, ProcessState, PROCESS_TABLE}, serial_println
+    constants::syscalls::*, events::{current_running_event_info, EventInfo}, exit_qemu, interrupts::{gdt::TSSS, x2apic::current_core_id}, memory::frame_allocator::with_bitmap_frame_allocator, processes::process::{clear_process_frames, sleep_process, ProcessState, PROCESS_TABLE}, serial_println, QemuExitCode
 };
 
 #[warn(unused)]
 use crate::interrupts::x2apic;
 #[allow(unused)]
 use core::arch::naked_asm;
+
+pub static TEST_EXIT_CODE: AtomicI64= AtomicI64::new(i64::MIN);
 
 #[repr(C)]
 #[derive(Debug)]
@@ -154,6 +156,13 @@ pub fn sys_exit(code: i64) -> Option<u64> {
 
     if code == -1 {
         panic!("Bad error code!");
+    }
+
+    serial_println!("Stored value");
+    #[cfg(test)]
+    {
+        serial_println!("Stored value");
+        TEST_EXIT_CODE.store(code, core::sync::atomic::Ordering::SeqCst);
     }
 
     unsafe {
