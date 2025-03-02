@@ -62,3 +62,58 @@ fn switch_allocator() {
         _ => panic!("We must be using Boot Frame Allocator at this point"),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use alloc::{boxed::Box, string::String, vec, vec::Vec};
+
+    #[test_case]
+    fn test_basic_heap_alloc() {
+        let base = Box::new(42);
+        assert_eq!(*base, 42);
+    }
+
+    #[test_case]
+    fn test_vector_alloc() {
+        let mut vec = Vec::new();
+        for i in 0..100 {
+            vec.push(i);
+        }
+
+        assert_eq!(vec.len(), 100);
+        let expected_sum: usize = (0..100).sum();
+        let sum: usize = vec.iter().sum();
+
+        assert_eq!(sum, expected_sum);
+    }
+
+    /// Allocates many boxes in a loop to stress the heap and ensure allocations do not overlap.
+    #[test_case]
+    fn test_many_allocations() {
+        let mut boxes = Vec::new();
+        // Adjust the count based on your heap size
+        for i in 0..1000 {
+            boxes.push(Box::new(i));
+        }
+        for (i, b) in boxes.iter().enumerate() {
+            assert_eq!(**b, i);
+        }
+    }
+
+    /// Tests allocation of a String on the heap.
+    #[test_case]
+    fn test_string_allocation() {
+        let s = String::from("Hello, kernel heap!");
+        assert_eq!(s, "Hello, kernel heap!");
+    }
+
+    #[test_case]
+    fn test_large_allocation() {
+        let size = 1024 * 512;
+        let vec: Vec<u8> = vec![1; size];
+
+        assert_eq!(vec.len(), size);
+
+        assert!(vec.iter().all(|&b| b == 1));
+    }
+}

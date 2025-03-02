@@ -14,7 +14,7 @@ pub const HEAP_SIZE: usize = 1024 * 1024;
 
 /// Maximum number of frames that can be allocated.
 /// Set to 512 to accommodate heap plus additional allocations.
-pub const MAX_ALLOCATED_FRAMES: usize = 512;
+pub const MAX_ALLOCATED_FRAMES: usize = 1024;
 
 /// Size of each bitmap entry in bits.
 pub const BITMAP_ENTRY_SIZE: usize = 64;
