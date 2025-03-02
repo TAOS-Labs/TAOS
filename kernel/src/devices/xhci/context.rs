@@ -1,10 +1,11 @@
 #[repr(C, packed)]
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 /// See section 6.2.2 of xHCI specs
 /// This structure should only be 32 bytes if Context Size field in the
 /// HCCPARAMS1 register is '0', otherwise it is 64 bytes with bytes 32
 /// to 64 reserved for the xHCI
-struct slot_contex {
+struct SlotContex {
     offset_0: u32,
     offset_1: u32,
     offset_2: u32,
@@ -15,7 +16,8 @@ struct slot_contex {
     offset_7: u32,
 }
 
-impl slot_contex {
+#[allow(dead_code)]
+impl SlotContex {
     /// Retrieves the route string from the slot contex.
     /// The route string is only 20 bits wide and is used
     /// by hubs to route packets.
@@ -139,11 +141,12 @@ impl slot_contex {
 
 #[repr(C, packed)]
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 /// See section 6.2.3 of the xHCI specs.
 /// This structure should only be 32 bytes if Context Size field in the
 /// HCCPARAMS1 register is '0', otherwise it is 64 bytes with bytes 32
 /// to 64 reserved for the xHCI
-struct endpoint_context {
+struct EndpointContext {
     offset_0: u32,
     offset_1: u32,
     offset_2: u32,
@@ -154,7 +157,8 @@ struct endpoint_context {
     offset_7: u32,
 }
 
-impl endpoint_context {
+#[allow(dead_code)]
+impl EndpointContext {
     /// retrieves the Endpoint State from the endpoint context
     /// This field is only 3 bits wide and identifies the current
     /// operational state of the endpoint.
@@ -306,17 +310,19 @@ impl endpoint_context {
 
 #[repr(C, packed)]
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 /// See section 6.2.4.1 of the xHCI specs.
 /// The Context Size field of the HCCPARAMS1 register does not apply to this
 /// structure, it is always 16 bytes in size.
-struct stream_context {
+struct StreamContext {
     offset_0: u32,
     offset_1: u32,
     offset_2: u32,
     offset_3: u32,
 }
 
-impl stream_context {
+#[allow(dead_code)]
+impl StreamContext {
     /// Retrieves the Dequeue Cycle State field from the stream context.
     /// This field is only 1 bit wide and identifies the value of the xHC Consumer
     /// Cycle State (CCS) flag for the TRB.
@@ -356,11 +362,12 @@ impl stream_context {
 
 #[repr(C, packed)]
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 /// See section 6.2.5.1 of the xHCI specs.
 /// This structure should only be 32 bytes if Context Size field in the
 /// HCCPARAMS1 register is '0', otherwise it is 64 bytes with bytes 32
 /// to 64 reserved for the xHCI
-struct input_control_context {
+struct InputControlContext {
     offset_0: u32,
     offset_1: u32,
     offset_2: u32,
@@ -374,7 +381,8 @@ struct input_control_context {
     rsvdz: u8,
 }
 
-impl input_control_context {
+#[allow(dead_code)]
+impl InputControlContext {
     /// Retrieves the value of the Drop Context flag of the bit at the index
     /// bit position. Index must be > 1 and < 32.
     fn get_drop_flag(&self, index: u32) -> u32 {

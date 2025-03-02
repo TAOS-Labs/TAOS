@@ -1,4 +1,5 @@
-enum TrbTypes {
+/// A list of all the TRB types and the values associated with them.
+pub enum TrbTypes {
     Reserved = 0,
     Normal = 1,
     SetupStage = 2,
@@ -87,13 +88,13 @@ pub enum EventRingType {
 /// A generic struct for Transfer Request Blocks (TRBs).
 /// Precise setting and getting of specific fields for a given TRB shall be done
 /// by the xHCI driver. See section 6.4 of the xHCI specs for more details.
-struct TransferRequestBlock {
-    parameters: u64,
-    status: u32,
-    control: u32,
+pub struct TransferRequestBlock {
+    pub parameters: u64,
+    pub status: u32,
+    pub control: u32,
 }
 
-type Trb = TransferRequestBlock;
+pub type Trb = TransferRequestBlock;
 
 impl TransferRequestBlock {
     /// Retrieves the TRB type from the control field in the TRB
@@ -134,27 +135,62 @@ pub enum RingType {
     Transfer
 }
 
+#[derive(Debug, Clone)]
+/// Error codes for ring buffers
 pub enum RingBufferError {
-    EnqueueError,
-    DequeueError
+    /// Error indicating that an attempt to enqueue onto a ring that is full
+    BufferFullError,
+    /// Error indicating that an attempt to dequeue from a ring that is empty
+    BufferEmptyError,
+    /// Error indicating that an improper action was taken on a ring.
+    /// For example, dequeue on a command or transfer ring or enqueue on an event ring.
+    InvalidType,
+    /// Error indicating that the address passed in is not aligned to 16
+    UnalignedAddress,
+    /// Error indicating that the size passed in is not aligned to 16
+    UnalignedSize
 }
 
 #[derive(Debug, Clone)]
 /// Implements a ring buffer for use with the different rings associated with
 /// the xHCI.
-struct RingBuffer {
+pub struct RingBuffer {
+    /// Pointer to the next TRB to be written to
     enqueue: *mut Trb,
+    /// Pointer to the next TRB to read from
     dequeue: *mut Trb,
+    /// The state of the cycle bit, represents both the Producer Cycle State (PCS) and the Consumer Cycle State (CCS)
     cycle_state: u8,
+    /// The type of this ring, either Command, Transfer, or Event
     ring: RingType
 }
 
 impl RingBuffer {
-    pub fn new(base_addr: u64, cycle_state: u8, ring_type: RingType, size: isize) -> Self {
+    /// Initializes and returns a new instance of a ring buffer or an error.
+    /// 
+    /// # Arguments
+    /// * `base_addr` - The base address of the ring buffer
+    /// * `cycle_state` - What to initialize PCS/CCS to
+    /// * `ring_type` - The type of ring that this buffer will represent, either Command, Transfer or Event
+    /// * `size` - The size of the buffer pointed to by `base_addr`
+    /// 
+    /// # Returns
+    /// Returns a newly initialize `RingBuffer` on success, on error returns `Err(RingBufferError)`.
+    /// - `UnalignedAddress` if `base_addr` is not aligned to 16
+    /// - `UnalignedSize` if `size` is not a multiple of 16
+    /// 
+    /// # Safety
+    /// - This function preforms a raw pointer access to initialize the Link TRB of the RingBuffer
+    /// - Assumes that `base_addr` points to a valid memory region of at least `size` bytes
+    pub fn new(base_addr: u64, cycle_state: u8, ring_type: RingType, size: isize) -> Result<Self, RingBufferError> {
         // ensure that the base address is aligned to 16
-        assert!(base_addr % 16 == 0);
+        if base_addr % 16 != 0 {
+            return Err(RingBufferError::UnalignedAddress);
+        }
         // make sure that size is a multiple of 16
-        assert!(size % 16 == 0);
+        if size % 16 != 0 {
+            return Err(RingBufferError::UnalignedSize);
+        }
 
         // initialize the link block at the end of this segment
         let num_blocks = size / 16;
@@ -165,22 +201,49 @@ impl RingBuffer {
             last.control =  0x1802;
             last.parameters = base_addr;
         }
-        RingBuffer {
-            enqueue: base_addr as *mut Trb,
-            dequeue: base_addr as *mut Trb,
-            cycle_state,
-            ring: ring_type
+        
+        Ok(
+            RingBuffer {
+                enqueue: base_addr as *mut Trb,
+                dequeue: base_addr as *mut Trb,
+                cycle_state,
+                ring: ring_type
+            }
+        )
+    }
+
+    /// Sets the Enqueue field to the given address.
+    /// 
+    /// # Arguments
+    /// * `addr` - The address to set `enqueue` to
+    /// 
+    /// # Returns
+    /// - `Ok(())` on success
+    /// - `Err(RingBufferError::UnalignedAddress)` if `addr` is not aligned to 16
+    pub fn set_enqueue(&mut self, addr: u64) -> Result<(), RingBufferError> {
+        if addr % 16 != 0 {
+            return Err(RingBufferError::UnalignedAddress);
         }
-    }
 
-    pub fn set_enqueue(&mut self, addr: u64) {
-        assert!(addr % 16 == 0);
         self.enqueue = addr as *mut Trb;
+        Ok(())
     }
 
-    pub fn set_dequeue(&mut self, addr: u64) {
-        assert!(addr % 16 == 0);
+    /// Sets the Dequeue field to the given address.
+    /// 
+    /// # Arguments
+    /// * `addr` - The address to set `dequeue` to
+    /// 
+    /// # Returns
+    /// - `Ok(())` on success
+    /// - `Err(RingBufferError::UnalignedAddress)` if `addr` is not aligned to 16
+    pub fn set_dequeue(&mut self, addr: u64) -> Result<(), RingBufferError>{
+        if addr % 16 != 0 {
+            return Err(RingBufferError::UnalignedAddress);
+        }
+
         self.dequeue = addr as *mut Trb;
+        Ok(())
     }
 
     unsafe fn is_enq_link(&self) -> bool {
@@ -199,20 +262,30 @@ impl RingBuffer {
         trb.get_trb_type() == TrbTypes::Link as u32
     }
 
+    /// Checks if the ring is full. Full is defined as if `enqueue` + 1 == `dequeue`, accounting for link TRB.
+    /// 
+    /// # Returns
+    /// True if the ring is full, false otherwise
+    /// 
+    /// # Safety
+    /// This functions uses unsafe actions on a raw pointer such as dereferencing it and adding an offset to it
     pub unsafe fn is_ring_full(&self) -> bool {
-        let next_enq: *mut Trb;
         // check if adding 1 to enqueue would make it point to a link trb
-        if self.is_next_link() {
+        let next_enq = if self.is_next_link() {
             // if so, set next_enq to the pointer stored in trb.parameters
             let next_trb = *self.enqueue;
-            next_enq = (next_trb.parameters & 0xF) as *mut Trb;
+            (next_trb.parameters & 0xF) as *mut Trb
         } else {
             // otherwise, just set next_enq to enqueue offsetted by one
-            next_enq = self.enqueue.offset(1);
-        }
+            self.enqueue.offset(1)
+        };
         self.dequeue == next_enq
     }
 
+    /// Checks if the ring is empty. Empty is defined as if `enqueue` == `dequeue`.
+    /// 
+    /// # Returns
+    /// True if the ring is empty, false otherwise
     pub fn is_ring_empty(&self) -> bool {
         self.enqueue == self.dequeue
     }
@@ -243,11 +316,33 @@ impl RingBuffer {
         }
     }
 
-    pub unsafe fn enqueue(&mut self, block: Trb) -> Result<(), RingBufferError> {
+    /// Queues a TRB onto the ring.
+    /// 
+    /// # Arguments
+    /// * `block` - The TRB data to be copied into the buffer
+    /// 
+    /// # Returns
+    /// returns `Ok(())` on success, on error will return `Err(RingBufferError)`
+    /// - `InvalidType` if this ring is an Event ring
+    /// - `BufferFullError` if the ring is full
+    /// 
+    /// # Safety
+    /// - This function preforms a raw pointer update to copy `block`'s data onto the buffer
+    /// - Increments `enqueue` to the next block, skipping any link TRBs
+    pub unsafe fn enqueue(&mut self, mut block: Trb) -> Result<(), RingBufferError> {
+        // If the ring type isnt command or transfer then return invalid type error
+        if let RingType::Event = self.ring {
+            return Err(RingBufferError::InvalidType)
+        }
+
         // If the ring is full then return enqueue error
         if self.is_ring_full() {
-            return Err(RingBufferError::EnqueueError);
+            return Err(RingBufferError::BufferFullError);
         }
+
+        // Write the current cycle state bit to the block
+        block.control = (block.control & !1) | self.cycle_state as u32;
+
         // copy the contents of block into enqueue
         // TODO: make sure this copies like I want it to
         *self.enqueue = block;
@@ -257,10 +352,26 @@ impl RingBuffer {
         Result::Ok(())
     }
 
+    /// Dequeues a TRB from the ring.
+    /// 
+    /// # Returns
+    /// Returns the next block to be dequeued on success, on error returns `Err(RingBufferError)`
+    /// - `InvalidType` if this ring is not an Event ring
+    /// - `BufferEmptyError` if the ring is empty
+    /// 
+    /// # Safety
+    /// - Preforms a dereference on a raw pointer to read the block
+    /// - Increments `dequeue` to the next block, skipping any link TRBs
     pub unsafe fn dequeue(&mut self) -> Result<Trb, RingBufferError> {
+        // if the ring isnt event then return invalid type error
+        match self.ring {
+            RingType::Event => {},
+            _ => return Err(RingBufferError::InvalidType)
+        }
+
         // If the ring is empty then reurn dequeue error
         if self.is_ring_empty() {
-            return Err(RingBufferError::DequeueError);
+            return Err(RingBufferError::BufferEmptyError);
         }
 
         // get the block

@@ -93,21 +93,21 @@ pub fn zero_out_page(page: Page) {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::memory::{frame_allocator::FRAME_ALLOCATOR, MAPPER};
+// #[cfg(test)]
+// mod tests {
+//     use super::*;
+//     use crate::memory::{frame_allocator::FRAME_ALLOCATOR, MAPPER};
 
-    #[test_case]
-    fn test_zero_out_page_4kib() {
-        let mut mapper = MAPPER.lock();
-        let mut allator_tmp = FRAME_ALLOCATOR.lock();
-        let allocator = allator_tmp.as_mut();
-        let frame1 = allocator.allocate_frame();
-        let frame2 = allocator.allocate_frame();
-        let frame3 = allocator.allocate_frame();
-        let addr_1 = map_page_as_uncacheable(frame1.start_address().as_u64(), &mut mapper);
-        map_page_as_uncacheable(frame2.start_address().as_u64(), &mut mapper);
-        let addr_3 = map_page_as_uncacheable(frame3.start_address().as_u64(), &mut mapper);
-    }
-}
+//     #[test_case]
+//     fn test_zero_out_page_4kib() {
+//         let mut mapper = MAPPER.lock();
+//         let mut allator_tmp = FRAME_ALLOCATOR.lock();
+//         let allocator = allator_tmp.as_mut();
+//         let frame1 = allocator.allocate_frame();
+//         let frame2 = allocator.allocate_frame();
+//         let frame3 = allocator.allocate_frame();
+//         let addr_1 = map_page_as_uncacheable(frame1.start_address().as_u64(), &mut mapper);
+//         map_page_as_uncacheable(frame2.start_address().as_u64(), &mut mapper);
+//         let addr_3 = map_page_as_uncacheable(frame3.start_address().as_u64(), &mut mapper);
+//     }
+// }

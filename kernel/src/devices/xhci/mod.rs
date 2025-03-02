@@ -290,3 +290,47 @@ fn initalize_xhciinfo(full_bar: u64, mapper: &mut OffsetPageTable) -> Result<XHC
         command_ring_base: cmd_frame.start_address().as_u64(),
     })
 }
+
+#[cfg(test)]
+mod test {
+    use x86_64::registers::control;
+
+    use super::{ring_buffer::{RingBuffer, RingType, Trb}, *};
+    use crate::memory::{paging::{create_mapping, remove_mapped_frame}, MAPPER};
+
+    #[test_case]
+    fn ring_buffer_init() {
+        // first get a page and zero init it
+        let mut mapper = MAPPER.lock();
+        let page: Page = Page::containing_address(VirtAddr::new(0x500000000));
+        let _ = create_mapping( page, &mut *mapper, None);
+
+        mmio::zero_out_page(page);
+        
+        // call the new function
+        let base_addr = page.start_address().as_u64();
+        let size = page.size() as isize;
+        let _cmd_ring = RingBuffer::new(base_addr, 1, RingType::Command, size).expect("Intialization failed");
+
+        // make sure the link trb is set correctly
+        let mut trb_ptr = base_addr as *const Trb;
+        let trb: Trb;
+        unsafe {
+            trb_ptr = trb_ptr.offset(size / 16 - 1);
+            trb = *trb_ptr;
+        }
+        debug_println!("link trb params: 0x{:X}", {trb.parameters});
+        debug_println!("link trb status: 0x{:X}", {trb.status});
+        debug_println!("link trb control: 0x{:X}", {trb.control});
+        
+        let params = trb.parameters;
+        let status = trb.status;
+        let control = trb.control;
+
+        assert_eq!(params, base_addr);
+        assert_eq!(status, 0);
+        assert_eq!(control, 0x1802);
+
+        remove_mapped_frame(page, &mut *mapper);
+    }
+}
