@@ -8,6 +8,12 @@ pub struct MessageWriter {
     buf: BytesMut,
 }
 
+impl Default for MessageWriter {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl MessageWriter {
     pub fn new() -> Self {
         Self {
@@ -102,7 +108,7 @@ impl<'a> MessageReader<'a> {
     }
 
     pub fn read_u8(&mut self) -> Result<u8, ProtocolError> {
-        if self.buf.len() < 1 {
+        if self.buf.is_empty() {
             return Err(ProtocolError::BufferTooSmall);
         }
         Ok(self.buf.get_u8())

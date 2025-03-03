@@ -99,3 +99,9 @@ impl FdTable {
         }
     }
 }
+
+impl Default for FdTable {
+    fn default() -> Self {
+        Self::new()
+    }
+}

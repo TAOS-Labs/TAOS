@@ -9,6 +9,7 @@ use futures::task::ArcWake;
 
 use super::{runner_timestamp, Event};
 
+/// Future to sleep an event until a target timestamp (in system ticks)
 #[derive(Clone)]
 pub struct Sleep {
     pub target_timestamp: u64,
@@ -32,11 +33,17 @@ impl Sleep {
     }
 }
 
+/// Order sleep futures with earlier timestamps given "higher" values.
+///
+/// PID then EID to tie break.
+/// Thus, events created earlier awaken first in the very rare event of a tie.
+/// This helps preventing compounding error from old events frequently sleeping.
 impl Ord for Sleep {
     fn cmp(&self, other: &Self) -> core::cmp::Ordering {
         self.target_timestamp
             .cmp(&other.target_timestamp)
             .reverse()
+            .then(self.event.pid.cmp(&other.event.pid))
             .then(self.event.eid.cmp(&other.event.eid))
     }
 }
@@ -49,7 +56,9 @@ impl PartialOrd for Sleep {
 
 impl PartialEq for Sleep {
     fn eq(&self, other: &Self) -> bool {
-        self.target_timestamp == other.target_timestamp && self.event.eid == other.event.eid
+        self.target_timestamp == other.target_timestamp
+            && self.event.pid == other.event.pid
+            && self.event.eid == other.event.eid
     }
 }
 

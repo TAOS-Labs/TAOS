@@ -26,6 +26,8 @@ impl Event {
 }
 
 impl ArcWake for Event {
+    /// Push event back on the queue it is to awaken at
+    /// And remove event from set of blocked events, if applicable
     fn wake_by_ref(arc: &Arc<Self>) {
         arc.rewake_queue.write().push_back(arc.clone());
         arc.blocked_events.write().remove(&arc.eid.0);

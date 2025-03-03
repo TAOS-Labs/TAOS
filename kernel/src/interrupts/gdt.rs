@@ -42,7 +42,7 @@ lazy_static! {
     /// Each TSS contains:
     /// - Interrupt Stack Table (IST) for handling exceptions
     /// - Kernel stack pointer (RSP0) for privilege level changes
-    static ref TSSS: [TaskStateSegment; MAX_CORES] = {
+    pub static ref TSSS: [TaskStateSegment; MAX_CORES] = {
         static mut DF_STACKS: [[u8; IST_STACK_SIZE]; MAX_CORES] = [[0; IST_STACK_SIZE]; MAX_CORES];
         static mut PRIV_STACKS: [[u8; RING0_STACK_SIZE]; MAX_CORES] = [[0; RING0_STACK_SIZE]; MAX_CORES];
 
@@ -52,9 +52,7 @@ lazy_static! {
             unsafe {
                 let stack_start = VirtAddr::from_ptr(&DF_STACKS[i]);
                 let stack_end = stack_start + IST_STACK_SIZE as u64;
-
                 let priv_stack_start = VirtAddr::from_ptr(&PRIV_STACKS[i]);
-
                 let priv_stack_end = priv_stack_start + RING0_STACK_SIZE as u64;
 
                 tss.interrupt_stack_table[DOUBLE_FAULT_IST_INDEX as usize] = stack_end;
@@ -97,8 +95,8 @@ lazy_static! {
 /// Collection of segment selectors for kernel and user segments, plus TSS selectors.
 #[derive(Debug)]
 pub struct Selectors {
-    code_selector: SegmentSelector,
-    data_selector: SegmentSelector,
+    pub code_selector: SegmentSelector,
+    pub data_selector: SegmentSelector,
     pub user_code_selector: SegmentSelector,
     pub user_data_selector: SegmentSelector,
     tss_selectors: [SegmentSelector; MAX_CORES],

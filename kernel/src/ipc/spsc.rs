@@ -85,6 +85,9 @@ impl<T> SpscChannel<T> {
         )
     }
 
+    ///
+    /// # Safety
+    /// TODO
     pub unsafe fn cleanup(&self) {
         let head = self.head.load(Ordering::Acquire);
         let tail = self.tail.load(Ordering::Acquire);
@@ -212,7 +215,7 @@ pub struct SendFuture<'a, T> {
     value: Option<T>,
 }
 
-impl<'a, T> Future for SendFuture<'a, T> {
+impl<T> Future for SendFuture<'_, T> {
     type Output = Result<(), SendError<T>>;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
@@ -225,7 +228,7 @@ impl<'a, T> Future for SendFuture<'a, T> {
             Err(SendError::Full(value)) => {
                 this.value = Some(value);
                 unsafe {
-                    *(*this.sender.channel).tx_waker.get() = Some(cx.waker().clone());
+                    *this.sender.channel.tx_waker.get() = Some(cx.waker().clone());
                 }
                 Poll::Pending
             }
@@ -238,7 +241,7 @@ pub struct RecvFuture<'a, T> {
     receiver: &'a Receiver<T>,
 }
 
-impl<'a, T> Future for RecvFuture<'a, T> {
+impl<T> Future for RecvFuture<'_, T> {
     type Output = Result<T, RecvError>;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
@@ -246,7 +249,7 @@ impl<'a, T> Future for RecvFuture<'a, T> {
             Ok(value) => Poll::Ready(Ok(value)),
             Err(RecvError::Empty) => {
                 unsafe {
-                    *(*self.receiver.channel).rx_waker.get() = Some(cx.waker().clone());
+                    *self.receiver.channel.rx_waker.get() = Some(cx.waker().clone());
                 }
                 Poll::Pending
             }

@@ -12,6 +12,12 @@ pub struct CancellationToken {
     cancelled: Arc<Mutex<bool>>,
 }
 
+impl Default for CancellationToken {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl CancellationToken {
     pub fn new() -> Self {
         Self {
@@ -32,7 +38,7 @@ pub struct CancellationGuard<'a> {
     token: &'a CancellationToken,
 }
 
-impl<'a> Future for CancellationGuard<'a> {
+impl Future for CancellationGuard<'_> {
     type Output = Result<(), TaskError>;
 
     fn poll(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Self::Output> {

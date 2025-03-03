@@ -93,7 +93,7 @@ pub struct Channel<T> {
 }
 
 impl<T> Channel<T> {
-    pub fn new(capacity: usize) -> (Sender<T>, Receiver<T>) {
+    pub fn new_channel(capacity: usize) -> (Sender<T>, Receiver<T>) {
         assert!(capacity > 0, "Channel capacity must be greater than 0");
         let queue = Arc::new(ArrayQueue::new(capacity));
         let state = Arc::new(ChannelState {
@@ -274,7 +274,7 @@ pub struct SendFuture<'a, T> {
     spin_count: u32,
 }
 
-impl<'a, T> Future for SendFuture<'a, T> {
+impl<T> Future for SendFuture<'_, T> {
     type Output = Result<(), SendError<T>>;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
@@ -313,7 +313,7 @@ pub struct RecvFuture<'a, T> {
     spin_count: u32,
 }
 
-impl<'a, T> Future for RecvFuture<'a, T> {
+impl<T> Future for RecvFuture<'_, T> {
     type Output = Result<T, RecvError>;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
@@ -370,7 +370,7 @@ mod tests {
 
     #[test_case]
     fn test_basic_operations() -> impl Future<Output = ()> + Send + 'static {
-        let (tx, rx) = Channel::new(2);
+        let (tx, rx) = Channel::new_channel(2);
 
         async move {
             assert_eq!(tx.queue.capacity(), 2);
@@ -392,7 +392,7 @@ mod tests {
 
     #[test_case]
     fn test_send_recv_ordering() -> impl Future<Output = ()> + Send + 'static {
-        let (tx, rx) = Channel::new(100);
+        let (tx, rx) = Channel::new_channel(100);
 
         async move {
             for i in 0..100 {
@@ -407,7 +407,7 @@ mod tests {
 
     #[test_case]
     fn test_multiple_producers() -> impl Future<Output = ()> + Send + 'static {
-        let (tx, rx) = Channel::new(100);
+        let (tx, rx) = Channel::new_channel(100);
 
         async move {
             let mut senders = Vec::new();
@@ -434,7 +434,7 @@ mod tests {
 
     #[test_case]
     fn test_multiple_producers_full_channel() -> impl Future<Output = ()> + Send + 'static {
-        let (tx, rx) = Channel::new(5);
+        let (tx, rx) = Channel::new_channel(5);
 
         async move {
             let mut senders = Vec::new();
@@ -467,7 +467,7 @@ mod tests {
 
     #[test_case]
     fn test_batch_operations() -> impl Future<Output = ()> + Send + 'static {
-        let (tx, rx) = Channel::new(100);
+        let (tx, rx) = Channel::new_channel(100);
 
         async move {
             for i in 0..50 {
@@ -490,7 +490,7 @@ mod tests {
 
     #[test_case]
     fn test_close_behavior() -> impl Future<Output = ()> + Send + 'static {
-        let (tx, rx) = Channel::new(10);
+        let (tx, rx) = Channel::new_channel(10);
 
         async move {
             tx.send(1).await.unwrap();
@@ -510,7 +510,7 @@ mod tests {
 
     #[test_case]
     fn test_drop_behavior() -> impl Future<Output = ()> + Send + 'static {
-        let (tx, rx) = Channel::new(10);
+        let (tx, rx) = Channel::new_channel(10);
 
         async move {
             let tx2 = tx.clone();
@@ -533,7 +533,7 @@ mod tests {
 
     #[test_case]
     fn test_zero_sized_type() -> impl Future<Output = ()> + Send + 'static {
-        let (tx, rx) = Channel::new(10);
+        let (tx, rx) = Channel::new_channel(10);
 
         async move {
             tx.send(()).await.unwrap();
@@ -543,8 +543,8 @@ mod tests {
 
     #[test_case]
     fn test_concurrent_channels() -> impl Future<Output = ()> + Send + 'static {
-        let (tx1, rx1) = Channel::new(1);
-        let (tx2, rx2) = Channel::new(1);
+        let (tx1, rx1) = Channel::new_channel(1);
+        let (tx2, rx2) = Channel::new_channel(1);
 
         async move {
             let send_fut1 = async {
@@ -570,7 +570,7 @@ mod tests {
 
     #[test_case]
     fn test_try_operations() -> impl Future<Output = ()> + Send + 'static {
-        let (tx, rx) = Channel::new(2);
+        let (tx, rx) = Channel::new_channel(2);
 
         async move {
             assert!(tx.try_send(1).is_ok());

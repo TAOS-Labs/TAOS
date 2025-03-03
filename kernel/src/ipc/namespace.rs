@@ -5,7 +5,7 @@ use super::{
     mount_manager::MountId,
     requests::{Tattach, Tclunk, Twalk},
 };
-use alloc::{collections::BTreeMap, string::String, vec::Vec};
+use alloc::{collections::BTreeMap, string::String, vec};
 use bytes::Bytes;
 use core::sync::atomic::{AtomicU32, Ordering};
 
@@ -30,6 +30,12 @@ pub struct Namespace {
 
 const ROOTFID: u32 = 0;
 
+impl Default for Namespace {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Namespace {
     pub fn new() -> Self {
         Self {
@@ -47,7 +53,7 @@ impl Namespace {
             return Err(Error::InvalidPath);
         }
 
-        let components: Vec<String> = path
+        let components: vec::Vec<String> = path
             .split('/')
             .filter(|s| !s.is_empty())
             .map(String::from)
@@ -90,8 +96,7 @@ impl Namespace {
             if let Some(mount_id) = current_mount {
                 // We're in a mount point - do a 9P walk
                 let new_fid = self.next_fid.fetch_add(1, Ordering::Relaxed);
-                let mut v = Vec::new();
-                v.push(Bytes::copy_from_slice(component.as_bytes()));
+                let v = vec![Bytes::copy_from_slice(component.as_bytes())];
                 let msg = Message::Twalk(Twalk::new(0, current_fid, new_fid, v).unwrap());
 
                 let response = mnt_manager
@@ -129,7 +134,7 @@ impl Namespace {
             return Err(Error::InvalidPath);
         }
 
-        let components: Vec<String> = path
+        let components: vec::Vec<String> = path
             .split('/')
             .filter(|s| !s.is_empty())
             .map(String::from)
@@ -181,7 +186,7 @@ impl Namespace {
             return Err(Error::InvalidPath);
         }
 
-        let components: Vec<String> = path
+        let components: vec::Vec<String> = path
             .split('/')
             .filter(|s| !s.is_empty())
             .map(String::from)

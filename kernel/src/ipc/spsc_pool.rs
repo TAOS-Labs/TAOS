@@ -45,7 +45,7 @@ impl<T> ChannelPool<T> {
             })
             .collect();
 
-        let bitmap_words = (num_channels + 63) / 64;
+        let bitmap_words = num_channels.div_ceil(64);
         let mut available = Vec::with_capacity(bitmap_words);
         for word_idx in 0..bitmap_words {
             let remaining_channels = num_channels.saturating_sub(word_idx * 64);
@@ -145,6 +145,7 @@ impl<T> ChannelPool<T> {
         data.available[word_idx] |= 1 << bit_idx;
     }
 
+    #[allow(clippy::type_complexity)]
     pub fn allocate_pair(
         &self,
     ) -> Result<((Sender<T>, Receiver<T>), (Sender<T>, Receiver<T>)), PoolError> {
