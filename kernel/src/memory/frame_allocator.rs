@@ -4,6 +4,7 @@
 
 use crate::memory::{
     bitmap_frame_allocator::BitmapFrameAllocator, boot_frame_allocator::BootIntoFrameAllocator,
+    buddy_frame_allocator::BuddyFrameAllocator,
 };
 use spin::Mutex;
 
@@ -17,6 +18,7 @@ pub static FRAME_ALLOCATOR: Mutex<Option<GlobalFrameAllocator>> = Mutex::new(Non
 pub enum GlobalFrameAllocator {
     Boot(BootIntoFrameAllocator),
     Bitmap(BitmapFrameAllocator),
+    Buddy(BuddyFrameAllocator),
 }
 
 unsafe impl FrameAllocator<Size4KiB> for GlobalFrameAllocator {
@@ -29,6 +31,7 @@ unsafe impl FrameAllocator<Size4KiB> for GlobalFrameAllocator {
         match self {
             GlobalFrameAllocator::Boot(ref mut boot_alloc) => boot_alloc.allocate_frame(),
             GlobalFrameAllocator::Bitmap(ref mut bitmap_alloc) => bitmap_alloc.allocate_frame(),
+            GlobalFrameAllocator::Buddy(ref mut buddy_alloc) => buddy_alloc.allocate_frame(),
         }
     }
 }
@@ -48,6 +51,7 @@ impl FrameDeallocator<Size4KiB> for GlobalFrameAllocator {
             GlobalFrameAllocator::Bitmap(ref mut bitmap_alloc) => {
                 bitmap_alloc.deallocate_frame(frame)
             }
+            GlobalFrameAllocator::Buddy(ref mut buddy_alloc) => buddy_alloc.deallocate_frame(frame),
         }
     }
 }
@@ -66,6 +70,27 @@ pub fn alloc_frame() -> Option<PhysFrame> {
 /// * `frame`: The frame to deallocate
 pub fn dealloc_frame(frame: PhysFrame<Size4KiB>) {
     with_generic_allocator(|allocator| unsafe { allocator.deallocate_frame(frame) })
+}
+
+/// Gives access to the bitmap frame allocator to any passed in closure
+/// Example:
+/// with_buddy_frame_allocator(|allocator| {
+///     // code to run
+/// })
+///
+/// Arguments:
+///
+/// * `f`: The closure to run
+pub fn with_buddy_frame_allocator<F, R>(f: F) -> R
+where
+    F: FnOnce(&mut BuddyFrameAllocator) -> R,
+{
+    let mut guard = FRAME_ALLOCATOR.lock();
+    let alloc = match &mut *guard {
+        Some(GlobalFrameAllocator::Buddy(alloc)) => alloc,
+        _ => panic!("Allocator is not a BuddyFrameAllocator"),
+    };
+    f(alloc)
 }
 
 /// Gives access to the bitmap frame allocator to any passed in closure

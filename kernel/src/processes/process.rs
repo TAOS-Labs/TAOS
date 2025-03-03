@@ -15,7 +15,7 @@ use crate::{
         x2apic::{self, nanos_to_ticks},
     },
     memory::{
-        frame_allocator::{alloc_frame, with_bitmap_frame_allocator, with_generic_allocator}, HHDM_OFFSET, KERNEL_MAPPER
+        frame_allocator::{alloc_frame, dealloc_frame, with_buddy_frame_allocator, with_generic_allocator}, HHDM_OFFSET, KERNEL_MAPPER
     },
     processes::{loader::load_elf, registers::Registers},
     serial_println,
@@ -175,8 +175,8 @@ pub fn create_placeholder_process() -> u32 {
 
 pub fn create_process(elf_bytes: &[u8]) -> u32 {
     let pid = NEXT_PID.fetch_add(1, Ordering::SeqCst);
-    with_bitmap_frame_allocator(|alloc| {
-        alloc.print_bitmap_free_frames();
+    with_buddy_frame_allocator(|alloc| {
+        alloc.print_free_frames();
     });
     // Build a new process address space
     let process_pml4_frame = unsafe { create_process_page_table() };
@@ -253,35 +253,30 @@ pub fn clear_process_frames(pcb: &mut PCB) {
     let pml4_frame = pcb.pml4_frame;
     let mapper = unsafe { pcb.create_mapper() };
 
-    with_bitmap_frame_allocator(|deallocator| {
-        // Iterate over first 256 entries (user space)
-        for i in 0..256 {
-            let entry = &mapper.level_4_table()[i];
-            if entry.is_unused() {
-                continue;
-            }
-
-            let pdpt_frame = PhysFrame::containing_address(entry.addr());
-            unsafe {
-                free_page_table(pdpt_frame, 3, deallocator, HHDM_OFFSET.as_u64());
-            }
+    // Iterate over first 256 entries (user space)
+    for i in 0..256 {
+        let entry = &mapper.level_4_table()[i];
+        if entry.is_unused() {
+            continue;
         }
+
+        let pdpt_frame = PhysFrame::containing_address(entry.addr());
         unsafe {
-            deallocator.deallocate_frame(pml4_frame);
-        };
-    });
+            free_page_table(pdpt_frame, 3, HHDM_OFFSET.as_u64());
+        }
+    }
+
+    dealloc_frame(pml4_frame);
 }
 
 /// Helper function to recursively multi level page tables
 ///
 /// * `frame`: the current page table frame iterating over
 /// * `level`: the current level of the page table we're on
-/// * `deallocator`:
 /// * `hhdm_offset`:
 unsafe fn free_page_table(
     frame: PhysFrame,
     level: u8,
-    deallocator: &mut impl FrameDeallocator<Size4KiB>,
     hhdm_offset: u64,
 ) {
     let virt = hhdm_offset + frame.start_address().as_u64();
@@ -294,16 +289,16 @@ unsafe fn free_page_table(
 
         if level > 1 {
             let child_frame = PhysFrame::containing_address(entry.addr());
-            free_page_table(child_frame, level - 1, deallocator, hhdm_offset);
+            free_page_table(child_frame, level - 1, hhdm_offset);
         } else {
             // Free level one page
             let page_frame = PhysFrame::containing_address(entry.addr());
-            deallocator.deallocate_frame(page_frame);
+            dealloc_frame(page_frame);
         }
         entry.set_unused();
     }
 
-    deallocator.deallocate_frame(frame);
+    dealloc_frame(frame);
 }
 
 use core::arch::asm;

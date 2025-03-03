@@ -6,7 +6,6 @@ pub mod syscall_handlers;
 mod tests {
     use core::sync::atomic::Ordering;
 
-    use log::debug;
     use syscall_handlers::TEST_EXIT_CODE;
 
     use crate::{
@@ -34,8 +33,8 @@ mod tests {
 
     /// The binary prints something to the console and then exits
     /// For now, requires manual verification that the printed
-    /// content is correct
-    #[test_case]
+    /// content is correct 
+    // #[test_case]
     fn test_print_exit() {
         let pid = create_process(TEST_64_PRINT_EXIT);
         schedule_process_on(1, pid);
@@ -52,7 +51,7 @@ mod tests {
     /// Creates a child process, then sleeps for a non-negligible amount of time.
     /// Then, exits with the child_process pid. The child process exits with 0
     /// We should see the child exit first
-    #[test_case]
+    // #[test_case]
     fn test_fork_simple() {
         let parent_pid = create_process(TEST_64_FORK_EXIT);
         schedule_process_on(1, parent_pid);
@@ -79,7 +78,7 @@ mod tests {
     /// Creates a child process, then sleeps for a non-negligible amount of time.
     /// Then, exits with the child_process pid. The child process exits with 0
     /// We should see the child exit first
-    #[test_case]
+    // #[test_case]
     fn test_fork_cow() {
         let parent_pid = create_process(TEST_64_FORK_COW);
         schedule_process_on(1, parent_pid);

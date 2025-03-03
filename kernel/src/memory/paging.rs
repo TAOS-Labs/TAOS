@@ -21,10 +21,7 @@ use crate::{
     serial_println,
 };
 
-use super::{
-    frame_allocator::with_bitmap_frame_allocator,
-    HHDM_OFFSET,
-};
+use super::{frame_allocator::with_buddy_frame_allocator, HHDM_OFFSET};
 
 static mut NEXT_EPH_OFFSET: u64 = 0;
 
@@ -119,9 +116,7 @@ pub fn update_mapping(
     let mut flags = flags.unwrap_or(PageTableFlags::WRITABLE);
     flags.set(PageTableFlags::PRESENT, true);
 
-    let frame_is_used = with_bitmap_frame_allocator(|alloc| {
-        alloc.is_frame_used(frame)
-    });
+    let frame_is_used = with_buddy_frame_allocator(|alloc| alloc.get_ref_count(frame) > 0);
 
     update_permissions(page, mapper, flags);
 
@@ -142,15 +137,14 @@ pub fn update_mapping(
             )
         };
 
-        with_bitmap_frame_allocator(|alloc| {
-            if alloc.frame_ref_count.get(old_frame) > 0 {
-                alloc.frame_ref_count.dec(old_frame);
+        with_buddy_frame_allocator(|alloc| {
+            if alloc.get_ref_count(old_frame) > 0 {
+                alloc.dec_ref_count(frame);
             }
             if frame_is_used {
-                alloc.frame_ref_count.inc(frame);
+                alloc.inc_ref_count(frame);
             }
         });
-
 
         tlb_shootdown(page.start_address());
     }
@@ -343,10 +337,7 @@ mod tests {
     };
     use alloc::vec::Vec;
     use bitflags::Flags;
-    use x86_64::structures::paging::{
-        mapper::{MappedFrame, TranslateError, TranslateResult},
-        Translate,
-    };
+    use x86_64::structures::paging::mapper::TranslateError;
 
     // used for tlb shootdown testcases
     static PRE_READ: AtomicU64 = AtomicU64::new(0);

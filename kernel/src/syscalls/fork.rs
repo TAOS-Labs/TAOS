@@ -7,13 +7,11 @@ use x86_64::structures::paging::{
 
 use crate::{
     events::{current_running_event_info, schedule_process, schedule_process_on},
-    memory::{
-        frame_allocator::{alloc_frame, with_bitmap_frame_allocator},
-        HHDM_OFFSET,
+    memory::{frame_allocator::{alloc_frame, with_buddy_frame_allocator}, HHDM_OFFSET},
+    processes::{
+        process::{ProcessState, UnsafePCB, NEXT_PID, PCB, PROCESS_TABLE},
+        registers::NonFlagRegisters,
     },
-    processes::{process::{
-        ProcessState, UnsafePCB, NEXT_PID, PCB, PROCESS_TABLE,
-    }, registers::NonFlagRegisters},
     serial_println,
 };
 
@@ -103,11 +101,11 @@ fn duplicate_entries(parent: &mut PageTable, child: &mut PageTable, level: u8) {
 
         // Preserve kernel mappings on higher half
         if level == 4 && index >= 256 {
-            with_bitmap_frame_allocator(|frc| {
+            with_buddy_frame_allocator(|frc| {
                 let frame = PhysFrame::from_start_address(parent_entry.addr())
                     .expect("Address not aligned");
                 child[index].set_addr(parent_entry.addr(), parent_entry.flags());
-                frc.frame_ref_count.inc(frame);
+                frc.inc_ref_count(frame);
             });
             continue;
         }
@@ -145,11 +143,11 @@ fn handle_leaf_level(parent_entry: &mut PageTableEntry, child_entry: &mut PageTa
         }
         parent_entry.set_flags(flags);
 
-        with_bitmap_frame_allocator(|frc| {
+        with_buddy_frame_allocator(|frc| {
             let frame =
                 PhysFrame::from_start_address(parent_entry.addr()).expect("Address not aligned");
             child_entry.set_addr(parent_entry.addr(), flags);
-            frc.frame_ref_count.inc(frame);
+            frc.inc_ref_count(frame);
         });
     }
 }

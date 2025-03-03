@@ -3,6 +3,7 @@
 //! Provides an interface for paging and mapping frames of memory
 //! Implements TLB shootdowns
 
+pub mod buddy_frame_allocator;
 pub mod bitmap_frame_allocator;
 pub mod boot_frame_allocator;
 pub mod frame_allocator;

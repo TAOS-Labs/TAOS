@@ -1,7 +1,10 @@
 use core::{ffi::CStr, i64, sync::atomic::AtomicI64};
 
 use crate::{
-    constants::syscalls::*, events::{current_running_event_info, EventInfo}, interrupts::{gdt::TSSS, x2apic::current_core_id}, memory::frame_allocator::with_bitmap_frame_allocator, processes::process::{clear_process_frames, sleep_process, ProcessState, PROCESS_TABLE}, serial_println, syscalls::fork::sys_fork, processes::registers::NonFlagRegisters
+    constants::syscalls::*, events::{current_running_event_info, EventInfo}, interrupts::{gdt::TSSS, x2apic::current_core_id}, memory::frame_allocator::with_buddy_frame_allocator, processes::{
+        process::{clear_process_frames, sleep_process, ProcessState, PROCESS_TABLE},
+        registers::NonFlagRegisters,
+    }, serial_println, syscalls::fork::sys_fork
 };
 
 #[warn(unused)]
@@ -9,7 +12,7 @@ use crate::interrupts::x2apic;
 #[allow(unused)]
 use core::arch::naked_asm;
 
-pub static TEST_EXIT_CODE: AtomicI64= AtomicI64::new(i64::MIN);
+pub static TEST_EXIT_CODE: AtomicI64 = AtomicI64::new(i64::MIN);
 
 #[repr(C)]
 #[derive(Debug)]
@@ -132,8 +135,11 @@ pub extern "C" fn syscall_handler_64_naked() {
 /// # Safety
 /// This function is unsafe as it must dereference `syscall` to get args
 #[no_mangle]
-pub unsafe extern "C" fn syscall_handler_impl(syscall: *const SyscallRegisters, reg_vals: *const NonFlagRegisters) -> u64 {
-    let regs = unsafe {&*reg_vals};
+pub unsafe extern "C" fn syscall_handler_impl(
+    syscall: *const SyscallRegisters,
+    reg_vals: *const NonFlagRegisters,
+) -> u64 {
+    let regs = unsafe { &*reg_vals };
     let syscall = unsafe { &*syscall };
     serial_println!("Syscall num: {}", syscall.number);
     match syscall.number as u32 {
@@ -182,10 +188,10 @@ pub fn sys_exit(code: i64) -> Option<u64> {
 
         (*pcb).state = ProcessState::Terminated;
         clear_process_frames(&mut *pcb);
-        with_bitmap_frame_allocator(|alloc| {
-            alloc.print_bitmap_free_frames();
+        with_buddy_frame_allocator(|alloc| {
+            alloc.print_free_frames();
         });
- 
+
         process_table.remove(&event.pid);
         ((*pcb).kernel_rsp, (*pcb).kernel_rip)
     };
@@ -217,7 +223,6 @@ pub fn sys_exit(code: i64) -> Option<u64> {
 
     Some(code as u64)
 }
-
 
 // Not a real system call, but useful for testing
 pub fn sys_print(buffer: *const u8) -> u64 {
