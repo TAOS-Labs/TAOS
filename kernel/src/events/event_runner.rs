@@ -113,7 +113,7 @@ impl EventRunner {
         future: impl Future<Output = ()> + 'static + Send,
         priority_level: usize,
         pid: u32,
-    ) {
+    ) -> Arc<Event> {
         if priority_level >= NUM_EVENT_PRIORITIES {
             panic!("Invalid event priority: {}", priority_level);
         } else {
@@ -129,6 +129,8 @@ impl EventRunner {
             Self::enqueue(&self.event_queues[priority_level], event.clone());
 
             self.pending_events.write().insert(event.eid.0);
+
+            event.clone()
         }
     }
 
@@ -144,7 +146,7 @@ impl EventRunner {
         future: impl Future<Output = ()> + 'static + Send,
         priority_level: usize,
         pid: u32,
-    ) {
+    ) -> Arc<Event> {
         if priority_level >= NUM_EVENT_PRIORITIES {
             panic!("Invalid event priority: {}", priority_level);
         } else {
@@ -159,6 +161,8 @@ impl EventRunner {
 
             self.pending_events.write().insert(event.eid.0);
             self.blocked_events.write().insert(event.eid.0);
+
+            event.clone()
         }
     }
 

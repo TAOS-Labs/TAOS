@@ -83,21 +83,21 @@ pub unsafe fn run_loop(cpuid: u32) -> ! {
 /// Schedules a kernel event
 ///
 /// PID will always be 0
-pub fn schedule_kernel(future: impl Future<Output = ()> + 'static + Send, priority_level: usize) {
+pub fn schedule_kernel(future: impl Future<Output = ()> + 'static + Send, priority_level: usize) -> Arc<Event> {
     let cpuid = x2apic::current_core_id() as u32;
 
     without_interrupts(|| {
         let runners = EVENT_RUNNERS.read();
         let mut runner = runners.get(&cpuid).expect("No runner found").write();
 
-        runner.schedule(future, priority_level, 0);
-    });
+        runner.schedule(future, priority_level, 0)
+    })
 }
 
 /// Schedules a user process
 /// Starts with minimum priority
 pub fn schedule_process(pid: u32, // 0 as kernel/sentinel
-) {
+) -> Arc<Event> {
     let cpuid = x2apic::current_core_id() as u32;
 
     without_interrupts(|| {
@@ -105,16 +105,16 @@ pub fn schedule_process(pid: u32, // 0 as kernel/sentinel
         let mut runner = runners.get(&cpuid).expect("No runner found").write();
 
         unsafe {
-            runner.schedule(run_process_ring3(pid), NUM_EVENT_PRIORITIES - 1, pid);
+            runner.schedule(run_process_ring3(pid), NUM_EVENT_PRIORITIES - 1, pid)
         }
-    });
+    })
 }
 
 /// Notifies runner of a user process,
 /// but does not immediately schedule for polling.
 /// Starts with minimum priority
 pub fn schedule_blocked_process(pid: u32, // 0 as kernel/sentinel
-) {
+)  -> Arc<Event> {
     let cpuid = x2apic::current_core_id() as u32;
 
     without_interrupts(|| {
@@ -122,11 +122,11 @@ pub fn schedule_blocked_process(pid: u32, // 0 as kernel/sentinel
         let mut runner = runners.get(&cpuid).expect("No runner found").write();
 
         unsafe {
-            runner.schedule_blocked(run_process_ring3(pid), NUM_EVENT_PRIORITIES - 1, pid);
+            runner.schedule_blocked(run_process_ring3(pid), NUM_EVENT_PRIORITIES - 1, pid)
         }
-    });
+    })
 
-    todo!();
+    //todo?
 }
 
 /// Registers a new event runner to the current core
