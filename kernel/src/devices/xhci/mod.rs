@@ -293,24 +293,32 @@ fn initalize_xhciinfo(full_bar: u64, mapper: &mut OffsetPageTable) -> Result<XHC
 
 #[cfg(test)]
 mod test {
-    use x86_64::registers::control;
-
-    use super::{ring_buffer::{RingBuffer, RingType, Trb}, *};
-    use crate::memory::{paging::{create_mapping, remove_mapped_frame}, MAPPER};
+    use super::{
+        ring_buffer::{RingBuffer, RingType, Trb, TrbTypes},
+        *,
+    };
+    use crate::{
+        devices::xhci::ring_buffer::RingBufferError,
+        memory::{
+            paging::{create_mapping, remove_mapped_frame},
+            MAPPER,
+        },
+    };
 
     #[test_case]
     fn ring_buffer_init() {
         // first get a page and zero init it
         let mut mapper = MAPPER.lock();
         let page: Page = Page::containing_address(VirtAddr::new(0x500000000));
-        let _ = create_mapping( page, &mut *mapper, None);
+        let _ = create_mapping(page, &mut *mapper, None);
 
         mmio::zero_out_page(page);
-        
+
         // call the new function
         let base_addr = page.start_address().as_u64();
         let size = page.size() as isize;
-        let _cmd_ring = RingBuffer::new(base_addr, 1, RingType::Command, size).expect("Intialization failed");
+        let _cmd_ring =
+            RingBuffer::new(base_addr, 1, RingType::Command, size).expect("Intialization failed");
 
         // make sure the link trb is set correctly
         let mut trb_ptr = base_addr as *const Trb;
@@ -319,10 +327,7 @@ mod test {
             trb_ptr = trb_ptr.offset(size / 16 - 1);
             trb = *trb_ptr;
         }
-        debug_println!("link trb params: 0x{:X}", {trb.parameters});
-        debug_println!("link trb status: 0x{:X}", {trb.status});
-        debug_println!("link trb control: 0x{:X}", {trb.control});
-        
+
         let params = trb.parameters;
         let status = trb.status;
         let control = trb.control;
@@ -330,6 +335,330 @@ mod test {
         assert_eq!(params, base_addr);
         assert_eq!(status, 0);
         assert_eq!(control, 0x1802);
+
+        remove_mapped_frame(page, &mut *mapper);
+    }
+
+    #[test_case]
+    fn ring_buffer_enqueue() {
+        // initialize a ring buffer we can enqueue onto
+        let mut mapper = MAPPER.lock();
+        let page: Page = Page::containing_address(VirtAddr::new(0x500000000));
+        let _ = create_mapping(page, &mut *mapper, None);
+
+        mmio::zero_out_page(page);
+
+        // call the new function
+        let base_addr = page.start_address().as_u64();
+        let size = page.size() as isize;
+        let mut cmd_ring =
+            RingBuffer::new(base_addr, 1, RingType::Command, size).expect("Intialization failed");
+
+        // create a block to queue
+        let mut cmd = Trb {
+            parameters: 0,
+            status: 0,
+            control: 0,
+        };
+        cmd.set_trb_type(TrbTypes::NoOpCmd as u32);
+
+        // enqueue the block
+        unsafe {
+            cmd_ring.enqueue(cmd).expect("enqueue error");
+        }
+
+        let ring_base = base_addr as *mut Trb;
+        let mut trb: Trb;
+        unsafe {
+            trb = *ring_base;
+        }
+        assert_eq!(trb.get_trb_type(), TrbTypes::NoOpCmd as u32);
+        assert_eq!(trb.get_cycle(), 1);
+
+        // enqueue another block
+        unsafe {
+            cmd_ring.enqueue(cmd).expect("enqueue error");
+            trb = *(ring_base.offset(1));
+        }
+        assert_eq!(trb.get_trb_type(), TrbTypes::NoOpCmd as u32);
+        assert_eq!(trb.get_cycle(), 1);
+
+        remove_mapped_frame(page, &mut *mapper);
+    }
+
+    #[test_case]
+    fn ring_buffer_dequeue() {
+        // initialize a ring buffer we can dequeue from
+        let mut mapper = MAPPER.lock();
+        let page: Page = Page::containing_address(VirtAddr::new(0x500000000));
+        let _ = create_mapping(page, &mut *mapper, None);
+
+        mmio::zero_out_page(page);
+
+        // call the new function
+        let base_addr = page.start_address().as_u64();
+        let size = page.size() as isize;
+        let mut event_ring =
+            RingBuffer::new(base_addr, 1, RingType::Event, size).expect("Intialization failed");
+
+        // first put the block onto the queue
+        let ring_base = base_addr as *mut Trb;
+        let expect_stat: u32 = 0x1000000;
+        let mut expected_trb = Trb {
+            parameters: 0,
+            status: expect_stat,
+            control: 0,
+        };
+        let expect_control: u32 = 0x9401;
+        expected_trb.set_trb_type(TrbTypes::HcEvent as u32);
+        expected_trb.set_cycle(1);
+
+        // insert the expected trb, set the enqueue pointer down the line to allow us to dequeue and then dequeue
+        let deq_trb: Trb;
+        unsafe {
+            *ring_base = expected_trb;
+            event_ring
+                .set_enqueue(base_addr + 16)
+                .expect("enqueue error");
+            deq_trb = event_ring.dequeue().expect("dequeue failed");
+        }
+
+        // check the trb we got back
+        let params = deq_trb.parameters;
+        let status = deq_trb.status;
+        let control = deq_trb.control;
+
+        assert_eq!(params, 0);
+        assert_eq!(status, expect_stat);
+        assert_eq!(control, expect_control);
+
+        remove_mapped_frame(page, &mut *mapper);
+    }
+
+    #[test_case]
+    fn ring_buffer_helpers() {
+        let mut mapper = MAPPER.lock();
+        let page: Page = Page::containing_address(VirtAddr::new(0x500000000));
+        let _ = create_mapping(page, &mut *mapper, None);
+
+        mmio::zero_out_page(page);
+
+        // create a small ring buffer
+        let base_addr = page.start_address().as_u64();
+        let size: isize = 64;
+        let mut cmd_ring =
+            RingBuffer::new(base_addr, 1, RingType::Command, size).expect("Intialization failed");
+
+        // test is empty and is full funcs
+        let mut result = cmd_ring.is_ring_empty();
+        assert_eq!(result, true);
+
+        unsafe {
+            result = cmd_ring.is_ring_full();
+        }
+
+        assert_eq!(result, false);
+
+        // create a no-op cmd to queue a couple of times
+        let mut cmd = Trb {
+            parameters: 0,
+            status: 0,
+            control: 0,
+        };
+        cmd.set_trb_type(TrbTypes::NoOpCmd as u32);
+
+        unsafe {
+            cmd_ring.enqueue(cmd).expect("enqueue error");
+        }
+
+        // both empty and true should be false
+        result = cmd_ring.is_ring_empty();
+        assert_eq!(result, false);
+
+        unsafe {
+            result = cmd_ring.is_ring_full();
+            assert_eq!(result, false);
+            cmd_ring.enqueue(cmd).expect("enqueue error");
+        }
+
+        // empty should be false and full should be true
+        result = cmd_ring.is_ring_empty();
+        assert_eq!(result, false);
+
+        unsafe {
+            result = cmd_ring.is_ring_full();
+        }
+        assert_eq!(result, true);
+
+        remove_mapped_frame(page, &mut *mapper);
+    }
+
+    #[test_case]
+    fn ring_buffer_errors() {
+        let mut mapper = MAPPER.lock();
+        let page: Page = Page::containing_address(VirtAddr::new(0x500000000));
+        let _ = create_mapping(page, &mut *mapper, None);
+
+        mmio::zero_out_page(page);
+
+        // First test the new function with unaligned address
+        let mut base_addr = page.start_address().as_u64();
+        base_addr += 1;
+        let mut size: isize = 64;
+        let mut result = RingBuffer::new(base_addr, 1, RingType::Command, size).unwrap_err();
+
+        assert_eq!(result, RingBufferError::UnalignedAddress);
+
+        // now test with unaligned size
+        base_addr -= 1;
+        size += 5;
+        result = RingBuffer::new(base_addr, 1, RingType::Command, size).unwrap_err();
+
+        assert_eq!(result, RingBufferError::UnalignedSize);
+        size -= 5;
+
+        // make an actual proper cmd ring
+        let mut cmd_ring =
+            RingBuffer::new(base_addr, 1, RingType::Command, size).expect("Intialization failed");
+
+        // now begin testing the setters for unaligned address
+        result = cmd_ring.set_enqueue(base_addr + 18).unwrap_err();
+        assert_eq!(result, RingBufferError::UnalignedAddress);
+
+        result = cmd_ring.set_dequeue(base_addr + 18).unwrap_err();
+        assert_eq!(result, RingBufferError::UnalignedAddress);
+
+        // test enqueue buffer full error
+        let mut cmd = Trb {
+            parameters: 0,
+            status: 0,
+            control: 0,
+        };
+        cmd.set_trb_type(TrbTypes::NoOpCmd as u32);
+
+        unsafe {
+            cmd_ring.enqueue(cmd).expect("enqueue error");
+            cmd_ring.enqueue(cmd).expect("enqueue error");
+            result = cmd_ring.enqueue(cmd).unwrap_err();
+        }
+        assert_eq!(result, RingBufferError::BufferFullError);
+
+        // test dequeue invalid type error
+        unsafe {
+            result = cmd_ring.dequeue().unwrap_err();
+        }
+        assert_eq!(result, RingBufferError::InvalidType);
+
+        // create an event buffer so we can test the rest of the errors
+        let mut event_ring =
+            RingBuffer::new(base_addr, 1, RingType::Event, size).expect("init failed");
+
+        // test enqueue invalid type err
+        unsafe {
+            result = event_ring.enqueue(cmd).unwrap_err();
+        }
+        assert_eq!(result, RingBufferError::InvalidType);
+
+        // try to dequeue when it is empty
+        unsafe {
+            result = event_ring.dequeue().unwrap_err();
+        }
+        assert_eq!(result, RingBufferError::BufferEmptyError);
+
+        remove_mapped_frame(page, &mut *mapper);
+    }
+
+    #[test_case]
+    fn ring_buffer_enqueue_accross_segment() {
+        let mut mapper = MAPPER.lock();
+        let page: Page = Page::containing_address(VirtAddr::new(0x500000000));
+        let _ = create_mapping(page, &mut *mapper, None);
+
+        mmio::zero_out_page(page);
+
+        // create a small ring buffer
+        let base_addr = page.start_address().as_u64();
+        let size: isize = 64;
+        let mut cmd_ring =
+            RingBuffer::new(base_addr, 1, RingType::Command, size).expect("Intialization failed");
+
+        // create our no op cmd
+        let mut cmd = Trb {
+            parameters: 0,
+            status: 0,
+            control: 0,
+        };
+        cmd.set_trb_type(TrbTypes::NoOpCmd as u32);
+
+        // queue it up so we can test that later the cycle bit gets correctly written
+        unsafe {
+            cmd_ring.enqueue(cmd).expect("enqueue error");
+        }
+        // move the enqueue to the last block before the end and then the dequeue over one
+        cmd_ring
+            .set_enqueue(base_addr + 32)
+            .expect("unaligned address");
+        cmd_ring
+            .set_dequeue(base_addr + 16)
+            .expect("unaligned address");
+
+        // now try to enqueue
+        unsafe {
+            cmd_ring.enqueue(cmd).expect("enqueue error");
+        }
+
+        // ring should be considered full now
+        unsafe {
+            assert!(cmd_ring.is_ring_full());
+        }
+
+        // now move dequeue so we can test that enqueue properly writes the cycle bit to 0
+        cmd_ring
+            .set_dequeue(base_addr + 32)
+            .expect("unaligned address");
+
+        unsafe {
+            cmd_ring.enqueue(cmd).expect("enqueue error");
+        }
+
+        // now lettuce check that the cycle bit of the very first block is 0
+        let trb_ptr = base_addr as *const Trb;
+        let trb: Trb;
+        unsafe {
+            trb = *trb_ptr;
+        }
+
+        assert_eq!(trb.get_cycle(), 0);
+
+        remove_mapped_frame(page, &mut *mapper);
+    }
+
+    #[test_case]
+    fn ring_buffer_dequeue_accross_segment() {
+        let mut mapper = MAPPER.lock();
+        let page: Page = Page::containing_address(VirtAddr::new(0x500000000));
+        let _ = create_mapping(page, &mut *mapper, None);
+
+        mmio::zero_out_page(page);
+
+        // create a small ring buffer
+        let base_addr = page.start_address().as_u64();
+        let size: isize = 64;
+        let mut event_ring =
+            RingBuffer::new(base_addr, 1, RingType::Event, size).expect("Intialization failed");
+
+        // move dequeue to point to block preceding link trb
+        event_ring
+            .set_dequeue(base_addr + 32)
+            .expect("unalgined address");
+
+        // dequeue should change the internal pointer to be the base address
+        unsafe {
+            event_ring.dequeue().expect("dequeue error");
+        }
+
+        // we can test this by seeing that the ring is empty since the enqueue pointer hasnt moved
+        assert!(event_ring.is_ring_empty());
 
         remove_mapped_frame(page, &mut *mapper);
     }

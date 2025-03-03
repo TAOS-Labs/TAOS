@@ -101,8 +101,10 @@ mod tests {
     use x86_64::structures::paging::FrameAllocator;
 
     use super::*;
-    use crate::constants::memory::PAGE_SIZE;
-    use crate::memory::{frame_allocator::FRAME_ALLOCATOR, MAPPER};
+    use crate::{
+        constants::memory::PAGE_SIZE,
+        memory::{frame_allocator::FRAME_ALLOCATOR, MAPPER},
+    };
 
     #[test_case]
     fn test_zero_out_page_4kib() {
