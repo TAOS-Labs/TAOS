@@ -9,5 +9,5 @@ _loop:
     cmp rbx, 0
     jg _loop
 
-    mov rax, 1
+    mov rax, 60
     int 0x80

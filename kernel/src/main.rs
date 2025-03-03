@@ -8,7 +8,9 @@
 #![reexport_test_harness_main = "test_main"]
 
 use limine::request::{RequestsEndMarker, RequestsStartMarker};
-use taos::events::run_loop;
+use taos::
+    events::{run_loop, schedule_kernel}
+;
 
 extern crate alloc;
 use taos::{debug, serial_println};
@@ -46,6 +48,7 @@ extern "C" fn _start() -> ! {
 #[cfg(not(test))]
 #[panic_handler]
 fn rust_panic(info: &core::panic::PanicInfo) -> ! {
+    use taos::serial_println;
     serial_println!("Kernel panic: {}", info);
     taos::idle_loop();
 }

@@ -36,6 +36,10 @@ test:
 fmt:
 	@cd kernel && cargo fmt
 
+.PHONY: objdump
+objdump:
+	@cd kernel && cargo objdump --lib --release -- -d -M intel
+
 .PHONY: blank_drive
 blank_drive:
 	@cd kernel && dd if=/dev/zero of=$(STORAGE_NAME).img bs=1M count=4k
