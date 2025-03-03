@@ -865,84 +865,88 @@ impl FileSystem for Fat16<'_> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use crate::devices::sd_card::SD_CARD;
 
-    // #[test_case]
-    // async fn fat_test() {
-    //     let lock = SD_CARD.lock().clone().unwrap();
-    //     let device = Box::new(lock);
+    use alloc::boxed::Box;
+    use crate::filesys::{
+        fat16::Fat16,
+        FileSystem,
+        SeekFrom
+    };
 
-    //     // Format the filesystem
-    //     let mut fs = Fat16::format(device).await.expect("Failed to format filesystem");
+    #[test_case]
+    async fn fat_test() {
+        let lock = SD_CARD.lock().clone().unwrap();
+        let device = Box::new(lock);
 
-    //     // Test directory operations
-    //     fs.create_dir("/test_dir")
-    //         .await
-    //         .expect("Failed to create directory");
-    //     fs.create_dir("/test_dir/subdir")
-    //         .await
-    //         .expect("Failed to create subdirectory");
+        // Format the filesystem
+        let mut fs = Fat16::format(device).await.expect("Failed to format filesystem");
 
-    //     // Create a test file
-    //     fs.create_file("/test_dir/test.txt")
-    //         .await
-    //         .expect("FailedBlockDevice to create file");
-    //     let fd = fs
-    //         .open_file("/test_dir/test.txt")
-    //         .await
-    //         .expect("Failed to open file");
+        // Test directory operations
+        fs.create_dir("/test_dir")
+            .await
+            .expect("Failed to create directory");
+        fs.create_dir("/test_dir/subdir")
+            .await
+            .expect("Failed to create subdirectory");
 
-    //     // Write test data
-    //     let test_data = b"Hello, TaOS FAT16!";
-    //     let written = fs.write_file(fd, test_data).await.expect("Failed to write");
-    //     assert_eq!(written, test_data.len(), "Write length mismatch");
+        // Create a test file
+        fs.create_file("/test_dir/test.txt")
+            .await
+            .expect("FailedBlockDevice to create file");
+        let fd = fs
+            .open_file("/test_dir/test.txt")
+            .await
+            .expect("Failed to open file");
 
-    //     fs.seek_file(fd, SeekFrom::Start(0))
-    //         .await
-    //         .expect("Failed to seek to start");
-    //     let mut read_buf = [0u8; 32];
-    //     let read = fs.read_file(fd, &mut read_buf).expect("Failed to read");
-    //     assert_eq!(read, test_data.len(), "Read length mismatch");
-    //     assert_eq!(&read_buf[..read], test_data, "Read data mismatch");
+        // Write test data
+        let test_data = b"Hello, TaOS FAT16!";
+        let written = fs.write_file(fd, test_data).await.expect("Failed to write");
+        assert_eq!(written, test_data.len(), "Write length mismatch");
 
-    //     // List directory contents
-    //     let entries = fs.read_dir("/test_dir").await.expect("Failed to read directory");
-    //     assert!(!entries.is_empty(), "Directory should not be empty");
-    //     assert_eq!(entries.len(), 2, "Directory should have exactly 2 entries"); // subdir and test.txt
+        fs.seek_file(fd, SeekFrom::Start(0))
+            .expect("Failed to seek to start");
+        let mut read_buf = [0u8; 32];
+        let read = fs.read_file(fd, &mut read_buf).await.expect("Failed to read");
+        assert_eq!(read, test_data.len(), "Read length mismatch");
+        assert_eq!(&read_buf[..read], test_data, "Read data mismatch");
 
-    //     // Check file metadata
-    //     let metadata = fs
-    //         .metadata("/test_dir/test.txt")
-    //         .await
-    //         .expect("Failed to get metadata");
-    //     assert_eq!(metadata.size, test_data.len() as u64, "File size mismatch");
-    //     assert!(!metadata.is_dir, "Should not be a directory");
+        // List directory contents
+        let entries = fs.read_dir("/test_dir").await.expect("Failed to read directory");
+        assert!(!entries.is_empty(), "Directory should not be empty");
+        assert_eq!(entries.len(), 2, "Directory should have exactly 2 entries"); // subdir and test.txt
 
-    //     // Test partial reads
-    //     fs.seek_file(fd, SeekFrom::Start(7))
-    //         .await
-    //         .expect("Failed to seek");
-    //     let mut partial_buf = [0u8; 4];
-    //     let read = fs.read_file(fd, &mut partial_buf).expect("Failed to read");
-    //     assert_eq!(read, 4, "Partial read length mismatch");
-    //     assert_eq!(&partial_buf[..read], b"TaOS", "Partial read data mismatch");
+        // Check file metadata
+        let metadata = fs
+            .metadata("/test_dir/test.txt")
+            .await
+            .expect("Failed to get metadata");
+        assert_eq!(metadata.size, test_data.len() as u64, "File size mismatch");
+        assert!(!metadata.is_dir, "Should not be a directory");
 
-    //     // // Close file and test removal
-    //     fs.close_file(fd);
+        // Test partial reads
+        fs.seek_file(fd, SeekFrom::Start(7))
+            .expect("Failed to seek");
+        let mut partial_buf = [0u8; 4];
+        let read = fs.read_file(fd, &mut partial_buf).await.expect("Failed to read");
+        assert_eq!(read, 4, "Partial read length mismatch");
+        assert_eq!(&partial_buf[..read], b"TaOS", "Partial read data mismatch");
 
-    //     fs.remove_file("/test_dir/test.txt")
-    //         .await
-    //         .expect("Failed to remove file");
-    //     fs.remove_dir("/test_dir/subdir")
-    //         .await
-    //         .expect("Failed to remove subdirectory");
-    //     fs.remove_dir("/test_dir")
-    //         .await
-    //         .expect("Failed to remove directory");
+        // Close file and test removal
+        fs.close_file(fd);
 
-    //     // Verify root is empty
-    //     let root_entries = fs.read_dir("/").await.expect("Failed to read root directory");
-    //     assert_eq!(root_entries.len(), 0, "Root directory should be empty");
-    // }
+        fs.remove_file("/test_dir/test.txt")
+            .await
+            .expect("Failed to remove file");
+        fs.remove_dir("/test_dir/subdir")
+            .await
+            .expect("Failed to remove subdirectory");
+        fs.remove_dir("/test_dir")
+            .await
+            .expect("Failed to remove directory");
+
+        // Verify root is empty
+        let root_entries = fs.read_dir("/").await.expect("Failed to read root directory");
+        assert_eq!(root_entries.len(), 0, "Root directory should be empty");
+    }
 }

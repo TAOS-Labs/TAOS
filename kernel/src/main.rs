@@ -8,12 +8,10 @@
 #![reexport_test_harness_main = "test_main"]
 
 use limine::request::{RequestsEndMarker, RequestsStartMarker};
-use taos::devices::sd_card::SD_CARD;
-use taos::events::{run_loop, schedule_kernel};
+use taos::events::run_loop;
 
 extern crate alloc;
-use taos::filesys::BlockDevice;
-use taos::{debug, serial_println};
+use taos::debug;
 
 /// Marks the start of Limine boot protocol requests.
 #[used]

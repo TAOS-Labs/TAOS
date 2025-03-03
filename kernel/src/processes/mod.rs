@@ -5,21 +5,24 @@ pub mod registers;
 #[cfg(test)]
 mod tests {
     use crate::{
-        constants::processes::INFINITE_LOOP, events::schedule_process, interrupts::x2apic,
+        constants::processes::SYSCALL_EXIT_TEST, 
+        events::{
+            current_running_event, 
+            futures::await_on::AwaitProcess, 
+            get_runner_time, 
+            schedule_process}, 
         processes::process::create_process,
     };
 
     #[test_case]
-    fn test_simple_process() {
-        let cpuid = x2apic::current_core_id() as u32;
+    async fn test_simple_process() {
+        let pid = create_process(SYSCALL_EXIT_TEST);
+        schedule_process(pid);
+        let waiter = AwaitProcess::new(pid, 
+                get_runner_time(3_000_000_000), 
+                current_running_event().unwrap())    // TODO how to get event corresponding to testcase?
+        .await;
 
-        let pid = create_process(LONG_LOOP);
-        let waiter = unsafe {
-            let event = schedule_process(pid);
-
-            Await::new(event.clone(), get_runner_time(10_000_000_000), event.clone())    // TODO how to get event corresponding to testcase?
-        };
-
-        assert!(matches!(cpuid, 0));
+        assert!(waiter.is_ok());
     }
 }

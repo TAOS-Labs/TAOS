@@ -105,9 +105,9 @@ pub fn schedule_kernel_on(
 /// Wrapper that schedules a kernel event on the current CPU core
 ///
 /// PID will always be 0
-pub fn schedule_kernel(future: impl Future<Output = ()> + 'static + Send, priority_level: usize) {
+pub fn schedule_kernel(future: impl Future<Output = ()> + 'static + Send, priority_level: usize) -> Arc<Event> {
     let cpuid = x2apic::current_core_id() as u32;
-    schedule_kernel_on(cpuid, future, priority_level);
+    schedule_kernel_on(cpuid, future, priority_level)
 }
 
 /// Schedules a user process on a specific CPU core
@@ -123,16 +123,16 @@ pub fn schedule_process_on(cpuid: u32, pid: u32) -> Arc<Event> {
 }
 
 /// Wrapper that schedules a user process on the current CPU core
-pub fn schedule_process(pid: u32) {
+pub fn schedule_process(pid: u32) -> Arc<Event> {
     let cpuid = x2apic::current_core_id() as u32;
-    schedule_process_on(cpuid, pid);
+    schedule_process_on(cpuid, pid)
 }
 
 /// Notifies runner of a user process,
 /// but does not immediately schedule for polling.
 /// Starts with minimum priority
 pub fn schedule_blocked_process(pid: u32, // 0 as kernel/sentinel
-) {
+)  -> Arc<Event> {
     let cpuid = x2apic::current_core_id() as u32;
 
     without_interrupts(|| {
@@ -140,7 +140,7 @@ pub fn schedule_blocked_process(pid: u32, // 0 as kernel/sentinel
         let mut runner = runners.get(&cpuid).expect("No runner found").write();
 
         unsafe {
-            runner.schedule_blocked(run_process_ring3(pid), NUM_EVENT_PRIORITIES - 1, pid);
+            runner.schedule_blocked(run_process_ring3(pid), NUM_EVENT_PRIORITIES - 1, pid)
         }
     })
 

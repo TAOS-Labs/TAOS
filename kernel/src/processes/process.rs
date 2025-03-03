@@ -118,6 +118,7 @@ pub fn create_process(elf_bytes: &[u8]) -> u32 {
 
     // Build a new process address space
     let process_pml4_frame = unsafe { create_process_page_table() };
+
     let mut mapper = unsafe {
         let virt = *HHDM_OFFSET + process_pml4_frame.start_address().as_u64();
         let ptr = virt.as_mut_ptr::<PageTable>();

@@ -277,7 +277,7 @@ mod tests {
 
     // Test basic remove, as removing and then translating should fail
     #[test_case]
-    fn test_remove_mapped_frame() {
+    async fn test_remove_mapped_frame() {
         let mut mapper = MAPPER.lock();
         let page: Page = Page::containing_address(VirtAddr::new(0x500000000));
         let _ = create_mapping(page, &mut *mapper, None);
@@ -294,7 +294,7 @@ mod tests {
 
     // Test basic translation after map returns correct frame
     #[test_case]
-    fn test_basic_map_and_translate() {
+    async fn test_basic_map_and_translate() {
         let mut mapper = MAPPER.lock();
 
         // random test virtual page
@@ -310,7 +310,7 @@ mod tests {
 
     // Test that permissions are updated correctly
     #[test_case]
-    fn test_update_permissions() {
+    async fn test_update_permissions() {
         let mut mapper = MAPPER.lock();
 
         let page: Page = Page::containing_address(VirtAddr::new(0x500000000));
@@ -330,7 +330,7 @@ mod tests {
 
     // Test that contiguous mappings work correctly. Allocates 8 pages in a row.
     #[test_case]
-    fn test_contiguous_mapping() {
+    async fn test_contiguous_mapping() {
         let mut mapper = MAPPER.lock();
 
         // Define a contiguous region spanning 8 pages.
@@ -365,7 +365,7 @@ mod tests {
     // is necessary.
     // Finally, check the mapping on another core.
     #[test_case]
-    fn test_tlb_shootdowns_cross_core() {
+    async fn test_tlb_shootdowns_cross_core() {
         const AP: u32 = 1;
         const PRIORITY: usize = 3;
         const PID: u32 = 0;
@@ -388,32 +388,32 @@ mod tests {
         // tell core 1 to read the value (to TLB cache) and wait until it's done
         schedule_kernel_on(AP, async move { pre_read(page).await }, PRIORITY);
 
-        // while PRE_READ.load(Ordering::SeqCst) == 0 {
-        //     core::hint::spin_loop();
-        // }
+        while PRE_READ.load(Ordering::SeqCst) == 0 {
+            core::hint::spin_loop();
+        }
 
-        // {
-        //     let mut mapper = MAPPER.lock();
-        //     let new_frame = alloc_frame().expect("Could not find a new frame");
+        {
+            let mut mapper = MAPPER.lock();
+            let new_frame = alloc_frame().expect("Could not find a new frame");
 
-        //     // could say page already mapped, which would be really dumb
-        //     update_mapping(page, &mut *mapper, new_frame);
+            // could say page already mapped, which would be really dumb
+            update_mapping(page, &mut *mapper, new_frame);
 
-        //     unsafe {
-        //         page.start_address()
-        //             .as_mut_ptr::<u64>()
-        //             .write_volatile(0x42);
-        //     }
-        // }
+            unsafe {
+                page.start_address()
+                    .as_mut_ptr::<u64>()
+                    .write_volatile(0x42);
+            }
+        }
 
         // back on core 1, read the value and see if it has changed
         schedule_kernel_on(AP, async move { post_read(page).await }, PRIORITY);
 
-        // while POST_READ.load(Ordering::SeqCst) == 0 {
-        //     core::hint::spin_loop();
-        // }
+        while POST_READ.load(Ordering::SeqCst) == 0 {
+            core::hint::spin_loop();
+        }
 
-        // assert_eq!(POST_READ.load(Ordering::SeqCst), 0x42);
+        assert_eq!(POST_READ.load(Ordering::SeqCst), 0x42);
 
         let mut mapper = MAPPER.lock();
         remove_mapped_frame(page, &mut *mapper);
