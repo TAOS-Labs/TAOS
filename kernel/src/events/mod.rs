@@ -24,6 +24,12 @@ mod event;
 mod event_runner;
 
 pub mod futures;
+mod tasks;
+
+pub use tasks::{
+    yield_task::{yield_now, Yield},
+    JoinHandle,
+};
 
 /// Thread-safe future that remains pinned to a heap address throughout its lifetime
 type SendFuture = Mutex<Pin<Box<dyn Future<Output = ()> + 'static + Send>>>;
@@ -33,7 +39,7 @@ type EventQueue = RwLock<VecDeque<Arc<Event>>>;
 
 /// Unique global ID for events.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-struct EventId(u64);
+pub struct EventId(u64);
 
 impl EventId {
     fn init() -> Self {
@@ -80,12 +86,14 @@ pub unsafe fn run_loop(cpuid: u32) -> ! {
     (*runner).run_loop()
 }
 
-/// Schedules a kernel event
+/// Schedules a kernel event on a specific CPU core
 ///
 /// PID will always be 0
-pub fn schedule_kernel(future: impl Future<Output = ()> + 'static + Send, priority_level: usize) -> Arc<Event> {
-    let cpuid = x2apic::current_core_id() as u32;
-
+pub fn schedule_kernel_on(
+    cpuid: u32,
+    future: impl Future<Output = ()> + 'static + Send,
+    priority_level: usize,
+) -> Arc<Event> {
     without_interrupts(|| {
         let runners = EVENT_RUNNERS.read();
         let mut runner = runners.get(&cpuid).expect("No runner found").write();
@@ -94,12 +102,16 @@ pub fn schedule_kernel(future: impl Future<Output = ()> + 'static + Send, priori
     })
 }
 
-/// Schedules a user process
-/// Starts with minimum priority
-pub fn schedule_process(pid: u32, // 0 as kernel/sentinel
-) -> Arc<Event> {
+/// Wrapper that schedules a kernel event on the current CPU core
+///
+/// PID will always be 0
+pub fn schedule_kernel(future: impl Future<Output = ()> + 'static + Send, priority_level: usize) {
     let cpuid = x2apic::current_core_id() as u32;
+    schedule_kernel_on(cpuid, future, priority_level);
+}
 
+/// Schedules a user process on a specific CPU core
+pub fn schedule_process_on(cpuid: u32, pid: u32) -> Arc<Event> {
     without_interrupts(|| {
         let runners = EVENT_RUNNERS.read();
         let mut runner = runners.get(&cpuid).expect("No runner found").write();
@@ -110,11 +122,17 @@ pub fn schedule_process(pid: u32, // 0 as kernel/sentinel
     })
 }
 
+/// Wrapper that schedules a user process on the current CPU core
+pub fn schedule_process(pid: u32) {
+    let cpuid = x2apic::current_core_id() as u32;
+    schedule_process_on(cpuid, pid);
+}
+
 /// Notifies runner of a user process,
 /// but does not immediately schedule for polling.
 /// Starts with minimum priority
 pub fn schedule_blocked_process(pid: u32, // 0 as kernel/sentinel
-)  -> Arc<Event> {
+) {
     let cpuid = x2apic::current_core_id() as u32;
 
     without_interrupts(|| {
@@ -122,7 +140,7 @@ pub fn schedule_blocked_process(pid: u32, // 0 as kernel/sentinel
         let mut runner = runners.get(&cpuid).expect("No runner found").write();
 
         unsafe {
-            runner.schedule_blocked(run_process_ring3(pid), NUM_EVENT_PRIORITIES - 1, pid)
+            runner.schedule_blocked(run_process_ring3(pid), NUM_EVENT_PRIORITIES - 1, pid);
         }
     })
 
@@ -264,7 +282,7 @@ pub fn current_running_event_info() -> EventInfo {
     let cpuid = x2apic::current_core_id() as u32;
 
     let runners = EVENT_RUNNERS.read();
-    let runner = runners.get(&cpuid).expect("No runner found").write();
+    let runner = runners.get(&cpuid).expect("No runner found").read();
 
     match runner.current_running_event() {
         Some(e) => EventInfo {
@@ -276,4 +294,17 @@ pub fn current_running_event_info() -> EventInfo {
             pid: 0,
         },
     }
+}
+
+pub fn spawn<F, T>(cpuid: u32, future: F, priority_level: usize) -> JoinHandle<T>
+where
+    F: Future<Output = T> + Send + 'static,
+    T: Send + 'static,
+{
+    without_interrupts(|| {
+        let runners = EVENT_RUNNERS.read();
+        let mut runner = runners.get(&cpuid).expect("No runner found").write();
+
+        runner.spawn(future, priority_level)
+    })
 }

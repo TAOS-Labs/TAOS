@@ -28,7 +28,7 @@ use crate::{
     memory::{paging::create_mapping, HHDM_OFFSET},
     prelude::*,
     processes::process::preempt_process,
-    syscalls::syscall_handlers::{sys_exit, sys_nanosleep},
+    syscalls::syscall_handlers::{sys_exit, sys_nanosleep, sys_print},
 };
 
 lazy_static! {
@@ -233,11 +233,19 @@ fn syscall_handler(rsp: u64) {
     }
 
     match syscall_num as u32 {
-        SYSCALL_EXIT => sys_exit(),
-        SYSCALL_PRINT => serial_println!("Hello world!"),
-        SYSCALL_NANOSLEEP => sys_nanosleep(p1, rsp),
-        _ => panic!("Unknown syscall: {}", syscall_num),
-    };
+        SYSCALL_EXIT => {
+            sys_exit(p1 as i64);
+        }
+        SYSCALL_PRINT => {
+            let success = sys_print(p1 as *const u8);
+        }
+        SYSCALL_NANOSLEEP => {
+            let success = sys_nanosleep(p1, p2);
+        }
+        _ => {
+            panic!("Unknown syscall, {}", syscall_num);
+        }
+    }
 
     x2apic::send_eoi();
 }
@@ -290,15 +298,17 @@ extern "x86-interrupt" fn naked_timer_handler(_: InterruptStackFrame) {
 }
 
 #[no_mangle]
-extern "C" fn timer_handler(rsp: u64) {
+fn timer_handler(rsp: u64) {
     inc_runner_clock();
     preempt_process(rsp);
+
     x2apic::send_eoi();
 }
 
 // TODO Technically, this design means that when TLB Shootdows happen, each core must sequentially
 // invalidate its TLB rather than doing this in parallel. While this is slow, this is of low
 // priority to fix
+#[no_mangle]
 extern "x86-interrupt" fn tlb_shootdown_handler(_: InterruptStackFrame) {
     let core = current_core_id();
     {

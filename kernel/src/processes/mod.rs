@@ -5,9 +5,7 @@ pub mod registers;
 #[cfg(test)]
 mod tests {
     use crate::{
-        constants::processes::LONG_LOOP,
-        events::{futures::await_on::Await, get_runner_time, schedule_process, Event},
-        interrupts::x2apic,
+        constants::processes::INFINITE_LOOP, events::schedule_process, interrupts::x2apic,
         processes::process::create_process,
     };
 

@@ -1,7 +1,7 @@
 extern crate alloc;
 
 use crate::{
-    constants::processes::PROCESS_NANOS,
+    constants::processes::PROCESS_TIMESLICE,
     debug,
     events::{
         current_running_event_info, nanosleep_current_process, runner_timestamp, schedule_process,
@@ -11,6 +11,7 @@ use crate::{
         gdt,
         x2apic::{self, nanos_to_ticks},
     },
+    ipc::namespace::Namespace,
     memory::{
         frame_allocator::{alloc_frame, with_generic_allocator},
         HHDM_OFFSET, MAPPER,
@@ -51,7 +52,8 @@ pub struct PCB {
     pub kernel_rip: u64,
     pub next_preemption_time: u64,
     pub registers: Registers,
-    pub pml4_frame: PhysFrame<Size4KiB>, // this process' page table
+    pub pml4_frame: PhysFrame<Size4KiB>, // this process' page table,
+    pub namespace: Namespace,
 }
 
 pub struct UnsafePCB {
@@ -64,7 +66,6 @@ impl UnsafePCB {
         }
     }
 }
-
 unsafe impl Sync for UnsafePCB {}
 type ProcessTable = Arc<RwLock<BTreeMap<u32, Arc<UnsafePCB>>>>;
 
@@ -151,6 +152,7 @@ pub fn create_process(elf_bytes: &[u8]) -> u32 {
             rflags: 0x202,
         },
         pml4_frame: process_pml4_frame,
+        namespace: Namespace::new(),
     }));
     let pid = unsafe { (*process.pcb.get()).pid };
     PROCESS_TABLE.write().insert(pid, Arc::clone(&process));
@@ -261,7 +263,7 @@ pub async unsafe fn run_process_ring3(pid: u32) {
     // But not TCB
     let process = process.pcb.get();
 
-    (*process).next_preemption_time = runner_timestamp() + nanos_to_ticks(PROCESS_NANOS);
+    (*process).next_preemption_time = runner_timestamp() + nanos_to_ticks(PROCESS_TIMESLICE);
 
     Cr3::write((*process).pml4_frame, Cr3Flags::empty());
 

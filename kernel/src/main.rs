@@ -8,11 +8,11 @@
 #![reexport_test_harness_main = "test_main"]
 
 use limine::request::{RequestsEndMarker, RequestsStartMarker};
-use taos::{
-    devices::sd_card::SD_CARD, events::{run_loop, schedule_kernel}, filesys::BlockDevice
-};
+use taos::devices::sd_card::SD_CARD;
+use taos::events::{run_loop, schedule_kernel};
 
 extern crate alloc;
+use taos::filesys::BlockDevice;
 use taos::{debug, serial_println};
 
 /// Marks the start of Limine boot protocol requests.
@@ -71,24 +71,24 @@ extern "C" fn _start() -> ! {
     // let pid2 = create_process(LONG_LOOP);
     // schedule_process(pid2);
 
-    schedule_kernel(
-        async move {
-            serial_println!("INITIATE READ");
-            let mut sd_lock = SD_CARD.lock();
-            let sd = sd_lock.as_mut().unwrap();
+    // schedule_kernel(
+    //     async move {
+    //         serial_println!("INITIATE READ");
+    //         let mut sd_lock = SD_CARD.lock();
+    //         let sd = sd_lock.as_mut().unwrap();
 
-            const BLOCK: u64 = 7;
+    //         const BLOCK: u64 = 7;
 
-            let wbuf = [0xAB; 512];
-            sd.write_block(BLOCK, &wbuf).await.expect("SD READ ERROR");
+    //         let wbuf = [0xAB; 512];
+    //         sd.write_block(BLOCK, &wbuf).await.expect("SD READ ERROR");
 
-            let mut rbuf = [0; 512];
-            sd.read_block(BLOCK, &mut rbuf).await.expect("SD READ ERROR");
+    //         let mut rbuf = [0; 512];
+    //         sd.read_block(BLOCK, &mut rbuf).await.expect("SD READ ERROR");
 
-            serial_println!("READ SD BLOCK {}: {:?}", BLOCK, rbuf);
-        },
-        0,
-    );
+    //         serial_println!("READ SD BLOCK {}: {:?}", BLOCK, rbuf);
+    //     },
+    //     0,
+    // );
 
     unsafe { run_loop(bsp_id) }
 }
@@ -97,6 +97,7 @@ extern "C" fn _start() -> ! {
 #[cfg(not(test))]
 #[panic_handler]
 fn rust_panic(info: &core::panic::PanicInfo) -> ! {
+    use taos::serial_println;
     serial_println!("Kernel panic: {}", info);
     taos::idle_loop();
 }

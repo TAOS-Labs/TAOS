@@ -1,4 +1,6 @@
-use super::{futures::sleep::Sleep, Event, EventId, EventQueue, EventRunner};
+use super::{
+    futures::sleep::Sleep, tasks::{CancellationToken, TaskError}, Event, EventId, EventQueue, EventRunner, JoinHandle
+};
 
 use alloc::{
     collections::{binary_heap::BinaryHeap, btree_set::BTreeSet, vec_deque::VecDeque},
@@ -6,18 +8,19 @@ use alloc::{
 };
 use futures::task::waker_ref;
 use spin::rwlock::RwLock;
-use x86_64::instructions::interrupts;
+use x86_64::instructions::interrupts::{self, without_interrupts};
 
 use core::{
     future::Future,
     sync::atomic::Ordering,
-    task::{Context, Poll},
+    task::{Context, Poll, Waker},
 };
 
 use crate::{
     constants::events::{NUM_EVENT_PRIORITIES, PRIORITY_INC_DELAY},
     interrupts::x2apic::nanos_to_ticks,
 };
+use spin::Mutex;
 
 impl EventRunner {
     pub fn init() -> EventRunner {
@@ -126,6 +129,8 @@ impl EventRunner {
                 self.event_clock,
             ));
 
+            // serial_println!("Created {:?}", event.eid);
+
             Self::enqueue(&self.event_queues[priority_level], event.clone());
 
             self.pending_events.write().insert(event.eid.0);
@@ -171,6 +176,52 @@ impl EventRunner {
     /// * `Option<&Arc<Event>>` - A reference to the currently running event, if it exists
     pub fn current_running_event(&self) -> Option<&Arc<Event>> {
         self.current_event.as_ref()
+    }
+
+    pub fn spawn<F, T>(&mut self, future: F, priority_level: usize) -> JoinHandle<T>
+    where
+        F: Future<Output = T> + Send + 'static,
+        T: Send + 'static,
+    {
+        without_interrupts(|| {
+            let result: Arc<Mutex<Option<Result<T, TaskError>>>> = Arc::new(Mutex::new(None));
+            let waker: Arc<Mutex<Option<Waker>>> = Arc::new(Mutex::new(None));
+            let cancellation = CancellationToken::new();
+
+            // Wrap the future to store its result and handle cancellation
+            let wrapped_future = {
+                let result = result.clone();
+                let waker = waker.clone();
+                let cancellation = cancellation.clone();
+
+                async move {
+                    let output = future.await;
+                    let output = if cancellation.is_cancelled() {
+                        Err(TaskError::Cancelled)
+                    } else {
+                        Ok(output)
+                    };
+
+                    // Store the result
+                    *result.lock() = Some(output);
+
+                    // Wake up anyone waiting on the join handle
+                    if let Some(waker) = waker.lock().take() {
+                        waker.wake();
+                    }
+                }
+            };
+
+            // Schedule the wrapped future
+            let eid = without_interrupts(|| self.schedule(wrapped_future, priority_level, 0));
+
+            JoinHandle {
+                result,
+                waker,
+                eid: eid.eid,
+                cancellation,
+            }
+        })
     }
 
     /// Increments the system timer (by one tick)
