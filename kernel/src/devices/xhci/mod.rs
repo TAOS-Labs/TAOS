@@ -17,7 +17,10 @@ use super::{
     pci::{read_config, DeviceInfo},
 };
 
-const MAX_USB_DEVICES: u8 = 4;
+const MAX_USB_DEVICES: u8 = 8;
+
+/// XHCI Spec refers to Revision 1.2 found here
+/// https://www.intel.com/content/dam/www/public/us/en/documents/technical-specifications/extensible-host-controler-interface-usb-xhci.pdf
 
 /// See section 5.3 of the xHCI spec
 #[derive(Debug, Clone, Copy)]
@@ -57,6 +60,7 @@ struct XHCIInfo {
 pub enum XHCIError {
     MemoryAllocationFailure,
     NoFrameAllocator,
+    UnknownPort,
 }
 
 bitflags! {
@@ -99,6 +103,37 @@ bitflags! {
         const HostControllerError = 1 << 12;
         const _ = !0;
     }
+}
+
+bitflags! {
+    /// See Section 5.4.8 of the XHCI spec (PORTSC)
+    #[derive(Debug, Clone, Copy)]
+    struct PortStatusAndControl: u32 {
+        //. Read Only, 1 = device connected (CCS)
+        const CurrentConnectStatus = 1;
+        /// 1 = enabled, 0 = disabled, disable by writing 1 (PED)
+        const PortEnabled = 1 << 1;
+        /// Set to 1 to reset the port (PR)
+        const PortReset = 1 << 4;
+        const _ = !0;
+    }
+}
+
+enum PortLinkStateRead {
+    U0 = 0,
+    U1 = 1,
+    U2 = 2,
+    /// U3 =  Device Suspended
+    U3 = 3,
+    Disabled = 4,
+    RxDetect = 5,
+    Inactive = 6,
+    Polling = 7,
+    Recovery = 8,
+    HotReset = 9,
+    ComplianceMode = 10,
+    TestMode = 11,
+    Resume = 15,
 }
 
 const XHCI_CLASS_CODE: u8 = 0x0C;
@@ -148,6 +183,7 @@ pub fn initalize_xhci_hub(
     unsafe {
         core::ptr::write_volatile(command_register_address, command_data.bits());
     }
+    boot_up_all_ports(&info)?;
 
     debug_println!("0x{:X} {:?}", { info.base_address }, { info.capablities });
     Result::Ok(())
@@ -289,6 +325,55 @@ fn initalize_xhciinfo(full_bar: u64, mapper: &mut OffsetPageTable) -> Result<XHC
         base_address_array: frame.start_address().as_u64(),
         command_ring_base: cmd_frame.start_address().as_u64(),
     })
+}
+
+fn boot_up_all_ports(info: &XHCIInfo) -> Result<(), XHCIError> {
+    for device in 0..MAX_USB_DEVICES {
+        debug_println!("Device = {device}");
+        let device_offset: u64 = 0x10 * <u8 as Into<u64>>::into(device);
+        let port_status_addr =
+            (info.operational_register_address + 0x400 + device_offset) as *const u32;
+        // debug_println!("Offset = {port_status_addr:?}, device = {device}");
+        let device_connected = unsafe {
+            PortStatusAndControl::from_bits_retain(core::ptr::read_volatile(port_status_addr))
+        };
+        // debug_println!("PortStatusAndCtrl = {device_connected:?}");
+        if PortStatusAndControl::CurrentConnectStatus.intersects(device_connected) {
+            debug_println!("PortStatusAndCtrl = {device_connected:?}");
+            boot_up_usb_port(info, device, device_connected)?;
+        } else {
+            continue;
+        }
+    }
+
+    Result::Ok(())
+}
+
+fn boot_up_usb_port(
+    info: &XHCIInfo,
+    device: u8,
+    port_status: PortStatusAndControl,
+) -> Result<(), XHCIError> {
+    let port_link_status = (port_status.bits() >> 5) & 0b1111;
+    if PortStatusAndControl::PortEnabled.intersects(port_status) {
+        debug_println!("USB3 detected and successfull");
+    } else if port_link_status == PortLinkStateRead::Polling as u32 {
+        debug_println!("USB2 detected, or USB3 still working");
+        let new_status = port_status.union(PortStatusAndControl::PortReset);
+        let device_offset: u64 = 0x10 * <u8 as Into<u64>>::into(device);
+        let port_status_addr =
+            (info.operational_register_address + 0x400 + device_offset) as *mut u32;
+        unsafe {
+            core::ptr::write_volatile(port_status_addr, new_status.bits());
+        }
+    } else if port_link_status == PortLinkStateRead::RxDetect as u32 {
+        debug_println!("USB3 detected and failed");
+    } else {
+        return Result::Err(XHCIError::UnknownPort);
+    }
+    // USB2 -- We need to reset the port
+
+    Result::Ok(())
 }
 
 #[cfg(test)]
