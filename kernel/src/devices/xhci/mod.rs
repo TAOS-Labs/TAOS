@@ -383,7 +383,7 @@ mod test {
         *,
     };
     use crate::{
-        devices::xhci::ring_buffer::RingBufferError,
+        devices::xhci::ring_buffer::ProducerRingError,
         memory::{
             paging::{create_mapping, remove_mapped_frame},
             MAPPER,
@@ -402,8 +402,8 @@ mod test {
         // call the new function
         let base_addr = page.start_address().as_u64();
         let size = page.size() as isize;
-        let _cmd_ring =
-            ProducerRingBuffer::new(base_addr, 1, RingType::Command, size).expect("Intialization failed");
+        let _cmd_ring = ProducerRingBuffer::new(base_addr, 1, RingType::Command, size)
+            .expect("Intialization failed");
 
         // make sure the link trb is set correctly
         let mut trb_ptr = base_addr as *const Trb;
@@ -436,8 +436,8 @@ mod test {
         // call the new function
         let base_addr = page.start_address().as_u64();
         let size = page.size() as isize;
-        let mut cmd_ring =
-            ProducerRingBuffer::new(base_addr, 1, RingType::Command, size).expect("Intialization failed");
+        let mut cmd_ring = ProducerRingBuffer::new(base_addr, 1, RingType::Command, size)
+            .expect("Intialization failed");
 
         // create a block to queue
         let mut cmd = Trb {
@@ -482,8 +482,8 @@ mod test {
         // create a small ring buffer
         let base_addr = page.start_address().as_u64();
         let size: isize = 64;
-        let mut cmd_ring =
-            ProducerRingBuffer::new(base_addr, 1, RingType::Command, size).expect("Intialization failed");
+        let mut cmd_ring = ProducerRingBuffer::new(base_addr, 1, RingType::Command, size)
+            .expect("Intialization failed");
 
         // test is empty and is full funcs
         let mut result = cmd_ring.is_ring_empty();
@@ -541,28 +541,29 @@ mod test {
         let mut base_addr = page.start_address().as_u64();
         base_addr += 1;
         let mut size: isize = 64;
-        let mut result = ProducerRingBuffer::new(base_addr, 1, RingType::Command, size).unwrap_err();
+        let mut result =
+            ProducerRingBuffer::new(base_addr, 1, RingType::Command, size).unwrap_err();
 
-        assert_eq!(result, RingBufferError::UnalignedAddress);
+        assert_eq!(result, ProducerRingError::UnalignedAddress);
 
         // now test with unaligned size
         base_addr -= 1;
         size += 5;
         result = ProducerRingBuffer::new(base_addr, 1, RingType::Command, size).unwrap_err();
 
-        assert_eq!(result, RingBufferError::UnalignedSize);
+        assert_eq!(result, ProducerRingError::UnalignedSize);
         size -= 5;
 
         // make an actual proper cmd ring
-        let mut cmd_ring =
-            ProducerRingBuffer::new(base_addr, 1, RingType::Command, size).expect("Intialization failed");
+        let mut cmd_ring = ProducerRingBuffer::new(base_addr, 1, RingType::Command, size)
+            .expect("Intialization failed");
 
         // now begin testing the setters for unaligned address
         result = cmd_ring.set_enqueue(base_addr + 18).unwrap_err();
-        assert_eq!(result, RingBufferError::UnalignedAddress);
+        assert_eq!(result, ProducerRingError::UnalignedAddress);
 
         result = cmd_ring.set_dequeue(base_addr + 18).unwrap_err();
-        assert_eq!(result, RingBufferError::UnalignedAddress);
+        assert_eq!(result, ProducerRingError::UnalignedAddress);
 
         // try to enqueue a transfer type TRB
         let mut transfer_trb = Trb {
@@ -574,7 +575,7 @@ mod test {
         unsafe {
             result = cmd_ring.enqueue(transfer_trb).unwrap_err();
         }
-        assert_eq!(result, RingBufferError::InvalidType);
+        assert_eq!(result, ProducerRingError::InvalidType);
 
         // test enqueue buffer full error
         let mut cmd = Trb {
@@ -589,7 +590,7 @@ mod test {
             cmd_ring.enqueue(cmd).expect("enqueue error");
             result = cmd_ring.enqueue(cmd).unwrap_err();
         }
-        assert_eq!(result, RingBufferError::BufferFullError);
+        assert_eq!(result, ProducerRingError::BufferFullError);
 
         // create a transfer ring so we can test the invalid type error on it
         let mut transfer_ring =
@@ -599,7 +600,7 @@ mod test {
         unsafe {
             result = transfer_ring.enqueue(cmd).unwrap_err();
         }
-        assert_eq!(result, RingBufferError::InvalidType);
+        assert_eq!(result, ProducerRingError::InvalidType);
 
         remove_mapped_frame(page, &mut *mapper);
     }
@@ -615,8 +616,8 @@ mod test {
         // create a small ring buffer
         let base_addr = page.start_address().as_u64();
         let size: isize = 64;
-        let mut cmd_ring =
-            ProducerRingBuffer::new(base_addr, 1, RingType::Command, size).expect("Intialization failed");
+        let mut cmd_ring = ProducerRingBuffer::new(base_addr, 1, RingType::Command, size)
+            .expect("Intialization failed");
 
         // create our no op cmd
         let mut cmd = Trb {

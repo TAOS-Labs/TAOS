@@ -135,7 +135,7 @@ pub enum RingType {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 /// Error codes for producer ring buffers.
-pub enum RingBufferError {
+pub enum ProducerRingError {
     /// Error indicating that an attempt to enqueue onto a ring that is full
     BufferFullError,
     /// Error indicating that there was an attempt to add a TRB with a type that does not belong on this ring type.
@@ -148,8 +148,7 @@ pub enum RingBufferError {
 }
 
 #[derive(Debug, Clone)]
-/// Implements a producer ring buffer for use with the transfer and command rings associated with
-/// the xHCI.
+/// Implements a producer ring buffer for use with the transfer and command rings associated with the xHCI.
 pub struct ProducerRingBuffer {
     /// Pointer to the next TRB to be written to
     enqueue: *mut Trb,
@@ -166,31 +165,31 @@ impl ProducerRingBuffer {
     ///
     /// # Arguments
     /// * `base_addr` - The base address of the ring buffer
-    /// * `cycle_state` - What to initialize PCS/CCS to
+    /// * `cycle_state` - What to initialize the PCS to
     /// * `ring_type` - The type of ring that this buffer will represent, either Command or Transfer
-    /// * `size` - The size of the buffer pointed to by `base_addr`
+    /// * `size` - The size in bytes of the buffer pointed to by `base_addr`
     ///
     /// # Returns
-    /// Returns a newly initialized `ProducerRingBuffer` on success, on error returns `Err(RingBufferError)`.
+    /// Returns a newly initialized `ProducerRingBuffer` on success, on error returns `Err(ProducerRingError)`.
     /// - `UnalignedAddress` if `base_addr` is not aligned to 16
     /// - `UnalignedSize` if `size` is not a multiple of 16
     ///
     /// # Safety
-    /// - This function preforms a raw pointer access to initialize the Link TRB of the RingBuffer
+    /// - This function preforms a raw pointer access to initialize the Link TRB of the ring
     /// - Assumes that `base_addr` points to a valid memory region of at least `size` bytes
     pub fn new(
         base_addr: u64,
         cycle_state: u8,
         ring_type: RingType,
         size: isize,
-    ) -> Result<Self, RingBufferError> {
+    ) -> Result<Self, ProducerRingError> {
         // ensure that the base address is aligned to 16
         if base_addr % 16 != 0 {
-            return Err(RingBufferError::UnalignedAddress);
+            return Err(ProducerRingError::UnalignedAddress);
         }
         // make sure that size is a multiple of 16
         if size % 16 != 0 {
-            return Err(RingBufferError::UnalignedSize);
+            return Err(ProducerRingError::UnalignedSize);
         }
 
         // initialize the link block at the end of this segment
@@ -217,10 +216,10 @@ impl ProducerRingBuffer {
     ///
     /// # Returns
     /// - `Ok(())` on success
-    /// - `Err(RingBufferError::UnalignedAddress)` if `addr` is not aligned to 16
-    pub fn set_enqueue(&mut self, addr: u64) -> Result<(), RingBufferError> {
+    /// - `Err(ProducerRingError::UnalignedAddress)` if `addr` is not aligned to 16
+    pub fn set_enqueue(&mut self, addr: u64) -> Result<(), ProducerRingError> {
         if addr % 16 != 0 {
-            return Err(RingBufferError::UnalignedAddress);
+            return Err(ProducerRingError::UnalignedAddress);
         }
 
         self.enqueue = addr as *mut Trb;
@@ -234,10 +233,10 @@ impl ProducerRingBuffer {
     ///
     /// # Returns
     /// - `Ok(())` on success
-    /// - `Err(RingBufferError::UnalignedAddress)` if `addr` is not aligned to 16
-    pub fn set_dequeue(&mut self, addr: u64) -> Result<(), RingBufferError> {
+    /// - `Err(ProducerRingError::UnalignedAddress)` if `addr` is not aligned to 16
+    pub fn set_dequeue(&mut self, addr: u64) -> Result<(), ProducerRingError> {
         if addr % 16 != 0 {
-            return Err(RingBufferError::UnalignedAddress);
+            return Err(ProducerRingError::UnalignedAddress);
         }
 
         self.dequeue = addr as *mut Trb;
@@ -305,33 +304,33 @@ impl ProducerRingBuffer {
     /// * `block` - The TRB data to be copied into the buffer
     ///
     /// # Returns
-    /// returns `Ok(())` on success, on error will return `Err(RingBufferError)`
+    /// Returns `Ok(())` on success, on error will return `Err(ProducerRingError)`
     /// - `InvalidType` if `block` has a TRB type that does not belong on this ring
     /// - `BufferFullError` if the ring is full
     ///
     /// # Safety
     /// - This function preforms a raw pointer update to copy `block`'s data onto the buffer
-    /// - Increments `enqueue` to the next block, skipping any link TRBs
-    pub unsafe fn enqueue(&mut self, mut block: Trb) -> Result<(), RingBufferError> {
+    /// - Increments `enqueue` to the next block, following any link TRBs
+    pub unsafe fn enqueue(&mut self, mut block: Trb) -> Result<(), ProducerRingError> {
         // first make sure that we are trying to enqueue a TRB that belongs on this ring
         match self.ring {
             RingType::Command => {
                 let trb_type = block.get_trb_type();
                 if !(trb_type == 6 || matches!(trb_type, 9..=25)) {
-                    return Err(RingBufferError::InvalidType);
+                    return Err(ProducerRingError::InvalidType);
                 }
             }
             RingType::Transfer => {
                 let trb_type = block.get_trb_type();
                 if !matches!(trb_type, 1..=8) {
-                    return Err(RingBufferError::InvalidType);
+                    return Err(ProducerRingError::InvalidType);
                 }
             }
         }
 
         // If the ring is full then return enqueue error
         if self.is_ring_full() {
-            return Err(RingBufferError::BufferFullError);
+            return Err(ProducerRingError::BufferFullError);
         }
 
         // Write the current cycle state bit to the block
@@ -373,7 +372,7 @@ impl EventRingSegmentTable {
     }
 
     /// If the table is not full, adds another segment to the table and returns true, returns false otherwise.
-    unsafe fn add_entry(&mut self, segment_base: u64, segment_size: u32) -> bool{
+    unsafe fn add_entry(&mut self, segment_base: u64, segment_size: u32) -> bool {
         // if we are at the max size then return false
         if self.size == self.max_size {
             return false;
@@ -383,7 +382,7 @@ impl EventRingSegmentTable {
         let entry = Trb {
             parameters: segment_base & !0xF,
             status: segment_size & 0xFFFF,
-            control: 0
+            control: 0,
         };
 
         // put the entry at the last index and then increment and return true
@@ -423,20 +422,27 @@ pub struct ConsumerRingBuffer {
 
 impl ConsumerRingBuffer {
     /// Initializes and returns a new instance of a consumer ring buffer or an error.
-    /// 
+    ///
     /// # Arguments
     /// * `erst_base_addr` - The base address of the ERST for this event ring
-    /// * `erst_max_size` - The max size of the erst
+    /// * `erst_max_size` - The max number of entries that the ERST can hold
     /// * `segment_base` - The base address of the first segment that this event ring is initialized with
     /// * `segment_size` - The number of TRBs that the initial segment can hold
-    /// 
+    ///
     /// # Returns
     /// Returns a newly initialized `ConsumerRingBuffer` on success, on error returns `Err(EventRingError)`.
     /// - `SegmentSize` if `segment_size` is not within 16 - 4096 (inclusive)
-    /// 
+    ///
     /// # Safety
-    /// This function preforms a raw pointer write to add the first segment into the ERST.
-    pub fn new(erst_base_addr: u64, erst_max_size: isize, segment_base: u64, segment_size: u32) -> Result<Self, EventRingError> {
+    /// - This function preforms a raw pointer write to add the first segment into the ERST
+    /// - This function assumes that both `erst_base_addr` and `segment_base` points to a valid memory region
+    /// that is zeroed out and has enough space for their respective sizes
+    pub fn new(
+        erst_base_addr: u64,
+        erst_max_size: isize,
+        segment_base: u64,
+        segment_size: u32,
+    ) -> Result<Self, EventRingError> {
         // first check that the segment is proper size
         if segment_size < 16 || segment_size > 4096 {
             return Err(EventRingError::SegmentSize);
@@ -463,12 +469,33 @@ impl ConsumerRingBuffer {
         })
     }
 
-    pub fn add_segment(&mut self, segment_base: u64, segment_size: u32) -> Result<(), EventRingError> {
+    /// Tries to add a new segment to the ERST.
+    ///
+    /// # Arguments
+    /// * `segment_base` - The base address of the segment that is being added
+    /// * `segment_size` - The number of TRBs that this segment can hold
+    ///
+    /// # Returns
+    /// Returns `Ok(())` on success, on error returns `Err(EventRingError)`
+    /// - `SegmentSize` if `segment_size` is not within the bounds of 16 - 4096 (inclusive)
+    /// - `ERSTFull` if the ERST is already full and the new segment can not be added
+    ///
+    /// # Safety
+    /// - This function preforms a raw pointer write to add the new segment into the ERST
+    /// - This function assumes that `segment_base` points to a valid memory region of at least `segment_size * 16` bytes
+    ///
+    /// # Notes
+    /// Any calls to this method should be immediately followed by a write to the Event Ring Segment Table Size Register (ERSTSZ) with the new size.
+    pub fn add_segment(
+        &mut self,
+        segment_base: u64,
+        segment_size: u32,
+    ) -> Result<(), EventRingError> {
         // check the segment size is within the bounds
         if segment_size < 16 || segment_size > 4096 {
             return Err(EventRingError::SegmentSize);
         }
-        
+
         // try to add the segment
         let result: bool;
         unsafe {
@@ -482,7 +509,13 @@ impl ConsumerRingBuffer {
         Ok(())
     }
 
-    // dequeues a block or returns an ring empty error
+    /// Tries to dequeue a TRB.
+    ///
+    /// # Returns
+    /// Returns the TRB that is pointed to by `dequeue` on succes, on error returns `Err(EventRingError::RingEmptyError)`
+    ///
+    /// # Safety
+    /// This function preforms a raw pointer access to read the TRB at `dequeue`.
     pub unsafe fn dequeue(&mut self) -> Result<Trb, EventRingError> {
         // first get the block and see if we own it
         let block: Trb;
@@ -501,14 +534,14 @@ impl ConsumerRingBuffer {
             // if the block's cycle bit does not match then we are at the enqueue pointer meaning that buffer is empty
             return Err(EventRingError::RingEmptyError);
         }
-        
+
         // move the dequeue pointer
         self.move_dequeue();
-        
+
         Ok(block)
     }
 
-    // moves the dequeue ptr to the next trb
+    /// Moves `dequeue` to the next TRB to be dequeued skipping unvisited segments and looping and whatnot.
     unsafe fn move_dequeue(&mut self) {
         if self.ers_size == 1 {
             // need to go to a new segment, if this is a new segment increment count visited
@@ -523,7 +556,7 @@ impl ConsumerRingBuffer {
                 self.ccs ^= 1;
                 self.erst_count = 0;
             }
-            
+
             // get the block at index count
             let mut entry = self.erst.get_entry(self.erst_count);
             // this may be a new segment that we have not seen
