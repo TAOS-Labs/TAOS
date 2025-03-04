@@ -1,4 +1,4 @@
-use core::{ffi::CStr, i64, sync::atomic::AtomicI64};
+use core::{arch::asm, ffi::CStr, i64, sync::atomic::AtomicI64};
 
 use crate::{
     constants::syscalls::*, events::{current_running_event_info, EventInfo}, interrupts::{gdt::TSSS, x2apic::current_core_id}, memory::frame_allocator::with_buddy_frame_allocator, processes::{
@@ -34,98 +34,43 @@ fn get_ring_0_rsp() -> u64 {
 
 #[naked]
 #[no_mangle]
-pub extern "C" fn syscall_handler_64_naked() {
-    unsafe {
-        core::arch::naked_asm!(
-            "
-            swapgs
-            // push every register so it can be pushed to kernel stack later
-            // we don't care about rax because the return value of syscall will be returned there
-            push rsp
-            push rbp
-            push r15
-            push r14
-            push r13
-            push r12
-            push r11
-            push r10
-            push r9
-            push r8
-            push rdi
-            push rsi
-            push rdx
-            push rcx
-            push rbx
-            push rax
-
-
-            call get_ring_0_rsp // call
-
-            // rax now has kernel rsp
-            // open up the kernel rsp to store all registers
-            mov r12, rax
-            sub r12, 128
-            mov rdi, r12
-            mov rsi, rsp
-            mov rcx, 16
-            rep   movsq
-
-            // rsp is now saved in r13 - callee-saved register
-            mov r13, rsp
-
-            // switch rsp to kernel rsp
-            mov rsp, r12
-
-            // we overwrote rax, rdi, and rsi which are parameters - restore them
-            mov rax, [rsp]
-            mov rdi, [rsp+40]
-            mov rsi, [rsp+32]
-
-            // open up stack frame for syscall params
-            sub rsp, 56
-            mov [rsp + 0], rax
-            mov [rsp + 8], rdi
-            mov [rsp + 16], rsi
-            mov [rsp + 24], rdx
-            mov [rsp + 32], r10
-            mov [rsp + 40], r8
-            mov [rsp + 48], r9
-            
-            // pass in pointer to syscall params and register values
-            mov rdi, rsp
-            mov rsi, rsp
-            add rsi, 56
-            call syscall_handler_impl
-
-            // add for both params and register values
-            add rsp, 176
-
-            // restore user rsp
-            mov rsp, r13
-
-            // pop back all original register values
-            add rsp, 8 // we don't want to overwrite rax
-            pop rbx
-            pop rcx
-            pop rdx
-            pop rsi
-            pop rdi
-            pop r8
-            pop r9
-            pop r10
-            pop r11
-            pop r12
-            pop r13
-            pop r14
-            pop r15
-            pop rbp
-            add rsp, 8 // we don' need to update rsp
-            swapgs
-            sysretq
-            "
-        )
-    };
+pub unsafe extern "C" fn syscall_handler_64_naked() -> ! {
+    naked_asm!(
+        // Swap GS to load the kernel GS base.
+        "swapgs",
+        // Allocate 56 bytes on the stack for SyscallRegisters.
+        "sub rsp, 56",
+        // Save the syscall number (from RAX).
+        "mov [rsp], rax",
+        // Save arg1 (from RDI).
+        "mov [rsp+8], rdi",
+        // Save arg2 (from RSI).
+        "mov [rsp+16], rsi",
+        // Save arg3 (from RDX).
+        "mov [rsp+24], rdx",
+        // The syscall calling convention: the user’s 4th argument was originally in RCX,
+        // but because syscall overwrites RCX with the return RIP, we copy RCX into r10.
+        "mov r10, rcx",
+        // Save arg4 (now in R10).
+        "mov [rsp+32], r10",
+        // Save arg5 (from R8).
+        "mov [rsp+40], r8",
+        // Save arg6 (from R9).
+        "mov [rsp+48], r9",
+        // Pass pointer to SyscallRegisters in RDI.
+        "mov rdi, rsp",
+        // Call the Rust syscall dispatcher.
+        "call syscall_handler_impl",
+        // The dispatcher returns a value in RAX; clean up the stack.
+        "add rsp, 56",
+        // Swap GS back.
+        "swapgs",
+        // Return to user mode. sysretq will use RCX (which contains the user RIP)
+        // and R11 (which holds user RFLAGS).
+        "sysretq",
+    );
 }
+
 
 /// Function that routes to different syscalls
 ///
@@ -137,9 +82,9 @@ pub extern "C" fn syscall_handler_64_naked() {
 #[no_mangle]
 pub unsafe extern "C" fn syscall_handler_impl(
     syscall: *const SyscallRegisters,
-    reg_vals: *const NonFlagRegisters,
 ) -> u64 {
-    let regs = unsafe { &*reg_vals };
+    serial_println!("RSP In SysHand: {:#X}", syscall as u64);
+
     let syscall = unsafe { &*syscall };
     serial_println!("Syscall num: {}", syscall.number);
     match syscall.number as u32 {
@@ -149,7 +94,7 @@ pub unsafe extern "C" fn syscall_handler_impl(
         }
         SYSCALL_PRINT => sys_print(syscall.arg1 as *const u8),
         SYSCALL_NANOSLEEP => sys_nanosleep(syscall.arg1, syscall.arg2),
-        SYSCALL_FORK => sys_fork(regs),
+        SYSCALL_FORK => sys_fork(),
         _ => {
             panic!("Unknown syscall, {}", syscall.number);
         }

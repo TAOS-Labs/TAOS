@@ -10,7 +10,7 @@ use limine::{
 };
 
 use crate::{
-    constants::processes::{FORK_SIMPLE, MMAP_ANON_SIMPLE, PRINT_EXIT, TEST_64_SIMPLE_EXIT, TEST_SYSCALL_PRINT}, debug, devices, events::{register_event_runner, run_loop, schedule_process}, interrupts::{self, idt, x2apic}, logging, memory::{self}, processes::{
+    constants::processes::{FORK_SIMPLE, MMAP_ANON_SIMPLE, PRINT_EXIT, TEST_64_PRINT_EXIT, TEST_64_SIMPLE_EXIT, TEST_SYSCALL_PRINT}, debug, devices, events::{register_event_runner, run_loop, schedule_process}, interrupts::{self, idt, x2apic}, logging, memory::{self}, processes::{
         self,
         process::{create_process, print_process_table, run_process_ring3, PROCESS_TABLE},
     }, serial_println, trace
@@ -62,7 +62,7 @@ pub fn init() -> u32 {
     //     -1,
     //     0,
     // );
-    let parent_pid = create_process(FORK_SIMPLE);
+    let parent_pid = create_process(TEST_64_PRINT_EXIT);
     schedule_process(parent_pid);
 
         // since no other processes are running or being created we assume that

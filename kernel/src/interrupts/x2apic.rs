@@ -16,6 +16,8 @@ use raw_cpuid::CpuId;
 use spin::Mutex;
 use x86_64::{instructions::port::Port, registers::model_specific::{GsBase, KernelGsBase, Msr}, VirtAddr};
 
+use super::gdt::TSSS;
+
 // MSR register constants
 const IA32_APIC_BASE_MSR: u32 = 0x1B;
 const X2APIC_EOI: u32 = 0x80B;
@@ -32,6 +34,9 @@ const X2APIC_IA32_LSTAR: u32 = 0xC000_0082;
 const X2APIC_IA32_FMASK: u32 = 0xC000_0084;
 const X2APIC_IA32_STAR: u32 = 0xC000_0081;
 const X2APIC_IA32_KERNEL_GSBASE: u32 = 0xC000_0102;
+const X2APIC_IA32_SYSENTER_CS: u32 = 0x174;
+const X2APIC_IA32_SYSENTER_ESP: u32 = 0x175;
+const X2APIC_IA32_SYSENTER_EIP: u32 = 0x176;
 
 /// Programmable Interval Timer (PIT) constants for timer calibration
 const PIT_FREQUENCY: u64 = 1_193_182;
@@ -153,12 +158,15 @@ impl X2ApicManager {
         let fmask: u64 = 0x200;
         let user_cs = gdt::GDT.1.user_code_selector.0 as u64;
         let kernel_cs = gdt::GDT.1.code_selector.0 as u64;
-        let star: u64 = (kernel_cs << 32) | (user_cs << 48);
+        let star: u64 = user_cs << 48 | kernel_cs << 32;
 
         let sys_addr = syscall_handler_64_naked as usize;
 
         GsBase::write(VirtAddr::new(gdt::GDT.1.user_data_selector.0 as u64));
         KernelGsBase::write(VirtAddr::new(gdt::GDT.1.data_selector.0 as u64));
+
+        let core = current_core_id();
+        let stack = ((TSSS[core].privilege_stack_table[0]).as_u64()) & !15;
 
         // Set up MSRs for syscall
         unsafe {
@@ -166,6 +174,9 @@ impl X2ApicManager {
             Msr::new(X2APIC_IA32_LSTAR).write(sys_addr.try_into().unwrap());
             Msr::new(X2APIC_IA32_FMASK).write(fmask);
             Msr::new(X2APIC_IA32_STAR).write(star);
+            Msr::new(X2APIC_IA32_SYSENTER_CS).write(kernel_cs);
+            Msr::new(X2APIC_IA32_SYSENTER_ESP).write(stack);
+            Msr::new(X2APIC_IA32_SYSENTER_EIP).write(sys_addr.try_into().unwrap());
             Msr::new(X2APIC_IA32_KERNEL_GSBASE).write(KernelGsBase::read().as_u64());
         }
 

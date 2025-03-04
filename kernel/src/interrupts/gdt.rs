@@ -8,7 +8,7 @@
 
 // Will remove after getting context switching
 // Right now user code/data is not used
-#![allow(dead_code)]
+// #![allow(dead_code)]
 
 use lazy_static::lazy_static;
 use x86_64::{
@@ -23,10 +23,10 @@ use x86_64::{
     PrivilegeLevel, VirtAddr,
 };
 
-use crate::constants::{
+use crate::{constants::{
     gdt::{DOUBLE_FAULT_IST_INDEX, IST_STACK_SIZE, RING0_STACK_SIZE},
     MAX_CORES,
-};
+}, serial_println};
 
 /// Number of base GDT entries: null descriptor + kernel code/data + user code/data
 const BASE_ENTRIES: usize = 5;
@@ -79,7 +79,8 @@ lazy_static! {
         let mut tss_selectors = [SegmentSelector::new(0, PrivilegeLevel::Ring0); MAX_CORES];
 
         for i in 0..MAX_CORES {
-            tss_selectors[i] = gdt.append(Descriptor::tss_segment(&TSSS[i]));
+            let value = gdt.append(Descriptor::tss_segment(&TSSS[i]));
+            tss_selectors[i] = value;
         }
 
         (gdt, Selectors {
@@ -117,6 +118,8 @@ pub fn init(cpu_id: u32) {
     unsafe {
         // Set up segment registers with appropriate selectors
         CS::set_reg(GDT.1.code_selector);
+        serial_println!("GDT: {}", GDT.1.code_selector.0 & 3);
+        serial_println!("GDT user: {}", GDT.1.user_code_selector.0 & 3);
 
         ES::set_reg(GDT.1.data_selector);
         DS::set_reg(GDT.1.data_selector);

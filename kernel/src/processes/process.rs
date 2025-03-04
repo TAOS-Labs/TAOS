@@ -331,8 +331,8 @@ pub async unsafe fn run_process_ring3(pid: u32) {
 
     Cr3::write((*process).pml4_frame, Cr3Flags::empty());
 
-    let user_cs = gdt::GDT.1.user_code_selector.0 as u64;
-    let user_ds = gdt::GDT.1.user_data_selector.0 as u64;
+    let user_cs = gdt::GDT.1.user_code_selector.0;
+    let user_ds = gdt::GDT.1.user_data_selector.0;
 
     let registers = &(*process).registers.clone();
 
@@ -362,8 +362,8 @@ pub async unsafe fn run_process_ring3(pid: u32) {
 #[no_mangle]
 unsafe fn call_process(
     registers: *const Registers,
-    user_ds: u64,
-    user_cs: u64,
+    user_ds: u16,
+    user_cs: u16,
     kernel_rsp: *const u64,
     process_state: *const u8,
 ) {
