@@ -15,12 +15,10 @@ use x86_64::{
     instructions::{
         segmentation::{Segment, CS, DS, ES, FS, GS, SS},
         tables::load_tss,
-    },
-    structures::{
+    }, registers::model_specific::KernelGsBase, structures::{
         gdt::{Descriptor, GlobalDescriptorTable, SegmentSelector},
         tss::TaskStateSegment,
-    },
-    PrivilegeLevel, VirtAddr,
+    }, PrivilegeLevel, VirtAddr
 };
 
 use crate::{constants::{
@@ -51,11 +49,12 @@ lazy_static! {
         for (i, tss) in tsss.iter_mut().enumerate() {
             unsafe {
                 let stack_start = VirtAddr::from_ptr(&DF_STACKS[i]);
-                let stack_end = stack_start + IST_STACK_SIZE as u64;
+                let stack_end = VirtAddr::new((stack_start + IST_STACK_SIZE as u64).as_u64() & !15);
                 let priv_stack_start = VirtAddr::from_ptr(&PRIV_STACKS[i]);
-                let priv_stack_end = priv_stack_start + RING0_STACK_SIZE as u64;
+                let priv_stack_end = VirtAddr::new((priv_stack_start + RING0_STACK_SIZE as u64).as_u64() & !15);
 
                 tss.interrupt_stack_table[DOUBLE_FAULT_IST_INDEX as usize] = stack_end;
+                serial_println!("Stack end for cpu_id {} is {:#x}", i, priv_stack_end);
                 tss.privilege_stack_table[0] = priv_stack_end;
             }
         }
@@ -125,5 +124,7 @@ pub fn init(cpu_id: u32) {
         GS::set_reg(GDT.1.data_selector);
 
         load_tss(GDT.1.tss_selectors[cpu_id as usize]);
+
     }
+    KernelGsBase::write(VirtAddr::new(&TSSS[cpu_id as usize] as *const _ as u64));
 }

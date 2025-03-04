@@ -38,9 +38,14 @@ pub unsafe extern "C" fn syscall_handler_64_naked() -> ! {
     naked_asm!(
         // Swap GS to load the kernel GS base.
         "swapgs",
+        // RSP2 in the TSS is scratch space - store userspace RSP for later
+        "mov qword ptr gs:[20], rsp",
         // TODO WE NEED TO USE KERNEL STACK HERE
-        "mov rsp, qword ptr gs:[0]",
+        "mov rsp, qword ptr gs:[4]",
         // Allocate 56 bytes on the stack for SyscallRegisters.
+        // Save important registers
+        "push rcx",
+        "push r11",
         "sub rsp, 56",
         // Save the syscall number (from RAX).
         "mov [rsp], rax",
@@ -65,7 +70,12 @@ pub unsafe extern "C" fn syscall_handler_64_naked() -> ! {
         "call syscall_handler_impl",
         // The dispatcher returns a value in RAX; clean up the stack.
         "add rsp, 56",
+        // Restore important regs
+        "pop r11",
+        "pop rcx",
         // Swap GS back.
+        "mov rsp, qword ptr gs:[20]",
+
         "swapgs",
         // Return to user mode. sysretq will use RCX (which contains the user RIP)
         // and R11 (which holds user RFLAGS).

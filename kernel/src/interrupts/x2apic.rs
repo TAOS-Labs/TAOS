@@ -162,8 +162,8 @@ impl X2ApicManager {
         let sys_addr = syscall_handler_64_naked as usize;
         let core = current_core_id();
 
-        let stack = ((TSSS[core].privilege_stack_table[0]).as_u64()) & !15;
-        KernelGsBase::write(VirtAddr::new(stack));
+        // let stack = ((TSSS[core].privilege_stack_table[0]).as_u64()) & !15;
+        // KernelGsBase::write(VirtAddr::new(stack));
 
         // Set up MSRs for syscall
         unsafe {
