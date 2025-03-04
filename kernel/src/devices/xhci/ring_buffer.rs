@@ -385,3 +385,127 @@ impl RingBuffer {
         Result::Ok(block)
     }
 }
+
+struct EventRingSegmentTable {
+    // the base of the table
+    base: *mut Trb,
+    // the size of the table in number of entries
+    size: isize,
+}
+
+type Erst = EventRingSegmentTable;
+
+impl EventRingSegmentTable {
+    // returns the number of entries in this table
+    fn get_size(&self) -> isize {
+        self.size
+    }
+
+    // returns the entry at the index
+    unsafe fn get_entry(&self, index: isize) -> Trb {
+        let block_addr = self.base.offset(index);
+        *block_addr
+    }
+
+    unsafe fn add_entry(&mut self, segment_base: u64, segment_size: u32) {
+        let entry = Trb {
+            parameters: segment_base & !0xF,
+            status: segment_size & 0xFFFF,
+            control: 0
+        };
+
+        *self.base.offset(self.size) = entry;
+    }
+}
+
+pub enum EventRingError {
+    RingEmptyError,
+    SegmentSize,
+}
+
+pub struct ConsumerRingBuffer {
+    // the current dequeue pointer
+    dequeue: *mut Trb,
+    // the current ccs
+    ccs: u8,
+    // the erst for this event ring
+    erst: Erst,
+    // the current index into the erst that we are working in
+    erst_count: isize,
+    // the number of entries remaining in the current segment
+    ers_size: u32,
+}
+
+impl ConsumerRingBuffer {
+    pub fn new(erst_base_addr: u64, segment_base: u64, segment_size: u32) -> Result<Self, EventRingError> {
+        if segment_size < 16 || segment_size > 4096 {
+            return Err(EventRingError::SegmentSize);
+        }
+        let mut erst = EventRingSegmentTable {
+            base: erst_base_addr as *mut Trb,
+            size: 0
+        };
+        unsafe {
+            erst.add_entry(segment_base, segment_size);
+        }
+
+        Ok(ConsumerRingBuffer {
+            dequeue: segment_base as *mut Trb,
+            ccs: 1,
+            erst,
+            erst_count: 0,
+            ers_size: segment_size,
+        })
+    }
+
+    pub fn add_segment(&mut self, segment_base: u64, segment_size: u32) -> Result<(), EventRingError> {
+        if segment_size < 16 || segment_size > 4096 {
+            return Err(EventRingError::SegmentSize);
+        }
+        unsafe {
+            self.erst.add_entry(segment_base, segment_size);
+        }
+        Ok(())
+    }
+
+    // dequeues a block or returns an ring empty error
+    pub unsafe fn dequeue(&mut self) -> Result<Trb, EventRingError> {
+        // first get the block and see if we own it
+        let block: Trb;
+        unsafe {
+            block = *self.dequeue;
+        }
+
+        // if the block's cycle bit does not match then we are at the enqueue pointer meaning that buffer is empty
+        if self.ccs as u32 != block.get_cycle() {
+            return Err(EventRingError::RingEmptyError);
+        }
+        
+        // move the dequeue pointer
+        self.move_dequeue();
+        
+        Ok(block)
+    }
+
+    // moves the dequeue ptr to the next trb
+    unsafe fn move_dequeue(&mut self) {
+        if self.ers_size == 1 {
+            // need to go to a new segment, first check to see if we need to loop back to the beginning
+            self.erst_count += 1;
+            if self.erst_count == self.erst.get_size() {
+                // toggle ccs and set count to 0
+                self.ccs ^= 1;
+                self.erst_count = 0;
+            }
+            
+            // get the block at index count and then set dequeue to the params and size to the size field
+            let entry = self.erst.get_entry(self.erst_count);
+            self.dequeue = entry.parameters as *mut Trb;
+            self.ers_size = entry.status & 0xFFFF;
+        } else {
+            // there are still blocks in this segment so just move things
+            self.ers_size -= 1;
+            self.dequeue = self.dequeue.offset(1);
+        }
+    }
+}
