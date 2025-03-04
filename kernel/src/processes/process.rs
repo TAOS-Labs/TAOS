@@ -15,7 +15,7 @@ use crate::{
         x2apic::{self, nanos_to_ticks},
     },
     memory::{
-        frame_allocator::{alloc_frame, dealloc_frame, with_buddy_frame_allocator, with_generic_allocator}, HHDM_OFFSET, KERNEL_MAPPER
+        frame_allocator::{alloc_frame, dealloc_frame, with_buddy_frame_allocator, with_generic_allocator}, mm::Mm, HHDM_OFFSET, KERNEL_MAPPER
     },
     processes::{loader::load_elf, registers::Registers},
     serial_println,
@@ -59,10 +59,10 @@ pub struct PCB {
     pub kernel_rip: u64,
     pub next_preemption_time: u64,
     pub registers: Registers,
-    pub pml4_frame: PhysFrame<Size4KiB>, // this process' page table
     pub mmaps: Vec<MmapCall>,
     pub mmap_address: u64,
     pub fd_table: [u64; MAX_FILES],
+    pub mm: Mm
 }
 
 pub struct UnsafePCB {
@@ -91,7 +91,7 @@ impl PCB {
     /// # Safety
     /// TODO
     pub unsafe fn create_mapper(&mut self) -> OffsetPageTable<'_> {
-        let virt = *HHDM_OFFSET + self.pml4_frame.start_address().as_u64();
+        let virt = *HHDM_OFFSET + self.mm.pml4_frame.start_address().as_u64();
         let ptr = virt.as_mut_ptr::<PageTable>();
         OffsetPageTable::new(unsafe { &mut *ptr }, *HHDM_OFFSET)
     }
@@ -138,6 +138,7 @@ pub fn create_placeholder_process() -> u32 {
     // Build a new process address space
     let pid = 0;
     let process_pml4_frame = unsafe { create_process_page_table() };
+    let mm = Mm::new(process_pml4_frame);
     let process = Arc::new(UnsafePCB::new(PCB {
         pid,
         state: ProcessState::New,
@@ -163,11 +164,11 @@ pub fn create_placeholder_process() -> u32 {
             rip: 0,
             rflags: 0x0,
         },
-        pml4_frame: process_pml4_frame,
         mmaps: Vec::new(),
         mmap_address: START_MMAP_ADDRESS,
         fd_table: [0; MAX_FILES],
         next_preemption_time: 0,
+        mm
     }));
     PROCESS_TABLE.write().insert(pid, Arc::clone(&process));
     pid
@@ -180,6 +181,7 @@ pub fn create_process(elf_bytes: &[u8]) -> u32 {
     });
     // Build a new process address space
     let process_pml4_frame = unsafe { create_process_page_table() };
+    let mm = Mm::new(process_pml4_frame);
     let mut mapper = unsafe {
         let virt = *HHDM_OFFSET + process_pml4_frame.start_address().as_u64();
         let ptr = virt.as_mut_ptr::<PageTable>();
@@ -213,10 +215,10 @@ pub fn create_process(elf_bytes: &[u8]) -> u32 {
             rip: entry_point,
             rflags: 0x202,
         },
-        pml4_frame: process_pml4_frame,
         mmaps: Vec::new(),
         mmap_address: START_MMAP_ADDRESS,
         fd_table: [0; MAX_FILES],
+        mm
     }));
     PROCESS_TABLE.write().insert(pid, Arc::clone(&process));
     debug!("Created process with PID: {}", pid);
@@ -250,7 +252,7 @@ unsafe fn create_process_page_table() -> PhysFrame<Size4KiB> {
 ///
 /// * `pcb`: The process PCB to clear memory for
 pub fn clear_process_frames(pcb: &mut PCB) {
-    let pml4_frame = pcb.pml4_frame;
+    let pml4_frame = pcb.mm.pml4_frame;
     let mapper = unsafe { pcb.create_mapper() };
 
     // Iterate over first 256 entries (user space)
@@ -329,7 +331,7 @@ pub async unsafe fn run_process_ring3(pid: u32) {
 
     (*process).next_preemption_time = runner_timestamp() + nanos_to_ticks(PROCESS_NANOS);
 
-    Cr3::write((*process).pml4_frame, Cr3Flags::empty());
+    Cr3::write((*process).mm.pml4_frame, Cr3Flags::empty());
 
     let user_cs = gdt::GDT.1.user_code_selector.0;
     let user_ds = gdt::GDT.1.user_data_selector.0;

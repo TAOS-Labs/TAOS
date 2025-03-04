@@ -10,6 +10,7 @@ pub mod frame_allocator;
 pub mod heap;
 pub mod paging;
 pub mod tlb;
+pub mod mm;
 
 use boot_frame_allocator::BootIntoFrameAllocator;
 use frame_allocator::{GlobalFrameAllocator, FRAME_ALLOCATOR};

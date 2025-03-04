@@ -16,6 +16,7 @@ use x86_64::{
     PhysAddr,
 };
 
+#[derive(Debug)]
 pub struct FrameDescriptor {
     ref_count: AtomicU16,
     order: AtomicU16,
@@ -198,7 +199,6 @@ impl BuddyFrameAllocator {
     }
 
     pub fn allocate_block(&mut self, order: u16) -> Vec<PhysFrame<Size4KiB>> { let mut found_order = None;
-
         for o in order..=self.max_order as u16 {
             if !self.free_lists[o as usize].is_empty() {
                 found_order = Some(o as usize);
@@ -333,6 +333,10 @@ impl BuddyFrameAllocator {
 
     pub fn frame_to_index(frame: PhysFrame<Size4KiB>) -> usize {
         frame.start_address().as_u64() as usize / PAGE_SIZE
+    }
+
+    pub fn get_frame_descriptor(&self, frame: PhysFrame<Size4KiB>) -> &FrameDescriptor {
+        &self.frames[Self::frame_to_index(frame)]
     }
 }
 

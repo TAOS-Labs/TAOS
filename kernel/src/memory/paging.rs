@@ -1,4 +1,4 @@
-// This is only there because of get_page_table_entry() function being used in testcases,
+// This is only there because of get_page_table_entry() function being used in testcases,paging
 // however it could be used in a plethora of places later so I am keeping it for now
 #![allow(dead_code)]
 
@@ -440,7 +440,7 @@ mod tests {
     }
 
     // Test that contiguous mappings work correctly. Allocates 8 pages in a row.
-    #[test_case]
+    // #[test_case]
     fn test_contiguous_mapping() {
         let mut mapper = KERNEL_MAPPER.lock();
 

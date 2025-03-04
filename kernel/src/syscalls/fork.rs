@@ -60,11 +60,11 @@ pub fn sys_fork(reg_vals: &NonFlagRegisters) -> u64 {
     serial_println!("Child Rflags: {}", reg_vals.r11);
 
 
-    let child_pml4_frame = duplicate_page_table(unsafe { (*parent_pcb).pml4_frame }, 4);
+    let child_pml4_frame = duplicate_page_table(unsafe { (*parent_pcb).mm.pml4_frame }, 4);
     // verify_page_table_walk(unsafe { &mut *parent_pcb }, unsafe {
     //     &mut *child_pcb.pcb.get()
     // });
-    unsafe { (*child_pcb.pcb.get()).pml4_frame = child_pml4_frame };
+    unsafe { (*child_pcb.pcb.get()).mm.pml4_frame = child_pml4_frame };
 
     {
         PROCESS_TABLE.write().insert(child_pid, child_pcb);
@@ -166,8 +166,8 @@ fn get_table_mut(frame: PhysFrame) -> &'static mut PageTable {
 
 fn verify_page_table_walk(parent_pcb: &mut PCB, child_pcb: &mut PCB) {
     assert_eq!(
-        parent_pcb.pml4_frame.start_address(),
-        child_pcb.pml4_frame.start_address()
+        parent_pcb.mm.pml4_frame.start_address(),
+        child_pcb.mm.pml4_frame.start_address()
     );
     let mut parent_mapper = unsafe { parent_pcb.create_mapper() };
     let mut child_mapper = unsafe { child_pcb.create_mapper() };

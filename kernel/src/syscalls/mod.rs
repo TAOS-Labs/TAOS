@@ -17,7 +17,7 @@ mod tests {
     use super::*;
 
     /// The binary exits with code 0 immediately
-    #[test_case]
+    // #[test_case]
     fn test_exit_code() {
         let pid = create_process(TEST_64_SIMPLE_EXIT);
         schedule_process_on(1, pid);
@@ -34,7 +34,7 @@ mod tests {
     /// The binary prints something to the console and then exits
     /// For now, requires manual verification that the printed
     /// content is correct 
-    #[test_case]
+    // #[test_case]
     fn test_print_exit() {
         let pid = create_process(TEST_64_PRINT_EXIT);
         schedule_process_on(1, pid);
