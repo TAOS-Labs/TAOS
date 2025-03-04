@@ -38,6 +38,8 @@ pub unsafe extern "C" fn syscall_handler_64_naked() -> ! {
     naked_asm!(
         // Swap GS to load the kernel GS base.
         "swapgs",
+        // TODO WE NEED TO USE KERNEL STACK HERE
+        "mov rsp, qword ptr gs:[0]",
         // Allocate 56 bytes on the stack for SyscallRegisters.
         "sub rsp, 56",
         // Save the syscall number (from RAX).

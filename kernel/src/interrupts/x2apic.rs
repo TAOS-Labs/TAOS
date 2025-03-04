@@ -7,9 +7,7 @@
 //! - End-of-interrupt (EOI) handling
 
 use crate::{
-    constants::{idt::TIMER_VECTOR, x2apic::CPU_FREQUENCY, MAX_CORES},
-    interrupts::gdt,
-    syscalls::syscall_handlers::syscall_handler_64_naked,
+    constants::{idt::TIMER_VECTOR, x2apic::CPU_FREQUENCY, MAX_CORES}, interrupts::gdt, serial_println, syscalls::syscall_handlers::syscall_handler_64_naked
 };
 use core::sync::atomic::{AtomicU32, Ordering};
 use raw_cpuid::CpuId;
@@ -33,6 +31,7 @@ const X2APIC_IA32_EFER: u32 = 0xC000_0080;
 const X2APIC_IA32_LSTAR: u32 = 0xC000_0082;
 const X2APIC_IA32_FMASK: u32 = 0xC000_0084;
 const X2APIC_IA32_STAR: u32 = 0xC000_0081;
+const X2APIC_IA32_GSBASE: u32 = 0xC000_0101;
 const X2APIC_IA32_KERNEL_GSBASE: u32 = 0xC000_0102;
 const X2APIC_IA32_SYSENTER_CS: u32 = 0x174;
 const X2APIC_IA32_SYSENTER_ESP: u32 = 0x175;
@@ -161,12 +160,10 @@ impl X2ApicManager {
         let star: u64 = user_cs << 48 | kernel_cs << 32;
 
         let sys_addr = syscall_handler_64_naked as usize;
-
-        GsBase::write(VirtAddr::new(gdt::GDT.1.user_data_selector.0 as u64));
-        KernelGsBase::write(VirtAddr::new(gdt::GDT.1.data_selector.0 as u64));
-
         let core = current_core_id();
+
         let stack = ((TSSS[core].privilege_stack_table[0]).as_u64()) & !15;
+        KernelGsBase::write(VirtAddr::new(stack));
 
         // Set up MSRs for syscall
         unsafe {
@@ -174,10 +171,11 @@ impl X2ApicManager {
             Msr::new(X2APIC_IA32_LSTAR).write(sys_addr.try_into().unwrap());
             Msr::new(X2APIC_IA32_FMASK).write(fmask);
             Msr::new(X2APIC_IA32_STAR).write(star);
-            Msr::new(X2APIC_IA32_SYSENTER_CS).write(kernel_cs);
-            Msr::new(X2APIC_IA32_SYSENTER_ESP).write(stack);
-            Msr::new(X2APIC_IA32_SYSENTER_EIP).write(sys_addr.try_into().unwrap());
             Msr::new(X2APIC_IA32_KERNEL_GSBASE).write(KernelGsBase::read().as_u64());
+
+            // Msr::new(X2APIC_IA32_SYSENTER_CS).write(kernel_cs);
+            // Msr::new(X2APIC_IA32_SYSENTER_ESP).write(stack);
+            // Msr::new(X2APIC_IA32_SYSENTER_EIP).write(sys_addr.try_into().unwrap());
         }
 
         Ok(())

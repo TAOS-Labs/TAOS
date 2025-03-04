@@ -2,12 +2,13 @@
 //!
 //! Handles the initialization of kernel subsystems and CPU cores.
 
-use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use core::{arch::asm, sync::atomic::{AtomicBool, AtomicU64, Ordering}};
 use limine::{
     request::SmpRequest,
     smp::{Cpu, RequestFlags},
     BaseRevision,
 };
+use x86_64::registers::{model_specific::GsBase, segmentation::GS};
 
 use crate::{
     constants::processes::{FORK_SIMPLE, MMAP_ANON_SIMPLE, PRINT_EXIT, TEST_64_PRINT_EXIT, TEST_64_SIMPLE_EXIT, TEST_SYSCALL_PRINT}, debug, devices, events::{register_event_runner, run_loop, schedule_process}, interrupts::{self, idt, x2apic}, logging, memory::{self}, processes::{
@@ -54,6 +55,8 @@ pub fn init() -> u32 {
     let bsp_id = wake_cores();
 
     idt::enable();
+
+
     // let addr = sys_mmap(
     //     0x1000,
     //     0x5000,

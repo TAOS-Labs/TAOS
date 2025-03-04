@@ -118,9 +118,6 @@ pub fn init(cpu_id: u32) {
     unsafe {
         // Set up segment registers with appropriate selectors
         CS::set_reg(GDT.1.code_selector);
-        serial_println!("GDT: {}", GDT.1.code_selector.0 & 3);
-        serial_println!("GDT user: {}", GDT.1.user_code_selector.0 & 3);
-
         ES::set_reg(GDT.1.data_selector);
         DS::set_reg(GDT.1.data_selector);
         SS::set_reg(GDT.1.data_selector);
