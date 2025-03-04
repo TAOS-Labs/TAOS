@@ -16,7 +16,7 @@ use crate::{
 };
 
 /// Creates a new child process, Copy-on-write
-pub fn sys_fork() -> u64 {
+pub fn sys_fork(reg_vals: &NonFlagRegisters) -> u64 {
     let child_pid = NEXT_PID.fetch_add(1, Ordering::SeqCst);
     let parent_pid = current_running_event_info().pid;
 
@@ -34,9 +34,31 @@ pub fn sys_fork() -> u64 {
     let child_pcb = Arc::new(UnsafePCB::new(unsafe { (*parent_pcb).clone() }));
     unsafe {
         (*child_pcb.pcb.get()).registers.rax = 0;
-        (*child_pcb.pcb.get()).registers.rip = (*parent_pcb).registers.rip + 1;
+        (*child_pcb.pcb.get()).registers.rbx = reg_vals.rbx;
+        (*child_pcb.pcb.get()).registers.rcx = reg_vals.rcx;
+        (*child_pcb.pcb.get()).registers.rdx = reg_vals.rdx;
+        (*child_pcb.pcb.get()).registers.rsi = reg_vals.rsi;
+        (*child_pcb.pcb.get()).registers.rdi = reg_vals.rdi;
+        (*child_pcb.pcb.get()).registers.r8 = reg_vals.r8;
+        (*child_pcb.pcb.get()).registers.r9 = reg_vals.r9;
+        (*child_pcb.pcb.get()).registers.r10 = reg_vals.r10;
+        (*child_pcb.pcb.get()).registers.r11 = reg_vals.r11;
+        (*child_pcb.pcb.get()).registers.r12 = reg_vals.r12;
+        (*child_pcb.pcb.get()).registers.r13 = reg_vals.r13;
+        (*child_pcb.pcb.get()).registers.r14 = reg_vals.r14;
+        (*child_pcb.pcb.get()).registers.r15 = reg_vals.r15;
+        (*child_pcb.pcb.get()).registers.rbp = reg_vals.rbp;
+        // By syscall instruction semantics, rcx will store next instruction to be ran.
+        (*child_pcb.pcb.get()).registers.rip = reg_vals.rcx;
+        (*child_pcb.pcb.get()).registers.rflags = reg_vals.r11;
+        (*child_pcb.pcb.get()).registers.rsp = reg_vals.rsp;
         (*child_pcb.pcb.get()).state = ProcessState::Ready;
     }
+
+
+    serial_println!("Child RIP: {:#x}", reg_vals.rcx);
+    serial_println!("Child Rflags: {}", reg_vals.r11);
+
 
     let child_pml4_frame = duplicate_page_table(unsafe { (*parent_pcb).pml4_frame }, 4);
     // verify_page_table_walk(unsafe { &mut *parent_pcb }, unsafe {
@@ -52,6 +74,7 @@ pub fn sys_fork() -> u64 {
 
     child_pid as u64
 }
+
 
 /// Recursively duplicate a page table starting at the specified level.
 ///

@@ -172,6 +172,8 @@ impl X2ApicManager {
             Msr::new(X2APIC_IA32_FMASK).write(fmask);
             Msr::new(X2APIC_IA32_STAR).write(star);
             Msr::new(X2APIC_IA32_KERNEL_GSBASE).write(KernelGsBase::read().as_u64());
+            Msr::new(X2APIC_IA32_GSBASE).write(GsBase::read().as_u64());
+
 
             // Msr::new(X2APIC_IA32_SYSENTER_CS).write(kernel_cs);
             // Msr::new(X2APIC_IA32_SYSENTER_ESP).write(stack);

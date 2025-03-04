@@ -219,7 +219,7 @@ extern "x86-interrupt" fn page_fault_handler(
 
             if !entry.loaded[index] && entry.fd == -1 {
                 break;
-            } else if !entry.loaded[index] && entry.fd != -1 {
+        } else if !entry.loaded[index] && entry.fd != -1 {
                 let _open_file = pcb.fd_table[entry.fd as usize];
                 let _pos = faulting_address - entry.start + entry.offset;
                 // figure out where in the file we are

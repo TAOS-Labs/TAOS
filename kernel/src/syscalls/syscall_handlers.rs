@@ -44,8 +44,22 @@ pub unsafe extern "C" fn syscall_handler_64_naked() -> ! {
         "mov rsp, qword ptr gs:[4]",
         // Allocate 56 bytes on the stack for SyscallRegisters.
         // Save important registers
-        "push rcx",
+        "push rbp",
+        "push r15",
+        "push r14",
+        "push r13",
+        "push r12",
         "push r11",
+        "push r10",
+        "push r9",
+        "push r8",
+        "push rdi",
+        "push rsi",
+        "push rdx",
+        "push rcx",
+        "push rbx",
+        "mov r12, qword ptr gs:[20]", // get user rsp and push it on stack for fork
+        "push r12",
         "sub rsp, 56",
         // Save the syscall number (from RAX).
         "mov [rsp], rax",
@@ -66,13 +80,28 @@ pub unsafe extern "C" fn syscall_handler_64_naked() -> ! {
         "mov [rsp+48], r9",
         // Pass pointer to SyscallRegisters in RDI.
         "mov rdi, rsp",
+        "mov rsi, rsp",
+        "add rsi, 56",
         // Call the Rust syscall dispatcher.
         "call syscall_handler_impl",
         // The dispatcher returns a value in RAX; clean up the stack.
         "add rsp, 56",
         // Restore important regs
-        "pop r11",
+        "add rsp, 8", // we don't care about rsp that was pushed for fork
+        "pop rbx",
         "pop rcx",
+        "pop rdx",
+        "pop rsi",
+        "pop rdi",
+        "pop r8",
+        "pop r9",
+        "pop r10",
+        "pop r11",
+        "pop r12",
+        "pop r13",
+        "pop r14",
+        "pop r15",
+        "pop rbp",
         // Swap GS back.
         "mov rsp, qword ptr gs:[20]",
 
@@ -94,10 +123,12 @@ pub unsafe extern "C" fn syscall_handler_64_naked() -> ! {
 #[no_mangle]
 pub unsafe extern "C" fn syscall_handler_impl(
     syscall: *const SyscallRegisters,
+    reg_vals: *const NonFlagRegisters,
 ) -> u64 {
     serial_println!("RSP In SysHand: {:#X}", syscall as u64);
 
     let syscall = unsafe { &*syscall };
+    let reg_vals = unsafe {&*reg_vals};
     serial_println!("Syscall num: {}", syscall.number);
     match syscall.number as u32 {
         SYSCALL_EXIT => {
@@ -106,7 +137,7 @@ pub unsafe extern "C" fn syscall_handler_impl(
         }
         SYSCALL_PRINT => sys_print(syscall.arg1 as *const u8),
         SYSCALL_NANOSLEEP => sys_nanosleep(syscall.arg1, syscall.arg2),
-        SYSCALL_FORK => sys_fork(),
+        SYSCALL_FORK => sys_fork(reg_vals),
         _ => {
             panic!("Unknown syscall, {}", syscall.number);
         }
@@ -175,6 +206,7 @@ pub fn sys_exit(code: i64) -> Option<u64> {
     }
 
     unsafe {
+        core::arch::asm!("swapgs");
         core::arch::asm!("ret");
     }
 

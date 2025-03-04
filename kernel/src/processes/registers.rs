@@ -48,7 +48,7 @@ pub struct Registers {
 }
 
 pub struct NonFlagRegisters {
-    pub rax: u64,
+    pub rsp: u64,
     pub rbx: u64,
     pub rcx: u64,
     pub rdx: u64,
@@ -63,7 +63,6 @@ pub struct NonFlagRegisters {
     pub r14: u64,
     pub r15: u64,
     pub rbp: u64,
-    pub rsp: u64,
 }
 
 impl Registers {
