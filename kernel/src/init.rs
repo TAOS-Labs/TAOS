@@ -11,7 +11,7 @@ use limine::{
 use x86_64::registers::{model_specific::GsBase, segmentation::GS};
 
 use crate::{
-    constants::processes::{FORK_SIMPLE, MMAP_ANON_SIMPLE, PRINT_EXIT, TEST_64_PRINT_EXIT, TEST_64_SIMPLE_EXIT, TEST_SYSCALL_PRINT}, debug, devices, events::{register_event_runner, run_loop, schedule_process, schedule_process_on}, interrupts::{self, idt, x2apic}, logging, memory::{self}, processes::{
+    constants::processes::{FORK_SIMPLE, MMAP_ANON_SIMPLE, PRINT_EXIT, TEST_64_PRINT_EXIT, TEST_64_SIMPLE_EXIT, TEST_SIMPLE_STACK_ACCESS, TEST_SYSCALL_PRINT}, debug, devices, events::{register_event_runner, run_loop, schedule_process, schedule_process_on}, interrupts::{self, idt, x2apic}, logging, memory::{self}, processes::{
         self,
         process::{create_process, print_process_table, run_process_ring3, PROCESS_TABLE},
     }, serial_println, trace
@@ -65,8 +65,9 @@ pub fn init() -> u32 {
     //     -1,
     //     0,
     // );
-    // let parent_pid = create_process(FORK_SIMPLE);
-    // schedule_process_on(1, parent_pid);
+
+    let parent_pid = create_process(TEST_SIMPLE_STACK_ACCESS);
+    schedule_process_on(1, parent_pid);
 
         // since no other processes are running or being created we assume that
         // the child pid is one more than the child pid

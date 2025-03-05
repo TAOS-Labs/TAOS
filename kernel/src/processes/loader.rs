@@ -4,11 +4,11 @@ use crate::{
         processes::{STACK_SIZE, STACK_START},
     },
     memory::{
-        frame_allocator::with_generic_allocator,
-        paging::{create_mapping, update_permissions},
+        frame_allocator::with_generic_allocator, mm::{AnonVmArea, Mm, VmAreaFlags}, paging::{create_mapping, update_permissions}
     }, serial_println,
 };
 use core::ptr::{copy_nonoverlapping, write_bytes};
+use alloc::sync::Arc;
 use goblin::{
     elf::Elf,
     elf64::program_header::{PF_W, PF_X, PT_LOAD},
@@ -36,6 +36,7 @@ pub fn load_elf(
     elf_bytes: &[u8],
     user_mapper: &mut impl Mapper<Size4KiB>,
     kernel_mapper: &mut OffsetPageTable<'static>,
+    mm: &mut Mm
 ) -> (VirtAddr, u64) {
     let elf = Elf::parse(elf_bytes).expect("Parsing ELF failed");
     for ph in elf.program_headers.iter() {
@@ -116,15 +117,19 @@ pub fn load_elf(
     // Map user stack
     let stack_start = VirtAddr::new(STACK_START);
     let stack_end = VirtAddr::new(STACK_START + STACK_SIZE as u64);
-    let start_page = Page::containing_address(stack_start);
-    let end_page = Page::containing_address(stack_end);
 
-    let stack_flags =
-        PageTableFlags::PRESENT | PageTableFlags::WRITABLE | PageTableFlags::USER_ACCESSIBLE;
+    // new anon_vma that corresponds to this stack
+    let anon_vma = Arc::new(AnonVmArea::new());
+    let backing = Arc::as_ptr(&anon_vma) as u64;
 
-    for page in Page::range_inclusive(start_page, end_page) {
-        create_mapping(page, user_mapper, Some(stack_flags));
-    }
+    // let stack_flags =
+    //     PageTableFlags::PRESENT | PageTableFlags::WRITABLE | PageTableFlags::USER_ACCESSIBLE;
+
+    mm.insert_vma(STACK_START, STACK_START + STACK_SIZE as u64, backing, VmAreaFlags::READ | VmAreaFlags::WRITE | VmAreaFlags::GROWS_DOWN);
+
+    // for page in Page::range_inclusive(start_page, end_page) {
+    //     create_mapping(page, user_mapper, Some(stack_flags));
+    // }
 
     (stack_end, elf.header.e_entry)
 }

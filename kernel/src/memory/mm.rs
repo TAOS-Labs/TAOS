@@ -115,6 +115,8 @@ bitflags! {
         const READ = 0b001;
         const WRITE = 0b010;
         const EXECUTE = 0b100;
+        const SHARED = 0b1000; // If 1, shared. If 0, private (COW)
+        const GROWS_DOWN = 0b1_0000; // Stack
     }
 }
 
@@ -433,11 +435,9 @@ mod tests {
         let mm = Mm::new(pml4_frame);
 
         let vma1 = mm.insert_vma(0, 0x1000, 0, VmAreaFlags::READ | VmAreaFlags::WRITE);
-        
         let got_vma1 = mm.find_vma(0x500);
 
         let vma2 = mm.insert_vma(0x1000, 0x2000, 0, VmAreaFlags::READ | VmAreaFlags::WRITE);
-
         let got_vma1_new = mm.find_vma(0x500);
 
         assert_eq!(got_vma1.unwrap().start, mm.find_vma(0x1500).unwrap().start);
@@ -458,17 +458,12 @@ mod tests {
     fn test_coalesce_both() {
         let pml4_frame = PhysFrame::containing_address(PhysAddr::new(0x1000));
         let mm = Mm::new(pml4_frame);
-
         let vma1 = mm.insert_vma(0x0, 0x1000, 0, VmAreaFlags::READ | VmAreaFlags::WRITE);
-
         let got_vma1 = mm.find_vma(0x500).unwrap();
 
         let vma2 = mm.insert_vma(0x2000, 0x3000, 0, VmAreaFlags::READ | VmAreaFlags::WRITE);
-        
         let vma3 = mm.insert_vma(0x1000, 0x2000, 0, VmAreaFlags::READ | VmAreaFlags::WRITE);
-
         let got_vma2 = mm.find_vma(0x1500).unwrap();
-
         let got_vma3 = mm.find_vma(0x2500).unwrap();
 
         assert_eq!(got_vma1.start, got_vma2.start);

@@ -8,26 +8,41 @@
 
 use core::{arch::naked_asm, ptr};
 
+use alloc::sync::Arc;
 use lazy_static::lazy_static;
 use x86_64::{
     instructions::interrupts,
     structures::{
         idt::{InterruptDescriptorTable, InterruptStackFrame, PageFaultErrorCode},
-        paging::{OffsetPageTable, Page, PageTable, PageTableFlags, Translate},
+        paging::{
+            mapper::PageTableFrameMapping, OffsetPageTable, Page, PageTable, PageTableFlags,
+            Translate,
+        },
     },
     VirtAddr,
 };
 
 use crate::{
     constants::{
-        idt::{SYSCALL_HANDLER, TIMER_VECTOR, TLB_SHOOTDOWN_VECTOR}, memory::PAGE_SIZE, syscalls::{SYSCALL_EXIT, SYSCALL_FORK, SYSCALL_MMAP, SYSCALL_NANOSLEEP, SYSCALL_PRINT}
+        idt::{SYSCALL_HANDLER, TIMER_VECTOR, TLB_SHOOTDOWN_VECTOR},
+        memory::PAGE_SIZE,
+        syscalls::{SYSCALL_EXIT, SYSCALL_FORK, SYSCALL_MMAP, SYSCALL_NANOSLEEP, SYSCALL_PRINT},
     },
     events::inc_runner_clock,
     interrupts::x2apic::{self, current_core_id, TLB_SHOOTDOWN_ADDR},
-    memory::{frame_allocator::alloc_frame, paging::{create_mapping, get_page_flags, update_mapping}, HHDM_OFFSET},
+    memory::{
+        frame_allocator::alloc_frame,
+        mm::{AnonVmArea, AnonVmaChain},
+        paging::{create_mapping, create_mapping_to_frame, get_page_flags, update_mapping},
+        HHDM_OFFSET,
+    },
     prelude::*,
     processes::process::{get_current_pid, preempt_process, PROCESS_TABLE},
-    syscalls::{fork::sys_fork, mmap::sys_mmap, syscall_handlers::{sys_exit, sys_nanosleep, sys_print}},
+    syscalls::{
+        fork::sys_fork,
+        mmap::sys_mmap,
+        syscall_handlers::{sys_exit, sys_nanosleep, sys_print},
+    },
 };
 
 lazy_static! {
@@ -130,7 +145,6 @@ extern "x86-interrupt" fn page_fault_handler(
     stack_frame: InterruptStackFrame,
     error_code: PageFaultErrorCode,
 ) {
-
     serial_println!("current core is {}", x2apic::current_core_id());
     use x86_64::registers::control::{Cr2, Cr3};
 
@@ -152,6 +166,60 @@ extern "x86-interrupt" fn page_fault_handler(
     );
 
     let page = Page::containing_address(VirtAddr::new(faulting_address));
+
+    let process = {
+        let process_table = PROCESS_TABLE.read();
+        process_table
+            .get(&get_current_pid())
+            .expect("Cannot find current pid")
+            .clone()
+    };
+
+    let vma = unsafe {
+        (*process.pcb.get())
+            .mm
+            .find_vma(faulting_address)
+            .expect("Vma not found?")
+    };
+    let fault_round_down: u64 = (faulting_address) & !(PAGE_SIZE as u64 - 1);
+    let ptr: *const AnonVmArea = vma.backing as *const AnonVmArea;
+    unsafe {
+        let frame = (*ptr).find_mapping(&vma, fault_round_down);
+        if frame.is_some() {
+            create_mapping_to_frame(
+                page,
+                &mut mapper,
+                Some(
+                    PageTableFlags::WRITABLE
+                        | PageTableFlags::USER_ACCESSIBLE
+                        | PageTableFlags::PRESENT,
+                ),
+                *frame.unwrap().frame,
+            );
+        } else {
+            let new_frame = create_mapping(
+                page,
+                &mut mapper,
+                Some(
+                    PageTableFlags::WRITABLE
+                        | PageTableFlags::USER_ACCESSIBLE
+                        | PageTableFlags::PRESENT,
+                ),
+            );
+
+            (*ptr).insert_mapping(Arc::new(AnonVmaChain {
+                vma,
+                offset: page.start_address().as_u64(),
+                frame: Arc::new(new_frame),
+            }));
+        }
+    }
+
+    return;
+    unreachable!("Testing stack");
+    // testing only above for stack access, worrying about the rest later
+    // -----------------------------------------------------------------------------------
+
     let frame = mapper.translate_addr(VirtAddr::new(faulting_address));
     serial_println!("Frame mapped to this VA is {:#?}", frame);
     let mut flags: PageTableFlags =
@@ -222,7 +290,7 @@ extern "x86-interrupt" fn page_fault_handler(
 
             if !entry.loaded[index] && entry.fd == -1 {
                 break;
-        } else if !entry.loaded[index] && entry.fd != -1 {
+            } else if !entry.loaded[index] && entry.fd != -1 {
                 let _open_file = pcb.fd_table[entry.fd as usize];
                 let _pos = faulting_address - entry.start + entry.offset;
                 // figure out where in the file we are

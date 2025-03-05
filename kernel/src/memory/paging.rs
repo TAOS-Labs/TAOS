@@ -99,6 +99,44 @@ pub fn create_mapping(
     frame
 }
 
+/// Creates a mapping to a designated physical frame
+/// Default flags: PRESENT | WRITABLE
+///
+/// # Arguments
+/// * `page` - a Page that we want to map
+/// * `mapper` - anything that implements a the Mapper trait
+/// * `flags` - Optional flags, can be None
+///
+/// # Returns
+/// Returns the frame that was allocated and mapped to this page
+pub fn create_mapping_to_frame(
+    page: Page,
+    mapper: &mut impl Mapper<Size4KiB>,
+    flags: Option<PageTableFlags>,
+    frame: PhysFrame
+) -> PhysFrame {
+    let _ = unsafe {
+        mapper
+            .map_to(
+                page,
+                frame,
+                flags.unwrap_or(
+                    PageTableFlags::PRESENT
+                        | PageTableFlags::WRITABLE
+                        | PageTableFlags::USER_ACCESSIBLE,
+                ),
+                FRAME_ALLOCATOR
+                    .lock()
+                    .as_mut()
+                    .expect("Global allocator not initialized"),
+            )
+            .expect("Mapping failed")
+    };
+
+    frame
+}
+
+
 /// Updates an existing mapping
 ///
 /// Performs a TLB shootdown if the new frame is different than the old
