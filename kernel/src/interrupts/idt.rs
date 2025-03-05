@@ -130,6 +130,8 @@ extern "x86-interrupt" fn page_fault_handler(
     stack_frame: InterruptStackFrame,
     error_code: PageFaultErrorCode,
 ) {
+
+    serial_println!("current core is {}", x2apic::current_core_id());
     use x86_64::registers::control::{Cr2, Cr3};
 
     let faulting_address = Cr2::read().expect("Cannot read faulting address").as_u64();
@@ -182,6 +184,7 @@ extern "x86-interrupt" fn page_fault_handler(
         unsafe {
             ptr::copy_nonoverlapping(buffer.as_mut_ptr(), src_ptr, PAGE_SIZE);
         }
+        return;
     }
 
     // check for stack growth
