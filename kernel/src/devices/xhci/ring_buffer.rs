@@ -582,4 +582,29 @@ impl ConsumerRingBuffer {
             self.dequeue = self.dequeue.offset(1);
         }
     }
+
+    /// Checks to see if the event ring is empty
+    /// 
+    /// # Returns
+    /// True if the TRB being pointed to by `dequeue` is not owned by the consumer.
+    /// 
+    /// # Safety
+    /// This function preforms a raw pointer read to access the TRB that is being pointed to.
+    pub unsafe fn is_empty(&self) -> bool {
+        // first get the block
+        let block = *self.dequeue;
+
+        // see if we need to check the completion code or cycle bit
+        if self.erst_count > self.count_visited {
+            let completion_code = (block.status >> 24) & 0xFF;
+            // if 0 then empty
+            if completion_code == 0 {
+                return true;
+            } else {
+                return false;
+            }
+        }
+
+        block.get_cycle() != self.ccs as u32
+    }
 }
