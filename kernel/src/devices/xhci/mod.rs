@@ -383,7 +383,7 @@ mod test {
         *,
     };
     use crate::{
-        devices::xhci::ring_buffer::ProducerRingError,
+        devices::xhci::ring_buffer::{ConsumerRingBuffer, TransferRequestBlock, ProducerRingError},
         memory::{
             paging::{create_mapping, remove_mapped_frame},
             MAPPER,
@@ -668,5 +668,83 @@ mod test {
         assert_eq!(trb.get_cycle(), 0);
 
         remove_mapped_frame(page, &mut *mapper);
+    }
+
+    #[test_case]
+    fn consumer_ring_buffer_init() {
+        // first get pages for the ERST and first segment
+        let mut mapper = MAPPER.lock();
+        let erst_page: Page = Page::containing_address(VirtAddr::new(0x500000000));
+        let segment_page: Page = Page::containing_address(VirtAddr::new(0x600000000));
+        let _ = create_mapping(erst_page, &mut *mapper, None);
+        let _ = create_mapping(segment_page, &mut *mapper, None);
+
+        let erst_entry_size = 16 as isize;
+
+        mmio::zero_out_page(erst_page);
+        mmio::zero_out_page(segment_page);
+
+        // call the initialization function
+        let erst_address = erst_page.start_address().as_u64();
+        let segment_address = segment_page.start_address().as_u64();
+        let page_size = erst_page.size() as isize;
+        let _cmd_ring =
+            ConsumerRingBuffer::new(erst_address, page_size / erst_entry_size, segment_address, (page_size / size_of::<TransferRequestBlock>() as isize) as u32);
+
+        // verify that the ERST was properly initialized
+
+        // check that the first TRB's worth of the ERST contains the correct information about the segment
+        let mut trb_ptr = erst_address as *const Trb;
+        let mut trb;
+        unsafe { trb = *trb_ptr; }
+
+        // added due to "unaligned padded struct field" error, probably not actually a good solution, I'd like
+        // to know how we were unaligned
+        let mut parameters = trb.parameters;
+        let mut status = trb.status;
+        let mut control = trb.control;
+
+        assert_eq!(parameters, segment_address);
+        assert_eq!(status, (page_size / size_of::<TransferRequestBlock>() as isize) as u32);
+        assert_eq!(control, 0);
+
+        // check that the rest of the TRB's worth of the ERST is still zeroed
+        for index in 1..(page_size/erst_entry_size) {
+            unsafe {
+                trb_ptr = trb_ptr.offset(size_of::<TransferRequestBlock>() as isize);
+                trb = *trb_ptr;
+            }
+
+            parameters = trb.parameters;
+            status = trb.status;
+            control = trb.control;
+    
+            assert_eq!(parameters, 0);
+            assert_eq!(status, 0);
+            assert_eq!(control, 0);
+        }
+
+        // check that the data segment remains untouched
+        trb_ptr = segment_address as *const Trb;
+        unsafe { trb = *trb_ptr; }
+
+        for index in 0..(page_size/erst_entry_size) {
+            parameters = trb.parameters;
+            status = trb.status;
+            control = trb.control;
+
+            assert_eq!(parameters, 0);
+            assert_eq!(status, 0);
+            assert_eq!(control, 0);
+
+            unsafe {
+                assert_eq!(size_of::<TransferRequestBlock>() as isize, 16);
+                trb_ptr = trb_ptr.offset(size_of::<TransferRequestBlock>() as isize);
+                trb = *trb_ptr;
+            }
+        }
+
+        remove_mapped_frame(erst_page, &mut *mapper);
+        remove_mapped_frame(segment_page, &mut *mapper);
     }
 }
