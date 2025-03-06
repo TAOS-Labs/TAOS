@@ -1,13 +1,14 @@
 use core::{ptr, sync::atomic::Ordering};
 
 use alloc::sync::Arc;
+use alloc::vec::Vec;
 use x86_64::structures::paging::{
     mapper, page_table::PageTableEntry, OffsetPageTable, PageTable, PageTableFlags, PhysFrame
 };
 
 use crate::{
     events::{current_running_event_info, schedule_process, schedule_process_on},
-    memory::{frame_allocator::{alloc_frame, with_buddy_frame_allocator}, HHDM_OFFSET},
+    memory::{frame_allocator::{alloc_frame, with_buddy_frame_allocator}, mm::{AnonVmArea, VmAreaFlags}, HHDM_OFFSET},
     processes::{
         process::{ProcessState, UnsafePCB, NEXT_PID, PCB, PROCESS_TABLE},
         registers::NonFlagRegisters,
@@ -60,13 +61,31 @@ pub fn sys_fork(reg_vals: &NonFlagRegisters) -> u64 {
     serial_println!("Child RIP: {:#x}", reg_vals.rcx);
     serial_println!("Child Rflags: {}", reg_vals.r11);
 
-
     let child_pml4_frame = duplicate_page_table_recursive(unsafe { (*parent_pcb).mm.pml4_frame }, 4);
-    // verify_page_table_walk(unsafe { &mut *parent_pcb }, unsafe {
-    //     &mut *child_pcb.pcb.get()
-    // });
-    unsafe { (*child_pcb.pcb.get()).mm.pml4_frame = child_pml4_frame };
 
+    unsafe { 
+        (*parent_pcb).mm.with_vma_tree_mutable(|tree| {
+            serial_println!("BOUTTA");
+            for vma_entry in tree.iter_mut() {
+                let vma_lock = vma_entry.1.lock();
+                let start = vma_lock.start;
+                let end = vma_lock.end;
+                let flags = vma_lock.flags;
+                let backing = vma_lock.backing.clone();
+                let anon = vma_lock.anon;
+                drop(vma_lock);
+                
+                // Use the extracted data when inserting into the child tree.
+                (*child_pcb.pcb.get()).mm.with_vma_tree_mutable(|child_tree| {
+                    serial_println!("Inserting range {:X} - {:X}", start, end);
+                    (*child_pcb.pcb.get()).mm.insert_vma(child_tree, start, end, backing, flags, anon);
+                });
+            }
+            serial_println!("AFTER THE FOR LOOP");
+        })
+    }
+
+    unsafe { (*child_pcb.pcb.get()).mm.pml4_frame = child_pml4_frame };
     {
         PROCESS_TABLE.write().insert(child_pid, child_pcb);
     }
@@ -134,7 +153,6 @@ fn duplicate_page_table_recursive(
             if flags.contains(PageTableFlags::PRESENT) {
                 if flags.contains(PageTableFlags::WRITABLE) {
                     // Mark this entry as copy-on-write:
-                    flags.set(PageTableFlags::BIT_9, true);
                     flags.set(PageTableFlags::WRITABLE, false);
                     // Also update the parent's entry with the new flags.
                     parent_entry.set_addr(parent_entry.addr(), flags);
@@ -145,12 +163,6 @@ fn duplicate_page_table_recursive(
                 with_buddy_frame_allocator(|alloc| {
                     alloc.inc_ref_count(PhysFrame::containing_address(parent_entry.addr()));
                 });
-
-                serial_println!(
-                    "On cow page, parent PT flags: {:#?}, child PT flags: {:#?}",
-                    parent_entry.flags(),
-                    child_table[i].flags()
-                );
             }
         }
     }

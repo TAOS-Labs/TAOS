@@ -290,6 +290,8 @@ pub fn create_not_present_mapping(
     let frame = create_mapping(page, mapper, flags);
     dealloc_frame(frame);
 
+    serial_println!("Create mapping?");
+
     let mut flags = flags.unwrap_or(PageTableFlags::WRITABLE);
 
     if flags.contains(PageTableFlags::PRESENT) {

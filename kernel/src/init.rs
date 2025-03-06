@@ -66,7 +66,7 @@ pub fn init() -> u32 {
     //     0,
     // );
 
-    let parent_pid = create_process(TEST_SIMPLE_STACK_ACCESS);
+    let parent_pid = create_process(FORK_SIMPLE);
     schedule_process_on(1, parent_pid);
 
         // since no other processes are running or being created we assume that

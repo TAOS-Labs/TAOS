@@ -19,7 +19,7 @@ _start:
     syscall
 
 _child:
-    mov byte [buffer], 'B'
+    mov byte [buffer + 1], 'B'
     mov rdi, buffer
     mov rax, 0x3
     syscall
