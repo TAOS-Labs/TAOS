@@ -5,7 +5,7 @@
 use core::sync::atomic::{AtomicU16, Ordering};
 
 use crate::{
-    constants::memory::{BITMAP_ENTRY_SIZE, FRAME_SIZE, FULL_BITMAP_ENTRY, PAGE_SIZE}, serial_print, serial_println
+    constants::memory::{BITMAP_ENTRY_SIZE, FRAME_SIZE, FULL_BITMAP_ENTRY, PAGE_SIZE}, serial_println
 };
 use limine::{memory_map::EntryType, response::MemoryMapResponse};
 use x86_64::{

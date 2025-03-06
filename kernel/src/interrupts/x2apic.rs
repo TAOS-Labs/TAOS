@@ -7,14 +7,13 @@
 //! - End-of-interrupt (EOI) handling
 
 use crate::{
-    constants::{idt::TIMER_VECTOR, x2apic::CPU_FREQUENCY, MAX_CORES}, interrupts::gdt, serial_println, syscalls::syscall_handlers::syscall_handler_64_naked
+    constants::{idt::TIMER_VECTOR, x2apic::CPU_FREQUENCY, MAX_CORES}, interrupts::gdt, syscalls::syscall_handlers::syscall_handler_64_naked
 };
 use core::sync::atomic::{AtomicU32, Ordering};
 use raw_cpuid::CpuId;
 use spin::Mutex;
-use x86_64::{instructions::port::Port, registers::model_specific::{GsBase, KernelGsBase, Msr}, VirtAddr};
+use x86_64::{instructions::port::Port, registers::model_specific::{GsBase, KernelGsBase, Msr}};
 
-use super::gdt::TSSS;
 
 // MSR register constants
 const IA32_APIC_BASE_MSR: u32 = 0x1B;

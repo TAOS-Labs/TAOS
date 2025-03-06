@@ -1,4 +1,4 @@
-use core::{arch::asm, ffi::CStr, i64, sync::atomic::AtomicI64};
+use core::{ffi::CStr, i64, sync::atomic::AtomicI64};
 
 use crate::{
     constants::syscalls::*, events::{current_running_event_info, current_running_event_pid, EventInfo}, interrupts::{gdt::TSSS, x2apic::current_core_id}, memory::frame_allocator::with_buddy_frame_allocator, processes::{

@@ -16,7 +16,7 @@ mod tests {
         constants::processes::RAND_REGS_EXIT,
         events::schedule_process,
         interrupts::x2apic,
-        processes::process::{create_process, run_process_ring3},
+        processes::process::create_process,
     };
 
     // #[test_case]

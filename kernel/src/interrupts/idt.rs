@@ -16,7 +16,7 @@ use x86_64::{
     structures::{
         idt::{InterruptDescriptorTable, InterruptStackFrame, PageFaultErrorCode},
         paging::{
-            mapper::{MappedFrame, PageTableFrameMapping, TranslateResult},
+            mapper::{MappedFrame, TranslateResult},
             Mapper, OffsetPageTable, Page, PageTable, PageTableFlags, Size4KiB, Translate,
         },
     },
@@ -28,22 +28,21 @@ use crate::{
     constants::{
         idt::{SYSCALL_HANDLER, TIMER_VECTOR, TLB_SHOOTDOWN_VECTOR},
         memory::PAGE_SIZE,
-        syscalls::{SYSCALL_EXIT, SYSCALL_FORK, SYSCALL_MMAP, SYSCALL_NANOSLEEP, SYSCALL_PRINT},
+        syscalls::{SYSCALL_EXIT, SYSCALL_MMAP, SYSCALL_PRINT},
     },
-    events::{current_running_event_pid, inc_runner_clock},
+    events::inc_runner_clock,
     interrupts::x2apic::{self, current_core_id, TLB_SHOOTDOWN_ADDR},
     memory::{
         frame_allocator::alloc_frame,
-        mm::{self, AnonVmArea, AnonVmaChain, VmArea, VmAreaFlags},
+        mm::{AnonVmaChain, VmArea, VmAreaFlags},
         paging::{create_mapping, create_mapping_to_frame, get_page_flags, update_mapping},
         HHDM_OFFSET,
     },
     prelude::*,
     processes::process::{get_current_pid, preempt_process, PROCESS_TABLE},
     syscalls::{
-        fork::sys_fork,
         mmap::sys_mmap,
-        syscall_handlers::{sys_exit, sys_nanosleep, sys_print},
+        syscall_handlers::{sys_exit, sys_print},
     },
 };
 

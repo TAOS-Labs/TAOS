@@ -16,7 +16,7 @@ use crate::{
     },
     memory::{
         frame_allocator::{
-            alloc_frame, dealloc_frame, with_buddy_frame_allocator, with_generic_allocator,
+            alloc_frame, dealloc_frame, with_buddy_frame_allocator,
         },
         mm::Mm,
         HHDM_OFFSET, KERNEL_MAPPER,

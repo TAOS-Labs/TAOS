@@ -15,7 +15,7 @@ use x86_64::{
     instructions::{
         segmentation::{Segment, CS, DS, ES, FS, GS, SS},
         tables::load_tss,
-    }, registers::model_specific::{GsBase, KernelGsBase}, structures::{
+    }, registers::model_specific::KernelGsBase, structures::{
         gdt::{Descriptor, GlobalDescriptorTable, SegmentSelector},
         tss::TaskStateSegment,
     }, PrivilegeLevel, VirtAddr

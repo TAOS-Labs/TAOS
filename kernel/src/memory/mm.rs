@@ -1,5 +1,5 @@
 use alloc::{collections::btree_map::BTreeMap, sync::Arc};
-use spin::{Mutex, MutexGuard, RwLock};
+use spin::Mutex;
 use x86_64::structures::paging::{PhysFrame, Size4KiB};
 use bitflags::bitflags;
 use crate::serial_println;

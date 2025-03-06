@@ -2,7 +2,6 @@
 // however it could be used in a plethora of places later so I am keeping it for now
 #![allow(dead_code)]
 
-use core::ptr::null;
 
 use x86_64::{
     structures::paging::{
@@ -370,10 +369,9 @@ mod tests {
 
     use super::*;
     use crate::{
-        constants::{memory::PAGE_SIZE, processes::SYSCALL_MMAP_MEMORY},
-        events::{schedule_kernel, schedule_kernel_on},
+        constants::memory::PAGE_SIZE,
+        events::schedule_kernel_on,
         memory::KERNEL_MAPPER,
-        processes::process::create_process,
     };
     use alloc::vec::Vec;
     use bitflags::Flags;

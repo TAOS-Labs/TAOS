@@ -2,19 +2,18 @@
 //!
 //! Handles the initialization of kernel subsystems and CPU cores.
 
-use core::{arch::asm, sync::atomic::{AtomicBool, AtomicU64, Ordering}};
+use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use limine::{
     request::SmpRequest,
     smp::{Cpu, RequestFlags},
     BaseRevision,
 };
-use x86_64::registers::{model_specific::GsBase, segmentation::GS};
 
 use crate::{
-    constants::processes::{FORK_SIMPLE, MMAP_ANON_SIMPLE, PRINT_EXIT, TEST_64_PRINT_EXIT, TEST_64_SIMPLE_EXIT, TEST_SIMPLE_STACK_ACCESS, TEST_SYSCALL_PRINT}, debug, devices, events::{register_event_runner, run_loop, schedule_process, schedule_process_on}, interrupts::{self, idt, x2apic}, logging, memory::{self}, processes::{
+    constants::processes::FORK_SIMPLE, debug, devices, events::{register_event_runner, run_loop, schedule_process_on}, interrupts::{self, idt}, logging, memory::{self}, processes::{
         self,
-        process::{create_process, print_process_table, run_process_ring3, PROCESS_TABLE},
-    }, serial_println, trace
+        process::create_process,
+    }, trace
 };
 
 extern crate alloc;

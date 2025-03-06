@@ -11,7 +11,6 @@ use x86_64::{
 use crate::{
     constants::{memory::PAGE_SIZE, syscalls::START_MMAP_ADDRESS},
     events::{current_running_event_info, EventInfo},
-    interrupts::x2apic,
     memory::{
         mm::{AnonVmArea, VmAreaFlags},
         paging::create_not_present_mapping,
@@ -161,11 +160,11 @@ pub fn sys_mmap(addr: u64, len: u64, prot: u64, flags: u64, fd: i64, offset: u64
         .get(&pid)
         .expect("Could not get pcb from process table");
     let pcb = process.pcb.get();
-    let mut begin_addr = unsafe { (*pcb).mmap_address };
+    let begin_addr = unsafe { (*pcb).mmap_address };
     // We must return the original beginning address while adjusting the value of MMAP_ADDR
     // for the next calls to MMAP
     let addr_to_return = begin_addr;
-    let mut mmap_call = MmapCall::new(begin_addr, begin_addr + len, fd, offset);
+    let mmap_call = MmapCall::new(begin_addr, begin_addr + len, fd, offset);
     let anon_vma = AnonVmArea::new();
 
     if begin_addr + offset > (*HHDM_OFFSET).as_u64() {
@@ -280,17 +279,12 @@ fn allocate_file_memory(
 #[cfg(test)]
 mod tests {
     use crate::{
-        constants::{
-            memory::PAGE_SIZE,
-            processes::{MMAP_ANON_SIMPLE, SYSCALL_MMAP_MEMORY},
-        },
+        constants::processes::MMAP_ANON_SIMPLE,
         events::schedule_process,
-        processes::process::{create_process, run_process_ring3, PCB, PROCESS_TABLE},
-        serial_println,
-        syscalls::mmap::MMAP_ADDR,
+        processes::process::{create_process, PCB, PROCESS_TABLE},
     };
 
-    use super::{sys_mmap, MmapFlags, ProtFlags};
+    
 
     fn setup() -> (u32, *mut PCB) {
         let pid = create_process(MMAP_ANON_SIMPLE);

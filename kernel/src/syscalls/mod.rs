@@ -11,7 +11,7 @@ mod tests {
     use crate::{
         constants::processes::{TEST_64_FORK_COW, TEST_64_FORK_EXIT, TEST_64_PRINT_EXIT, TEST_64_SIMPLE_EXIT},
         events::schedule_process_on,
-        processes::process::create_process, serial_println,
+        processes::process::create_process,
     };
 
     use super::*;

@@ -1,14 +1,13 @@
-use core::{ptr, sync::atomic::Ordering};
+use core::sync::atomic::Ordering;
 
 use alloc::sync::Arc;
-use alloc::vec::Vec;
 use x86_64::structures::paging::{
-    mapper, page_table::PageTableEntry, OffsetPageTable, PageTable, PageTableFlags, PhysFrame
+    page_table::PageTableEntry, OffsetPageTable, PageTable, PageTableFlags, PhysFrame
 };
 
 use crate::{
-    events::{current_running_event_info, schedule_process, schedule_process_on},
-    memory::{frame_allocator::{alloc_frame, with_buddy_frame_allocator}, mm::{AnonVmArea, VmAreaFlags}, HHDM_OFFSET},
+    events::{current_running_event_info, schedule_process_on},
+    memory::{frame_allocator::{alloc_frame, with_buddy_frame_allocator}, HHDM_OFFSET},
     processes::{
         process::{ProcessState, UnsafePCB, NEXT_PID, PCB, PROCESS_TABLE},
         registers::NonFlagRegisters,
@@ -31,7 +30,7 @@ pub fn sys_fork(reg_vals: &NonFlagRegisters) -> u64 {
     };
 
     let parent_pcb = process.pcb.get();
-    let mut mapper = unsafe { (*parent_pcb).create_mapper() };
+    let mapper = unsafe { (*parent_pcb).create_mapper() };
 
     let child_pcb = Arc::new(UnsafePCB::new(unsafe { (*parent_pcb).clone() }));
     unsafe {
@@ -369,7 +368,7 @@ fn recursive_walk(
     for i in 0..512 {
         let parent_entry = &parent_table[i];
         let child_entry = &child_table[i];
-        if (parent_entry.is_unused()) {
+        if parent_entry.is_unused() {
             assert!(child_entry.is_unused());
             continue;
         }
@@ -408,7 +407,7 @@ fn recursive_walk(
 
 #[cfg(test)]
 mod tests {
-    use crate::{exit_qemu, QemuExitCode};
+    
 
     use super::*;
 
