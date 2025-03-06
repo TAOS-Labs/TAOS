@@ -1,4 +1,6 @@
+use alloc::sync::Arc;
 use alloc::vec::Vec;
+use bitflags::bitflags;
 use spin::Mutex;
 use x86_64::{
     registers::control::Cr3,
@@ -10,7 +12,11 @@ use crate::{
     constants::{memory::PAGE_SIZE, syscalls::START_MMAP_ADDRESS},
     events::{current_running_event_info, EventInfo},
     interrupts::x2apic,
-    memory::{paging::create_not_present_mapping, HHDM_OFFSET, KERNEL_MAPPER},
+    memory::{
+        mm::{AnonVmArea, VmAreaFlags},
+        paging::create_not_present_mapping,
+        HHDM_OFFSET, KERNEL_MAPPER,
+    },
     processes::process::PROCESS_TABLE,
     serial_println,
 };
@@ -43,56 +49,31 @@ impl MmapCall {
 }
 
 // See https://www.man7.org/linux/man-pages/man2/mmap.2.html
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct MmapFlags(u64);
-
-impl Default for MmapFlags {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl MmapFlags {
-    pub const MAP_SHARED: u64 = 1 << 0;
-    pub const MAP_SHARED_VALIDATE: u64 = 1 << 1;
-    pub const MAP_PRIVATE: u64 = 1 << 2;
-    pub const MAP_32BIT: u64 = 1 << 3;
-    pub const MAP_ANONYMOUS: u64 = 1 << 4;
-    pub const MAP_ANON: u64 = 1 << 4;
-    pub const MAP_DENYWRITE: u64 = 1 << 5;
-    pub const MAP_EXECUTABLE: u64 = 1 << 6;
-    pub const MAP_FILE: u64 = 1 << 7;
-    pub const MAP_FIXED: u64 = 1 << 8;
-    pub const MAP_FIXED_NOREPLACE: u64 = 1 << 9;
-    pub const MAP_GROWSDOWN: u64 = 1 << 10;
-    pub const MAP_HUGETLB: u64 = 1 << 11;
-    pub const MAP_HUGE_2MB: u64 = 1 << 12;
-    pub const MAP_HUGE_1GB: u64 = 1 << 13;
-    pub const MAP_LOCKED: u64 = 1 << 14;
-    pub const MAP_NONBLOCK: u64 = 1 << 15;
-    pub const MAP_NORESERVE: u64 = 1 << 16;
-    pub const MAP_POPULATE: u64 = 1 << 17;
-    pub const MAP_STACK: u64 = 1 << 18;
-    pub const MAP_SYNC: u64 = 1 << 19;
-    pub const MAP_UNINITIALIZED: u64 = 1 << 20;
-
-    pub const fn new() -> Self {
-        MmapFlags(0)
-    }
-
-    // creates MmapFlags with inputted flags
-    pub const fn with_flags(self, flag: u64) -> Self {
-        MmapFlags(self.0 | flag)
-    }
-
-    // Checks if MmapFlags contains input flags
-    pub const fn contains(self, flag: u64) -> bool {
-        (self.0 & flag) != 0
-    }
-
-    // returns the MmapFlags
-    pub const fn bits(self) -> u64 {
-        self.0
+bitflags! {
+    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+    pub struct MmapFlags: u64 {
+        const MAP_SHARED = 1 << 0;
+        const MAP_SHARED_VALIDATE = 1 << 1;
+        const MAP_PRIVATE = 1 << 2;
+        const MAP_32BIT = 1 << 3;
+        const MAP_ANONYMOUS = 1 << 4;
+        const MAP_ANON = 1 << 4;
+        const MAP_DENYWRITE = 1 << 5;
+        const MAP_EXECUTABLE = 1 << 6;
+        const MAP_FILE = 1 << 7;
+        const MAP_FIXED = 1 << 8;
+        const MAP_FIXED_NOREPLACE = 1 << 9;
+        const MAP_GROWSDOWN = 1 << 10;
+        const MAP_HUGETLB = 1 << 11;
+        const MAP_HUGE_2MB = 1 << 12;
+        const MAP_HUGE_1GB = 1 << 13;
+        const MAP_LOCKED = 1 << 14;
+        const MAP_NONBLOCK = 1 << 15;
+        const MAP_NORESERVE = 1 << 16;
+        const MAP_POPULATE = 1 << 17;
+        const MAP_STACK = 1 << 18;
+        const MAP_SYNC = 1 << 19;
+        const MAP_UNINITIALIZED = 1 << 20;
     }
 }
 
@@ -185,23 +166,72 @@ pub fn sys_mmap(addr: u64, len: u64, prot: u64, flags: u64, fd: i64, offset: u64
     // for the next calls to MMAP
     let addr_to_return = begin_addr;
     let mut mmap_call = MmapCall::new(begin_addr, begin_addr + len, fd, offset);
+    let anon_vma = AnonVmArea::new();
+
     if begin_addr + offset > (*HHDM_OFFSET).as_u64() {
         serial_println!("Ran out of virtual memory for mmap call.");
         return Some((*HHDM_OFFSET).as_u64());
     }
-    if flags == MmapFlags::MAP_ANONYMOUS {
-        map_memory(&mut begin_addr, len, prot, &mut mmap_call);
-    } else {
-        allocate_file_memory(&mut begin_addr, len, fd, prot, offset, &mut mmap_call);
-    }
     unsafe {
-        (*pcb).mmaps.push(mmap_call);
+        (*pcb).mm.with_vma_tree_mutable(|tree| {
+            let vma = (*pcb).mm.insert_vma(
+                tree,
+                begin_addr,
+                begin_addr + len,
+                Arc::new(anon_vma),
+                VmAreaFlags::READ | VmAreaFlags::WRITE | !VmAreaFlags::SHARED,
+                true,
+            );
+        })
     }
-    unsafe {
-        (*pcb).mmap_address = begin_addr;
-    }
+    // let mmap_flags = MmapFlags::from_bits_retain(flags);
+    // if mmap_flags.contains(MmapFlags::MAP_ANON) {
+    //     map_memory(&mut begin_addr, len, prot, &mut mmap_call);
+    // } else {
+    //     allocate_file_memory(&mut begin_addr, len, fd, prot, offset, &mut mmap_call);
+    //
+
     Some(addr_to_return)
 }
+
+// pub fn sys_mmapa(addr: u64, len: u64, prot: u64, flags: u64, fd: i64, offset: u64) -> Option<u64> {
+//     // we will currently completely ignore user address requests and do whatever we want
+//     if len == 0 {
+//         serial_println!("Zero length mapping");
+//         panic!();
+//         // return something
+//     }
+//     serial_println!("Fd is {}", fd);
+//     let event: EventInfo = current_running_event_info();
+//     let pid = event.pid;
+//     // for testing we hardcode to one for now
+//     let process_table = PROCESS_TABLE.write();
+//     let process = process_table
+//         .get(&pid)
+//         .expect("Could not get pcb from process table");
+//     let pcb = process.pcb.get();
+//     let mut begin_addr = unsafe { (*pcb).mmap_address };
+//     // We must return the original beginning address while adjusting the value of MMAP_ADDR
+//     // for the next calls to MMAP
+//     let addr_to_return = begin_addr;
+//     let mut mmap_call = MmapCall::new(begin_addr, begin_addr + len, fd, offset);
+//     if begin_addr + offset > (*HHDM_OFFSET).as_u64() {
+//         serial_println!("Ran out of virtual memory for mmap call.");
+//         return Some((*HHDM_OFFSET).as_u64());
+//     }
+//     if flags == MmapFlags::MAP_ANONYMOUS {
+//         map_memory(&mut begin_addr, len, prot, &mut mmap_call);
+//     } else {
+//         allocate_file_memory(&mut begin_addr, len, fd, prot, offset, &mut mmap_call);
+//     }
+//     unsafe {
+//         (*pcb).mmaps.push(mmap_call);
+//     }
+//     unsafe {
+//         (*pcb).mmap_address = begin_addr;
+//     }
+//     Some(addr_to_return)
+// }
 
 fn map_memory(begin_addr: &mut u64, len: u64, prot: u64, mmap_call: &mut MmapCall) {
     let pml4 = Cr3::read().0;
