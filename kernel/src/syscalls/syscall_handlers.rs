@@ -1,15 +1,12 @@
 use core::{arch::asm, ffi::CStr, i64, sync::atomic::AtomicI64};
 
 use crate::{
-    constants::syscalls::*, events::{current_running_event_info, EventInfo}, interrupts::{gdt::TSSS, x2apic::current_core_id}, memory::frame_allocator::with_buddy_frame_allocator, processes::{
+    constants::syscalls::*, events::{current_running_event_info, current_running_event_pid, EventInfo}, interrupts::{gdt::TSSS, x2apic::current_core_id}, memory::frame_allocator::with_buddy_frame_allocator, processes::{
         process::{clear_process_frames, sleep_process, ProcessState, PROCESS_TABLE},
         registers::NonFlagRegisters,
     }, serial_println, syscalls::fork::sys_fork
 };
 
-#[warn(unused)]
-use crate::interrupts::x2apic;
-#[allow(unused)]
 use core::arch::naked_asm;
 
 pub static TEST_EXIT_CODE: AtomicI64 = AtomicI64::new(i64::MIN);
@@ -125,11 +122,9 @@ pub unsafe extern "C" fn syscall_handler_impl(
     syscall: *const SyscallRegisters,
     reg_vals: *const NonFlagRegisters,
 ) -> u64 {
-    serial_println!("RSP In SysHand: {:#X}", syscall as u64);
-
     let syscall = unsafe { &*syscall };
     let reg_vals = unsafe {&*reg_vals};
-    serial_println!("Syscall num: {}", syscall.number);
+    serial_println!("Syscall num: {}, by PID: {}", syscall.number, current_running_event_pid());
     match syscall.number as u32 {
         SYSCALL_EXIT => {
             sys_exit(syscall.arg1 as i64);

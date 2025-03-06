@@ -2,7 +2,7 @@ use core::{ptr, sync::atomic::Ordering};
 
 use alloc::sync::Arc;
 use x86_64::structures::paging::{
-    page_table::PageTableEntry, OffsetPageTable, PageTable, PageTableFlags, PhysFrame,
+    mapper, page_table::PageTableEntry, OffsetPageTable, PageTable, PageTableFlags, PhysFrame
 };
 
 use crate::{
@@ -30,6 +30,7 @@ pub fn sys_fork(reg_vals: &NonFlagRegisters) -> u64 {
     };
 
     let parent_pcb = process.pcb.get();
+    let mut mapper = unsafe { (*parent_pcb).create_mapper() };
 
     let child_pcb = Arc::new(UnsafePCB::new(unsafe { (*parent_pcb).clone() }));
     unsafe {
@@ -60,7 +61,7 @@ pub fn sys_fork(reg_vals: &NonFlagRegisters) -> u64 {
     serial_println!("Child Rflags: {}", reg_vals.r11);
 
 
-    let child_pml4_frame = duplicate_page_table(unsafe { (*parent_pcb).mm.pml4_frame }, 4);
+    let child_pml4_frame = duplicate_page_table_recursive(unsafe { (*parent_pcb).mm.pml4_frame }, 4);
     // verify_page_table_walk(unsafe { &mut *parent_pcb }, unsafe {
     //     &mut *child_pcb.pcb.get()
     // });
@@ -72,10 +73,157 @@ pub fn sys_fork(reg_vals: &NonFlagRegisters) -> u64 {
 
     schedule_process_on(1, child_pid);
 
+    serial_println!("Got out of fork");
+
     child_pid as u64
 }
 
 
+/// Recursively duplicate a page table.
+///
+/// # Arguments
+/// * `parent_frame` - reference to parent page tables
+/// * `level` - 4 for PML4, 3 for PDPT, 2 for PD, and 1 for PT
+/// * `mapper` - new mapper
+///
+/// # Return
+/// Returns a PhysFrame that represents the new pml4 frame for child
+fn duplicate_page_table_recursive(
+    parent_frame: PhysFrame,
+    level: u8,
+) -> PhysFrame {
+    // Allocate a new frame for this level’s table.
+    let child_frame = alloc_frame().expect("Frame allocation failed");
+    // Map it into our address space using HHDM_OFFSET.
+    let child_table_ptr =
+        (HHDM_OFFSET.as_u64() + child_frame.start_address().as_u64()) as *mut PageTable;
+
+    unsafe { (*child_table_ptr).zero() };
+
+    // Obtain a mutable pointer to the parent table.
+    let parent_table_ptr =
+        (HHDM_OFFSET.as_u64() + parent_frame.start_address().as_u64()) as *mut PageTable;
+    
+    // Convert to mutable references so we can update parent's entries.
+    let parent_table = unsafe { &mut *parent_table_ptr };
+    let child_table = unsafe { &mut *child_table_ptr };
+
+    // Iterate over all 512 entries.
+    for (i, parent_entry) in parent_table.iter_mut().enumerate() {
+        if parent_entry.is_unused() {
+            continue;
+        }
+
+        // For the PML4 level, share kernel mappings.
+        if level == 4 && i >= 256 {
+            // For kernel space, simply copy the parent's entry.
+            child_table[i].set_addr(parent_entry.addr(), parent_entry.flags());
+            continue;
+        }
+
+        if level > 1 {
+            // For intermediate tables, recursively duplicate the lower-level table.
+            let new_child_lower_frame = duplicate_page_table_recursive(
+                PhysFrame::containing_address(parent_entry.addr()),
+                level - 1,
+            );
+            child_table[i].set_addr(new_child_lower_frame.start_address(), parent_entry.flags());
+        } else {
+            // For leaf entries, if the page is writable mark it as copy-on-write.
+            let mut flags = parent_entry.flags();
+            if flags.contains(PageTableFlags::PRESENT) {
+                if flags.contains(PageTableFlags::WRITABLE) {
+                    // Mark this entry as copy-on-write:
+                    flags.set(PageTableFlags::BIT_9, true);
+                    flags.set(PageTableFlags::WRITABLE, false);
+                    // Also update the parent's entry with the new flags.
+                    parent_entry.set_addr(parent_entry.addr(), flags);
+                }
+                // Set the child's entry to the (possibly updated) flags.
+                child_table[i].set_addr(parent_entry.addr(), flags);
+
+                with_buddy_frame_allocator(|alloc| {
+                    alloc.inc_ref_count(PhysFrame::containing_address(parent_entry.addr()));
+                });
+
+                serial_println!(
+                    "On cow page, parent PT flags: {:#?}, child PT flags: {:#?}",
+                    parent_entry.flags(),
+                    child_table[i].flags()
+                );
+            }
+        }
+    }
+
+    child_frame
+}
+
+// /// Helper function to process entries recursively
+// fn duplicate_entries(parent: &mut PageTable, child: &mut PageTable, level: u8) {
+//     for (index, parent_entry) in parent.iter_mut().enumerate() {
+//         if parent_entry.is_unused() {
+//             continue;
+//         }
+//
+//         // Preserve kernel mappings on higher half
+//         if level == 4 && index >= 256 {
+//             with_buddy_frame_allocator(|frc| {
+//                 let frame = PhysFrame::from_start_address(parent_entry.addr())
+//                     .expect("Address not aligned");
+//                 child[index].set_addr(parent_entry.addr(), parent_entry.flags());
+//                 frc.inc_ref_count(frame);
+//             });
+//             continue;
+//         }
+//
+//         match level {
+//             2..=4 => handle_upper_level(parent_entry, child, index, level),
+//             1 => handle_leaf_level(parent_entry, &mut child[index]),
+//             _ => unreachable!("Invalid page table level"),
+//         }
+//     }
+// }
+//
+// /// Handle intermediate page table entries
+// fn handle_upper_level(
+//     parent_entry: &mut PageTableEntry,
+//     child_table: &mut PageTable,
+//     index: usize,
+//     level: u8,
+// ) {
+//     let child_lower_frame = duplicate_page_table(
+//         PhysFrame::containing_address(parent_entry.addr()),
+//         level - 1,
+//     );
+//     child_table[index].set_addr(child_lower_frame.start_address(), parent_entry.flags());
+// }
+//
+// /// Handle leaf page table entries
+// fn handle_leaf_level(parent_entry: &mut PageTableEntry, child_entry: &mut PageTableEntry) {
+//     let mut flags = parent_entry.flags();
+//
+//     if flags.contains(PageTableFlags::PRESENT) {
+//         if flags.contains(PageTableFlags::WRITABLE) {
+//             flags.set(PageTableFlags::BIT_9, true); // COW flag
+//             flags.remove(PageTableFlags::WRITABLE);
+//         }
+//         parent_entry.set_flags(flags);
+//
+//         with_buddy_frame_allocator(|frc| {
+//             let frame =
+//                 PhysFrame::from_start_address(parent_entry.addr()).expect("Address not aligned");
+//             child_entry.set_addr(parent_entry.addr(), flags);
+//             frc.inc_ref_count(frame);
+//         });
+//     }
+// }
+//
+// /// Helper to get mutable reference to a page table from a physical frame
+// fn get_table_mut(frame: PhysFrame) -> &'static mut PageTable {
+//     let phys_addr = frame.start_address();
+//     let virt_addr = HHDM_OFFSET.as_u64() + phys_addr.as_u64();
+//     unsafe { &mut *(virt_addr as *mut PageTable) }
+// }
 /// Recursively duplicate a page table starting at the specified level.
 ///
 /// # Arguments

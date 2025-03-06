@@ -4,11 +4,14 @@ use crate::{
         processes::{STACK_SIZE, STACK_START},
     },
     memory::{
-        frame_allocator::with_generic_allocator, mm::{AnonVmArea, Mm, VmAreaFlags}, paging::{create_mapping, update_permissions}
-    }, serial_println,
+        frame_allocator::with_generic_allocator,
+        mm::{AnonVmArea, Mm, VmAreaFlags},
+        paging::{create_mapping, update_permissions},
+    },
+    serial_println,
 };
-use core::ptr::{copy_nonoverlapping, write_bytes};
 use alloc::sync::Arc;
+use core::ptr::{copy_nonoverlapping, write_bytes};
 use goblin::{
     elf::Elf,
     elf64::program_header::{PF_W, PF_X, PT_LOAD},
@@ -36,7 +39,7 @@ pub fn load_elf(
     elf_bytes: &[u8],
     user_mapper: &mut impl Mapper<Size4KiB>,
     kernel_mapper: &mut OffsetPageTable<'static>,
-    mm: &mut Mm
+    mm: &mut Mm,
 ) -> (VirtAddr, u64) {
     let elf = Elf::parse(elf_bytes).expect("Parsing ELF failed");
     for ph in elf.program_headers.iter() {
@@ -57,9 +60,18 @@ pub fn load_elf(
             PageTableFlags::PRESENT | PageTableFlags::USER_ACCESSIBLE | PageTableFlags::WRITABLE;
         let mut flags = PageTableFlags::PRESENT | PageTableFlags::USER_ACCESSIBLE;
 
+        let anon_vma_code_and_data = Arc::new(AnonVmArea::new());
+
         // For each page in [start_page..end_page], create user mapping,
         // then do a kernel alias to copy data in
         for page in Page::range_inclusive(start_page, end_page) {
+            mm.insert_vma(
+                page.start_address().as_u64(),
+                page.start_address().as_u64() + PAGE_SIZE as u64,
+                anon_vma_code_and_data.clone(),
+                VmAreaFlags::WRITE | VmAreaFlags::READ | VmAreaFlags::EXECUTE,
+                true,
+            );
             let frame = create_mapping(page, user_mapper, Some(default_flags));
             let kernel_alias = map_kernel_frame(kernel_mapper, frame, default_flags);
             // now `kernel_alias` is a kernel virtual address of that same frame
@@ -123,7 +135,15 @@ pub fn load_elf(
     // let stack_flags =
     //     PageTableFlags::PRESENT | PageTableFlags::WRITABLE | PageTableFlags::USER_ACCESSIBLE;
 
-    mm.insert_vma(STACK_START, STACK_START + STACK_SIZE as u64, anon_vma, VmAreaFlags::READ | VmAreaFlags::WRITE | VmAreaFlags::GROWS_DOWN);
+    mm.insert_vma(
+        STACK_START,
+        STACK_START + STACK_SIZE as u64,
+        anon_vma,
+        VmAreaFlags::READ | VmAreaFlags::WRITE | VmAreaFlags::GROWS_DOWN,
+        true,
+    );
+
+    mm.print_vma();
 
     // for page in Page::range_inclusive(start_page, end_page) {
     //     create_mapping(page, user_mapper, Some(stack_flags));

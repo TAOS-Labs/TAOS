@@ -28,7 +28,7 @@ use crate::{
         memory::PAGE_SIZE,
         syscalls::{SYSCALL_EXIT, SYSCALL_FORK, SYSCALL_MMAP, SYSCALL_NANOSLEEP, SYSCALL_PRINT},
     },
-    events::inc_runner_clock,
+    events::{current_running_event_pid, inc_runner_clock},
     interrupts::x2apic::{self, current_core_id, TLB_SHOOTDOWN_ADDR},
     memory::{
         frame_allocator::alloc_frame,
@@ -145,7 +145,6 @@ extern "x86-interrupt" fn page_fault_handler(
     stack_frame: InterruptStackFrame,
     error_code: PageFaultErrorCode,
 ) {
-    serial_println!("current core is {}", x2apic::current_core_id());
     use x86_64::registers::control::{Cr2, Cr3};
 
     let faulting_address = Cr2::read().expect("Cannot read faulting address").as_u64();
@@ -153,73 +152,12 @@ extern "x86-interrupt" fn page_fault_handler(
     let new_pml4_phys = pml4.start_address();
     let new_pml4_virt = VirtAddr::new((*HHDM_OFFSET).as_u64()) + new_pml4_phys.as_u64();
     let new_pml4_ptr: *mut PageTable = new_pml4_virt.as_mut_ptr();
+    serial_println!("\tFauling address: {}", faulting_address);
 
     let mut mapper =
         unsafe { OffsetPageTable::new(&mut *new_pml4_ptr, VirtAddr::new((*HHDM_OFFSET).as_u64())) };
     let stack_pointer = stack_frame.stack_pointer.as_u64();
-
-    serial_println!(
-        "EXCEPTION: PAGE FAULT\nFaulting Address: {:#X}\nError Code: {:X}\n{:#?}",
-        faulting_address,
-        error_code,
-        stack_frame
-    );
-
     let page = Page::containing_address(VirtAddr::new(faulting_address));
-
-    let process = {
-        let process_table = PROCESS_TABLE.read();
-        process_table
-            .get(&get_current_pid())
-            .expect("Cannot find current pid")
-            .clone()
-    };
-
-    let vma = unsafe {
-        (*process.pcb.get())
-            .mm
-            .find_vma(faulting_address)
-            .expect("Vma not found?")
-    };
-    let fault_round_down: u64 = (faulting_address) & !(PAGE_SIZE as u64 - 1);
-    let backing = Arc::clone(&(vma.backing));
-    unsafe {
-        let frame = backing.find_mapping(&vma, fault_round_down);
-        if frame.is_some() {
-            create_mapping_to_frame(
-                page,
-                &mut mapper,
-                Some(
-                    PageTableFlags::WRITABLE
-                        | PageTableFlags::USER_ACCESSIBLE
-                        | PageTableFlags::PRESENT,
-                ),
-                *frame.unwrap().frame,
-            );
-        } else {
-            let new_frame = create_mapping(
-                page,
-                &mut mapper,
-                Some(
-                    PageTableFlags::WRITABLE
-                        | PageTableFlags::USER_ACCESSIBLE
-                        | PageTableFlags::PRESENT,
-                ),
-            );
-
-            backing.insert_mapping(Arc::new(AnonVmaChain {
-                vma,
-                offset: page.start_address().as_u64(),
-                frame: Arc::new(new_frame),
-            }));
-        }
-    }
-
-    return;
-    unreachable!("Testing stack");
-    // testing only above for stack access, worrying about the rest later
-    // -----------------------------------------------------------------------------------
-
     let frame = mapper.translate_addr(VirtAddr::new(faulting_address));
     serial_println!("Frame mapped to this VA is {:#?}", frame);
     let mut flags: PageTableFlags =
@@ -230,6 +168,61 @@ extern "x86-interrupt" fn page_fault_handler(
     let read_only = !flags.contains(PageTableFlags::WRITABLE);
 
     let caused_by_write = (error_code.bits() & PageFaultErrorCode::CAUSED_BY_WRITE.bits()) != 0;
+
+    serial_println!("\nError code: {:#?}", error_code);
+    serial_println!("Page fault exception:");
+    serial_println!("\tCurrent pid: {}", current_running_event_pid());
+    serial_println!("\tRSP: {:X}", stack_frame.stack_pointer.as_u64());
+    serial_println!("\tRIP: {:X}", stack_frame.instruction_pointer.as_u64());
+    serial_println!("\tIs present? {}", present);
+    serial_println!("\tIs caused by write access? {}\n", caused_by_write);
+    serial_println!("\tIs copy on write? {}", cow);
+
+
+    // let vma = unsafe {
+    //     (*process.pcb.get())
+    //         .mm
+    //         .find_vma(faulting_address)
+    //         .expect("Vma not found?")
+    // };
+    // let fault_round_down: u64 = (faulting_address) & !(PAGE_SIZE as u64 - 1);
+    // let backing = Arc::clone(&(vma.backing));
+    // unsafe {
+    //     let frame = backing.find_mapping(&vma, fault_round_down);
+    //     if frame.is_some() {
+    //         create_mapping_to_frame(
+    //             page,
+    //             &mut mapper,
+    //             Some(
+    //                 PageTableFlags::WRITABLE
+    //                     | PageTableFlags::USER_ACCESSIBLE
+    //                     | PageTableFlags::PRESENT,
+    //             ),
+    //             *frame.unwrap().frame,
+    //         );
+    //     } else {
+    //         let new_frame = create_mapping(
+    //             page,
+    //             &mut mapper,
+    //             Some(
+    //                 PageTableFlags::WRITABLE
+    //                     | PageTableFlags::USER_ACCESSIBLE
+    //                     | PageTableFlags::PRESENT,
+    //             ),
+    //         );
+    //
+    //         backing.insert_mapping(Arc::new(AnonVmaChain {
+    //             vma,
+    //             offset: page.start_address().as_u64(),
+    //             frame: Arc::new(new_frame),
+    //         }));
+    //     }
+    // }
+    //
+    // return;
+    // unreachable!("Testing stack");
+    // testing only above for stack access, worrying about the rest later
+    // -----------------------------------------------------------------------------------
 
     // If error code was caused by write and permissions of PTE are for COW
     if cow && caused_by_write && read_only && present {
@@ -247,19 +240,22 @@ extern "x86-interrupt" fn page_fault_handler(
         flags.set(PageTableFlags::BIT_9, false);
         flags.set(PageTableFlags::WRITABLE, true);
 
+
         let frame = alloc_frame().expect("Allocation failed");
         update_mapping(page, &mut mapper, frame, Some(flags));
         unsafe {
             ptr::copy_nonoverlapping(buffer.as_mut_ptr(), src_ptr, PAGE_SIZE);
         }
+
+        serial_println!("Done handling COW");
         return;
     }
 
-    // check for stack growth
-    if stack_pointer - 64 <= faulting_address && faulting_address < (*HHDM_OFFSET).as_u64() {
-        create_mapping(page, &mut mapper, None);
-        return;
-    }
+    // // check for stack growth
+    // if stack_pointer - 64 <= faulting_address && faulting_address < (*HHDM_OFFSET).as_u64() {
+    //     create_mapping(page, &mut mapper, None);
+    //     return;
+    // }
 
     // check if lazy loaded address from mmap
     let pid = get_current_pid();

@@ -19,8 +19,7 @@ impl Mm {
     }
 
     /// Insert a new VmArea into the VMA tree.
-    pub fn insert_vma(&self, start: u64, end: u64, backing: Arc<AnonVmArea>, flags: VmAreaFlags) -> Arc<VmArea> {
-
+    pub fn insert_vma(&self, start: u64, end: u64, backing: Arc<AnonVmArea>, flags: VmAreaFlags, anon: bool) -> Arc<VmArea> {
         let left_vma = if start > 0 {
             Mm::find_vma(&self, start - 1)
         } else {
@@ -32,6 +31,7 @@ impl Mm {
         let coalesce_left = start > 0 && left_vma.as_ref().map(|v| v.flags == flags && v.end == start).unwrap_or(false);
         let coalesce_right = right_vma.as_ref().map(|v| v.flags == flags && v.start == end).unwrap_or(false);
 
+        // TODO: Deal with backing
         if coalesce_left && coalesce_right {
             serial_println!("Coalescing both");
             let left_bor = left_vma.unwrap();
@@ -40,7 +40,7 @@ impl Mm {
             tree.remove(&(left_bor.start as usize));
             tree.remove(&(right_bor.start as usize));
 
-            let new_vma = Arc::new(VmArea::new(left_bor.start, right_bor.end, backing, flags));
+            let new_vma = Arc::new(VmArea::new(left_bor.start, right_bor.end, backing, flags, anon));
 
             tree.insert(left_bor.start as usize, new_vma.clone());
 
@@ -53,27 +53,28 @@ impl Mm {
 
             serial_println!("Left start: {}", left_bor.start);
 
-            let new_vma = Arc::new(VmArea::new(left_bor.start, end, backing, flags));
+            let new_vma = Arc::new(VmArea::new(left_bor.start, end, left_bor.backing.clone(), flags, anon));
 
             serial_println!("{:#?}", new_vma);
 
             tree.insert(left_bor.start as usize, new_vma.clone());
 
             new_vma.clone()
+        // TODO Add properly to this anon vma
         } else if coalesce_right {
             serial_println!("Coalescing right");
             let mut tree = self.vma_tree.lock();
             let right_bor = right_vma.unwrap();
             tree.remove(&(right_bor.start as usize));
             
-            let new_vma = Arc::new(VmArea::new(start, right_bor.end, backing, flags));
+            let new_vma = Arc::new(VmArea::new(start, right_bor.end, backing, flags, anon));
             tree.insert(start as usize,new_vma.clone());
 
             new_vma.clone()
         } else {
             serial_println!("Coalescing none");
             let mut tree = self.vma_tree.lock();
-            let new_vma = Arc::new(VmArea::new(start, end, backing, flags));
+            let new_vma = Arc::new(VmArea::new(start, end, backing, flags, anon));
             tree.insert(start as usize, new_vma.clone());
             new_vma.clone()
         }
@@ -96,6 +97,13 @@ impl Mm {
             }
         }
         None
+    }
+
+    /// Debug fn to print vma
+    pub fn print_vma(&self) {
+        for (i, vma) in self.vma_tree.lock().iter().enumerate() {
+            serial_println!("VMA {}: {:#?}", i, vma);
+        }
     }
 }
 
@@ -125,16 +133,18 @@ pub struct VmArea {
     pub start: u64,
     pub end: u64,
     pub backing: Arc<AnonVmArea>,
-    pub flags: VmAreaFlags
+    pub flags: VmAreaFlags,
+    pub anon: bool
 }
 
 impl VmArea {
-    pub fn new(start: u64, end: u64, backing: Arc<AnonVmArea>, flags: VmAreaFlags) -> Self {
+    pub fn new(start: u64, end: u64, backing: Arc<AnonVmArea>, flags: VmAreaFlags, anon: bool) -> Self {
         VmArea {
             start,
             end,
             backing,
-            flags
+            flags,
+            anon
         }
     }
 }
