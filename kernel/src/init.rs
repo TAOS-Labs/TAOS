@@ -46,7 +46,6 @@ pub fn init() -> u32 {
     interrupts::init(0);
 
     memory::init(0);
-    devices::init(0);
     // Should be kept after devices in case logging gets complicated
     // Right now log writes to serial, but if it were to switch to VGA, this would be important
     logging::init(0);
@@ -55,6 +54,7 @@ pub fn init() -> u32 {
     let bsp_id = wake_cores();
 
     idt::enable();
+    devices::init(0);
 
     bsp_id
 }

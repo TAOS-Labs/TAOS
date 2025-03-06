@@ -7,7 +7,7 @@ use x86_64::{
     PhysAddr, VirtAddr,
 };
 
-use crate::memory::paging;
+use crate::{debug_println, memory::paging};
 
 /// An error occured when setting up a frame as uncacheable
 #[derive(Debug)]
@@ -28,6 +28,7 @@ pub fn map_page_as_uncacheable(
             flags,
         } => match frame {
             MappedFrame::Size4KiB(_) => {
+                debug_println!("mapped 4KB");
                 let page: Page<Size4KiB> = Page::containing_address(VirtAddr::new(offset_bar));
                 unsafe {
                     mapper
@@ -40,6 +41,7 @@ pub fn map_page_as_uncacheable(
                 }
             }
             MappedFrame::Size2MiB(_) => {
+                debug_println!("mapped 2MB");
                 let page: Page<Size2MiB> = Page::containing_address(VirtAddr::new(offset_bar));
                 unsafe {
                     mapper
@@ -52,6 +54,7 @@ pub fn map_page_as_uncacheable(
                 }
             }
             MappedFrame::Size1GiB(_) => {
+                debug_println!("mapped 1GB");
                 let page: Page<Size1GiB> = Page::containing_address(VirtAddr::new(offset_bar));
                 unsafe {
                     mapper
@@ -68,6 +71,7 @@ pub fn map_page_as_uncacheable(
             panic!("Invalid physical address in SD BAR")
         }
         TranslateResult::NotMapped => {
+            debug_println!("notmapped");
             let bar_frame: PhysFrame<Size4KiB> =
                 PhysFrame::containing_address(PhysAddr::new(requested_phys_addr));
             let new_va = paging::map_kernel_frame(

@@ -1,3 +1,10 @@
+use crate::{debug_println, memory::MAPPER};
+use alloc::collections::BTreeMap;
+use x86_64::{
+    structures::paging::{Mapper, OffsetPageTable, Page, PhysFrame, Size2MiB, Size4KiB},
+    PhysAddr, VirtAddr,
+};
+
 /// A list of all the TRB types and the values associated with them.
 pub enum TrbTypes {
     Reserved = 0,
@@ -336,6 +343,8 @@ impl ProducerRingBuffer {
         // Write the current cycle state bit to the block
         block.control = (block.control & !1) | self.pcs as u32;
 
+        let enqueue_addr = self.enqueue as u64;
+        debug_println!("putting trb at address: {:X}", enqueue_addr);
         // copy the contents of block into enqueue
         // TODO: make sure this copies like I want it to
         *self.enqueue = block;
@@ -346,7 +355,7 @@ impl ProducerRingBuffer {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 /// Implements an Event Ring Segment Table (ERST) for use by the xHC and the event ring.
 struct EventRingSegmentTable {
     /// Pointer to the base of the ERST.
@@ -355,6 +364,8 @@ struct EventRingSegmentTable {
     size: isize,
     /// The max number of entries this ERST can hold.
     max_size: isize,
+    /// A BTreeMap that maps physical addresses to the corresponding virtual addresses mapped to them.
+    address_map: BTreeMap<u64, u64>,
 }
 
 type Erst = EventRingSegmentTable;
@@ -365,22 +376,41 @@ impl EventRingSegmentTable {
         self.size
     }
 
-    /// Gets the entry at `index`.
+    /// Gets the entry at `index` and translates the physical address to the virtual address.
     unsafe fn get_entry(&self, index: isize) -> Trb {
         let block_addr = self.base.offset(index);
-        *block_addr
+        let block = *block_addr;
+        let param = block.parameters;
+        let virt_addr = *self.address_map.get(&param).unwrap();
+        Trb {
+            parameters: virt_addr,
+            status: block.status,
+            control: block.control,
+        }
     }
 
     /// If the table is not full, adds another segment to the table and returns true, returns false otherwise.
-    unsafe fn add_entry(&mut self, segment_base: u64, segment_size: u32) -> bool {
+    unsafe fn add_entry(
+        &mut self,
+        segment_vbase: VirtAddr,
+        segment_size: u32,
+        segment_pbase: PhysAddr,
+    ) -> bool {
         // if we are at the max size then return false
         if self.size == self.max_size {
             return false;
         }
 
+        // Since this is a new entry add it to our map.
+        let virt_address = segment_vbase.as_u64();
+        let phys_address = segment_pbase.as_u64();
+        self.address_map.insert(phys_address, virt_address);
+
+        debug_println!("physical address: {:X}", phys_address);
+
         // create the entry
         let entry = Trb {
-            parameters: segment_base & !0xF,
+            parameters: phys_address & !0xF,
             status: segment_size & 0xFFFF,
             control: 0,
         };
@@ -389,6 +419,26 @@ impl EventRingSegmentTable {
         *self.base.offset(self.size) = entry;
         self.size += 1;
         true
+    }
+
+    unsafe fn print_table(&self) {
+        debug_println!("!!!!Printing ERST!!!!");
+        debug_println!("size: {}", self.size);
+        debug_println!("max size: {}", self.max_size);
+        debug_println!("base: {:X}", self.base as u64);
+        if self.size == 1 {
+            let entry = *self.base.offset(0);
+            let params = entry.parameters;
+            let size = entry.status & 0xFFFF;
+            debug_println!("index: 0\taddr: {:X}\tsize:{}", params, size);
+        } else {
+            for index in 0..self.size - 1 {
+                let entry = *self.base.offset(index);
+                let params = entry.parameters;
+                let size = entry.status & 0xFFFF;
+                debug_println!("index: {}\taddr: {:X}\tsize:{}", index, params, size);
+            }
+        }
     }
 }
 
@@ -426,7 +476,8 @@ impl ConsumerRingBuffer {
     /// # Arguments
     /// * `erst_base_addr` - The base address of the ERST for this event ring
     /// * `erst_max_size` - The max number of entries that the ERST can hold
-    /// * `segment_base` - The base address of the first segment that this event ring is initialized with
+    /// * `segment_vbase` - The base virtual address of the first segment that this event ring is initialized with
+    /// * `segment_pbase` - The base physical address of the first segment that this event ring is initialized with
     /// * `segment_size` - The number of TRBs that the initial segment can hold
     ///
     /// # Returns
@@ -436,31 +487,36 @@ impl ConsumerRingBuffer {
     /// # Safety
     /// - This function preforms a raw pointer write to add the first segment into the ERST
     /// - This function assumes that both `erst_base_addr` and `segment_base` points to a valid memory region
+    /// - `segment_vbase` should be the virtual address that refers to the physical address of `segment_pbase`
     /// that is zeroed out and has enough space for their respective sizes
     pub fn new(
         erst_base_addr: u64,
         erst_max_size: isize,
-        segment_base: u64,
+        segment_vbase: VirtAddr,
+        segment_pbase: PhysAddr,
         segment_size: u32,
     ) -> Result<Self, EventRingError> {
         // first check that the segment is proper size
         if segment_size < 16 || segment_size > 4096 {
             return Err(EventRingError::SegmentSize);
         }
+        debug_println!("erst_base {:X}", erst_base_addr);
+        debug_println!("segment virtual base {:X}", segment_vbase);
 
         // create the ERST for this ring
         let mut erst = EventRingSegmentTable {
             base: erst_base_addr as *mut Trb,
             size: 0,
             max_size: erst_max_size,
+            address_map: BTreeMap::new(),
         };
         unsafe {
-            erst.add_entry(segment_base, segment_size);
+            erst.add_entry(segment_vbase, segment_size, segment_pbase);
         }
 
         // create the new buffer
         Ok(ConsumerRingBuffer {
-            dequeue: segment_base as *mut Trb,
+            dequeue: segment_vbase.as_u64() as *mut Trb,
             ccs: 1,
             erst,
             erst_count: 0,
@@ -472,8 +528,9 @@ impl ConsumerRingBuffer {
     /// Tries to add a new segment to the ERST.
     ///
     /// # Arguments
-    /// * `segment_base` - The base address of the segment that is being added
+    /// * `segment_vbase` - The base virtual address of the segment that is being added
     /// * `segment_size` - The number of TRBs that this segment can hold
+    /// * `segment_pbase` - The base physical address of the segment that is being added
     ///
     /// # Returns
     /// Returns `Ok(())` on success, on error returns `Err(EventRingError)`
@@ -482,14 +539,16 @@ impl ConsumerRingBuffer {
     ///
     /// # Safety
     /// - This function preforms a raw pointer write to add the new segment into the ERST
-    /// - This function assumes that `segment_base` points to a valid memory region of at least `segment_size * 16` bytes
+    /// - This function assumes that `segment_vbase` points to a valid memory region of at least `segment_size * 16` bytes
+    /// - `segment_vbase` should be the virtual address that refers to the physical address of `segment_pbase`
     ///
     /// # Notes
     /// Any calls to this method should be immediately followed by a write to the Event Ring Segment Table Size Register (ERSTSZ) with the new size.
     pub fn add_segment(
         &mut self,
-        segment_base: u64,
+        segment_vbase: VirtAddr,
         segment_size: u32,
+        segment_pbase: PhysAddr,
     ) -> Result<(), EventRingError> {
         // check the segment size is within the bounds
         if segment_size < 16 || segment_size > 4096 {
@@ -499,7 +558,9 @@ impl ConsumerRingBuffer {
         // try to add the segment
         let result: bool;
         unsafe {
-            result = self.erst.add_entry(segment_base, segment_size);
+            result = self
+                .erst
+                .add_entry(segment_vbase, segment_size, segment_pbase);
         }
 
         // if failed, return erst full err
@@ -584,15 +645,21 @@ impl ConsumerRingBuffer {
     }
 
     /// Checks to see if the event ring is empty
-    /// 
+    ///
     /// # Returns
     /// True if the TRB being pointed to by `dequeue` is not owned by the consumer.
-    /// 
+    ///
     /// # Safety
     /// This function preforms a raw pointer read to access the TRB that is being pointed to.
     pub unsafe fn is_empty(&self) -> bool {
         // first get the block
         let block = *self.dequeue;
+        let parameters = block.parameters;
+        let status = block.status;
+        let control = block.control;
+        debug_println!("params: {:X}", parameters);
+        debug_println!("status: {:X}", status);
+        debug_println!("control: {:X}", control);
 
         // see if we need to check the completion code or cycle bit
         if self.erst_count > self.count_visited {
@@ -605,6 +672,19 @@ impl ConsumerRingBuffer {
             }
         }
 
+        debug_println!("cycle bit: {}", block.get_cycle());
+
         block.get_cycle() != self.ccs as u32
+    }
+
+    pub unsafe fn print_ring(&self) {
+        debug_println!("======PRINTING EVENT RING======");
+        debug_println!("dequeue ptr: {:X}", self.dequeue as u64);
+        debug_println!("ccs: {}", self.ccs);
+        self.erst.print_table();
+        debug_println!("erst index: {}", self.erst_count);
+        debug_println!("ers size: {}", self.ers_size);
+        debug_println!("index visited: {}", self.count_visited);
+        debug_println!("===============================");
     }
 }
