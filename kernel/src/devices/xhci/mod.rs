@@ -10,7 +10,7 @@ use crate::{
 };
 use alloc::{sync::Arc, vec::Vec};
 use bitflags::bitflags;
-use ring_buffer::{ConsumerRingBuffer, ProducerRingBuffer, Trb, TrbTypes};
+use ring_buffer::{ConsumerRingBuffer, ProducerRingBuffer, TransferRequestBlock, Trb, TrbTypes};
 use spin::Mutex;
 use x86_64::{
     structures::paging::{FrameAllocator, OffsetPageTable, Page},
@@ -68,6 +68,7 @@ pub enum XHCIError {
     MemoryAllocationFailure,
     NoFrameAllocator,
     UnknownPort,
+    CommandRingError,
 }
 
 bitflags! {
@@ -195,7 +196,7 @@ pub fn initalize_xhci_hub(
         let status = core::ptr::read_volatile(status_addr);
         debug_println!("status reg before boot: {:X}", status);
     }
-    // boot_up_all_ports(&info)?;
+    boot_up_all_ports(&mut info)?;
 
     unsafe {
         let status_addr = (info.operational_register_address + 0x4) as *mut u32;
@@ -476,7 +477,7 @@ fn initalize_xhciinfo(full_bar: u64, mapper: &mut OffsetPageTable) -> Result<XHC
     })
 }
 
-fn boot_up_all_ports(info: &XHCIInfo) -> Result<(), XHCIError> {
+fn boot_up_all_ports(info: &mut XHCIInfo) -> Result<(), XHCIError> {
     for device in 0..MAX_USB_DEVICES {
         debug_println!("Device = {device}");
         let device_offset: u64 = 0x10 * <u8 as Into<u64>>::into(device);
@@ -499,7 +500,7 @@ fn boot_up_all_ports(info: &XHCIInfo) -> Result<(), XHCIError> {
 }
 
 fn boot_up_usb_port(
-    info: &XHCIInfo,
+    info: &mut XHCIInfo,
     device: u8,
     port_status: PortStatusAndControl,
 ) -> Result<(), XHCIError> {
@@ -508,7 +509,9 @@ fn boot_up_usb_port(
         debug_println!("USB3 detected and successfull");
     } else if port_link_status == PortLinkStateRead::Polling as u32 {
         debug_println!("USB2 detected, or USB3 still working");
-        let new_status = port_status.union(PortStatusAndControl::PortReset);
+        let mut new_status = port_status.union(PortStatusAndControl::PortReset);
+        new_status.remove(PortStatusAndControl::CurrentConnectStatus);
+        new_status = PortStatusAndControl::from_bits_retain(new_status.bits() & (!(0b1111 << 5)));
         let device_offset: u64 = 0x10 * <u8 as Into<u64>>::into(device);
         let port_status_addr =
             (info.operational_register_address + 0x400 + device_offset) as *mut u32;
@@ -520,8 +523,15 @@ fn boot_up_usb_port(
     } else {
         return Result::Err(XHCIError::UnknownPort);
     }
-    // USB2 -- We need to reset the port
+    // Now Enable the slot (4.3.2)
+    let mut block = TransferRequestBlock {parameters: 0, status: 0, control: 0};
+    block.set_trb_type(TrbTypes::EnableSlotCmd as u32);
+    unsafe {info.command_ring.enqueue(block).map_err(|_| XHCIError::CommandRingError )?};
 
+    let doorbell_base: *mut u32 =
+        (info.base_address + info.capablities.doorbell_offset as u64) as *mut u32;
+    unsafe {core::ptr::write_volatile(doorbell_base, 0)};
+    debug_println!("Test");
     Result::Ok(())
 }
 
