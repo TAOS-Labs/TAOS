@@ -182,9 +182,9 @@ extern "x86-interrupt" fn page_fault_handler(
             .expect("Vma not found?")
     };
     let fault_round_down: u64 = (faulting_address) & !(PAGE_SIZE as u64 - 1);
-    let ptr: *const AnonVmArea = vma.backing as *const AnonVmArea;
+    let backing = Arc::clone(&(vma.backing));
     unsafe {
-        let frame = (*ptr).find_mapping(&vma, fault_round_down);
+        let frame = backing.find_mapping(&vma, fault_round_down);
         if frame.is_some() {
             create_mapping_to_frame(
                 page,
@@ -207,7 +207,7 @@ extern "x86-interrupt" fn page_fault_handler(
                 ),
             );
 
-            (*ptr).insert_mapping(Arc::new(AnonVmaChain {
+            backing.insert_mapping(Arc::new(AnonVmaChain {
                 vma,
                 offset: page.start_address().as_u64(),
                 frame: Arc::new(new_frame),

@@ -19,7 +19,7 @@ impl Mm {
     }
 
     /// Insert a new VmArea into the VMA tree.
-    pub fn insert_vma(&self, start: u64, end: u64, backing: u64, flags: VmAreaFlags) -> Arc<VmArea> {
+    pub fn insert_vma(&self, start: u64, end: u64, backing: Arc<AnonVmArea>, flags: VmAreaFlags) -> Arc<VmArea> {
 
         let left_vma = if start > 0 {
             Mm::find_vma(&self, start - 1)
@@ -124,12 +124,12 @@ bitflags! {
 pub struct VmArea {
     pub start: u64,
     pub end: u64,
-    pub backing: u64,
+    pub backing: Arc<AnonVmArea>,
     pub flags: VmAreaFlags
 }
 
 impl VmArea {
-    pub fn new(start: u64, end: u64, backing: u64, flags: VmAreaFlags) -> Self {
+    pub fn new(start: u64, end: u64, backing: Arc<AnonVmArea>, flags: VmAreaFlags) -> Self {
         VmArea {
             start,
             end,

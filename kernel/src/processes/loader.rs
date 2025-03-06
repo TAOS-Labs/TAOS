@@ -120,12 +120,10 @@ pub fn load_elf(
 
     // new anon_vma that corresponds to this stack
     let anon_vma = Arc::new(AnonVmArea::new());
-    let backing = Arc::as_ptr(&anon_vma) as u64;
-
     // let stack_flags =
     //     PageTableFlags::PRESENT | PageTableFlags::WRITABLE | PageTableFlags::USER_ACCESSIBLE;
 
-    mm.insert_vma(STACK_START, STACK_START + STACK_SIZE as u64, backing, VmAreaFlags::READ | VmAreaFlags::WRITE | VmAreaFlags::GROWS_DOWN);
+    mm.insert_vma(STACK_START, STACK_START + STACK_SIZE as u64, anon_vma, VmAreaFlags::READ | VmAreaFlags::WRITE | VmAreaFlags::GROWS_DOWN);
 
     // for page in Page::range_inclusive(start_page, end_page) {
     //     create_mapping(page, user_mapper, Some(stack_flags));
