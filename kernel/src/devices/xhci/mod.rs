@@ -197,7 +197,7 @@ pub fn initalize_xhci_hub(
         debug_println!("status reg before boot: {:X}", status);
     }
     boot_up_all_ports(&mut info)?;
-
+    unsafe {info.primary_event_ring.print_ring();} 
     unsafe {
         let status_addr = (info.operational_register_address + 0x4) as *mut u32;
         let status = core::ptr::read_volatile(status_addr);
@@ -426,7 +426,19 @@ fn initalize_xhciinfo(full_bar: u64, mapper: &mut OffsetPageTable) -> Result<XHC
         4096 / 16,
     )
     .expect("error initializing primary event ring");
+    unsafe {
 
+
+        let mut  addr = erst_vaddr as *const u64;
+        let base_address = core::ptr::read_volatile(addr);
+        debug_println!("Base address = 0x{base_address:X}");
+        debug_println!("Base addr should be 0x{:X}", er_segment_frame.start_address().as_u64());
+
+        addr = (erst_vaddr  + 0x8) as *const u64;
+        let size = core::ptr::read_volatile(addr);
+        debug_println!("Size = {size}");
+
+    }
     unsafe {
         primary_event_ring.print_ring();
     }
@@ -454,10 +466,10 @@ fn initalize_xhciinfo(full_bar: u64, mapper: &mut OffsetPageTable) -> Result<XHC
     unsafe {
         // write the number of entries in the erst to the erst size register
         core::ptr::write_volatile(erstsz_addr, erst_size);
+        // write the base address of the erst to the event ring dequeue pointer register
+        core::ptr::write_volatile(erdp_addr, er_segment_frame.start_address().as_u64());
         // write the base address of the erst to the erst base address register
         core::ptr::write_volatile(erstba_addr, erst_ba);
-        // write the base address of the erst to the event ring dequeue pointer register
-        core::ptr::write_volatile(erdp_addr, erst_ba & !0xF);
         let erstsz_value = core::ptr::read_volatile(erstsz_addr);
         let erstba_value = core::ptr::read_volatile(erstba_addr);
         let erdp_value = core::ptr::read_volatile(erdp_addr);
