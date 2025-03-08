@@ -162,7 +162,7 @@ impl X2ApicManager {
         let fmask: u64 = 0x200;
         let user_cs = gdt::GDT.1.user_code_selector.0 as u64;
         let kernel_cs = gdt::GDT.1.code_selector.0 as u64;
-        let star: u64 = (user_cs - 16) << 48 | (kernel_cs) << 32;
+        let star: u64 = ((user_cs - 16) << 48) | (kernel_cs << 32);
 
         let sys_addr = syscall_handler_64_naked as usize;
 

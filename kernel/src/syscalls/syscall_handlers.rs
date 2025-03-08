@@ -1,12 +1,9 @@
-use core::{ffi::CStr, i64, sync::atomic::AtomicI64};
+use core::{ffi::CStr, sync::atomic::AtomicI64};
 
 use crate::{
     constants::syscalls::*,
     events::{current_running_event_info, current_running_event_pid, EventInfo},
-    interrupts::{
-        gdt::TSSS,
-        x2apic::{self, current_core_id},
-    },
+    interrupts::x2apic,
     memory::frame_allocator::with_bitmap_frame_allocator,
     processes::{
         process::{clear_process_frames, sleep_process, ProcessState, PROCESS_TABLE},
@@ -31,12 +28,15 @@ pub struct SyscallRegisters {
     pub arg6: u64,   // originally in r9
 }
 
-#[no_mangle]
-fn get_ring_0_rsp() -> u64 {
-    let core = current_core_id();
-    ((TSSS[core].privilege_stack_table[0]).as_u64()) & !15
-}
-
+/// Naked syscall handler that switches to a valid kernel stack (saving
+/// the user stack in some TSS), saves register values, sets up
+/// correct arguments, and dispatches to a syscall handler
+///
+/// # Return
+/// This function never returns normally as it performs a sysretq
+///
+/// # Safety
+/// This function is unsafe as it manually saves state and switches stacks
 #[naked]
 #[no_mangle]
 pub unsafe extern "C" fn syscall_handler_64_naked() -> ! {
