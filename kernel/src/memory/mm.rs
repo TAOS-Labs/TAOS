@@ -202,13 +202,6 @@ impl VmArea {
     }
 }
 
-// /// A composite key for reverse mappings, consisting of a VMA identifier and an offset.
-// #[derive(PartialEq, Eq, PartialOrd, Ord, Debug)]
-// pub struct AnonMappingKey {
-//     pub vma_ptr: usize,
-//     pub offset: u64,
-// }
-
 /// Reverse mapping chain entry that links a VMA and its offset to a physical page.
 #[derive(Debug)]
 pub struct AnonVmaChain {
@@ -271,272 +264,408 @@ impl AnonVmArea {
     }
 }
 
-// #[cfg(test)]
-// mod tests {
-//     use log::debug;
-//     use x86_64::{
-//         structures::paging::{Mapper, Page},
-//         PhysAddr, VirtAddr,
-//     };
+#[cfg(test)]
+mod tests {
+    use alloc::sync::Arc;
+    use x86_64::{structures::paging::PhysFrame, PhysAddr};
 
-//     use crate::{
-//         constants::memory::PAGE_SIZE,
-//         memory::{
-//             frame_allocator::{alloc_frame, with_buddy_frame_allocator},
-//             paging::{create_mapping, remove_mapped_frame, update_mapping},
-//             KERNEL_MAPPER,
-//         },
-//     };
+    // (Import additional items from your crate as needed.)
+    use crate::{constants::memory::PAGE_SIZE, memory::frame_allocator::alloc_frame};
 
-//     use super::*;
+    use super::*;
 
-//     #[test_case]
-//     fn test_mm_vma_insert_find() {
-//         // Create a dummy PML4 frame.
-//         let pml4_frame = PhysFrame::containing_address(PhysAddr::new(0x1000));
-//         let mm = Mm::new(pml4_frame);
+    /// Tests insertion and lookup of VM Areas in the memory manager.
+    ///
+    /// This test creates a memory manager (`Mm`) with a dummy PML4 frame and a new
+    /// anonymous backing area (`AnonVmArea`). It inserts two VM Areas into the internal VMA tree:
+    /// one covering addresses `[0, 500)` and another covering `[600, 1000)`. The test then
+    /// verifies that looking up addresses 250 and 750 correctly returns the corresponding VM Areas
+    /// with the expected starting addresses.
+    #[test_case]
+    fn test_mm_vma_insert_find() {
+        // Create a dummy PML4 frame.
+        let pml4_frame = PhysFrame::containing_address(PhysAddr::new(0x1000));
+        let mm = Mm::new(pml4_frame);
+        let anon_area = Arc::new(AnonVmArea::new());
 
-//         mm.with_vma_tree_mutable(|tree| {
-//             let vma1 = mm.insert_vma(tree, 0, 500, 0, VmAreaFlags::READ | VmAreaFlags::WRITE, true);
-//             let vma2 = mm.insert_vma(tree, 600, 1000, 0, VmAreaFlags::READ | VmAreaFlags::WRITE, true);
-//             // Test finding a VMA that covers a given address.
-//             let found1 = mm.find_vma(250, tree);
-//             assert!(found1.is_some(), "Should find a VMA covering address 250");
-//             assert_eq!(found1.unwrap().start, 0);
+        mm.with_vma_tree_mutable(|tree| {
+            let _vma1 = mm.insert_vma(
+                tree,
+                0,
+                500,
+                anon_area.clone(),
+                VmAreaFlags::READ | VmAreaFlags::WRITE,
+                true,
+            );
+            let _vma2 = mm.insert_vma(
+                tree,
+                600,
+                1000,
+                anon_area.clone(),
+                VmAreaFlags::READ | VmAreaFlags::WRITE,
+                true,
+            );
+            // Test finding a VMA that covers a given address.
+            let found1 = mm.find_vma(250, tree);
+            assert!(found1.is_some(), "Should find a VMA covering address 250");
+            assert_eq!(found1.unwrap().lock().start, 0);
 
-//             let found2 = mm.find_vma(750, tree);
-//             assert!(found2.is_some(), "Should find a VMA covering address 750");
-//             assert_eq!(found2.unwrap().start, 600);
-//         });
-//     }
+            let found2 = mm.find_vma(750, tree);
+            assert!(found2.is_some(), "Should find a VMA covering address 750");
+            assert_eq!(found2.unwrap().lock().start, 600);
+        });
+    }
 
-//     #[test_case]
-//     fn test_mm_vma_remove() {
-//         // Create a dummy PML4 frame.
-//         let pml4_frame = PhysFrame::containing_address(PhysAddr::new(0x1000));
-//         let mm = Mm::new(pml4_frame);
+    /// Tests removal of a VM Area from the memory manager's VMA tree.
+    ///
+    /// This test creates a memory manager with a dummy PML4 frame and a new anonymous backing area.
+    /// It inserts a single VM Area spanning `[0, 500)` and verifies that it can be found by address lookup.
+    /// The test then removes the VM Area starting at address 0 and confirms that subsequent lookup fails,
+    /// ensuring that removal works correctly.
+    #[test_case]
+    fn test_mm_vma_remove() {
+        // Create a dummy PML4 frame.
+        let pml4_frame = PhysFrame::containing_address(PhysAddr::new(0x1000));
+        let mm = Mm::new(pml4_frame);
+        let anon_area = Arc::new(AnonVmArea::new());
 
-//         mm.with_vma_tree_mutable(|tree| {
-//             // Create two VmArea instances.
-//             let vma = mm.insert_vma(tree, 0, 500, 123, VmAreaFlags::READ | VmAreaFlags::WRITE, true);
+        mm.with_vma_tree_mutable(|tree| {
+            // Create a VmArea instance.
+            let _vma = mm.insert_vma(
+                tree,
+                0,
+                500,
+                anon_area.clone(),
+                VmAreaFlags::READ | VmAreaFlags::WRITE,
+                true,
+            );
 
-//             let found = mm.find_vma(250, tree);
-//             assert_eq!(found.unwrap().start, 0);
+            let found = mm.find_vma(250, tree);
+            assert_eq!(found.unwrap().lock().start, 0);
 
-//             let removed = mm.find_vma(mm.remove_vma(tree, 0).unwrap().start, tree);
-//             assert!(removed.is_none());
-//         })
-//     }
+            // Remove the VMA starting at address 0.
+            let removed = mm.remove_vma(0, tree).unwrap();
+            let removed_start = removed.lock().start;
+            let found_after = mm.find_vma(removed_start, tree);
+            assert!(found_after.is_none());
+        });
+    }
 
-//     /// Testcase to test whether correct frames are gotten after setting up
-//     /// an Anon_Vma backing
-//     ///
-//     /// Tests just 1 frame
-//     #[test_case]
-//     fn test_mm_anon_vm_backing() {
-//         let pml4_frame = PhysFrame::containing_address(PhysAddr::new(0x1000));
-//         let mm = Mm::new(pml4_frame);
+    /// Verifies that an anonymous VM backing area correctly maps a faulted address to its corresponding frame.
+    ///
+    /// This test sets up a VM Area with an anonymous backing area and allocates a physical frame.
+    /// It then simulates a fault at a specific address within the VM Area and maps that offset to the frame.
+    /// The test checks that:
+    /// - The VM Area can be correctly retrieved by its faulted address.
+    /// - The backing pointer of the VM Area matches the anonymous backing area.
+    /// - The mapping in the anonymous area correctly returns the physical frame.
+    #[test_case]
+    fn test_mm_anon_vm_backing() {
+        let pml4_frame = PhysFrame::containing_address(PhysAddr::new(0x1000));
+        let mm = Mm::new(pml4_frame);
+        let anon_area = Arc::new(AnonVmArea::new());
 
-//         let anon_area = Arc::new(AnonVmArea::new());
-//         let backing_value = Arc::as_ptr(&anon_area) as u64;
+        let frame1 = alloc_frame().expect("Could not allocate PhysFrame");
 
-//         let frame1 = alloc_frame().expect("Could not allocate PhysFrame");
+        let vm_area = mm.with_vma_tree_mutable(|tree| {
+            mm.insert_vma(
+                tree,
+                0,
+                0x1000,
+                anon_area.clone(),
+                VmAreaFlags::READ | VmAreaFlags::WRITE,
+                true,
+            )
+        });
 
-//         let vm_area = mm.with_vma_tree_mutable(|tree| {
-//             mm.insert_vma(tree, 0, 0x1000, backing_value, VmAreaFlags::READ | VmAreaFlags::WRITE, true)
-//         });
+        // Calculate the faulting address's aligned offset.
+        let faulting_address1: u64 = 0x500;
+        let vm_start = vm_area.lock().start;
+        let faulting_address1_round = (faulting_address1 - vm_start) & !(PAGE_SIZE as u64 - 1);
 
-//         // faulting_addresses and rounded down versions
-//         let faulting_address1: u64 = 0x500;
+        // Map the vm_area and offset to the frame.
+        let chain1 = Arc::new(AnonVmaChain {
+            offset: faulting_address1_round,
+            frame: frame1.into(),
+        });
+        anon_area.insert_mapping(chain1);
 
-//         let faulting_address1_round = (faulting_address1 - vm_area.start) & !(PAGE_SIZE as u64 - 1);
+        mm.with_vma_tree(|tree| {
+            let found1 = mm
+                .find_vma(faulting_address1, tree)
+                .expect("Should find vma");
+            // Compare backing using pointer equality.
+            assert!(Arc::ptr_eq(&found1.lock().backing, &anon_area));
 
-//         // maps the vm_area and offset to the frame
-//         let chain1 = Arc::new(AnonVmaChain {
-//             offset: faulting_address1_round,
-//             frame: frame1.into(),
-//         });
+            let found1_anon = anon_area
+                .find_mapping(faulting_address1_round)
+                .expect("Mapping not found");
+            assert_eq!(found1_anon.frame.start_address(), frame1.start_address());
+        });
+    }
 
-//         anon_area.insert_mapping(chain1.clone());
+    /// Verifies that an anonymous VM backing area correctly handles multiple frame mappings.
+    ///
+    /// This test sets up a VM Area spanning `[0, 0x2000)` with an anonymous backing area and allocates two distinct frames.
+    /// It simulates faults at two different addresses within the VM Area and maps each offset to a different frame.
+    /// The test asserts that the correct physical frame is returned for each fault offset.
+    #[test_case]
+    fn test_mm_anon_vm_backing2() {
+        let pml4_frame = PhysFrame::containing_address(PhysAddr::new(0x1000));
+        let mm = Mm::new(pml4_frame);
+        let anon_area = Arc::new(AnonVmArea::new());
 
-//         // get the vma from some address access (as we would in pf handler)
-//         mm.with_vma_tree(|tree| {
-//             let found1 = mm.find_vma(faulting_address1, tree).expect("Should find vma");
-//             assert_eq!(found1.backing, backing_value);
+        let frame1 = alloc_frame().expect("Could not allocate PhysFrame");
+        let frame2 = alloc_frame().expect("Could not allocate PhysFrame");
 
-//             let found1_anon_vma =
-//                 anon_area.find_mapping(&faulting_address1);
-//             assert_eq!(
-//                 found1_anon_vma.unwrap().frame.start_address(),
-//                 frame1.start_address()
-//             );
-//         })
-//     }
+        mm.with_vma_tree_mutable(|tree| {
+            let vm_area = mm.insert_vma(
+                tree,
+                0,
+                0x2000,
+                anon_area.clone(),
+                VmAreaFlags::READ | VmAreaFlags::WRITE,
+                true,
+            );
 
-//     /// Tests the same thing as above, but with two different frames
-//     #[test_case]
-//     fn test_mm_anon_vm_backing2() {
-//         let pml4_frame = PhysFrame::containing_address(PhysAddr::new(0x1000));
-//         let mm = Mm::new(pml4_frame);
+            let vm_start = vm_area.lock().start;
+            let faulting_address1: u64 = 0x500;
+            let faulting_address2: u64 = 0x1500;
 
-//         // anon vm area to serve as backing for all vmas
-//         let anon_area = Arc::new(AnonVmArea::new());
-//         let backing_value = Arc::as_ptr(&anon_area) as u64;
+            let faulting_address1_round = (faulting_address1 - vm_start) & !(PAGE_SIZE as u64 - 1);
+            let faulting_address2_round = (faulting_address2 - vm_start) & !(PAGE_SIZE as u64 - 1);
 
-//         let frame1 = alloc_frame().expect("Could not allocate PhysFrame");
-//         let frame2 = alloc_frame().expect("Could not allocate PhysFrame");
+            let chain1 = Arc::new(AnonVmaChain {
+                offset: faulting_address1_round,
+                frame: frame1.into(),
+            });
+            let chain2 = Arc::new(AnonVmaChain {
+                offset: faulting_address2_round,
+                frame: frame2.into(),
+            });
 
-//         mm.with_vma_tree_mutable(|tree| {
-//             let vm_area = mm.insert_vma(tree, 0, 0x2000, backing_value, VmAreaFlags::READ | VmAreaFlags::WRITE, true);
+            anon_area.insert_mapping(chain1);
+            anon_area.insert_mapping(chain2);
 
-//             // faulting_addresses and rounded down versions
-//             let faulting_address1: u64 = 0x500;
-//             let faulting_address2: u64 = 0x1500;
+            let found = mm
+                .find_vma(faulting_address1, tree)
+                .expect("Should find vma");
+            assert!(Arc::ptr_eq(&found.lock().backing, &anon_area));
 
-//             let faulting_address1_round = (faulting_address1 - vm_area.start) & !(PAGE_SIZE as u64 - 1);
-//             let faulting_address2_round = (faulting_address2 - vm_area.start) & !(PAGE_SIZE as u64 - 1);
+            let found1_anon = anon_area
+                .find_mapping(faulting_address1_round)
+                .expect("Mapping not found");
+            assert_eq!(found1_anon.frame.start_address(), frame1.start_address());
 
-//             // maps the vm_area and offset to the frame
-//             let chain1 = Arc::new(AnonVmaChain {
-//                 offset: faulting_address1_round,
-//                 frame: frame1.into(),
-//             });
+            let found2_anon = anon_area
+                .find_mapping(faulting_address2_round)
+                .expect("Mapping not found");
+            assert_eq!(found2_anon.frame.start_address(), frame2.start_address());
+        });
+    }
 
-//             // maps the vm_area and offset to the frame
-//             let chain2 = Arc::new(AnonVmaChain {
-//                 offset: faulting_address2_round,
-//                 frame: frame2.into(),
-//             });
+    /// Simulates multiple processes sharing memory by mapping different VM Areas to the same anonymous backing.
+    ///
+    /// This test creates two memory manager instances (`mm1` and `mm2`), each with its own VMA tree.
+    /// Two VM Areas are inserted with non-overlapping ranges but sharing the same anonymous backing area.
+    /// A single physical frame is mapped to a faulting offset which should be consistent across both VM Areas.
+    /// The test verifies that:
+    /// - The backing pointer in both VM Areas is the same.
+    /// - The anonymous mapping returns the same frame for the corresponding offset.
+    #[test_case]
+    fn test_mm_multiple_vmas() {
+        let pml4_frame1 = PhysFrame::containing_address(PhysAddr::new(0x1000));
+        let mm1 = Mm::new(pml4_frame1);
+        let pml4_frame2 = PhysFrame::containing_address(PhysAddr::new(0x1000));
+        let mm2 = Mm::new(pml4_frame2);
+        let anon_area = Arc::new(AnonVmArea::new());
 
-//             anon_area.insert_mapping(chain1.clone());
-//             anon_area.insert_mapping(chain2.clone());
+        let vm_area1 = mm1.with_vma_tree_mutable(|tree| {
+            mm1.insert_vma(
+                tree,
+                0,
+                0x1000,
+                anon_area.clone(),
+                VmAreaFlags::READ | VmAreaFlags::WRITE,
+                true,
+            )
+        });
+        let vm_area2 = mm2.with_vma_tree_mutable(|tree| {
+            mm2.insert_vma(
+                tree,
+                0x1000,
+                0x2000,
+                anon_area.clone(),
+                VmAreaFlags::READ | VmAreaFlags::WRITE,
+                true,
+            )
+        });
 
-//             anon_area.print_mappings();
+        let faulting_address1: u64 = 0x500;
+        let faulting_address2: u64 = 0x1500;
 
-//             // get the vma from some address access (as we would in pf handler)
-//             let found = mm.find_vma(faulting_address1, tree).expect("Should find vma");
-//             assert_eq!(found.backing, backing_value);
+        let vm1_start = vm_area1.lock().start;
+        let vm2_start = vm_area2.lock().start;
+        let faulting_address1_round = (faulting_address1 - vm1_start) & !(PAGE_SIZE as u64 - 1);
+        let faulting_address2_round = (faulting_address2 - vm2_start) & !(PAGE_SIZE as u64 - 1);
 
-//             let found1_anon_vma = anon_area.find_mapping(faulting_address1_round);
+        // Note: Both faulting offsets should be the same.
+        let frame = alloc_frame().expect("Could not get frame");
+        let chain = Arc::new(AnonVmaChain {
+            offset: faulting_address1_round,
+            frame: frame.into(),
+        });
+        anon_area.insert_mapping(chain);
 
-//             assert_eq!(
-//                 found1_anon_vma.unwrap().frame.start_address(),
-//                 frame1.start_address()
-//             );
+        let found1 = mm1.with_vma_tree(|tree| {
+            mm1.find_vma(faulting_address1, tree)
+                .expect("Should find vma")
+        });
+        let found2 = mm2.with_vma_tree(|tree| {
+            mm2.find_vma(faulting_address2, tree)
+                .expect("Should find vma")
+        });
+        assert!(Arc::ptr_eq(&found1.lock().backing, &found2.lock().backing));
 
-//             // get the vma from some address access (as we would in pf handler)
-//             assert_eq!(found.backing, backing_value);
+        let found1_anon = anon_area
+            .find_mapping(faulting_address1_round)
+            .expect("Mapping not found");
+        let found2_anon = anon_area
+            .find_mapping(faulting_address2_round)
+            .expect("Mapping not found");
+        assert_eq!(
+            found1_anon.frame.start_address(),
+            found2_anon.frame.start_address()
+        );
+    }
 
-//             let found2_anon_vma = anon_area.find_mapping(faulting_address2_round);
+    /// Tests coalescing of adjacent VM Areas on the left.
+    ///
+    /// This test creates a VM Area covering `[0, 0x1000)` and then inserts a second VM Area starting
+    /// exactly at `0x1000` and ending at `0x2000`. The test verifies that the two adjacent VM Areas are
+    /// coalesced into a single VM Area by checking that a lookup for an address in the first region returns
+    /// a VM Area with the same start as the coalesced result.
+    #[test_case]
+    fn test_coalesce_left() {
+        let pml4_frame = PhysFrame::containing_address(PhysAddr::new(0x1000));
+        let mm = Mm::new(pml4_frame);
+        let anon_area = Arc::new(AnonVmArea::new());
 
-//             assert_eq!(
-//                 found2_anon_vma.unwrap().frame.start_address(),
-//                 frame2.start_address()
-//             );
-//         })
-//     }
+        mm.with_vma_tree_mutable(|tree| {
+            let _vma1 = mm.insert_vma(
+                tree,
+                0,
+                0x1000,
+                anon_area.clone(),
+                VmAreaFlags::READ | VmAreaFlags::WRITE,
+                true,
+            );
+            let got_vma1 = mm.find_vma(0x500, tree).expect("Should find vma");
 
-//     /// Simulates multiple processes sharing memory by mapping multiple
-//     /// VMAs to the same anon_vma
-//     #[test_case]
-//     fn test_mm_multiple_vmas() {
-//         let pml4_frame1 = PhysFrame::containing_address(PhysAddr::new(0x1000));
-//         let mm1 = Mm::new(pml4_frame1);
+            let _vma2 = mm.insert_vma(
+                tree,
+                0x1000,
+                0x2000,
+                anon_area.clone(),
+                VmAreaFlags::READ | VmAreaFlags::WRITE,
+                true,
+            );
+            let v1_start = got_vma1.lock().start;
+            let v2_start = mm
+                .find_vma(0x1500, tree)
+                .expect("Should find vma")
+                .lock()
+                .start;
+            assert_eq!(v1_start, v2_start);
+        });
+    }
 
-//         let pml4_frame2 = PhysFrame::containing_address(PhysAddr::new(0x1000));
-//         let mm2 = Mm::new(pml4_frame2);
+    /// Tests coalescing of adjacent VM Areas on the right.
+    ///
+    /// This test inserts two VM Areas: one covering `[0x1000, 0x2000)` and another covering `[0, 0x1000)`.
+    /// Since the VM Area starting at `0` ends exactly where the first begins, they should be coalesced.
+    /// A lookup of an address in the first region (e.g. `0x1500`) should return a VM Area starting at `0`.
+    #[test_case]
+    fn test_coalesce_right() {
+        let pml4_frame = PhysFrame::containing_address(PhysAddr::new(0x1000));
+        let mm = Mm::new(pml4_frame);
+        let anon_area = Arc::new(AnonVmArea::new());
 
-//         let anon_area = Arc::new(AnonVmArea::new());
-//         let backing_value = Arc::as_ptr(&anon_area) as u64;
+        mm.with_vma_tree_mutable(|tree| {
+            let _vma1 = mm.insert_vma(
+                tree,
+                0x1000,
+                0x2000,
+                anon_area.clone(),
+                VmAreaFlags::READ | VmAreaFlags::WRITE,
+                true,
+            );
+            let _vma2 = mm.insert_vma(
+                tree,
+                0,
+                0x1000,
+                anon_area.clone(),
+                VmAreaFlags::READ | VmAreaFlags::WRITE,
+                true,
+            );
+        });
+        let found = mm.with_vma_tree(|tree| mm.find_vma(0x1500, tree).expect("Should find vma"));
+        assert_eq!(0, found.lock().start);
+    }
 
-//         // two different vmas with the same backing
-//         // note: different start and end, so different faulting_addresses
-//         // correspond to same anon_vma
-//         mm1.with_vma_tree_mut(|tree_1| {
-//             let vm_area1 = mm1.insert_vma(0, 0x1000, backing_value, VmAreaFlags::READ | VmAreaFlags::WRITE, true, tree_1);
-//         });
-//         mm2.with_vma_tree_mutable(|tree_2| {
-//             let vm_area2 = mm2.insert_vma(0x1000, 0x2000, backing_value, VmAreaFlags::READ | VmAreaFlags::WRITE, true, tree_2);
-//         });
+    /// Tests coalescing of adjacent VM Areas on both left and right sides.
+    ///
+    /// This test inserts three VM Areas:
+    /// - The first covering `[0, 0x1000)`,
+    /// - The second covering `[0x2000, 0x3000)`,
+    /// - The third covering `[0x1000, 0x2000)`.
+    ///
+    /// When the third VM Area is inserted, it should coalesce with both the first and second,
+    /// resulting in a single coalesced VM Area. The test verifies that the start address for all
+    /// resulting VM Areas is the same.
+    #[test_case]
+    fn test_coalesce_both() {
+        let pml4_frame = PhysFrame::containing_address(PhysAddr::new(0x1000));
+        let mm = Mm::new(pml4_frame);
+        let anon_area = Arc::new(AnonVmArea::new());
 
-//         // fault here and map a frame (later done lazily, for now we just allocate a frame)
-//         let faulting_address1: u64 = 0x500;
-//         let faulting_address1_round =
-//             (faulting_address1 - vm_area1.start) & !(PAGE_SIZE as u64 - 1);
+        let (got_vma1, got_vma2, got_vma3) = mm.with_vma_tree_mutable(|tree| {
+            let _vma1 = mm.insert_vma(
+                tree,
+                0,
+                0x1000,
+                anon_area.clone(),
+                VmAreaFlags::READ | VmAreaFlags::WRITE,
+                true,
+            );
+            let got_vma1 = mm.find_vma(0x500, tree).expect("Should find vma");
 
-//         let faulting_address2: u64 = 0x1500;
-//         let faulting_address2_round =
-//             (faulting_address2 - vm_area2.start) & !(PAGE_SIZE as u64 - 1);
+            let _vma2 = mm.insert_vma(
+                tree,
+                0x2000,
+                0x3000,
+                anon_area.clone(),
+                VmAreaFlags::READ | VmAreaFlags::WRITE,
+                true,
+            );
+            let _vma3 = mm.insert_vma(
+                tree,
+                0x1000,
+                0x2000,
+                anon_area.clone(),
+                VmAreaFlags::READ | VmAreaFlags::WRITE,
+                true,
+            );
+            let got_vma2 = mm.find_vma(0x1500, tree).expect("Should find vma");
+            let got_vma3 = mm.find_vma(0x2500, tree).expect("Should find vma");
 
-//         let frame = alloc_frame().expect("Could not get frame");
+            (got_vma1, got_vma2, got_vma3)
+        });
+        let start1 = got_vma1.lock().start;
+        let start2 = got_vma2.lock().start;
+        let start3 = got_vma3.lock().start;
+        assert_eq!(start1, start2);
+        assert_eq!(start2, start3);
+    }
+}
 
-//         // NOTE: This is why i think the VMA field is not necessary, but idk
-//         // maps the vm_area and offset to the frame
-//         let chain1 = Arc::new(AnonVmaChain {
-//             offset: faulting_address1_round,
-//             frame: frame.into(),
-//         });
-
-//         anon_area.insert_mapping(chain1.clone());
-
-//         // get the vma from some address access (as we would in pf handler)
-//         mm1.with_vma_tree_(|tree_1| {
-//             let found1 = mm1.find_vma(faulting_address1, tree_1).expect("Should find vma");
-//         });
-//         mm2.with_vma_tree(|tree_2| {
-//             let found2 = mm2.find_vma(faulting_address2, tree_2).expect("Should find vma");
-//         });
-//         assert_eq!(found1.backing, found2.backing);
-
-//         let found2_anon_vma =
-//             anon_area.find_mapping(faulting_address2_round);
-
-//         assert_eq!(
-//             found1_anon_vma.unwrap().frame.start_address(),
-//             found2_anon_vma.unwrap().frame.start_address()
-//         );
-//     }
-
-//     #[test_case]
-//     fn test_coalesce_left() {
-//         let pml4_frame = PhysFrame::containing_address(PhysAddr::new(0x1000));
-//         let mm = Mm::new(pml4_frame);
-//         mm.with_vma_tree_mutable(|tree| {
-//             let vma1 = mm.insert_vma(0, 0x1000, 0, VmAreaFlags::READ | VmAreaFlags::WRITE, true, tree);
-//             let got_vma1 = mm.find_vma(0x500,tree_2);
-
-//             let vma2 = mm.insert_vma(0x1000, 0x2000, 0, VmAreaFlags::READ | VmAreaFlags::WRITE, true, tree);
-//             let got_vma1_new = mm.find_vma(0x500, tree);
-
-//             assert_eq!(got_vma1.unwrap().start, mm.find_vma(0x1500, tree).unwrap().start);
-//         });
-//     }
-
-//     #[test_case]
-//     fn test_coalesce_right() {
-//         let pml4_frame = PhysFrame::containing_address(PhysAddr::new(0x1000));
-//         let mm = Mm::new(pml4_frame);
-//         mm.with_vma_tree(|tree| {
-//         let vma1 = mm.insert_vma(&mut tree, 0x1000, 0x2000, 0, VmAreaFlags::READ | VmAreaFlags::WRITE, true);
-//         let vma2 = mm.insert_vma(&mut tree, 0x0, 0x1000, 0, VmAreaFlags::READ | VmAreaFlags::WRITE, true);
-//         });
-//         assert_eq!(0, mm.find_vma(0x1500, &mut tree).unwrap().start);
-//     }
-
-//     #[test_case]
-//     fn test_coalesce_both() {
-//         let pml4_frame = PhysFrame::containing_address(PhysAddr::new(0x1000));
-//         let mm = Mm::new(pml4_frame);
-//         mm.with_vma_tree(|tree| {
-//         let vma1 = mm.insert_vma(&mut tree, 0x0, 0x1000, 0, VmAreaFlags::READ | VmAreaFlags::WRITE, true);
-//         let got_vma1 = mm.find_vma(0x500, &mut tree).unwrap();
-
-//         let vma2 = mm.insert_vma(&mut tree, 0x2000, 0x3000, 0, VmAreaFlags::READ | VmAreaFlags::WRITE, true);
-//         let vma3 = mm.insert_vma(&mut tree, 0x1000, 0x2000, 0, VmAreaFlags::READ | VmAreaFlags::WRITE, true);
-//         let got_vma2 = mm.find_vma(0x1500, &mut tree).unwrap();
-//         let got_vma3 = mm.find_vma(0x2500, &mut tree).unwrap();
-//     });
-//         assert_eq!(got_vma1.start, got_vma2.start);
-//         assert_eq!(got_vma2.start, got_vma3.start);
-//     }
-// }

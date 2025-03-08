@@ -4,6 +4,8 @@ pub const FORK_SIMPLE: &[u8] = include_bytes!("../processes/test_binaries/fork_s
 
 pub const TEST_SIMPLE_STACK_ACCESS: &[u8] =
     include_bytes!("../processes/test_binaries/test_simple_stack_access");
+    
+pub const TEST_64_SLEEP: &[u8] = include_bytes!("../processes/test_binaries/64_sleep");
 
 
 // SYSCALL TESTING BINARIES

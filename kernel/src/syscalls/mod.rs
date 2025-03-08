@@ -19,7 +19,7 @@ mod tests {
     use super::*;
 
     /// The binary exits with code 0 immediately
-    // #[test_case]
+    #[test_case]
     fn test_exit_code() {
         let pid = create_process(TEST_64_SIMPLE_EXIT);
         schedule_process_on(1, pid);
