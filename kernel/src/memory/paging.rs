@@ -252,7 +252,9 @@ unsafe fn get_page_table_entry<'a>(
 #[cfg(test)]
 mod tests {
     use core::{
-        future::Future, ptr::{read_volatile, write_volatile}, sync::atomic::{AtomicU64, Ordering}
+        future::Future,
+        ptr::{read_volatile, write_volatile},
+        sync::atomic::{AtomicU64, Ordering},
     };
 
     use super::*;
@@ -346,8 +348,9 @@ mod tests {
 
             let mut frames = Vec::new();
             for i in 0..num_pages {
-                let page = Page::from_start_address(start_page.start_address() + i * PAGE_SIZE as u64)
-                    .expect("Invalid page address");
+                let page =
+                    Page::from_start_address(start_page.start_address() + i * PAGE_SIZE as u64)
+                        .expect("Invalid page address");
                 let frame = create_mapping(page, &mut *mapper, Some(flags));
                 frames.push((page, frame));
             }
