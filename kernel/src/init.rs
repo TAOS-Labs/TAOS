@@ -10,9 +10,7 @@ use limine::{
 };
 
 use crate::{
-    constants::processes::{
-        FORK_SIMPLE, TEST_DEBUG_MMAP, TEST_DEBUG_MMAP2, TEST_SIMPLE_STACK_ACCESS,
-    },
+    constants::processes::FORK_SIMPLE,
     debug, devices,
     events::{register_event_runner, run_loop, schedule_process_on},
     interrupts::{self, idt},
@@ -70,7 +68,7 @@ pub fn init() -> u32 {
     //     0,
     // );
 
-    let parent_pid = create_process(TEST_DEBUG_MMAP);
+    let parent_pid = create_process(FORK_SIMPLE);
     schedule_process_on(0, parent_pid);
 
     // since no other processes are running or being created we assume that
