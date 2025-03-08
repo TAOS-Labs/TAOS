@@ -133,7 +133,7 @@ pub fn load_elf(
     let stack_start = VirtAddr::new(STACK_START);
     let stack_end = VirtAddr::new(STACK_START + STACK_SIZE as u64);
     let start_page: Page<Size4KiB> = Page::containing_address(stack_start);
-    let end_page: Page<Size4KiB> = Page::containing_address(stack_end + 1);
+    let end_page: Page<Size4KiB> = Page::containing_address(stack_end);
 
     // new anon_vma that corresponds to this stack
     let anon_vma = Arc::new(AnonVmArea::new());
@@ -142,7 +142,7 @@ pub fn load_elf(
 
     mm.with_vma_tree_mutable(|tree| {
         mm.insert_vma(
-            tree, 
+            tree,
             STACK_START,
             STACK_START + STACK_SIZE as u64,
             anon_vma,
@@ -151,13 +151,9 @@ pub fn load_elf(
         );
     });
 
-    mm.with_vma_tree(|tree| {
-        mm.print_vma(tree);
-    });
-
-    for page in Page::range_inclusive(start_page, end_page) {
-        create_mapping(page, user_mapper, Some(PageTableFlags::PRESENT));
-    }
+    // for page in Page::range_inclusive(start_page, end_page) {
+    //     create_mapping(page, user_mapper, Some(PageTableFlags::WRITABLE | PageTableFlags::USER_ACCESSIBLE | PageTableFlags::PRESENT));
+    // }
 
     (stack_end, elf.header.e_entry)
 }

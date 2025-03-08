@@ -15,16 +15,22 @@ use x86_64::{
     instructions::{
         segmentation::{Segment, CS, DS, ES, FS, GS, SS},
         tables::load_tss,
-    }, registers::model_specific::KernelGsBase, structures::{
+    },
+    registers::model_specific::KernelGsBase,
+    structures::{
         gdt::{Descriptor, GlobalDescriptorTable, SegmentSelector},
         tss::TaskStateSegment,
-    }, PrivilegeLevel, VirtAddr
+    },
+    PrivilegeLevel, VirtAddr,
 };
 
-use crate::{constants::{
-    gdt::{DOUBLE_FAULT_IST_INDEX, IST_STACK_SIZE, RING0_STACK_SIZE},
-    MAX_CORES,
-}, serial_println};
+use crate::{
+    constants::{
+        gdt::{DOUBLE_FAULT_IST_INDEX, IST_STACK_SIZE, RING0_STACK_SIZE},
+        MAX_CORES,
+    },
+    serial_println,
+};
 
 /// Number of base GDT entries: null descriptor + kernel code/data + user code/data
 const BASE_ENTRIES: usize = 5;
@@ -72,8 +78,8 @@ lazy_static! {
         // Add segments
         let code_selector = gdt.append(Descriptor::kernel_code_segment());
         let data_selector = gdt.append(Descriptor::kernel_data_segment());
-        let user_code_selector = gdt.append(Descriptor::user_code_segment());
         let user_data_selector = gdt.append(Descriptor::user_data_segment());
+        let user_code_selector = gdt.append(Descriptor::user_code_segment());
 
         let mut tss_selectors = [SegmentSelector::new(0, PrivilegeLevel::Ring0); MAX_CORES];
 
@@ -85,8 +91,8 @@ lazy_static! {
         (gdt, Selectors {
             code_selector,
             data_selector,
-            user_code_selector,
             user_data_selector,
+            user_code_selector,
             tss_selectors,
         })
     };
@@ -97,8 +103,8 @@ lazy_static! {
 pub struct Selectors {
     pub code_selector: SegmentSelector,
     pub data_selector: SegmentSelector,
-    pub user_code_selector: SegmentSelector,
     pub user_data_selector: SegmentSelector,
+    pub user_code_selector: SegmentSelector,
     tss_selectors: [SegmentSelector; MAX_CORES],
 }
 
@@ -124,7 +130,6 @@ pub fn init(cpu_id: u32) {
         GS::set_reg(GDT.1.data_selector);
 
         load_tss(GDT.1.tss_selectors[cpu_id as usize]);
-
     }
     KernelGsBase::write(VirtAddr::new(&TSSS[cpu_id as usize] as *const _ as u64));
 }

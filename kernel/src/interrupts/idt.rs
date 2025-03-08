@@ -6,40 +6,30 @@
 //! - Timer interrupt handling
 //! - Functions to enable/disable interrupts
 
-use core::{arch::naked_asm, ptr};
+use core::arch::naked_asm;
 
-use alloc::sync::Arc;
 use lazy_static::lazy_static;
-use spin::Mutex;
 use x86_64::{
     instructions::interrupts,
-    structures::{
-        idt::{InterruptDescriptorTable, InterruptStackFrame, PageFaultErrorCode},
-        paging::{
-            mapper::{MappedFrame, TranslateResult},
-            Mapper, OffsetPageTable, Page, PageTable, PageTableFlags, Size4KiB, Translate,
-        },
-    },
-
-    VirtAddr,
+    structures::idt::{InterruptDescriptorTable, InterruptStackFrame, PageFaultErrorCode},
 };
 
 use crate::{
     constants::{
         idt::{SYSCALL_HANDLER, TIMER_VECTOR, TLB_SHOOTDOWN_VECTOR},
-        memory::PAGE_SIZE,
         syscalls::{SYSCALL_EXIT, SYSCALL_MMAP, SYSCALL_PRINT},
     },
     events::inc_runner_clock,
     interrupts::x2apic::{self, current_core_id, TLB_SHOOTDOWN_ADDR},
     memory::{
-        frame_allocator::alloc_frame,
-        mm::{AnonVmaChain, VmArea, VmAreaFlags},
-        paging::{create_mapping, create_mapping_to_frame, get_page_flags, update_mapping},
-        HHDM_OFFSET,
+        mm::{AnonVmArea, AnonVmaChain, VmArea, VmAreaFlags},
+        page_fault::{
+            determine_fault_cause, handle_cow_fault, handle_existing_mapping, handle_new_mapping,
+            FaultOutcome,
+        },
     },
     prelude::*,
-    processes::process::{get_current_pid, preempt_process, PROCESS_TABLE},
+    processes::process::{get_current_pid, preempt_process},
     syscalls::{
         mmap::sys_mmap,
         syscall_handlers::{sys_exit, sys_print},
@@ -141,198 +131,48 @@ extern "x86-interrupt" fn double_fault_handler(
     panic!("EXCEPTION: DOUBLE FAULT\n{:#?}", stack_frame);
 }
 
-fn valid_vma_backing(
-    vma: Arc<Mutex<VmArea>>,
-    faulting_address: u64,
-    mapper: &mut impl Mapper<Size4KiB>,
-) -> Option<Arc<AnonVmaChain>> {
-    let fault_round_down: u64 = (faulting_address) & !(PAGE_SIZE as u64 - 1);
-    let page: Page<Size4KiB> = Page::containing_address(VirtAddr::new(faulting_address));
-    let backing = Arc::clone(&(vma.lock().backing));
-    backing.find_mapping(fault_round_down)
-}
-
-/// Handles page fault exceptions by printing fault information.
+/// TODO: Refractor so cause determing code is separated from setup code (page tables)
 extern "x86-interrupt" fn page_fault_handler(
     stack_frame: InterruptStackFrame,
     error_code: PageFaultErrorCode,
 ) {
-    use x86_64::registers::control::{Cr2, Cr3};
+    serial_println!("Page fault");
+    serial_println!("Stack pointer: 0x{:X}", stack_frame.stack_pointer);
+    serial_println!(
+        "Instruction pointer: 0x{:X}",
+        stack_frame.instruction_pointer
+    );
+    serial_println!("Error code: {:#?}", error_code);
 
-    // getting page table
-    let faulting_address = Cr2::read().expect("Cannot read faulting address").as_u64();
-    let pml4 = Cr3::read().0;
-    let new_pml4_phys = pml4.start_address();
-    let new_pml4_virt = VirtAddr::new((*HHDM_OFFSET).as_u64()) + new_pml4_phys.as_u64();
-    let new_pml4_ptr: *mut PageTable = new_pml4_virt.as_mut_ptr();
-    let mut mapper =
-        unsafe { OffsetPageTable::new(&mut *new_pml4_ptr, VirtAddr::new((*HHDM_OFFSET).as_u64())) };
-
-    let page = Page::containing_address(VirtAddr::new(faulting_address));
-    let pid = get_current_pid();
-    let process = {
-        // clone the arc - the first reference is dropped out of this scope and we use the cloned one
-        let process_table = PROCESS_TABLE.read();
-        process_table
-            .get(&pid)
-            .expect("can't find pcb in process table")
-            .clone()
-    };
-
-    serial_println!("\nError code: {:#?}", error_code);
-    serial_println!("Page fault exception:");
-    serial_println!("Faulting address: {:X}", faulting_address);
-
-    let translate_result = mapper.translate(page.start_address());
-    let is_mapped = match translate_result {
-        TranslateResult::Mapped {
-            frame,
-            offset: _,
-            flags: _,
-        } => match frame {
-            MappedFrame::Size4KiB(_) => true,
-            _ => true,
-        },
-        TranslateResult::NotMapped => false,
-        _ => panic!("Something went wrong with translate in PF handler"),
-    };
-    unsafe {
-        (*process.pcb.get()).mm.with_vma_tree(|tree| {
-            let vma = (*process.pcb.get())
-                .mm
-                .find_vma(faulting_address, tree)
-                .expect("Vma not found?");
-
-            let backing = Arc::clone(&(vma.lock().backing));
-            let anon_vma_chain = valid_vma_backing(vma.clone(), faulting_address, &mut mapper);
-
-            if !is_mapped {
-                serial_println!("Page is not mapped");
-                if anon_vma_chain.is_some() {
-                    create_mapping_to_frame(
-                        page,
-                        &mut mapper,
-                        Some(
-                            PageTableFlags::WRITABLE
-                                | PageTableFlags::USER_ACCESSIBLE
-                                | PageTableFlags::PRESENT,
-                        ),
-                        *anon_vma_chain.unwrap().frame,
-                    );
-                } else {
-                    let new_frame = create_mapping(
-                        page,
-                        &mut mapper,
-                        Some(
-                            PageTableFlags::WRITABLE
-                                | PageTableFlags::USER_ACCESSIBLE
-                                | PageTableFlags::PRESENT,
-                        ),
-                    );
-
-                    backing.insert_mapping(Arc::new(AnonVmaChain {
-                        offset: page.start_address().as_u64(),
-                        frame: Arc::new(new_frame),
-                    }));
-                }
-
-                return;
-            } else {
-                serial_println!("Page is mapped");
-            }
-
-            let mut flags: PageTableFlags =
-                get_page_flags(page, &mut mapper).expect("Could not get page flags");
-            serial_println!("PAGE TABLE FLAGS {:#?}", flags);
-            let cow = !vma.lock().flags.contains(VmAreaFlags::SHARED);
-            let present = flags.contains(PageTableFlags::PRESENT);
-            let read_only = !flags.contains(PageTableFlags::WRITABLE);
-
-            let caused_by_write = error_code.contains(PageFaultErrorCode::CAUSED_BY_WRITE);
-
-            serial_println!("Faulting address: {:X}", faulting_address);
-            serial_println!("\tCurrent pid: {}", pid);
-            serial_println!("\tRSP: {:X}", stack_frame.stack_pointer.as_u64());
-            serial_println!("\tRIP: {:X}", stack_frame.instruction_pointer.as_u64());
-            serial_println!("\tIs present? {}", present);
-            serial_println!("\tIs caused by write access? {}\n", caused_by_write);
-            serial_println!("\tIs copy on write? {}", cow);
-
-            // If error code was caused by write and permissions of PTE are for COW
-            if cow && caused_by_write && present {
-                // before we update mapping, we save data
-                serial_println!("In page fault handler for COW");
-                let start = page.start_address();
-                let src_ptr = start.as_mut_ptr();
-
-                let mut buffer: [u8; PAGE_SIZE] = [0; PAGE_SIZE];
-
-                unsafe {
-                    ptr::copy_nonoverlapping(src_ptr, buffer.as_mut_ptr(), PAGE_SIZE);
-                }
-
-                flags.set(PageTableFlags::WRITABLE, true);
-
-                let frame = alloc_frame().expect("Frame allocation failed in COW");
-                update_mapping(
-                    page,
-                    &mut mapper,
-                    frame,
-                    Some(
-                        PageTableFlags::WRITABLE
-                            | PageTableFlags::PRESENT
-                            | PageTableFlags::USER_ACCESSIBLE,
-                    ),
-                );
-
-                ptr::copy_nonoverlapping(buffer.as_mut_ptr(), src_ptr, PAGE_SIZE);
-
-                serial_println!("Done handling COW");
-                return;
-            }
-        })
-    };
-
-    // // check if lazy loaded address from mmap
-    // let pid = get_current_pid();
-    // let process_table = PROCESS_TABLE.write();
-    // let process = process_table
-    //     .get(&pid)
-    //     .expect("Could not get pcb from process table");
-    // let pcb = unsafe { &mut *process.pcb.get() };
-    // let mmaps = &mut pcb.mmaps;
-
-    // for entry in mmaps.iter_mut() {
-    //     if entry.contains(faulting_address) {
-    //         serial_println!("Entry start: {}", entry.start);
-    //         let index = ((faulting_address - entry.start) / PAGE_SIZE as u64) as usize;
-    //         let frame = alloc_frame().expect("Could not allocate frame");
-
-    //         entry.loaded[index] = true;
-    //         update_mapping(
-    //             page,
-    //             &mut mapper,
-    //             frame,
-    //             Some(
-    //                 PageTableFlags::PRESENT
-    //                     | PageTableFlags::WRITABLE
-    //                     | PageTableFlags::USER_ACCESSIBLE,
-    //             ),
-    //         );
-
-    //         if !entry.loaded[index] && entry.fd == -1 {
-    //             break;
-    //         } else if !entry.loaded[index] && entry.fd != -1 {
-    //             let _open_file = pcb.fd_table[entry.fd as usize];
-    //             let _pos = faulting_address - entry.start + entry.offset;
-    //             // figure out where in the file we are
-    //             // load file content
-    //             // write content to physmem
-    //         }
-    //     }
-    //     break;
-    // }
+    let fault = determine_fault_cause(error_code);
+    match fault {
+        FaultOutcome::ExistingMapping {
+            page,
+            mut mapper,
+            chain,
+        } => {
+            handle_existing_mapping(page, &mut mapper, chain);
+        }
+        FaultOutcome::NewMapping {
+            page,
+            mut mapper,
+            vma,
+            backing,
+        } => {
+            // Lock the VMA to pass a reference.
+            let vma_guard = vma.lock();
+            handle_new_mapping(&vma_guard, page, &mut mapper, &backing);
+        }
+        FaultOutcome::CopyOnWrite { page, mut mapper } => {
+            handle_cow_fault(page, &mut mapper);
+        }
+        FaultOutcome::Mapped => {
+            serial_println!("Page is mapped; no COW fault detected");
+        }
+    }
+    serial_println!("At end of page fault handler");
 }
+
 #[no_mangle]
 #[naked]
 pub extern "x86-interrupt" fn naked_syscall_handler(_: InterruptStackFrame) {
@@ -391,7 +231,7 @@ fn syscall_handler(rsp: u64) {
     if syscall_num == SYSCALL_EXIT {
         sys_exit(p1 as i64);
     } else if syscall_num == SYSCALL_MMAP {
-        let val = sys_mmap(p1, p2, p3, p4, p5 as i64, p6).expect("Mmap failed");
+        let val = sys_mmap(p1, p2, p3, p4, p5 as i64, p6);
         unsafe {
             core::arch::asm!(
                 "mov rax, {0}",

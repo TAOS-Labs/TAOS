@@ -2,12 +2,15 @@ use core::sync::atomic::Ordering;
 
 use alloc::sync::Arc;
 use x86_64::structures::paging::{
-    page_table::PageTableEntry, OffsetPageTable, PageTable, PageTableFlags, PhysFrame
+    page_table::PageTableEntry, OffsetPageTable, PageTable, PageTableFlags, PhysFrame,
 };
 
 use crate::{
     events::{current_running_event_info, schedule_process_on},
-    memory::{frame_allocator::{alloc_frame, with_buddy_frame_allocator}, HHDM_OFFSET},
+    memory::{
+        frame_allocator::{alloc_frame, with_buddy_frame_allocator},
+        HHDM_OFFSET,
+    },
     processes::{
         process::{ProcessState, UnsafePCB, NEXT_PID, PCB, PROCESS_TABLE},
         registers::NonFlagRegisters,
@@ -30,7 +33,6 @@ pub fn sys_fork(reg_vals: &NonFlagRegisters) -> u64 {
     };
 
     let parent_pcb = process.pcb.get();
-    let mapper = unsafe { (*parent_pcb).create_mapper() };
 
     let child_pcb = Arc::new(UnsafePCB::new(unsafe { (*parent_pcb).clone() }));
     unsafe {
@@ -56,13 +58,13 @@ pub fn sys_fork(reg_vals: &NonFlagRegisters) -> u64 {
         (*child_pcb.pcb.get()).state = ProcessState::Ready;
     }
 
-
     serial_println!("Child RIP: {:#x}", reg_vals.rcx);
     serial_println!("Child Rflags: {}", reg_vals.r11);
 
-    let child_pml4_frame = duplicate_page_table_recursive(unsafe { (*parent_pcb).mm.pml4_frame }, 4);
+    let child_pml4_frame =
+        duplicate_page_table_recursive(unsafe { (*parent_pcb).mm.pml4_frame }, 4);
 
-    unsafe { 
+    unsafe {
         (*parent_pcb).mm.with_vma_tree_mutable(|tree| {
             serial_println!("BOUTTA");
             for vma_entry in tree.iter_mut() {
@@ -73,12 +75,16 @@ pub fn sys_fork(reg_vals: &NonFlagRegisters) -> u64 {
                 let backing = vma_lock.backing.clone();
                 let anon = vma_lock.anon;
                 drop(vma_lock);
-                
+
                 // Use the extracted data when inserting into the child tree.
-                (*child_pcb.pcb.get()).mm.with_vma_tree_mutable(|child_tree| {
-                    serial_println!("Inserting range {:X} - {:X}", start, end);
-                    (*child_pcb.pcb.get()).mm.insert_vma(child_tree, start, end, backing, flags, anon);
-                });
+                (*child_pcb.pcb.get())
+                    .mm
+                    .with_vma_tree_mutable(|child_tree| {
+                        serial_println!("Inserting range {:X} - {:X}", start, end);
+                        (*child_pcb.pcb.get())
+                            .mm
+                            .insert_vma(child_tree, start, end, backing, flags, anon);
+                    });
             }
             serial_println!("AFTER THE FOR LOOP");
         })
@@ -96,7 +102,6 @@ pub fn sys_fork(reg_vals: &NonFlagRegisters) -> u64 {
     child_pid as u64
 }
 
-
 /// Recursively duplicate a page table.
 ///
 /// # Arguments
@@ -106,10 +111,7 @@ pub fn sys_fork(reg_vals: &NonFlagRegisters) -> u64 {
 ///
 /// # Return
 /// Returns a PhysFrame that represents the new pml4 frame for child
-fn duplicate_page_table_recursive(
-    parent_frame: PhysFrame,
-    level: u8,
-) -> PhysFrame {
+fn duplicate_page_table_recursive(parent_frame: PhysFrame, level: u8) -> PhysFrame {
     // Allocate a new frame for this level’s table.
     let child_frame = alloc_frame().expect("Frame allocation failed");
     // Map it into our address space using HHDM_OFFSET.
@@ -121,7 +123,7 @@ fn duplicate_page_table_recursive(
     // Obtain a mutable pointer to the parent table.
     let parent_table_ptr =
         (HHDM_OFFSET.as_u64() + parent_frame.start_address().as_u64()) as *mut PageTable;
-    
+
     // Convert to mutable references so we can update parent's entries.
     let parent_table = unsafe { &mut *parent_table_ptr };
     let child_table = unsafe { &mut *child_table_ptr };
@@ -407,7 +409,6 @@ fn recursive_walk(
 
 #[cfg(test)]
 mod tests {
-    
 
     use super::*;
 

@@ -4,10 +4,8 @@
 use crate::{
     constants::memory::{HEAP_SIZE, HEAP_START},
     memory::{
-        buddy_frame_allocator::{BuddyFrameAllocator},
-        frame_allocator::FRAME_ALLOCATOR,
-        paging::create_mapping,
-        KERNEL_MAPPER,
+        buddy_frame_allocator::BuddyFrameAllocator, frame_allocator::FRAME_ALLOCATOR,
+        paging::create_mapping, KERNEL_MAPPER,
     },
     serial_println,
 };

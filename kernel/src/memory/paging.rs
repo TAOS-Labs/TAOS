@@ -2,7 +2,6 @@
 // however it could be used in a plethora of places later so I am keeping it for now
 #![allow(dead_code)]
 
-
 use x86_64::{
     structures::paging::{
         mapper::{MappedFrame, TranslateResult},
@@ -95,6 +94,8 @@ pub fn create_mapping(
             .expect("Mapping failed")
     };
 
+    tlb_shootdown(page.start_address());
+
     frame
 }
 
@@ -112,7 +113,7 @@ pub fn create_mapping_to_frame(
     page: Page,
     mapper: &mut impl Mapper<Size4KiB>,
     flags: Option<PageTableFlags>,
-    frame: PhysFrame
+    frame: PhysFrame,
 ) -> PhysFrame {
     let _ = unsafe {
         mapper
@@ -132,9 +133,10 @@ pub fn create_mapping_to_frame(
             .expect("Mapping failed")
     };
 
+    tlb_shootdown(page.start_address());
+
     frame
 }
-
 
 /// Updates an existing mapping
 ///
@@ -368,11 +370,7 @@ mod tests {
     };
 
     use super::*;
-    use crate::{
-        constants::memory::PAGE_SIZE,
-        events::schedule_kernel_on,
-        memory::KERNEL_MAPPER,
-    };
+    use crate::{constants::memory::PAGE_SIZE, events::schedule_kernel_on, memory::KERNEL_MAPPER};
     use alloc::vec::Vec;
     use bitflags::Flags;
     use x86_64::structures::paging::mapper::TranslateError;

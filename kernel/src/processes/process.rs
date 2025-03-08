@@ -15,9 +15,7 @@ use crate::{
         x2apic::{self, nanos_to_ticks},
     },
     memory::{
-        frame_allocator::{
-            alloc_frame, dealloc_frame, with_buddy_frame_allocator,
-        },
+        frame_allocator::{alloc_frame, dealloc_frame, with_buddy_frame_allocator},
         mm::Mm,
         HHDM_OFFSET, KERNEL_MAPPER,
     },
@@ -27,7 +25,10 @@ use crate::{
 };
 use alloc::{collections::BTreeMap, sync::Arc, vec::Vec};
 use core::{
-    arch::naked_asm, borrow::BorrowMut, cell::UnsafeCell, sync::atomic::{AtomicU32, Ordering}
+    arch::naked_asm,
+    borrow::BorrowMut,
+    cell::UnsafeCell,
+    sync::atomic::{AtomicU32, Ordering},
 };
 use spin::rwlock::RwLock;
 use x86_64::{
@@ -184,7 +185,12 @@ pub fn create_process(elf_bytes: &[u8]) -> u32 {
         let ptr = virt.as_mut_ptr::<PageTable>();
         OffsetPageTable::new(&mut *ptr, *HHDM_OFFSET)
     };
-    let (stack_top, entry_point) = load_elf(elf_bytes, &mut mapper, &mut KERNEL_MAPPER.lock(), mm.borrow_mut());
+    let (stack_top, entry_point) = load_elf(
+        elf_bytes,
+        &mut mapper,
+        &mut KERNEL_MAPPER.lock(),
+        mm.borrow_mut(),
+    );
 
     let process = Arc::new(UnsafePCB::new(PCB {
         pid,
@@ -208,7 +214,7 @@ pub fn create_process(elf_bytes: &[u8]) -> u32 {
             r14: 0,
             r15: 0,
             rbp: 0,
-            rsp: stack_top.as_u64(),
+            rsp: stack_top.as_u64() - 16,
             rip: entry_point,
             rflags: 0x202,
         },
@@ -238,7 +244,7 @@ unsafe fn create_process_page_table() -> PhysFrame<Size4KiB> {
         (*ptr).zero();
         let kernel_pml4 = mapper.level_4_table();
         for i in 256..512 {
-            (*ptr)[i] = kernel_pml4[i].clone();
+            (*ptr)[i].set_addr(kernel_pml4[i].addr(), kernel_pml4[i].flags());
         }
     }
 

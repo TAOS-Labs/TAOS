@@ -3,14 +3,15 @@
 //! Provides an interface for paging and mapping frames of memory
 //! Implements TLB shootdowns
 
-pub mod buddy_frame_allocator;
 pub mod bitmap_frame_allocator;
 pub mod boot_frame_allocator;
+pub mod buddy_frame_allocator;
 pub mod frame_allocator;
 pub mod heap;
+pub mod mm;
+pub mod page_fault;
 pub mod paging;
 pub mod tlb;
-pub mod mm;
 
 use boot_frame_allocator::BootIntoFrameAllocator;
 use frame_allocator::{GlobalFrameAllocator, FRAME_ALLOCATOR};

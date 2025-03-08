@@ -1,10 +1,16 @@
 use core::{ffi::CStr, i64, sync::atomic::AtomicI64};
 
 use crate::{
-    constants::syscalls::*, events::{current_running_event_info, current_running_event_pid, EventInfo}, interrupts::{gdt::TSSS, x2apic::current_core_id}, memory::frame_allocator::with_buddy_frame_allocator, processes::{
+    constants::syscalls::*,
+    events::{current_running_event_info, current_running_event_pid, EventInfo},
+    interrupts::{gdt::TSSS, x2apic::current_core_id},
+    memory::frame_allocator::with_buddy_frame_allocator,
+    processes::{
         process::{clear_process_frames, sleep_process, ProcessState, PROCESS_TABLE},
         registers::NonFlagRegisters,
-    }, serial_println, syscalls::fork::sys_fork
+    },
+    serial_println,
+    syscalls::{fork::sys_fork, mmap::sys_mmap},
 };
 
 use core::arch::naked_asm;
@@ -101,14 +107,12 @@ pub unsafe extern "C" fn syscall_handler_64_naked() -> ! {
         "pop rbp",
         // Swap GS back.
         "mov rsp, qword ptr gs:[20]",
-
         "swapgs",
         // Return to user mode. sysretq will use RCX (which contains the user RIP)
         // and R11 (which holds user RFLAGS).
         "sysretq",
     );
 }
-
 
 /// Function that routes to different syscalls
 ///
@@ -123,8 +127,12 @@ pub unsafe extern "C" fn syscall_handler_impl(
     reg_vals: *const NonFlagRegisters,
 ) -> u64 {
     let syscall = unsafe { &*syscall };
-    let reg_vals = unsafe {&*reg_vals};
-    serial_println!("Syscall num: {}, by PID: {}", syscall.number, current_running_event_pid());
+    let reg_vals = unsafe { &*reg_vals };
+    serial_println!(
+        "Syscall num: {}, by PID: {}",
+        syscall.number,
+        current_running_event_pid()
+    );
     match syscall.number as u32 {
         SYSCALL_EXIT => {
             sys_exit(syscall.arg1 as i64);
@@ -133,6 +141,14 @@ pub unsafe extern "C" fn syscall_handler_impl(
         SYSCALL_PRINT => sys_print(syscall.arg1 as *const u8),
         SYSCALL_NANOSLEEP => sys_nanosleep(syscall.arg1, syscall.arg2),
         SYSCALL_FORK => sys_fork(reg_vals),
+        SYSCALL_MMAP => sys_mmap(
+            syscall.arg1,
+            syscall.arg2,
+            syscall.arg3,
+            syscall.arg4,
+            syscall.arg5 as i64,
+            syscall.arg6,
+        ),
         _ => {
             panic!("Unknown syscall, {}", syscall.number);
         }

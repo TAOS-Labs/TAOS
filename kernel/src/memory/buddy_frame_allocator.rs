@@ -129,7 +129,7 @@ impl BuddyFrameAllocator {
                     }
                 }
             }
-           false
+            false
         };
 
         let mut frame_count = 0;
@@ -198,7 +198,8 @@ impl BuddyFrameAllocator {
         self.frames[index].ref_count.store(1, Ordering::Relaxed);
     }
 
-    pub fn allocate_block(&mut self, order: u16) -> Vec<PhysFrame<Size4KiB>> { let mut found_order = None;
+    pub fn allocate_block(&mut self, order: u16) -> Vec<PhysFrame<Size4KiB>> {
+        let mut found_order = None;
         for o in order..=self.max_order as u16 {
             if !self.free_lists[o as usize].is_empty() {
                 found_order = Some(o as usize);
@@ -238,7 +239,11 @@ impl BuddyFrameAllocator {
 
     pub unsafe fn deallocate_block(&mut self, block: Vec<PhysFrame<Size4KiB>>, order: u16) {
         // given frames vec must be of 1 << order size
-        assert_eq!(block.len(), 1 << order, "Block length does not match the order");
+        assert_eq!(
+            block.len(),
+            1 << order,
+            "Block length does not match the order"
+        );
 
         let base_index = block[0].start_address().as_u64() as usize / PAGE_SIZE;
 

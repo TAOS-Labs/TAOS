@@ -5,7 +5,8 @@
 use core::sync::atomic::{AtomicU16, Ordering};
 
 use crate::{
-    constants::memory::{BITMAP_ENTRY_SIZE, FRAME_SIZE, FULL_BITMAP_ENTRY, PAGE_SIZE}, serial_println
+    constants::memory::{BITMAP_ENTRY_SIZE, FRAME_SIZE, FULL_BITMAP_ENTRY, PAGE_SIZE},
+    serial_println,
 };
 use limine::{memory_map::EntryType, response::MemoryMapResponse};
 use x86_64::{
@@ -15,9 +16,8 @@ use x86_64::{
 
 use alloc::{boxed::Box, vec, vec::Vec};
 
-
 pub struct FrameRefCount {
-    counts: Box<[AtomicU16]>
+    counts: Box<[AtomicU16]>,
 }
 
 impl FrameRefCount {
@@ -110,7 +110,7 @@ impl BitmapFrameAllocator {
         let bitmap_size = total_frames.div_ceil(BITMAP_ENTRY_SIZE);
         serial_println!("The bitmap size in bytes is: {}", { bitmap_size });
         let bitmap = vec![FULL_BITMAP_ENTRY; bitmap_size].into_boxed_slice();
-        let frame_ref_count = FrameRefCount::new(total_frames);  
+        let frame_ref_count = FrameRefCount::new(total_frames);
         let mut allocator = Self {
             total_frames,
             free_frames: 0,
@@ -284,7 +284,8 @@ unsafe impl FrameAllocator<Size4KiB> for BitmapFrameAllocator {
                 let addr = self.to_allocate * FRAME_SIZE;
                 self.to_allocate = (self.to_allocate + 1) % self.total_frames;
                 self.allocate_count += 1;
-                self.frame_ref_count.inc(PhysFrame::containing_address(PhysAddr::new(addr as u64)));
+                self.frame_ref_count
+                    .inc(PhysFrame::containing_address(PhysAddr::new(addr as u64)));
                 return Some(PhysFrame::containing_address(PhysAddr::new(addr as u64)));
             }
 
@@ -309,4 +310,3 @@ impl FrameDeallocator<Size4KiB> for BitmapFrameAllocator {
         }
     }
 }
-

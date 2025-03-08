@@ -1,5 +1,4 @@
-use alloc::sync::Arc;
-use alloc::vec::Vec;
+use alloc::{sync::Arc, vec::Vec};
 use bitflags::bitflags;
 use spin::Mutex;
 use x86_64::{
@@ -19,8 +18,6 @@ use crate::{
     processes::process::PROCESS_TABLE,
     serial_println,
 };
-
-static MMAP_ADDR: Mutex<u64> = Mutex::new(START_MMAP_ADDRESS);
 
 #[derive(Clone, Debug)]
 pub struct MmapCall {
@@ -144,7 +141,7 @@ pub fn protection_to_pagetable_flags(prot: u64) -> PageTableFlags {
     flags
 }
 
-pub fn sys_mmap(addr: u64, len: u64, prot: u64, flags: u64, fd: i64, offset: u64) -> Option<u64> {
+pub fn sys_mmap(addr: u64, len: u64, prot: u64, flags: u64, fd: i64, offset: u64) -> u64 {
     // we will currently completely ignore user address requests and do whatever we want
     if len == 0 {
         serial_println!("Zero length mapping");
@@ -164,12 +161,11 @@ pub fn sys_mmap(addr: u64, len: u64, prot: u64, flags: u64, fd: i64, offset: u64
     // We must return the original beginning address while adjusting the value of MMAP_ADDR
     // for the next calls to MMAP
     let addr_to_return = begin_addr;
-    let mmap_call = MmapCall::new(begin_addr, begin_addr + len, fd, offset);
     let anon_vma = AnonVmArea::new();
 
-    if begin_addr + offset > (*HHDM_OFFSET).as_u64() {
+    if begin_addr + len > (*HHDM_OFFSET).as_u64() {
         serial_println!("Ran out of virtual memory for mmap call.");
-        return Some((*HHDM_OFFSET).as_u64());
+        return 0;
     }
     unsafe {
         (*pcb).mm.with_vma_tree_mutable(|tree| {
@@ -178,59 +174,15 @@ pub fn sys_mmap(addr: u64, len: u64, prot: u64, flags: u64, fd: i64, offset: u64
                 begin_addr,
                 begin_addr + len,
                 Arc::new(anon_vma),
-                VmAreaFlags::READ | VmAreaFlags::WRITE | !VmAreaFlags::SHARED,
+                VmAreaFlags::READ | VmAreaFlags::WRITE,
                 true,
             );
         })
     }
-    // let mmap_flags = MmapFlags::from_bits_retain(flags);
-    // if mmap_flags.contains(MmapFlags::MAP_ANON) {
-    //     map_memory(&mut begin_addr, len, prot, &mut mmap_call);
-    // } else {
-    //     allocate_file_memory(&mut begin_addr, len, fd, prot, offset, &mut mmap_call);
-    //
 
-    Some(addr_to_return)
+    serial_println!("Finished mmap call");
+    addr_to_return
 }
-
-// pub fn sys_mmapa(addr: u64, len: u64, prot: u64, flags: u64, fd: i64, offset: u64) -> Option<u64> {
-//     // we will currently completely ignore user address requests and do whatever we want
-//     if len == 0 {
-//         serial_println!("Zero length mapping");
-//         panic!();
-//         // return something
-//     }
-//     serial_println!("Fd is {}", fd);
-//     let event: EventInfo = current_running_event_info();
-//     let pid = event.pid;
-//     // for testing we hardcode to one for now
-//     let process_table = PROCESS_TABLE.write();
-//     let process = process_table
-//         .get(&pid)
-//         .expect("Could not get pcb from process table");
-//     let pcb = process.pcb.get();
-//     let mut begin_addr = unsafe { (*pcb).mmap_address };
-//     // We must return the original beginning address while adjusting the value of MMAP_ADDR
-//     // for the next calls to MMAP
-//     let addr_to_return = begin_addr;
-//     let mut mmap_call = MmapCall::new(begin_addr, begin_addr + len, fd, offset);
-//     if begin_addr + offset > (*HHDM_OFFSET).as_u64() {
-//         serial_println!("Ran out of virtual memory for mmap call.");
-//         return Some((*HHDM_OFFSET).as_u64());
-//     }
-//     if flags == MmapFlags::MAP_ANONYMOUS {
-//         map_memory(&mut begin_addr, len, prot, &mut mmap_call);
-//     } else {
-//         allocate_file_memory(&mut begin_addr, len, fd, prot, offset, &mut mmap_call);
-//     }
-//     unsafe {
-//         (*pcb).mmaps.push(mmap_call);
-//     }
-//     unsafe {
-//         (*pcb).mmap_address = begin_addr;
-//     }
-//     Some(addr_to_return)
-// }
 
 fn map_memory(begin_addr: &mut u64, len: u64, prot: u64, mmap_call: &mut MmapCall) {
     let pml4 = Cr3::read().0;
@@ -283,8 +235,6 @@ mod tests {
         events::schedule_process,
         processes::process::{create_process, PCB, PROCESS_TABLE},
     };
-
-    
 
     fn setup() -> (u32, *mut PCB) {
         let pid = create_process(MMAP_ANON_SIMPLE);

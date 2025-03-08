@@ -9,7 +9,9 @@ mod tests {
     use syscall_handlers::TEST_EXIT_CODE;
 
     use crate::{
-        constants::processes::{TEST_64_FORK_COW, TEST_64_FORK_EXIT, TEST_64_PRINT_EXIT, TEST_64_SIMPLE_EXIT},
+        constants::processes::{
+            TEST_64_FORK_COW, TEST_64_FORK_EXIT, TEST_64_PRINT_EXIT, TEST_64_SIMPLE_EXIT,
+        },
         events::schedule_process_on,
         processes::process::create_process,
     };
@@ -33,7 +35,7 @@ mod tests {
 
     /// The binary prints something to the console and then exits
     /// For now, requires manual verification that the printed
-    /// content is correct 
+    /// content is correct
     // #[test_case]
     fn test_print_exit() {
         let pid = create_process(TEST_64_PRINT_EXIT);
@@ -70,7 +72,10 @@ mod tests {
             core::hint::spin_loop();
         }
 
-        assert_eq!(TEST_EXIT_CODE.load(Ordering::SeqCst), (parent_pid + 1) as i64);
+        assert_eq!(
+            TEST_EXIT_CODE.load(Ordering::SeqCst),
+            (parent_pid + 1) as i64
+        );
 
         TEST_EXIT_CODE.store(i64::MIN, Ordering::SeqCst);
     }

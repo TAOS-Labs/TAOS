@@ -13,9 +13,7 @@ pub fn init(cpu_id: u32) {
 #[cfg(test)]
 mod tests {
     use crate::{
-        constants::processes::RAND_REGS_EXIT,
-        events::schedule_process,
-        interrupts::x2apic,
+        constants::processes::RAND_REGS_EXIT, events::schedule_process, interrupts::x2apic,
         processes::process::create_process,
     };
 

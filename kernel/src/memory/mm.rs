@@ -1,8 +1,8 @@
+use crate::serial_println;
 use alloc::{collections::btree_map::BTreeMap, sync::Arc};
+use bitflags::bitflags;
 use spin::Mutex;
 use x86_64::structures::paging::{PhysFrame, Size4KiB};
-use bitflags::bitflags;
-use crate::serial_println;
 
 type VmaTree = BTreeMap<usize, Arc<Mutex<VmArea>>>;
 
@@ -14,12 +14,9 @@ pub struct Mm {
 
 impl Clone for Mm {
     fn clone(&self) -> Self {
-        self.with_vma_tree(|tree| {
-            Mm {
-                vma_tree: Mutex::new(tree.clone()),
-                pml4_frame: self.pml4_frame
-            }
-
+        self.with_vma_tree(|tree| Mm {
+            vma_tree: Mutex::new(tree.clone()),
+            pml4_frame: self.pml4_frame,
         })
     }
 }
@@ -33,8 +30,15 @@ impl Mm {
     }
 
     /// Insert a new VmArea into the VMA tree.
-    pub fn insert_vma(&self, tree: &mut VmaTree,
-        start: u64, end: u64, backing: Arc<AnonVmArea>, flags: VmAreaFlags, anon: bool) -> Arc<Mutex<VmArea>> {
+    pub fn insert_vma(
+        &self,
+        tree: &mut VmaTree,
+        start: u64,
+        end: u64,
+        backing: Arc<AnonVmArea>,
+        flags: VmAreaFlags,
+        anon: bool,
+    ) -> Arc<Mutex<VmArea>> {
         let left_vma = if start > 0 {
             Mm::find_vma(&self, start - 1, tree)
         } else {
@@ -42,62 +46,75 @@ impl Mm {
         };
 
         let right_vma = Mm::find_vma(&self, end, tree);
-        serial_println!("COALESCED FUCKING NOTHING");
         let coalesce_left = if start > 0 {
-            left_vma.as_ref().map(|v| {
-                let guard = v.lock();
-                guard.flags == flags && guard.end == start
-            }).unwrap_or(false)
+            left_vma
+                .as_ref()
+                .map(|v| {
+                    let guard = v.lock();
+                    guard.flags == flags && guard.end == start
+                })
+                .unwrap_or(false)
         } else {
             false
         };
 
-        serial_println!("COALESCED LEFT");
-        
-        let coalesce_right = right_vma.as_ref().map(|v| {
-            let guard = v.lock();
-            guard.flags == flags && guard.start == end
-        }).unwrap_or(false);
-        serial_println!("COALESCED RIGHT");
-        
+        let coalesce_right = right_vma
+            .as_ref()
+            .map(|v| {
+                let guard = v.lock();
+                guard.flags == flags && guard.start == end
+            })
+            .unwrap_or(false);
 
         // TODO: Deal with backing
         if coalesce_left && coalesce_right {
-            serial_println!("Coalescing both");
             let left_bor = left_vma.unwrap();
             let right_bor = right_vma.unwrap();
             tree.remove(&(left_bor.lock().start as usize));
             tree.remove(&(right_bor.lock().start as usize));
 
-            let new_vma = Arc::new(Mutex::new(VmArea::new(left_bor.lock().start, right_bor.lock().end, backing, flags, anon)));
+            let new_vma = Arc::new(Mutex::new(VmArea::new(
+                left_bor.lock().start,
+                right_bor.lock().end,
+                backing,
+                flags,
+                anon,
+            )));
 
             tree.insert(left_bor.lock().start as usize, new_vma.clone());
 
             new_vma.clone()
         } else if coalesce_left {
-            serial_println!("Coalescing left");
             let left_vma_unwrapped = left_vma.unwrap();
             let left_bor = left_vma_unwrapped.lock();
             tree.remove(&(left_bor.start as usize));
-            let new_vma = Arc::new(Mutex::new(VmArea::new(left_bor.start, end, left_bor.backing.clone(), flags, anon)));
-
-            serial_println!("{:#?}", new_vma);
+            let new_vma = Arc::new(Mutex::new(VmArea::new(
+                left_bor.start,
+                end,
+                left_bor.backing.clone(),
+                flags,
+                anon,
+            )));
 
             tree.insert(left_bor.start as usize, new_vma.clone());
 
             new_vma.clone()
         } else if coalesce_right {
-            serial_println!("Coalescing right");
             let right_vma_unwrapped = right_vma.unwrap();
             let right_bor = right_vma_unwrapped.lock();
             tree.remove(&(right_bor.start as usize));
-            
-            let new_vma = Arc::new(Mutex::new(VmArea::new(start, right_bor.end, backing, flags, anon)));
-            tree.insert(start as usize,new_vma.clone());
+
+            let new_vma = Arc::new(Mutex::new(VmArea::new(
+                start,
+                right_bor.end,
+                backing,
+                flags,
+                anon,
+            )));
+            tree.insert(start as usize, new_vma.clone());
 
             new_vma.clone()
         } else {
-            serial_println!("Coalescing none");
             let new_vma = Arc::new(Mutex::new(VmArea::new(start, end, backing, flags, anon)));
             tree.insert(start as usize, new_vma.clone());
             new_vma.clone()
@@ -114,11 +131,9 @@ impl Mm {
         // Look for the area with the largest start address <= addr.
         let candidate = tree.range(..=addr as usize).next_back();
         if let Some((_, vma)) = candidate {
-            serial_println!("CHECKING ADDRESS");
             if addr < vma.lock().end {
                 return Some(vma.clone());
             }
-            serial_println!("CHECKED ADDRESS");
         }
         None
     }
@@ -129,8 +144,8 @@ impl Mm {
             serial_println!("VMA {}: {:#?}", i, vma.1.lock());
         }
     }
-    
-    pub fn with_vma_tree_mutable<F, R>(&self, f: F) -> R 
+
+    pub fn with_vma_tree_mutable<F, R>(&self, f: F) -> R
     where
         F: FnOnce(&mut VmaTree) -> R,
     {
@@ -139,7 +154,7 @@ impl Mm {
         f(&mut tree)
     }
 
-    pub fn with_vma_tree<F, R>(&self, f: F) -> R 
+    pub fn with_vma_tree<F, R>(&self, f: F) -> R
     where
         F: FnOnce(&VmaTree) -> R,
     {
@@ -147,9 +162,7 @@ impl Mm {
         let tree = self.vma_tree.lock();
         f(&tree)
     }
-
 }
-
 
 bitflags! {
     #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -168,17 +181,23 @@ pub struct VmArea {
     pub end: u64,
     pub backing: Arc<AnonVmArea>,
     pub flags: VmAreaFlags,
-    pub anon: bool
+    pub anon: bool,
 }
 
 impl VmArea {
-    pub fn new(start: u64, end: u64, backing: Arc<AnonVmArea>, flags: VmAreaFlags, anon: bool) -> Self {
+    pub fn new(
+        start: u64,
+        end: u64,
+        backing: Arc<AnonVmArea>,
+        flags: VmAreaFlags,
+        anon: bool,
+    ) -> Self {
         VmArea {
             start,
             end,
             backing,
             flags,
-            anon
+            anon,
         }
     }
 }
@@ -477,7 +496,7 @@ impl AnonVmArea {
 //             found2_anon_vma.unwrap().frame.start_address()
 //         );
 //     }
-    
+
 //     #[test_case]
 //     fn test_coalesce_left() {
 //         let pml4_frame = PhysFrame::containing_address(PhysAddr::new(0x1000));
@@ -485,10 +504,10 @@ impl AnonVmArea {
 //         mm.with_vma_tree_mutable(|tree| {
 //             let vma1 = mm.insert_vma(0, 0x1000, 0, VmAreaFlags::READ | VmAreaFlags::WRITE, true, tree);
 //             let got_vma1 = mm.find_vma(0x500,tree_2);
-    
+
 //             let vma2 = mm.insert_vma(0x1000, 0x2000, 0, VmAreaFlags::READ | VmAreaFlags::WRITE, true, tree);
 //             let got_vma1_new = mm.find_vma(0x500, tree);
-    
+
 //             assert_eq!(got_vma1.unwrap().start, mm.find_vma(0x1500, tree).unwrap().start);
 //         });
 //     }
