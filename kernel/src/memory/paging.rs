@@ -252,8 +252,7 @@ unsafe fn get_page_table_entry<'a>(
 #[cfg(test)]
 mod tests {
     use core::{
-        ptr::{read_volatile, write_volatile},
-        sync::atomic::{AtomicU64, Ordering},
+        future::Future, ptr::{read_volatile, write_volatile}, sync::atomic::{AtomicU64, Ordering}
     };
 
     use super::*;
@@ -277,86 +276,94 @@ mod tests {
 
     // Test basic remove, as removing and then translating should fail
     #[test_case]
-    fn test_remove_mapped_frame() {
-        let mut mapper = MAPPER.lock();
-        let page: Page = Page::containing_address(VirtAddr::new(0x500000000));
-        let _ = create_mapping(page, &mut *mapper, None);
+    fn test_remove_mapped_frame() -> impl Future<Output = ()> + Send + 'static {
+        async move {
+            let mut mapper = MAPPER.lock();
+            let page: Page = Page::containing_address(VirtAddr::new(0x500000000));
+            let _ = create_mapping(page, &mut *mapper, None);
 
-        remove_mapped_frame(page, &mut *mapper);
+            remove_mapped_frame(page, &mut *mapper);
 
-        let translate_frame_error = mapper.translate_page(page);
+            let translate_frame_error = mapper.translate_page(page);
 
-        assert!(matches!(
-            translate_frame_error,
-            Err(TranslateError::PageNotMapped)
-        ));
+            assert!(matches!(
+                translate_frame_error,
+                Err(TranslateError::PageNotMapped)
+            ));
+        }
     }
 
     // Test basic translation after map returns correct frame
     #[test_case]
-    fn test_basic_map_and_translate() {
-        let mut mapper = MAPPER.lock();
+    fn test_basic_map_and_translate() -> impl Future<Output = ()> + Send + 'static {
+        async move {
+            let mut mapper = MAPPER.lock();
 
-        // random test virtual page
-        let page: Page = Page::containing_address(VirtAddr::new(0x500000000));
-        let frame: PhysFrame = create_mapping(page, &mut *mapper, None);
+            // random test virtual page
+            let page: Page = Page::containing_address(VirtAddr::new(0x500000000));
+            let frame: PhysFrame = create_mapping(page, &mut *mapper, None);
 
-        let translate_frame = mapper.translate_page(page).expect("Translation failed");
+            let translate_frame = mapper.translate_page(page).expect("Translation failed");
 
-        assert_eq!(frame, translate_frame);
+            assert_eq!(frame, translate_frame);
 
-        remove_mapped_frame(page, &mut *mapper);
+            remove_mapped_frame(page, &mut *mapper);
+        }
     }
 
     // Test that permissions are updated correctly
     #[test_case]
-    fn test_update_permissions() {
-        let mut mapper = MAPPER.lock();
+    fn test_update_permissions() -> impl Future<Output = ()> + Send + 'static {
+        async move {
+            let mut mapper = MAPPER.lock();
 
-        let page: Page = Page::containing_address(VirtAddr::new(0x500000000));
-        let _ = create_mapping(page, &mut *mapper, None);
+            let page: Page = Page::containing_address(VirtAddr::new(0x500000000));
+            let _ = create_mapping(page, &mut *mapper, None);
 
-        let flags = PageTableFlags::PRESENT;
+            let flags = PageTableFlags::PRESENT;
 
-        update_permissions(page, &mut *mapper, flags);
+            update_permissions(page, &mut *mapper, flags);
 
-        let pte = unsafe { get_page_table_entry(page, &mapper) }.expect("Getting PTE Failed");
+            let pte = unsafe { get_page_table_entry(page, &mapper) }.expect("Getting PTE Failed");
 
-        assert!(pte.flags().contains(PageTableFlags::PRESENT));
-        assert!(!pte.flags().contains(PageTableFlags::WRITABLE));
+            assert!(pte.flags().contains(PageTableFlags::PRESENT));
+            assert!(!pte.flags().contains(PageTableFlags::WRITABLE));
 
-        remove_mapped_frame(page, &mut *mapper);
+            remove_mapped_frame(page, &mut *mapper);
+        }
     }
 
     // Test that contiguous mappings work correctly. Allocates 8 pages in a row.
     #[test_case]
-    fn test_contiguous_mapping() {
-        let mut mapper = MAPPER.lock();
+    fn test_contiguous_mapping() -> impl Future<Output = ()> + Send + 'static {
+        async move {
+            let mut mapper = MAPPER.lock();
 
-        // Define a contiguous region spanning 8 pages.
-        let start_page: Page = Page::containing_address(VirtAddr::new(0x500000000));
-        let num_pages = 8;
-        let flags = PageTableFlags::PRESENT | PageTableFlags::WRITABLE;
+            // Define a contiguous region spanning 8 pages.
+            let start_page: Page = Page::containing_address(VirtAddr::new(0x500000000));
+            let num_pages = 8;
+            let flags = PageTableFlags::PRESENT | PageTableFlags::WRITABLE;
 
-        let mut frames = Vec::new();
-        for i in 0..num_pages {
-            let page = Page::from_start_address(start_page.start_address() + i * PAGE_SIZE as u64)
-                .expect("Invalid page address");
-            let frame = create_mapping(page, &mut *mapper, Some(flags));
-            frames.push((page, frame));
-        }
+            let mut frames = Vec::new();
+            for i in 0..num_pages {
+                let page = Page::from_start_address(start_page.start_address() + i * PAGE_SIZE as u64)
+                    .expect("Invalid page address");
+                let frame = create_mapping(page, &mut *mapper, Some(flags));
+                frames.push((page, frame));
+            }
 
-        // Write and verify distinct values.
-        for (i, (page, _)) in frames.iter().enumerate() {
-            let ptr = page.start_address().as_mut_ptr::<u64>();
-            unsafe { write_volatile(ptr, i as u64) };
-            let val = unsafe { read_volatile(ptr) };
-            assert_eq!(val, i as u64,);
-        }
+            // Write and verify distinct values.
+            for (i, (page, _)) in frames.iter().enumerate() {
+                let ptr = page.start_address().as_mut_ptr::<u64>();
+                unsafe { write_volatile(ptr, i as u64) };
+                let val = unsafe { read_volatile(ptr) };
+                assert_eq!(val, i as u64,);
+            }
 
-        // Cleanup: Unmap all pages.
-        for (page, _) in frames {
-            remove_mapped_frame(page, &mut *mapper);
+            // Cleanup: Unmap all pages.
+            for (page, _) in frames {
+                remove_mapped_frame(page, &mut *mapper);
+            }
         }
     }
 
@@ -365,57 +372,59 @@ mod tests {
     // is necessary.
     // Finally, check the mapping on another core.
     #[test_case]
-    fn test_tlb_shootdowns_cross_core() {
-        const AP: u32 = 1;
-        const PRIORITY: usize = 3;
-        const PID: u32 = 0;
+    fn test_tlb_shootdowns_cross_core() -> impl Future<Output = ()> + Send + 'static {
+        async move {
+            const AP: u32 = 1;
+            const PRIORITY: usize = 3;
+            const PID: u32 = 0;
 
-        // create mapping and set value on current core to cache page
-        let page: Page = Page::containing_address(VirtAddr::new(0x500000000));
+            // create mapping and set value on current core to cache page
+            let page: Page = Page::containing_address(VirtAddr::new(0x500000000));
 
-        {
-            let mut mapper = MAPPER.lock();
-            let _ = create_mapping(page, &mut *mapper, None);
-            unsafe {
-                page.start_address()
-                    .as_mut_ptr::<u64>()
-                    .write_volatile(0xdead);
+            {
+                let mut mapper = MAPPER.lock();
+                let _ = create_mapping(page, &mut *mapper, None);
+                unsafe {
+                    page.start_address()
+                        .as_mut_ptr::<u64>()
+                        .write_volatile(0xdead);
+                }
             }
-        }
 
-        // mapping exists now and is cached for first core
+            // mapping exists now and is cached for first core
 
-        // tell core 1 to read the value (to TLB cache) and wait until it's done
-        schedule_kernel_on(AP, async move { pre_read(page).await }, PRIORITY);
+            // tell core 1 to read the value (to TLB cache) and wait until it's done
+            schedule_kernel_on(AP, async move { pre_read(page).await }, PRIORITY);
 
-        while PRE_READ.load(Ordering::SeqCst) == 0 {
-            core::hint::spin_loop();
-        }
-
-        {
-            let mut mapper = MAPPER.lock();
-            let new_frame = alloc_frame().expect("Could not find a new frame");
-
-            // could say page already mapped, which would be really dumb
-            update_mapping(page, &mut *mapper, new_frame);
-
-            unsafe {
-                page.start_address()
-                    .as_mut_ptr::<u64>()
-                    .write_volatile(0x42);
+            while PRE_READ.load(Ordering::SeqCst) == 0 {
+                core::hint::spin_loop();
             }
+
+            {
+                let mut mapper = MAPPER.lock();
+                let new_frame = alloc_frame().expect("Could not find a new frame");
+
+                // could say page already mapped, which would be really dumb
+                update_mapping(page, &mut *mapper, new_frame);
+
+                unsafe {
+                    page.start_address()
+                        .as_mut_ptr::<u64>()
+                        .write_volatile(0x42);
+                }
+            }
+
+            // back on core 1, read the value and see if it has changed
+            schedule_kernel_on(AP, async move { post_read(page).await }, PRIORITY);
+
+            while POST_READ.load(Ordering::SeqCst) == 0 {
+                core::hint::spin_loop();
+            }
+
+            assert_eq!(POST_READ.load(Ordering::SeqCst), 0x42);
+
+            let mut mapper = MAPPER.lock();
+            remove_mapped_frame(page, &mut *mapper);
         }
-
-        // back on core 1, read the value and see if it has changed
-        schedule_kernel_on(AP, async move { post_read(page).await }, PRIORITY);
-
-        while POST_READ.load(Ordering::SeqCst) == 0 {
-            core::hint::spin_loop();
-        }
-
-        assert_eq!(POST_READ.load(Ordering::SeqCst), 0x42);
-
-        let mut mapper = MAPPER.lock();
-        remove_mapped_frame(page, &mut *mapper);
     }
 }
