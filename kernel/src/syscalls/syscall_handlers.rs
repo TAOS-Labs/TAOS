@@ -1,18 +1,20 @@
-use core::ffi::CStr;
+use core::{ffi::CStr, sync::atomic::AtomicI64};
 
 use crate::{
     constants::syscalls::*,
-    debug,
-    events::{current_running_event_info, EventInfo},
-    interrupts::{gdt::TSSS, x2apic::current_core_id},
-    processes::process::{clear_process_frames, sleep_process, ProcessState, PROCESS_TABLE},
+    events::{current_running_event_info, current_running_event_pid, EventInfo},
+    interrupts::x2apic,
+    memory::frame_allocator::with_bitmap_frame_allocator,
+    processes::{
+        process::{clear_process_frames, sleep_process, ProcessState, PROCESS_TABLE},
+        registers::NonFlagRegisters,
+    },
     serial_println,
 };
 
-#[warn(unused)]
-use crate::interrupts::x2apic;
-#[allow(unused)]
 use core::arch::naked_asm;
+
+pub static TEST_EXIT_CODE: AtomicI64 = AtomicI64::new(i64::MIN);
 
 #[repr(C)]
 #[derive(Debug)]
@@ -26,58 +28,92 @@ pub struct SyscallRegisters {
     pub arg6: u64,   // originally in r9
 }
 
-#[no_mangle]
-fn get_ring_0_rsp() -> u64 {
-    let core = current_core_id();
-    ((TSSS[core].privilege_stack_table[0]).as_u64()) & !15
-}
-
+/// Naked syscall handler that switches to a valid kernel stack (saving
+/// the user stack in some TSS), saves register values, sets up
+/// correct arguments, and dispatches to a syscall handler
+///
+/// # Return
+/// This function never returns normally as it performs a sysretq
+///
+/// # Safety
+/// This function is unsafe as it manually saves state and switches stacks
 #[naked]
 #[no_mangle]
-pub extern "C" fn syscall_handler_64_naked() {
-    unsafe {
-        core::arch::naked_asm!(
-            "
-            swapgs
-            mov r12, rcx
-            mov r13, r11
-            mov r14, rax // syscall num
-            mov r15, rsp
-            push rdi
-            push rsi
-            push rdx
-            push r10
-            push r8
-            push r9
-            call get_ring_0_rsp // call
-            pop r9
-            pop r8
-            pop r10
-            pop rdx
-            pop rsi
-            pop rdi
-            mov rsp, rax // rax has return from get_ring_0_rsp, mov rsp
-            mov rax, r14 // return rax (syscall_number) back
-            sub rsp, 56
-            mov [rsp + 0], rax
-            mov [rsp + 8], rdi
-            mov [rsp + 16], rsi
-            mov [rsp + 24], rdx
-            mov [rsp + 32], r10
-            mov [rsp + 40], r8
-            mov [rsp + 48], r9
-            mov rdi, rsp
-            call syscall_handler_impl
-            add rsp, 56
-            pop rbx
-            mov rcx, r12
-            mov r11, r13
-            mov rsp, r15
-            swapgs
-            sysretq
-            "
-        )
-    };
+pub unsafe extern "C" fn syscall_handler_64_naked() -> ! {
+    naked_asm!(
+        // Swap GS to load the kernel GS base.
+        "swapgs",
+        // RSP2 in the TSS is scratch space - store userspace RSP for later
+        "mov qword ptr gs:[20], rsp",
+        // TODO WE NEED TO USE KERNEL STACK HERE
+        "mov rsp, qword ptr gs:[4]",
+        // Allocate 56 bytes on the stack for SyscallRegisters.
+        // Save important registers
+        "push rbp",
+        "push r15",
+        "push r14",
+        "push r13",
+        "push r12",
+        "push r11",
+        "push r10",
+        "push r9",
+        "push r8",
+        "push rdi",
+        "push rsi",
+        "push rdx",
+        "push rcx",
+        "push rbx",
+        "mov r12, qword ptr gs:[20]", // get user rsp and push it on stack for fork
+        "push r12",
+        "sub rsp, 56",
+        // Save the syscall number (from RAX).
+        "mov [rsp], rax",
+        // Save arg1 (from RDI).
+        "mov [rsp+8], rdi",
+        // Save arg2 (from RSI).
+        "mov [rsp+16], rsi",
+        // Save arg3 (from RDX).
+        "mov [rsp+24], rdx",
+        // The syscall calling convention: the user’s 4th argument was originally in RCX,
+        // but because syscall overwrites RCX with the return RIP, we copy RCX into r10.
+        "mov r10, rcx",
+        // Save arg4 (now in R10).
+        "mov [rsp+32], r10",
+        // Save arg5 (from R8).
+        "mov [rsp+40], r8",
+        // Save arg6 (from R9).
+        "mov [rsp+48], r9",
+        // Pass pointer to SyscallRegisters in RDI.
+        "mov rdi, rsp",
+        "mov rsi, rsp",
+        "add rsi, 56",
+        // Call the Rust syscall dispatcher.
+        "call syscall_handler_impl",
+        // The dispatcher returns a value in RAX; clean up the stack.
+        "add rsp, 56",
+        // Restore important regs
+        "add rsp, 8", // we don't care about rsp that was pushed for fork
+        "pop rbx",
+        "pop rcx",
+        "pop rdx",
+        "pop rsi",
+        "pop rdi",
+        "pop r8",
+        "pop r9",
+        "pop r10",
+        "pop r11",
+        "pop r12",
+        "pop r13",
+        "pop r14",
+        "pop r15",
+        "pop rbp",
+        // Swap GS back.
+        "mov rsp, qword ptr gs:[20]",
+        "swapgs",
+        // Return to user mode. sysretq will use RCX (which contains the user RIP)
+        // and R11 (which holds user RFLAGS).
+        "sysretq",
+    );
 }
 
 /// Function that routes to different syscalls
@@ -88,8 +124,17 @@ pub extern "C" fn syscall_handler_64_naked() {
 /// # Safety
 /// This function is unsafe as it must dereference `syscall` to get args
 #[no_mangle]
-pub unsafe extern "C" fn syscall_handler_impl(syscall: *const SyscallRegisters) -> u64 {
+pub unsafe extern "C" fn syscall_handler_impl(
+    syscall: *const SyscallRegisters,
+    reg_vals: *const NonFlagRegisters,
+) -> u64 {
     let syscall = unsafe { &*syscall };
+    let _reg_vals = unsafe { &*reg_vals };
+    serial_println!(
+        "Syscall num: {}, by PID: {}",
+        syscall.number,
+        current_running_event_pid()
+    );
     match syscall.number as u32 {
         SYSCALL_EXIT => {
             sys_exit(syscall.arg1 as i64);
@@ -103,9 +148,8 @@ pub unsafe extern "C" fn syscall_handler_impl(syscall: *const SyscallRegisters) 
     }
 }
 
-pub fn sys_exit(code: i64) {
+pub fn sys_exit(code: i64) -> Option<u64> {
     // TODO handle hierarchy (parent processes), resources, threads, etc.
-    // TODO recursive page table walk to handle cleaning up process memory
 
     // Used for testing
     if code == -1 {
@@ -115,12 +159,14 @@ pub fn sys_exit(code: i64) {
     let event: EventInfo = current_running_event_info();
 
     serial_println!("Process {} exited with code {}", event.pid, code);
+    // This is for testing; this way, we can write binaries that conditionally fail tests
+    if code == -1 {
+        panic!("Unknown exit code, something went wrong")
+    }
 
     if event.pid == 0 {
         panic!("Calling exit from outside of process");
     }
-
-    debug!("Process {} exit", event.pid);
 
     // Get PCB from PID
     let preemption_info = unsafe {
@@ -134,21 +180,41 @@ pub fn sys_exit(code: i64) {
         (*pcb).state = ProcessState::Terminated;
 
         clear_process_frames(&mut *pcb);
-        serial_println!("Removing {}", event.pid);
+        with_bitmap_frame_allocator(|alloc| {
+            alloc.print_bitmap_free_frames();
+        });
+
         process_table.remove(&event.pid);
         ((*pcb).kernel_rsp, (*pcb).kernel_rip)
     };
+
+    #[cfg(test)]
+    {
+        TEST_EXIT_CODE.store(code, core::sync::atomic::Ordering::SeqCst);
+    }
 
     unsafe {
         // Restore kernel RSP + PC -> RIP from where it was stored in run/resume process
         core::arch::asm!(
             "mov rsp, {0}",
             "push {1}",
-            "ret",
+            "stc",          // Use carry flag as sentinel to run_process that we're exiting
+            // "ret",
             in(reg) preemption_info.0,
             in(reg) preemption_info.1
         );
     }
+
+    if code == -1 {
+        panic!("Bad error code!");
+    }
+
+    unsafe {
+        core::arch::asm!("swapgs");
+        core::arch::asm!("ret");
+    }
+
+    Some(code as u64)
 }
 
 // Not a real system call, but useful for testing
@@ -160,6 +226,7 @@ pub fn sys_print(buffer: *const u8) -> u64 {
     0
 }
 
+// hey gang
 pub fn sys_nanosleep(nanos: u64, rsp: u64) -> u64 {
     sleep_process(rsp, nanos);
     x2apic::send_eoi();

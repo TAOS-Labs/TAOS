@@ -14,7 +14,10 @@ use crate::{
 use core::sync::atomic::{AtomicU32, Ordering};
 use raw_cpuid::CpuId;
 use spin::Mutex;
-use x86_64::{instructions::port::Port, registers::model_specific::Msr};
+use x86_64::{
+    instructions::port::Port,
+    registers::model_specific::{GsBase, KernelGsBase, Msr},
+};
 
 /// MSR register addresses for x2APIC control
 const IA32_APIC_BASE_MSR: u32 = 0x1B;
@@ -31,6 +34,13 @@ const X2APIC_IA32_EFER: u32 = 0xC000_0080;
 const X2APIC_IA32_LSTAR: u32 = 0xC000_0082;
 const X2APIC_IA32_FMASK: u32 = 0xC000_0084;
 const X2APIC_IA32_STAR: u32 = 0xC000_0081;
+const X2APIC_IA32_GSBASE: u32 = 0xC000_0101;
+const X2APIC_IA32_KERNEL_GSBASE: u32 = 0xC000_0102;
+
+// TODO Add support for sysenter and sysret system calls
+// const X2APIC_IA32_SYSENTER_CS: u32 = 0x174;
+// const X2APIC_IA32_SYSENTER_ESP: u32 = 0x175;
+// const X2APIC_IA32_SYSENTER_EIP: u32 = 0x176;
 
 /// Programmable Interval Timer (PIT) constants for timer calibration
 const PIT_FREQUENCY: u64 = 1_193_182;
@@ -153,7 +163,7 @@ impl X2ApicManager {
         let fmask: u64 = 0x200;
         let user_cs = gdt::GDT.1.user_code_selector.0 as u64;
         let kernel_cs = gdt::GDT.1.code_selector.0 as u64;
-        let star: u64 = (kernel_cs << 32) | (user_cs << 48);
+        let star: u64 = ((user_cs - 16) << 48) | (kernel_cs << 32);
 
         let sys_addr = syscall_handler_64_naked as usize;
 
@@ -163,6 +173,8 @@ impl X2ApicManager {
             Msr::new(X2APIC_IA32_LSTAR).write(sys_addr.try_into().unwrap());
             Msr::new(X2APIC_IA32_FMASK).write(fmask);
             Msr::new(X2APIC_IA32_STAR).write(star);
+            Msr::new(X2APIC_IA32_KERNEL_GSBASE).write(KernelGsBase::read().as_u64());
+            Msr::new(X2APIC_IA32_GSBASE).write(GsBase::read().as_u64());
         }
 
         Ok(())
@@ -238,6 +250,7 @@ impl X2ApicManager {
         Self::initialize_current_core()?;
         Self::configure_timer_current_core(count)?;
         Self::configure_syscall_current_core()?;
+
         Ok(())
     }
 }
