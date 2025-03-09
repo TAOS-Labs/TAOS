@@ -70,7 +70,7 @@ pub fn load_elf(
                     page.start_address().as_u64(),
                     page.start_address().as_u64() + PAGE_SIZE as u64,
                     anon_vma_code_and_data.clone(),
-                    VmAreaFlags::WRITE | VmAreaFlags::READ | VmAreaFlags::EXECUTE,
+                    VmAreaFlags::WRITABLE | VmAreaFlags::EXECUTE,
                     true,
                 );
             });
@@ -132,13 +132,11 @@ pub fn load_elf(
     // Map user stack
     let stack_start = VirtAddr::new(STACK_START);
     let stack_end = VirtAddr::new(STACK_START + STACK_SIZE as u64);
-    let start_page: Page<Size4KiB> = Page::containing_address(stack_start);
-    let end_page: Page<Size4KiB> = Page::containing_address(stack_end);
+    let _start_page: Page<Size4KiB> = Page::containing_address(stack_start);
+    let _end_page: Page<Size4KiB> = Page::containing_address(stack_end);
 
     // new anon_vma that corresponds to this stack
     let anon_vma = Arc::new(AnonVmArea::new());
-    // let stack_flags =
-    //     PageTableFlags::PRESENT | PageTableFlags::WRITABLE | PageTableFlags::USER_ACCESSIBLE;
 
     mm.with_vma_tree_mutable(|tree| {
         mm.insert_vma(
@@ -146,14 +144,10 @@ pub fn load_elf(
             STACK_START,
             STACK_START + STACK_SIZE as u64,
             anon_vma,
-            VmAreaFlags::READ | VmAreaFlags::WRITE | VmAreaFlags::GROWS_DOWN,
+            VmAreaFlags::WRITABLE | VmAreaFlags::GROWS_DOWN,
             true,
         );
     });
-
-    // for page in Page::range_inclusive(start_page, end_page) {
-    //     create_mapping(page, user_mapper, Some(PageTableFlags::WRITABLE | PageTableFlags::USER_ACCESSIBLE | PageTableFlags::PRESENT));
-    // }
 
     (stack_end, elf.header.e_entry)
 }

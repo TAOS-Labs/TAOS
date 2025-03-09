@@ -2,7 +2,7 @@ use crate::serial_println;
 use alloc::{collections::btree_map::BTreeMap, sync::Arc};
 use bitflags::bitflags;
 use spin::Mutex;
-use x86_64::structures::paging::{PhysFrame, Size4KiB};
+use x86_64::structures::paging::{PageTableFlags, PhysFrame, Size4KiB};
 
 type VmaTree = BTreeMap<usize, Arc<Mutex<VmArea>>>;
 
@@ -14,10 +14,21 @@ pub struct Mm {
 
 impl Clone for Mm {
     fn clone(&self) -> Self {
-        self.with_vma_tree(|tree| Mm {
-            vma_tree: Mutex::new(tree.clone()),
+        let new_tree: VmaTree = self.with_vma_tree(|tree| {
+            tree.iter()
+                .map(|(&k, v)| {
+                    let new_vma = {
+                        let guard = v.lock();
+                        guard.clone()
+                    };
+                    (k, Arc::new(Mutex::new(new_vma)))
+                })
+                .collect()
+        });
+        Mm {
+            vma_tree: Mutex::new(new_tree),
             pml4_frame: self.pml4_frame,
-        })
+        }
     }
 }
 
@@ -167,12 +178,29 @@ impl Mm {
 bitflags! {
     #[derive(Clone, Copy, Debug, Eq, PartialEq)]
     pub struct VmAreaFlags: u64 {
-        const READ = 0b001;
-        const WRITE = 0b010;
-        const EXECUTE = 0b100;
-        const SHARED = 0b1000; // If 1, shared. If 0, private (COW)
-        const GROWS_DOWN = 0b1_0000; // Stack
+        const WRITABLE = 0b001;
+        const EXECUTE = 0b10; // For code segments
+        const SHARED = 0b100; // If 1, shared. If 0, private (COW)
+        const GROWS_DOWN = 0b1000; // Stack
+        const PINNED = 0b1_0000; // Not to be evicted by PRA
+        const MAPPED_FILE = 0b10_0000; // Indicates a file backed mapping
+        const HUGEPAGE = 0b100_0000; // Indicates that this VMA could contain huge pages
+        const FIXED = 0b1000_0000; // Mappings in the VMA wont be changed
+        const NORESERVE = 0b1_0000_0000; // For lazy loading
     }
+}
+
+pub fn vma_to_page_flags(vma_flags: VmAreaFlags) -> PageTableFlags {
+    let mut flags = PageTableFlags::USER_ACCESSIBLE;
+
+    if vma_flags.contains(VmAreaFlags::WRITABLE) {
+        flags.set(PageTableFlags::WRITABLE, true);
+    }
+    if vma_flags.contains(VmAreaFlags::EXECUTE) {
+        flags.set(PageTableFlags::NO_EXECUTE, false);
+    }
+
+    flags
 }
 
 #[derive(Clone, Debug)]
@@ -289,20 +317,13 @@ mod tests {
         let anon_area = Arc::new(AnonVmArea::new());
 
         mm.with_vma_tree_mutable(|tree| {
-            let _vma1 = mm.insert_vma(
-                tree,
-                0,
-                500,
-                anon_area.clone(),
-                VmAreaFlags::READ | VmAreaFlags::WRITE,
-                true,
-            );
+            let _vma1 = mm.insert_vma(tree, 0, 500, anon_area.clone(), VmAreaFlags::WRITABLE, true);
             let _vma2 = mm.insert_vma(
                 tree,
                 600,
                 1000,
                 anon_area.clone(),
-                VmAreaFlags::READ | VmAreaFlags::WRITE,
+                VmAreaFlags::WRITABLE,
                 true,
             );
             // Test finding a VMA that covers a given address.
@@ -331,14 +352,7 @@ mod tests {
 
         mm.with_vma_tree_mutable(|tree| {
             // Create a VmArea instance.
-            let _vma = mm.insert_vma(
-                tree,
-                0,
-                500,
-                anon_area.clone(),
-                VmAreaFlags::READ | VmAreaFlags::WRITE,
-                true,
-            );
+            let _vma = mm.insert_vma(tree, 0, 500, anon_area.clone(), VmAreaFlags::WRITABLE, true);
 
             let found = mm.find_vma(250, tree);
             assert_eq!(found.unwrap().lock().start, 0);
@@ -373,7 +387,7 @@ mod tests {
                 0,
                 0x1000,
                 anon_area.clone(),
-                VmAreaFlags::READ | VmAreaFlags::WRITE,
+                VmAreaFlags::WRITABLE,
                 true,
             )
         });
@@ -424,7 +438,7 @@ mod tests {
                 0,
                 0x2000,
                 anon_area.clone(),
-                VmAreaFlags::READ | VmAreaFlags::WRITE,
+                VmAreaFlags::WRITABLE,
                 true,
             );
 
@@ -486,7 +500,7 @@ mod tests {
                 0,
                 0x1000,
                 anon_area.clone(),
-                VmAreaFlags::READ | VmAreaFlags::WRITE,
+                VmAreaFlags::WRITABLE,
                 true,
             )
         });
@@ -496,7 +510,7 @@ mod tests {
                 0x1000,
                 0x2000,
                 anon_area.clone(),
-                VmAreaFlags::READ | VmAreaFlags::WRITE,
+                VmAreaFlags::WRITABLE,
                 true,
             )
         });
@@ -557,7 +571,7 @@ mod tests {
                 0,
                 0x1000,
                 anon_area.clone(),
-                VmAreaFlags::READ | VmAreaFlags::WRITE,
+                VmAreaFlags::WRITABLE,
                 true,
             );
             let got_vma1 = mm.find_vma(0x500, tree).expect("Should find vma");
@@ -567,7 +581,7 @@ mod tests {
                 0x1000,
                 0x2000,
                 anon_area.clone(),
-                VmAreaFlags::READ | VmAreaFlags::WRITE,
+                VmAreaFlags::WRITABLE,
                 true,
             );
             let v1_start = got_vma1.lock().start;
@@ -597,7 +611,7 @@ mod tests {
                 0x1000,
                 0x2000,
                 anon_area.clone(),
-                VmAreaFlags::READ | VmAreaFlags::WRITE,
+                VmAreaFlags::WRITABLE,
                 true,
             );
             let _vma2 = mm.insert_vma(
@@ -605,7 +619,7 @@ mod tests {
                 0,
                 0x1000,
                 anon_area.clone(),
-                VmAreaFlags::READ | VmAreaFlags::WRITE,
+                VmAreaFlags::WRITABLE,
                 true,
             );
         });
@@ -635,7 +649,7 @@ mod tests {
                 0,
                 0x1000,
                 anon_area.clone(),
-                VmAreaFlags::READ | VmAreaFlags::WRITE,
+                VmAreaFlags::WRITABLE,
                 true,
             );
             let got_vma1 = mm.find_vma(0x500, tree).expect("Should find vma");
@@ -645,7 +659,7 @@ mod tests {
                 0x2000,
                 0x3000,
                 anon_area.clone(),
-                VmAreaFlags::READ | VmAreaFlags::WRITE,
+                VmAreaFlags::WRITABLE,
                 true,
             );
             let _vma3 = mm.insert_vma(
@@ -653,7 +667,7 @@ mod tests {
                 0x1000,
                 0x2000,
                 anon_area.clone(),
-                VmAreaFlags::READ | VmAreaFlags::WRITE,
+                VmAreaFlags::WRITABLE,
                 true,
             );
             let got_vma2 = mm.find_vma(0x1500, tree).expect("Should find vma");
@@ -668,4 +682,3 @@ mod tests {
         assert_eq!(start2, start3);
     }
 }
-

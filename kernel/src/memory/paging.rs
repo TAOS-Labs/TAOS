@@ -561,7 +561,7 @@ mod tests {
                     page.start_address().as_u64(),
                     page.start_address().as_u64() + PAGE_SIZE as u64,
                     anon_area.clone(),
-                    VmAreaFlags::READ,
+                    VmAreaFlags::empty(),
                     true,
                 );
             });
@@ -641,7 +641,7 @@ mod tests {
                     page.start_address().as_u64(),
                     page.start_address().as_u64() + PAGE_SIZE as u64,
                     anon_area.clone(),
-                    VmAreaFlags::READ,
+                    VmAreaFlags::empty(),
                     true,
                 );
             });

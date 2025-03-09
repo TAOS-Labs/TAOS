@@ -1,48 +1,16 @@
-use alloc::{sync::Arc, vec::Vec};
+use alloc::sync::Arc;
 use bitflags::bitflags;
-use spin::Mutex;
-use x86_64::{
-    registers::control::Cr3,
-    structures::paging::{OffsetPageTable, Page, PageTable, PageTableFlags, Size4KiB},
-    VirtAddr,
-};
+use x86_64::structures::paging::{OffsetPageTable, Page, PageTable, PageTableFlags, Size4KiB};
 
 use crate::{
-    constants::{memory::PAGE_SIZE, syscalls::START_MMAP_ADDRESS},
     events::{current_running_event_info, EventInfo},
     memory::{
         mm::{AnonVmArea, VmAreaFlags},
-        paging::create_not_present_mapping,
-        HHDM_OFFSET, KERNEL_MAPPER,
+        HHDM_OFFSET,
     },
     processes::process::PROCESS_TABLE,
     serial_println,
 };
-
-#[derive(Clone, Debug)]
-pub struct MmapCall {
-    pub start: u64,
-    pub end: u64,
-    pub fd: i64,
-    pub offset: u64,
-    pub loaded: Vec<bool>,
-}
-
-impl MmapCall {
-    pub fn new(start: u64, end: u64, fd: i64, offset: u64) -> Self {
-        MmapCall {
-            start,
-            end,
-            fd,
-            offset,
-            loaded: Vec::new(),
-        }
-    }
-
-    pub fn contains(&self, addr: u64) -> bool {
-        addr >= self.start && addr < self.end
-    }
-}
 
 // See https://www.man7.org/linux/man-pages/man2/mmap.2.html
 bitflags! {
@@ -169,12 +137,12 @@ pub fn sys_mmap(addr: u64, len: u64, prot: u64, flags: u64, fd: i64, offset: u64
     }
     unsafe {
         (*pcb).mm.with_vma_tree_mutable(|tree| {
-            let vma = (*pcb).mm.insert_vma(
+            let _ = (*pcb).mm.insert_vma(
                 tree,
                 begin_addr,
                 begin_addr + len,
                 Arc::new(anon_vma),
-                VmAreaFlags::READ | VmAreaFlags::WRITE,
+                VmAreaFlags::WRITABLE,
                 true,
             );
         })
@@ -182,50 +150,6 @@ pub fn sys_mmap(addr: u64, len: u64, prot: u64, flags: u64, fd: i64, offset: u64
 
     serial_println!("Finished mmap call");
     addr_to_return
-}
-
-fn map_memory(begin_addr: &mut u64, len: u64, prot: u64, mmap_call: &mut MmapCall) {
-    let pml4 = Cr3::read().0;
-    let new_pml4_phys = pml4.start_address();
-    let new_pml4_virt = VirtAddr::new((*HHDM_OFFSET).as_u64()) + new_pml4_phys.as_u64();
-    let new_pml4_ptr: *mut PageTable = new_pml4_virt.as_mut_ptr();
-
-    let mut mapper =
-        unsafe { OffsetPageTable::new(&mut *new_pml4_ptr, VirtAddr::new((*HHDM_OFFSET).as_u64())) };
-
-    let page_count = len / PAGE_SIZE as u64;
-    for _ in 0..page_count {
-        let page: Page<Size4KiB> = Page::containing_address(VirtAddr::new(*begin_addr));
-        let flags = protection_to_pagetable_flags(prot);
-        create_not_present_mapping(page, &mut mapper, Some(flags));
-        serial_println!("MAPPING MEMORY PAGE {:?}", page);
-        mmap_call.loaded.push(false);
-        *begin_addr += PAGE_SIZE as u64;
-    }
-
-    mmap_call.fd = -1;
-    mmap_call.offset = 0;
-}
-
-fn allocate_file_memory(
-    begin_addr: &mut u64,
-    len: u64,
-    fd: i64,
-    prot: u64,
-    offset: u64,
-    mmap_call: &mut MmapCall,
-) {
-    let page_count = len / PAGE_SIZE as u64;
-    for _ in 0..page_count {
-        let page: Page<Size4KiB> = Page::containing_address(VirtAddr::new(*begin_addr));
-        let mut mapper = KERNEL_MAPPER.lock();
-        let flags = protection_to_pagetable_flags(prot);
-        create_not_present_mapping(page, &mut *mapper, Some(flags));
-        *begin_addr += PAGE_SIZE as u64;
-    }
-
-    mmap_call.fd = fd;
-    mmap_call.offset = offset;
 }
 
 #[cfg(test)]

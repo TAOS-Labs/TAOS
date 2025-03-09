@@ -21,9 +21,8 @@ use crate::{
     },
     processes::{loader::load_elf, registers::Registers},
     serial_println,
-    syscalls::mmap::MmapCall,
 };
-use alloc::{collections::BTreeMap, sync::Arc, vec::Vec};
+use alloc::{collections::BTreeMap, sync::Arc};
 use core::{
     arch::naked_asm,
     borrow::BorrowMut,
@@ -57,7 +56,6 @@ pub struct PCB {
     pub kernel_rip: u64,
     pub next_preemption_time: u64,
     pub registers: Registers,
-    pub mmaps: Vec<MmapCall>,
     pub mmap_address: u64,
     pub fd_table: [u64; MAX_FILES],
     pub mm: Mm,
@@ -162,7 +160,6 @@ pub fn create_placeholder_process() -> u32 {
             rip: 0,
             rflags: 0x0,
         },
-        mmaps: Vec::new(),
         mmap_address: START_MMAP_ADDRESS,
         fd_table: [0; MAX_FILES],
         next_preemption_time: 0,
@@ -218,7 +215,6 @@ pub fn create_process(elf_bytes: &[u8]) -> u32 {
             rip: entry_point,
             rflags: 0x202,
         },
-        mmaps: Vec::new(),
         mmap_address: START_MMAP_ADDRESS,
         fd_table: [0; MAX_FILES],
         mm,
