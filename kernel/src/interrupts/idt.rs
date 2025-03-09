@@ -131,7 +131,19 @@ extern "x86-interrupt" fn double_fault_handler(
     panic!("EXCEPTION: DOUBLE FAULT\n{:#?}", stack_frame);
 }
 
-/// TODO: Refractor so cause determing code is separated from setup code (page tables)
+/// Handles a page fault
+/// There are several possible cases that are handled here:
+/// 1. The page is lazy loaded, and not mapped yet
+/// 2. The page is loaded, but mapping does not exist yet
+/// 3. The page is loaded, but marked Copy-on-write
+/// 4. The page is mapped, and some other error happened
+///
+/// # Arguments
+/// * `stack_frame` - The interrupt stack frame made from the page fault happening
+/// * `error_code` - A page fault error code that gives information such as prot, write fault, etc.
+///
+/// Returns
+/// This function does not return normally, uses x86-interrupt ABI
 extern "x86-interrupt" fn page_fault_handler(
     stack_frame: InterruptStackFrame,
     error_code: PageFaultErrorCode,
@@ -150,21 +162,24 @@ extern "x86-interrupt" fn page_fault_handler(
             page,
             mut mapper,
             chain,
+            pt_flags,
         } => {
-            handle_existing_mapping(page, &mut mapper, chain);
+            handle_existing_mapping(page, &mut mapper, chain, pt_flags);
         }
         FaultOutcome::NewMapping {
             page,
             mut mapper,
-            vma,
             backing,
+            pt_flags,
         } => {
-            // Lock the VMA to pass a reference.
-            let vma_guard = vma.lock();
-            handle_new_mapping(&vma_guard, page, &mut mapper, &backing);
+            handle_new_mapping(page, &mut mapper, &backing, pt_flags);
         }
-        FaultOutcome::CopyOnWrite { page, mut mapper } => {
-            handle_cow_fault(page, &mut mapper);
+        FaultOutcome::CopyOnWrite {
+            page,
+            mut mapper,
+            pt_flags,
+        } => {
+            handle_cow_fault(page, &mut mapper, pt_flags);
         }
         FaultOutcome::Mapped => {
             serial_println!("Page is mapped; no COW fault detected");

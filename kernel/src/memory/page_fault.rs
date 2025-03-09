@@ -17,7 +17,7 @@ use crate::{
     constants::memory::PAGE_SIZE,
     memory::{
         frame_allocator::alloc_frame,
-        mm::VmAreaFlags,
+        mm::{vma_to_page_flags, VmAreaFlags},
         paging::{create_mapping, create_mapping_to_frame, get_page_flags, update_mapping},
         HHDM_OFFSET,
     },
@@ -34,16 +34,18 @@ pub enum FaultOutcome {
         page: Page<Size4KiB>,
         mapper: OffsetPageTable<'static>,
         chain: Arc<AnonVmaChain>,
+        pt_flags: PageTableFlags,
     },
     NewMapping {
         page: Page<Size4KiB>,
         mapper: OffsetPageTable<'static>,
-        vma: Arc<Mutex<VmArea>>,
         backing: Arc<AnonVmArea>,
+        pt_flags: PageTableFlags,
     },
     CopyOnWrite {
         page: Page<Size4KiB>,
         mapper: OffsetPageTable<'static>,
+        pt_flags: PageTableFlags,
     },
     Mapped,
 }
@@ -94,7 +96,6 @@ pub fn determine_fault_cause(error_code: PageFaultErrorCode) -> FaultOutcome {
         _ => panic!("Unexpected result during page translation"),
     };
 
-    // We now need to lock the VMA tree to safely access the VMA.
     let mut outcome = None;
     unsafe {
         (*process.pcb.get()).mm.with_vma_tree(|tree| {
@@ -110,19 +111,22 @@ pub fn determine_fault_cause(error_code: PageFaultErrorCode) -> FaultOutcome {
             // Compute the anonymous VMA chain mapping, if any.
             let anon_vma_chain = backing.find_mapping(page.start_address().as_u64() - vma.start);
 
+            let pt_flags = vma_to_page_flags(vma.flags);
+
             outcome = if !is_mapped {
                 if let Some(chain) = anon_vma_chain {
                     Some(FaultOutcome::ExistingMapping {
                         page,
                         mapper,
                         chain,
+                        pt_flags,
                     })
                 } else {
                     Some(FaultOutcome::NewMapping {
                         page,
                         mapper,
-                        vma: Arc::clone(&vma_arc),
                         backing,
+                        pt_flags,
                     })
                 }
             } else {
@@ -131,7 +135,11 @@ pub fn determine_fault_cause(error_code: PageFaultErrorCode) -> FaultOutcome {
                 let cow = !vma.flags.contains(VmAreaFlags::SHARED);
                 let caused_by_write = error_code.contains(PageFaultErrorCode::CAUSED_BY_WRITE);
                 if cow && caused_by_write && flags.contains(PageTableFlags::PRESENT) {
-                    Some(FaultOutcome::CopyOnWrite { page, mapper })
+                    Some(FaultOutcome::CopyOnWrite {
+                        page,
+                        mapper,
+                        pt_flags,
+                    })
                 } else {
                     Some(FaultOutcome::Mapped)
                 }
@@ -147,29 +155,21 @@ pub fn handle_existing_mapping(
     page: Page<Size4KiB>,
     mapper: &mut OffsetPageTable,
     chain: Arc<AnonVmaChain>,
+    pt_flags: PageTableFlags,
 ) {
     serial_println!("Page not mapped; using existing anon chain mapping.");
-    create_mapping_to_frame(
-        page,
-        mapper,
-        Some(PageTableFlags::WRITABLE | PageTableFlags::USER_ACCESSIBLE | PageTableFlags::PRESENT),
-        *chain.frame,
-    );
+    create_mapping_to_frame(page, mapper, Some(pt_flags), *chain.frame);
 }
 
 /// Handles a fault by creating a new mapping and inserting it into the backing.
 pub fn handle_new_mapping(
-    _vma: &VmArea,
     page: Page<Size4KiB>,
     mapper: &mut OffsetPageTable,
-    backing: &Arc<AnonVmArea>, // Replace `BackingType` with the actual type of vma.backing.
+    backing: &Arc<AnonVmArea>,
+    pt_flags: PageTableFlags,
 ) {
     serial_println!("Page not mapped; creating a new mapping.");
-    let new_frame = create_mapping(
-        page,
-        mapper,
-        Some(PageTableFlags::WRITABLE | PageTableFlags::USER_ACCESSIBLE | PageTableFlags::PRESENT),
-    );
+    let new_frame = create_mapping(page, mapper, Some(pt_flags));
     backing.insert_mapping(Arc::new(AnonVmaChain {
         offset: page.start_address().as_u64(),
         frame: Arc::new(new_frame),
@@ -177,29 +177,24 @@ pub fn handle_new_mapping(
 }
 
 /// Handles a copy-on-write fault.
-pub fn handle_cow_fault(page: Page<Size4KiB>, mapper: &mut OffsetPageTable) {
+pub fn handle_cow_fault(
+    page: Page<Size4KiB>,
+    mapper: &mut OffsetPageTable,
+    pt_flags: PageTableFlags,
+) {
     serial_println!("Handling copy-on-write fault.");
     let start = page.start_address();
     let src_ptr = start.as_mut_ptr();
 
-    // Backup the page data.
+    // old page data
     let mut buffer: [u8; PAGE_SIZE] = [0; PAGE_SIZE];
     unsafe {
         ptr::copy_nonoverlapping(src_ptr, buffer.as_mut_ptr(), PAGE_SIZE);
     }
 
-    // Update the page table flags to allow writes.
-    let mut flags = get_page_flags(page, mapper).expect("Could not get page flags");
-    flags.set(PageTableFlags::WRITABLE, true);
-
     // Allocate a new frame and update the mapping.
     let frame = alloc_frame().expect("Frame allocation failed in COW");
-    update_mapping(
-        page,
-        mapper,
-        frame,
-        Some(PageTableFlags::WRITABLE | PageTableFlags::PRESENT | PageTableFlags::USER_ACCESSIBLE),
-    );
+    update_mapping(page, mapper, frame, Some(pt_flags));
 
     // Copy the saved data back.
     unsafe {

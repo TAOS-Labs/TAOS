@@ -93,48 +93,86 @@ pub enum MmapErrors {
     SIGBUS,
 }
 
-pub fn protection_to_pagetable_flags(prot: u64) -> PageTableFlags {
-    let mut flags = PageTableFlags::empty();
+// Helper function to convert mmap flags (and prot) to VmAreaFlags.
+pub fn mmap_flags_to_vma_flags(prot: u64, mmap_flags: MmapFlags) -> VmAreaFlags {
+    let mut vma_flags = VmAreaFlags::empty();
 
-    if prot & ProtFlags::PROT_READ != 0 {
-        flags |= PageTableFlags::PRESENT;
-    }
+    // Set writable/executable based on the prot flags.
     if prot & ProtFlags::PROT_WRITE != 0 {
-        flags |= PageTableFlags::WRITABLE | PageTableFlags::PRESENT;
+        vma_flags.set(VmAreaFlags::WRITABLE, true);
     }
-    if prot & ProtFlags::PROT_EXEC == 0 {
-        flags |= PageTableFlags::NO_EXECUTE | PageTableFlags::PRESENT;
+    if prot & ProtFlags::PROT_EXEC != 0 {
+        vma_flags.set(VmAreaFlags::EXECUTE, true);
     }
 
-    flags
+    // Shared vs. private: if MAP_SHARED is set, mark as SHARED.
+    if mmap_flags.contains(MmapFlags::MAP_SHARED) {
+        vma_flags.set(VmAreaFlags::SHARED, true);
+    }
+    // For MAP_PRIVATE, we leave it as non-shared (copy-on-write semantics).
+
+    if mmap_flags.contains(MmapFlags::MAP_GROWSDOWN) {
+        vma_flags.set(VmAreaFlags::GROWS_DOWN, true);
+    }
+
+    if mmap_flags.contains(MmapFlags::MAP_LOCKED) {
+        vma_flags.set(VmAreaFlags::LOCKED, true);
+    }
+
+    if mmap_flags.contains(MmapFlags::MAP_NORESERVE) {
+        vma_flags.set(VmAreaFlags::NORESERVE, true);
+    }
+
+    if mmap_flags.contains(MmapFlags::MAP_HUGETLB) {
+        vma_flags.set(VmAreaFlags::HUGEPAGE, true);
+    }
+
+    if mmap_flags.contains(MmapFlags::MAP_FIXED) {
+        vma_flags.set(VmAreaFlags::FIXED, true);
+    }
+
+    if mmap_flags.contains(MmapFlags::MAP_FILE) {
+        vma_flags.set(VmAreaFlags::MAPPED_FILE, true);
+    }
+
+    vma_flags
 }
 
 pub fn sys_mmap(addr: u64, len: u64, prot: u64, flags: u64, fd: i64, offset: u64) -> u64 {
-    // we will currently completely ignore user address requests and do whatever we want
+    // Basic sanity check.
     if len == 0 {
         serial_println!("Zero length mapping");
-        panic!();
-        // return something
+        panic!("mmap called with zero length");
     }
     serial_println!("Fd is {}", fd);
+
     let event: EventInfo = current_running_event_info();
     let pid = event.pid;
-    // for testing we hardcode to one for now
+
+    // For testing we hardcode to one for now.
     let process_table = PROCESS_TABLE.write();
     let process = process_table
         .get(&pid)
         .expect("Could not get pcb from process table");
     let pcb = process.pcb.get();
     let begin_addr = unsafe { (*pcb).mmap_address };
-    // We must return the original beginning address while adjusting the value of MMAP_ADDR
-    // for the next calls to MMAP
     let addr_to_return = begin_addr;
     let anon_vma = AnonVmArea::new();
 
+    // Make sure we have enough virtual space.
     if begin_addr + len > (*HHDM_OFFSET).as_u64() {
         serial_println!("Ran out of virtual memory for mmap call.");
         return 0;
     }
+
+    // Create an instance of MmapFlags from the raw flags.
+    let mmap_flags = MmapFlags::from_bits_truncate(flags);
+    // Compute the VMA flags using our helper.
+    let vma_flags = mmap_flags_to_vma_flags(prot, mmap_flags);
+    // Determine if this is an anonymous mapping.
+    let anon = mmap_flags.contains(MmapFlags::MAP_ANONYMOUS);
+
+    // Insert the new VMA into the process's VMA tree.
     unsafe {
         (*pcb).mm.with_vma_tree_mutable(|tree| {
             let _ = (*pcb).mm.insert_vma(
@@ -142,8 +180,8 @@ pub fn sys_mmap(addr: u64, len: u64, prot: u64, flags: u64, fd: i64, offset: u64
                 begin_addr,
                 begin_addr + len,
                 Arc::new(anon_vma),
-                VmAreaFlags::WRITABLE,
-                true,
+                vma_flags,
+                anon,
             );
         })
     }

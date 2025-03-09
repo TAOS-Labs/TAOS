@@ -178,15 +178,15 @@ impl Mm {
 bitflags! {
     #[derive(Clone, Copy, Debug, Eq, PartialEq)]
     pub struct VmAreaFlags: u64 {
-        const WRITABLE = 0b001;
-        const EXECUTE = 0b10; // For code segments
-        const SHARED = 0b100; // If 1, shared. If 0, private (COW)
-        const GROWS_DOWN = 0b1000; // Stack
-        const PINNED = 0b1_0000; // Not to be evicted by PRA
-        const MAPPED_FILE = 0b10_0000; // Indicates a file backed mapping
-        const HUGEPAGE = 0b100_0000; // Indicates that this VMA could contain huge pages
-        const FIXED = 0b1000_0000; // Mappings in the VMA wont be changed
-        const NORESERVE = 0b1_0000_0000; // For lazy loading
+        const WRITABLE = 1 << 0;
+        const EXECUTE = 1 << 1; // For code segments
+        const SHARED = 1 << 2; // If 1, shared. If 0, private (COW)
+        const GROWS_DOWN = 1 << 3; // Stack
+        const LOCKED = 1 << 4; // Not to be evicted by PRA
+        const MAPPED_FILE = 1 << 5; // Indicates a file backed mapping
+        const HUGEPAGE = 1 << 6; // Indicates that this VMA could contain huge pages
+        const FIXED = 1 << 7; // Mappings in the VMA wont be changed
+        const NORESERVE = 1 << 8; // For lazy loading
     }
 }
 
