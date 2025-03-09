@@ -1,6 +1,6 @@
 use alloc::{sync::Arc, vec::Vec};
 use spin::Mutex;
-use x86_64::structures::paging::OffsetPageTable;
+use x86_64::{structures::paging::OffsetPageTable, PhysAddr};
 
 use crate::{
     debug_println,
@@ -269,8 +269,9 @@ pub fn initalize_sd_card(
     // Determine the Base Address, and setup a mapping
     let base_address_register = read_config(sd_card.bus, sd_card.device, 0, 0x10);
     let bar_address: u64 = (base_address_register & 0xFFFFFF00).into();
-    let offset_bar =
-        map_page_as_uncacheable(bar_address, mapper).map_err(|_| SDCardError::GenericSDError)?;
+    let base_virtual_addr = map_page_as_uncacheable(PhysAddr::new(bar_address), mapper)
+        .map_err(|_| SDCardError::GenericSDError)?;
+    let offset_bar = base_virtual_addr.as_u64();
     // Re-enable memory space commands
     write_pci_command(
         sd_card.bus,

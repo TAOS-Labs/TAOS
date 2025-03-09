@@ -15,11 +15,11 @@ pub struct MMIOError;
 
 /// Maps the requested_phys_addr as an uncacheable page above hhdm offset
 pub fn map_page_as_uncacheable(
-    requested_phys_addr: u64,
+    requested_phys_addr: PhysAddr,
     mapper: &mut OffsetPageTable,
-) -> Result<u64, MMIOError> {
+) -> Result<VirtAddr, MMIOError> {
     let offset = mapper.phys_offset().as_u64();
-    let mut offset_bar = requested_phys_addr + offset;
+    let mut offset_bar = requested_phys_addr.as_u64() + offset;
     let translate_result = mapper.translate(VirtAddr::new(offset_bar));
     match translate_result {
         TranslateResult::Mapped {
@@ -72,8 +72,7 @@ pub fn map_page_as_uncacheable(
         }
         TranslateResult::NotMapped => {
             debug_println!("notmapped");
-            let bar_frame: PhysFrame<Size4KiB> =
-                PhysFrame::containing_address(PhysAddr::new(requested_phys_addr));
+            let bar_frame: PhysFrame<Size4KiB> = PhysFrame::containing_address(requested_phys_addr);
             let new_va = paging::map_kernel_frame(
                 mapper,
                 bar_frame,
@@ -82,7 +81,7 @@ pub fn map_page_as_uncacheable(
             offset_bar = new_va.as_u64();
         }
     }
-    Result::Ok(offset_bar)
+    Result::Ok(VirtAddr::new(offset_bar))
 }
 
 pub fn zero_out_page(page: Page) {

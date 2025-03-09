@@ -3,18 +3,14 @@ pub mod ring_buffer;
 
 use core::cmp::min;
 
-use crate::{
-    constants::{events, memory::PAGE_SIZE},
-    debug_println,
-    memory::frame_allocator::{alloc_frame, FRAME_ALLOCATOR},
-};
+use crate::{constants::memory::PAGE_SIZE, debug_println, memory::frame_allocator::alloc_frame};
 use alloc::{sync::Arc, vec::Vec};
 use bitflags::bitflags;
 use ring_buffer::{ConsumerRingBuffer, ProducerRingBuffer, TransferRequestBlock, Trb, TrbTypes};
 use spin::Mutex;
 use x86_64::{
-    structures::paging::{FrameAllocator, OffsetPageTable, Page},
-    VirtAddr,
+    structures::paging::{OffsetPageTable, Page},
+    PhysAddr, VirtAddr,
 };
 
 use super::{
@@ -51,6 +47,10 @@ struct XHCICapabilities {
     capability_paramaters_2: u32,
 }
 
+struct XHCIDevice {
+    input_context: VirtAddr,
+}
+
 #[derive(Debug, Clone)]
 #[allow(dead_code)]
 struct XHCIInfo {
@@ -69,6 +69,7 @@ pub enum XHCIError {
     NoFrameAllocator,
     UnknownPort,
     CommandRingError,
+    Timeout,
 }
 
 bitflags! {
@@ -182,7 +183,14 @@ pub fn initalize_xhci_hub(
 
     let mut info = initalize_xhciinfo(full_bar, mapper)?;
     // Turn on device
+    run_host_controller(&info);
+    boot_up_all_ports(&mut info)?;
+    Result::Ok(())
+}
 
+/// Tells the host controller to start running by setting the RunHostControler
+/// bitflag to true
+fn run_host_controller(info: &XHCIInfo) {
     let command_register_address = info.operational_register_address as *mut u32;
     let mut command_data = CommandRegister::from_bits_retain(unsafe {
         core::ptr::read_volatile(command_register_address)
@@ -191,54 +199,6 @@ pub fn initalize_xhci_hub(
     unsafe {
         core::ptr::write_volatile(command_register_address, command_data.bits());
     }
-    unsafe {
-        let status_addr = (info.operational_register_address + 0x4) as *mut u32;
-        let status = core::ptr::read_volatile(status_addr);
-        debug_println!("status reg before boot: {:X}", status);
-    }
-    boot_up_all_ports(&mut info)?;
-    unsafe {info.primary_event_ring.print_ring();} 
-    unsafe {
-        let status_addr = (info.operational_register_address + 0x4) as *mut u32;
-        let status = core::ptr::read_volatile(status_addr);
-        debug_println!("status reg before: {:X}", status);
-    }
-
-    let mut noop_cmd = Trb {
-        parameters: 0,
-        status: 0,
-        control: 0,
-    };
-    noop_cmd.set_trb_type(TrbTypes::NoOpCmd as u32);
-
-    unsafe {
-        info.command_ring.enqueue(noop_cmd).unwrap();
-    }
-    debug_println!("queued the cmd");
-
-    let doorbell_base: *mut u32 =
-        (info.base_address + info.capablities.doorbell_offset as u64) as *mut u32;
-    // let event;
-    unsafe {
-        let _ = info.primary_event_ring.is_empty();
-        core::ptr::write_volatile(doorbell_base, 0);
-        // while info.primary_event_ring.is_empty() {
-        //     // debug_println!("waiting for event...");
-        // }
-        if !info.primary_event_ring.is_empty() {
-            debug_println!("yippee!!");
-        } else {
-            debug_println!("FUCK!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!");
-        }
-        let status_addr = (info.operational_register_address + 0x4) as *mut u32;
-        let status = core::ptr::read_volatile(status_addr);
-        debug_println!("status reg after: {:X}", status);
-        // event = info.primary_event_ring.dequeue().unwrap();
-    }
-    // debug_println!("event type: {}", event.get_trb_type());
-
-    debug_println!("0x{:X} {:?}", { info.base_address }, { info.capablities });
-    Result::Ok(())
 }
 
 /// Determines the capablities of a given host controller
@@ -323,7 +283,9 @@ fn reset_xchi_controller(operational_registers: u64) {
 }
 
 fn initalize_xhciinfo(full_bar: u64, mapper: &mut OffsetPageTable) -> Result<XHCIInfo, XHCIError> {
-    let address = mmio::map_page_as_uncacheable(full_bar, mapper).unwrap();
+    let base_virtual_address =
+        mmio::map_page_as_uncacheable(PhysAddr::new(full_bar), mapper).unwrap();
+    let address = base_virtual_address.as_u64();
     let capablities = get_host_controller_cap_regs(address);
     let extended_reg_length: u64 = capablities.register_length.into();
     let operational_start = address + extended_reg_length;
@@ -342,11 +304,10 @@ fn initalize_xhciinfo(full_bar: u64, mapper: &mut OffsetPageTable) -> Result<XHC
     //     .allocate_frame()
     //     .ok_or(XHCIError::MemoryAllocationFailure)?;
     let dcbaap_frame = alloc_frame().expect("Frame allocation failed");
-    let virtual_adddr =
-        mmio::map_page_as_uncacheable(dcbaap_frame.start_address().as_u64(), mapper)
-            .map_err(|_| XHCIError::MemoryAllocationFailure)?;
+    let virtual_adddr = mmio::map_page_as_uncacheable(dcbaap_frame.start_address(), mapper)
+        .map_err(|_| XHCIError::MemoryAllocationFailure)?;
     // We need to zero out shit
-    mmio::zero_out_page(Page::containing_address(VirtAddr::new(virtual_adddr)));
+    mmio::zero_out_page(Page::containing_address(virtual_adddr));
 
     // set DCBAAP (Device Context Base Array Pointer Register)
     let dcbaap_reg_addr = (operational_start + 0x30) as *mut u64;
@@ -359,11 +320,11 @@ fn initalize_xhciinfo(full_bar: u64, mapper: &mut OffsetPageTable) -> Result<XHC
     // let cmd_frame = allocator
     //     .allocate_frame()
     //     .ok_or(XHCIError::MemoryAllocationFailure)?;
-    let cmd_vaddr = mmio::map_page_as_uncacheable(cmd_frame.start_address().as_u64(), mapper)
+    let cmd_vaddr = mmio::map_page_as_uncacheable(cmd_frame.start_address(), mapper)
         .map_err(|_| XHCIError::MemoryAllocationFailure)?;
 
     // We need to zero out this page as well
-    let cmd_page: Page = Page::containing_address(VirtAddr::new(cmd_vaddr));
+    let cmd_page: Page = Page::containing_address(cmd_vaddr);
     mmio::zero_out_page(cmd_page);
 
     // set Command Ring Control reg to starting addr of command ring.
@@ -388,7 +349,7 @@ fn initalize_xhciinfo(full_bar: u64, mapper: &mut OffsetPageTable) -> Result<XHC
     // let erst_frame = allocator
     //     .allocate_frame()
     //     .ok_or(XHCIError::MemoryAllocationFailure)?;
-    let erst_vaddr = mmio::map_page_as_uncacheable(erst_frame.start_address().as_u64(), mapper)
+    let erst_vaddr = mmio::map_page_as_uncacheable(erst_frame.start_address(), mapper)
         .map_err(|_| XHCIError::MemoryAllocationFailure)?;
     let er_segment_frame = alloc_frame().expect("Frame allocation failed");
     debug_println!(
@@ -399,17 +360,16 @@ fn initalize_xhciinfo(full_bar: u64, mapper: &mut OffsetPageTable) -> Result<XHC
     //     .allocate_frame()
     //     .ok_or(XHCIError::MemoryAllocationFailure)?;
     debug_println!("before er seg mao");
-    let er_segment_vaddr =
-        mmio::map_page_as_uncacheable(er_segment_frame.start_address().as_u64(), mapper)
-            .map_err(|_| XHCIError::MemoryAllocationFailure)?;
+    let er_segment_vaddr = mmio::map_page_as_uncacheable(er_segment_frame.start_address(), mapper)
+        .map_err(|_| XHCIError::MemoryAllocationFailure)?;
     debug_println!("ers vaddr: {:X}", er_segment_vaddr);
 
     // drop allocator lock
     // drop(allocator_tmp);
 
     // zero out pages
-    let erst_page: Page = Page::containing_address(VirtAddr::new(erst_vaddr));
-    let ers_page: Page = Page::containing_address(VirtAddr::new(er_segment_vaddr));
+    let erst_page: Page = Page::containing_address(erst_vaddr);
+    let ers_page: Page = Page::containing_address(er_segment_vaddr);
     mmio::zero_out_page(erst_page);
     mmio::zero_out_page(ers_page);
 
@@ -427,32 +387,35 @@ fn initalize_xhciinfo(full_bar: u64, mapper: &mut OffsetPageTable) -> Result<XHC
     )
     .expect("error initializing primary event ring");
     unsafe {
-
-
-        let mut  addr = erst_vaddr as *const u64;
+        let mut addr = erst_vaddr.as_u64() as *const u64;
         let base_address = core::ptr::read_volatile(addr);
         debug_println!("Base address = 0x{base_address:X}");
-        debug_println!("Base addr should be 0x{:X}", er_segment_frame.start_address().as_u64());
+        debug_println!(
+            "Base addr should be 0x{:X}",
+            er_segment_frame.start_address().as_u64()
+        );
 
-        addr = (erst_vaddr  + 0x8) as *const u64;
+        addr = (erst_vaddr.as_u64() + 0x8) as *const u64;
         let size = core::ptr::read_volatile(addr);
         debug_println!("Size = {size}");
-
     }
     unsafe {
         primary_event_ring.print_ring();
     }
 
     mmio::map_page_as_uncacheable(
-        full_bar + (capablities.runtime_register_space_offset as u64),
+        PhysAddr::new(full_bar + (capablities.runtime_register_space_offset as u64)),
         mapper,
     )
     .map_err(|_| XHCIError::MemoryAllocationFailure)
     .unwrap();
 
-    mmio::map_page_as_uncacheable(full_bar + (capablities.doorbell_offset as u64), mapper)
-        .map_err(|_| XHCIError::MemoryAllocationFailure)
-        .unwrap();
+    mmio::map_page_as_uncacheable(
+        PhysAddr::new(full_bar + (capablities.doorbell_offset as u64)),
+        mapper,
+    )
+    .map_err(|_| XHCIError::MemoryAllocationFailure)
+    .unwrap();
     // write the necessary data to the event ring fields of the 0th interrupter register
     let erstsz_addr =
         (address + (capablities.runtime_register_space_offset as u64) + 0x28) as *mut u32;
@@ -535,15 +498,50 @@ fn boot_up_usb_port(
     } else {
         return Result::Err(XHCIError::UnknownPort);
     }
+
+    let mut event_result = unsafe { info.primary_event_ring.dequeue() };
+    while event_result.is_err() {
+        event_result = unsafe { info.primary_event_ring.dequeue() };
+        core::hint::spin_loop();
+    }
+    let event = event_result.map_err(|_| XHCIError::Timeout)?;
     // Now Enable the slot (4.3.2)
-    let mut block = TransferRequestBlock {parameters: 0, status: 0, control: 0};
+    let mut block = TransferRequestBlock {
+        parameters: 0,
+        status: 0,
+        control: 0,
+    };
     block.set_trb_type(TrbTypes::EnableSlotCmd as u32);
-    unsafe {info.command_ring.enqueue(block).map_err(|_| XHCIError::CommandRingError )?};
+    unsafe {
+        info.command_ring
+            .enqueue(block)
+            .map_err(|_| XHCIError::CommandRingError)?
+    };
 
     let doorbell_base: *mut u32 =
         (info.base_address + info.capablities.doorbell_offset as u64) as *mut u32;
-    unsafe {core::ptr::write_volatile(doorbell_base, 0)};
+    unsafe { core::ptr::write_volatile(doorbell_base, 0) };
+
+    // Now wait for response
+
+    let mut event_result = unsafe { info.primary_event_ring.dequeue() };
+    while event_result.is_err() {
+        event_result = unsafe { info.primary_event_ring.dequeue() };
+        core::hint::spin_loop();
+    }
+    let event = event_result.map_err(|_| XHCIError::Timeout)?;
+    unsafe { info.primary_event_ring.is_empty() };
+    debug_println!("Type = {}", event.get_trb_type());
+    debug_println!("Is empty = {}", unsafe {
+        info.primary_event_ring.is_empty()
+    });
     debug_println!("Test");
+    Result::Ok(())
+}
+
+fn setup_input_context(info: &mut XHCIInfo, device: u8) -> Result<(), XHCIError> {
+    let input_frame = alloc_frame().ok_or(XHCIError::MemoryAllocationFailure)?;
+
     Result::Ok(())
 }
 
