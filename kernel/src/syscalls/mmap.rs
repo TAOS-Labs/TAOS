@@ -1,6 +1,5 @@
 use alloc::sync::Arc;
 use bitflags::bitflags;
-use x86_64::structures::paging::{OffsetPageTable, Page, PageTable, PageTableFlags, Size4KiB};
 
 use crate::{
     events::{current_running_event_info, EventInfo},

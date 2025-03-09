@@ -1,9 +1,7 @@
 use core::sync::atomic::Ordering;
 
 use alloc::sync::Arc;
-use x86_64::structures::paging::{
-    page_table::PageTableEntry, OffsetPageTable, PageTable, PageTableFlags, PhysFrame,
-};
+use x86_64::structures::paging::{OffsetPageTable, PageTable, PageTableFlags, PhysFrame};
 
 use crate::{
     events::{current_running_event_info, schedule_process_on},

@@ -21,15 +21,12 @@ use crate::{
     },
     events::inc_runner_clock,
     interrupts::x2apic::{self, current_core_id, TLB_SHOOTDOWN_ADDR},
-    memory::{
-        mm::{AnonVmArea, AnonVmaChain, VmArea, VmAreaFlags},
-        page_fault::{
-            determine_fault_cause, handle_cow_fault, handle_existing_mapping, handle_new_mapping,
-            FaultOutcome,
-        },
+    memory::page_fault::{
+        determine_fault_cause, handle_cow_fault, handle_existing_mapping, handle_new_mapping,
+        FaultOutcome,
     },
     prelude::*,
-    processes::process::{get_current_pid, preempt_process},
+    processes::process::preempt_process,
     syscalls::{
         mmap::sys_mmap,
         syscall_handlers::{sys_exit, sys_print},

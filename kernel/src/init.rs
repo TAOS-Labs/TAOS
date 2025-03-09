@@ -10,7 +10,7 @@ use limine::{
 };
 
 use crate::{
-    constants::processes::{FORK_SIMPLE, TEST_64_SLEEP},
+    constants::processes::FORK_SIMPLE,
     debug, devices,
     events::{register_event_runner, run_loop, schedule_process_on},
     interrupts::{self, idt},

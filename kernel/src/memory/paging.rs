@@ -414,14 +414,15 @@ mod tests {
 
         update_permissions(page, &mut *mapper, flags);
 
-        let flags = get_page_flags(page, &mut *mapper).ok().expect("Getting page table flags failed");
+        let flags = get_page_flags(page, &mut *mapper)
+            .ok()
+            .expect("Getting page table flags failed");
 
         assert!(flags.contains(PageTableFlags::PRESENT));
         assert!(!flags.contains(PageTableFlags::WRITABLE));
 
         remove_mapped_frame(page, &mut *mapper);
     }
-
 
     /// Tests that contiguous mappings spanning multiple pages work correctly.
     ///
@@ -600,7 +601,7 @@ mod tests {
         let new_frame = mapper
             .translate_page(page)
             .expect("Translation after COW failed");
-        
+
         // We already made this our own, no need to have done COW
         assert_eq!(frame, new_frame);
 
@@ -615,7 +616,7 @@ mod tests {
     ///
     /// In a COW scenario, the page is initially mapped as writable, and a full buffer is written
     /// Then, the page is marked read only and the first byte in the buffer is written to.
-    /// This should trigger a page fault that does COW, but it should maintain the rest 
+    /// This should trigger a page fault that does COW, but it should maintain the rest
     /// of the values in the buffer.
     #[test_case]
     fn test_copy_on_write_full() {
@@ -648,7 +649,11 @@ mod tests {
         }
 
         // Create mapping with read-only permission to simulate a COW mapping.
-        let _ = create_mapping(page, &mut *mapper, Some(PageTableFlags::PRESENT | PageTableFlags::WRITABLE));
+        let _ = create_mapping(
+            page,
+            &mut *mapper,
+            Some(PageTableFlags::PRESENT | PageTableFlags::WRITABLE),
+        );
 
         // Write 1s to the entire buffer
         unsafe {
@@ -657,7 +662,7 @@ mod tests {
         }
 
         // Make it so we page fault on write
-        update_permissions(page, &mut *mapper,PageTableFlags::PRESENT);
+        update_permissions(page, &mut *mapper, PageTableFlags::PRESENT);
 
         // Write to the page.
         // In a real system, this would trigger a page fault to handle copy-on-write.
@@ -667,8 +672,8 @@ mod tests {
                 .write_volatile(TEST_VALUE);
         }
 
-        // the cow should not have messed with any data in the buffer besides what 
-        // we just wrote to 
+        // the cow should not have messed with any data in the buffer besides what
+        // we just wrote to
         let read_value = unsafe { page.start_address().as_ptr::<u8>().read_volatile() };
 
         assert_eq!(read_value, TEST_VALUE);
@@ -680,7 +685,6 @@ mod tests {
                 assert_eq!(val, 1, "Byte at offset {} is not 1 (found {})", i, val);
             }
         }
-
 
         remove_mapped_frame(page, &mut *mapper);
     }

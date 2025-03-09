@@ -1,7 +1,6 @@
 use core::ptr;
 
 use alloc::sync::Arc;
-use spin::Mutex;
 use x86_64::{
     structures::{
         idt::PageFaultErrorCode,
@@ -25,10 +24,9 @@ use crate::{
     serial_println,
 };
 
-use super::mm::{AnonVmArea, AnonVmaChain, VmArea};
+use super::mm::{AnonVmArea, AnonVmaChain};
 
-// Define an enum to capture the various fault outcomes.
-// (Adjust type names as needed.)
+/// Fault outcome enum to route what to do in IDT
 pub enum FaultOutcome {
     ExistingMapping {
         page: Page<Size4KiB>,
@@ -151,6 +149,12 @@ pub fn determine_fault_cause(error_code: PageFaultErrorCode) -> FaultOutcome {
 }
 
 /// Handles a fault by using an existing anonymous VMA chain mapping.
+///
+/// # Arguments
+/// * `page` - the page corresponding to the faulting address
+/// * `mapper` - page faulting process's page table
+/// * `chain` - AnonVmaChain that corresponds to this faulting address (offset within VMA)
+/// * `pt_flags` - page table flags to update to, based on VMA flags
 pub fn handle_existing_mapping(
     page: Page<Size4KiB>,
     mapper: &mut OffsetPageTable,
@@ -162,6 +166,12 @@ pub fn handle_existing_mapping(
 }
 
 /// Handles a fault by creating a new mapping and inserting it into the backing.
+///
+/// # Arguments
+/// * `page` - the page corresponding to the faulting address
+/// * `mapper` - page faulting process's page table
+/// * `backing` - AnonVmaChain that corresponds to this faulting address (offset within VMA)
+/// * `pt_flags` - page table flags to update to, based on VMA flags
 pub fn handle_new_mapping(
     page: Page<Size4KiB>,
     mapper: &mut OffsetPageTable,
@@ -176,7 +186,13 @@ pub fn handle_new_mapping(
     }));
 }
 
-/// Handles a copy-on-write fault.
+/// Handles a copy-on-write fault. Saves current data in a buffer 
+/// and then copies it over after a new frame is allocated
+///
+/// # Arguments
+/// * `page` - the page corresponding to the faulting address
+/// * `mapper` - page faulting process's page table
+/// * `pt_flags` - page table flags to update to, based on VMA flags
 pub fn handle_cow_fault(
     page: Page<Size4KiB>,
     mapper: &mut OffsetPageTable,
