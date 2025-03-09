@@ -2,11 +2,11 @@ use core::{ffi::CStr, sync::atomic::AtomicI64};
 
 use crate::{
     constants::syscalls::*,
-    events::{current_running_event_info, current_running_event_pid, EventInfo},
+    events::{current_running_event_info, EventInfo},
     interrupts::x2apic,
     memory::frame_allocator::with_bitmap_frame_allocator,
     processes::{
-        process::{clear_process_frames, sleep_process, ProcessState, PROCESS_TABLE},
+        process::{clear_process_frames, sleep_process_int, sleep_process_syscall, ProcessState, PROCESS_TABLE},
         registers::NonFlagRegisters,
     },
     serial_println,
@@ -41,6 +41,7 @@ pub struct SyscallRegisters {
 #[no_mangle]
 pub unsafe extern "C" fn syscall_handler_64_naked() -> ! {
     naked_asm!(
+        "cli",  // Disable interrupts for now (don't want to be preempted here)
         // Swap GS to load the kernel GS base.
         "swapgs",
         // RSP2 in the TSS is scratch space - store userspace RSP for later
@@ -112,6 +113,39 @@ pub unsafe extern "C" fn syscall_handler_64_naked() -> ! {
         "swapgs",
         // Return to user mode. sysretq will use RCX (which contains the user RIP)
         // and R11 (which holds user RFLAGS).
+        "sti",
+        "sysretq",
+    );
+}
+
+#[naked]
+#[no_mangle]
+pub unsafe extern "C" fn end_syscall() -> ! {
+    naked_asm!(
+        // The dispatcher returns a value in RAX; clean up the stack.
+        "add rsp, 56",
+        // Restore important regs
+        "add rsp, 8", // we don't care about rsp that was pushed for fork
+        "pop rbx",
+        "pop rcx",
+        "pop rdx",
+        "pop rsi",
+        "pop rdi",
+        "pop r8",
+        "pop r9",
+        "pop r10",
+        "pop r11",
+        "pop r12",
+        "pop r13",
+        "pop r14",
+        "pop r15",
+        "pop rbp",
+        // Swap GS back.
+        "mov rsp, qword ptr gs:[20]",
+        "swapgs",
+        "sti",
+        // Return to user mode. sysretq will use RCX (which contains the user RIP)
+        // and R11 (which holds user RFLAGS).
         "sysretq",
     );
 }
@@ -130,18 +164,14 @@ pub unsafe extern "C" fn syscall_handler_impl(
 ) -> u64 {
     let syscall = unsafe { &*syscall };
     let _reg_vals = unsafe { &*reg_vals };
-    serial_println!(
-        "Syscall num: {}, by PID: {}",
-        syscall.number,
-        current_running_event_pid()
-    );
+    
     match syscall.number as u32 {
         SYSCALL_EXIT => {
             sys_exit(syscall.arg1 as i64);
             unreachable!("sys_exit does not return");
         }
         SYSCALL_PRINT => sys_print(syscall.arg1 as *const u8),
-        SYSCALL_NANOSLEEP => sys_nanosleep(syscall.arg1, syscall.arg2),
+        SYSCALL_NANOSLEEP => sys_nanosleep_64(syscall.arg1,_reg_vals),
         _ => {
             panic!("Unknown syscall, {}", syscall.number);
         }
@@ -226,10 +256,15 @@ pub fn sys_print(buffer: *const u8) -> u64 {
     0
 }
 
-// hey gang
-pub fn sys_nanosleep(nanos: u64, rsp: u64) -> u64 {
-    sleep_process(rsp, nanos);
+pub fn sys_nanosleep_32(nanos: u64, rsp: u64) -> u64 {
+    sleep_process_int(nanos, rsp);
     x2apic::send_eoi();
+
+    0
+}
+
+pub fn sys_nanosleep_64(nanos: u64, reg_vals: &NonFlagRegisters) -> u64 {
+    sleep_process_syscall(nanos, reg_vals);
 
     0
 }

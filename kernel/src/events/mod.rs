@@ -140,6 +140,7 @@ pub fn schedule_blocked_process(pid: u32, // 0 as kernel/sentinel
         let mut runner = runners.get(&cpuid).expect("No runner found").write();
 
         unsafe {
+            // TODO may need to replace with syscall variant
             runner.schedule_blocked(run_process_ring3(pid), NUM_EVENT_PRIORITIES - 1, pid)
         }
     })

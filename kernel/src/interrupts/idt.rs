@@ -28,7 +28,7 @@ use crate::{
     memory::{paging::create_mapping, HHDM_OFFSET},
     prelude::*,
     processes::process::preempt_process,
-    syscalls::syscall_handlers::{sys_exit, sys_nanosleep, sys_print},
+    syscalls::syscall_handlers::{sys_exit, sys_nanosleep_32, sys_print},
 };
 
 lazy_static! {
@@ -240,7 +240,7 @@ fn syscall_handler(rsp: u64) {
             let success = sys_print(p1 as *const u8);
         }
         SYSCALL_NANOSLEEP => {
-            let success = sys_nanosleep(p1, p2);
+            let success = sys_nanosleep_32(p1, rsp);
         }
         _ => {
             panic!("Unknown syscall, {}", syscall_num);
