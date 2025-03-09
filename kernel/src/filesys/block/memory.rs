@@ -1,7 +1,7 @@
 //! In-memory block device implementation
 
 use crate::filesys::{BlockDevice, FsError};
-use alloc::{vec, vec::Vec, boxed::Box};
+use alloc::{boxed::Box, vec, vec::Vec};
 use async_trait::async_trait;
 use core::result::Result;
 

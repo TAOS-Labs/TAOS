@@ -55,7 +55,9 @@ impl File for Fat16File {
             let sectors_per_cluster = self.cluster_size / SECTOR_SIZE;
             for i in 0..sectors_per_cluster {
                 let mut sector_data = vec![0u8; SECTOR_SIZE];
-                device.read_block(sector + i as u64, &mut sector_data).await?;
+                device
+                    .read_block(sector + i as u64, &mut sector_data)
+                    .await?;
                 let start = i * SECTOR_SIZE;
                 cluster_data[start..start + SECTOR_SIZE].copy_from_slice(&sector_data);
             }
@@ -98,7 +100,9 @@ impl File for Fat16File {
             let sectors_per_cluster = self.cluster_size / SECTOR_SIZE;
             for i in 0..sectors_per_cluster {
                 let mut sector_data = vec![0u8; SECTOR_SIZE];
-                device.read_block(sector + i as u64, &mut sector_data).await?;
+                device
+                    .read_block(sector + i as u64, &mut sector_data)
+                    .await?;
                 let start = i * SECTOR_SIZE;
                 cluster_data[start..start + SECTOR_SIZE].copy_from_slice(&sector_data);
             }
@@ -108,7 +112,9 @@ impl File for Fat16File {
 
             for i in 0..sectors_per_cluster {
                 let start = i * SECTOR_SIZE;
-                device.write_block(sector + i as u64, &cluster_data[start..start + SECTOR_SIZE]).await?;
+                device
+                    .write_block(sector + i as u64, &cluster_data[start..start + SECTOR_SIZE])
+                    .await?;
             }
 
             bytes_written += chunk_size;
@@ -126,7 +132,8 @@ impl File for Fat16File {
                         FatEntry {
                             cluster: new_cluster,
                         },
-                    ).await?;
+                    )
+                    .await?;
                     self.current_cluster = new_cluster;
                 } else {
                     self.current_cluster = fat_entry.cluster;
@@ -252,7 +259,8 @@ impl Fat16File {
         for cluster in 2..total_clusters as u16 {
             let entry = self.read_fat_entry(device, cluster).await?;
             if entry.is_free() {
-                self.write_fat_entry(device, cluster, FatEntry { cluster: 0xFFFF }).await?;
+                self.write_fat_entry(device, cluster, FatEntry { cluster: 0xFFFF })
+                    .await?;
                 return Ok(cluster);
             }
         }

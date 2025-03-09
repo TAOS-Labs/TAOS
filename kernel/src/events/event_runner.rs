@@ -1,5 +1,7 @@
 use super::{
-    futures::sleep::Sleep, tasks::{CancellationToken, TaskError}, Event, EventId, EventQueue, EventRunner, JoinHandle
+    futures::sleep::Sleep,
+    tasks::{CancellationToken, TaskError},
+    Event, EventId, EventQueue, EventRunner, JoinHandle,
 };
 
 use alloc::{

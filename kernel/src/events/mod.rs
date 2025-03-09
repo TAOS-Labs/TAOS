@@ -16,7 +16,8 @@ use core::{
 };
 
 use crate::{
-    constants::events::NUM_EVENT_PRIORITIES, interrupts::x2apic::{self, nanos_to_ticks},
+    constants::events::NUM_EVENT_PRIORITIES,
+    interrupts::x2apic::{self, nanos_to_ticks},
     processes::process::run_process_ring3,
 };
 
@@ -57,7 +58,7 @@ pub struct Event {
     blocked_events: Arc<RwLock<BTreeSet<u64>>>,
     priority: AtomicUsize,
     scheduled_timestamp: AtomicU64,
-    completed: AtomicBool
+    completed: AtomicBool,
 }
 
 /// Schedules and runs events within a single core
@@ -105,7 +106,10 @@ pub fn schedule_kernel_on(
 /// Wrapper that schedules a kernel event on the current CPU core
 ///
 /// PID will always be 0
-pub fn schedule_kernel(future: impl Future<Output = ()> + 'static + Send, priority_level: usize) -> Arc<Event> {
+pub fn schedule_kernel(
+    future: impl Future<Output = ()> + 'static + Send,
+    priority_level: usize,
+) -> Arc<Event> {
     let cpuid = x2apic::current_core_id() as u32;
     schedule_kernel_on(cpuid, future, priority_level)
 }
@@ -116,9 +120,7 @@ pub fn schedule_process_on(cpuid: u32, pid: u32) -> Arc<Event> {
         let runners = EVENT_RUNNERS.read();
         let mut runner = runners.get(&cpuid).expect("No runner found").write();
 
-        unsafe {
-            runner.schedule(run_process_ring3(pid), NUM_EVENT_PRIORITIES - 1, pid)
-        }
+        unsafe { runner.schedule(run_process_ring3(pid), NUM_EVENT_PRIORITIES - 1, pid) }
     })
 }
 
@@ -132,7 +134,7 @@ pub fn schedule_process(pid: u32) -> Arc<Event> {
 /// but does not immediately schedule for polling.
 /// Starts with minimum priority
 pub fn schedule_blocked_process(pid: u32, // 0 as kernel/sentinel
-)  -> Arc<Event> {
+) -> Arc<Event> {
     let cpuid = x2apic::current_core_id() as u32;
 
     without_interrupts(|| {

@@ -6,7 +6,10 @@ use crate::{
     interrupts::x2apic,
     memory::frame_allocator::with_bitmap_frame_allocator,
     processes::{
-        process::{clear_process_frames, sleep_process_int, sleep_process_syscall, ProcessState, PROCESS_TABLE},
+        process::{
+            clear_process_frames, sleep_process_int, sleep_process_syscall, ProcessState,
+            PROCESS_TABLE,
+        },
         registers::NonFlagRegisters,
     },
     serial_println,
@@ -41,7 +44,7 @@ pub struct SyscallRegisters {
 #[no_mangle]
 pub unsafe extern "C" fn syscall_handler_64_naked() -> ! {
     naked_asm!(
-        "cli",  // Disable interrupts for now (don't want to be preempted here)
+        "cli", // Disable interrupts for now (don't want to be preempted here)
         // Swap GS to load the kernel GS base.
         "swapgs",
         // RSP2 in the TSS is scratch space - store userspace RSP for later
@@ -118,38 +121,6 @@ pub unsafe extern "C" fn syscall_handler_64_naked() -> ! {
     );
 }
 
-#[naked]
-#[no_mangle]
-pub unsafe extern "C" fn end_syscall() -> ! {
-    naked_asm!(
-        // The dispatcher returns a value in RAX; clean up the stack.
-        "add rsp, 56",
-        // Restore important regs
-        "add rsp, 8", // we don't care about rsp that was pushed for fork
-        "pop rbx",
-        "pop rcx",
-        "pop rdx",
-        "pop rsi",
-        "pop rdi",
-        "pop r8",
-        "pop r9",
-        "pop r10",
-        "pop r11",
-        "pop r12",
-        "pop r13",
-        "pop r14",
-        "pop r15",
-        "pop rbp",
-        // Swap GS back.
-        "mov rsp, qword ptr gs:[20]",
-        "swapgs",
-        "sti",
-        // Return to user mode. sysretq will use RCX (which contains the user RIP)
-        // and R11 (which holds user RFLAGS).
-        "sysretq",
-    );
-}
-
 /// Function that routes to different syscalls
 ///
 /// # Arguments
@@ -164,14 +135,14 @@ pub unsafe extern "C" fn syscall_handler_impl(
 ) -> u64 {
     let syscall = unsafe { &*syscall };
     let _reg_vals = unsafe { &*reg_vals };
-    
+
     match syscall.number as u32 {
         SYSCALL_EXIT => {
             sys_exit(syscall.arg1 as i64);
             unreachable!("sys_exit does not return");
         }
         SYSCALL_PRINT => sys_print(syscall.arg1 as *const u8),
-        SYSCALL_NANOSLEEP => sys_nanosleep_64(syscall.arg1,_reg_vals),
+        SYSCALL_NANOSLEEP => sys_nanosleep_64(syscall.arg1, _reg_vals),
         _ => {
             panic!("Unknown syscall, {}", syscall.number);
         }

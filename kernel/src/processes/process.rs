@@ -42,7 +42,7 @@ pub enum ProcessState {
     Running,
     Blocked,
     Terminated,
-    Kernel
+    Kernel,
 }
 
 #[derive(Debug)]
@@ -567,7 +567,6 @@ pub fn sleep_process_int(nanos: u64, rsp: u64) {
     }
 }
 
-
 pub fn sleep_process_syscall(nanos: u64, reg_vals: &NonFlagRegisters) {
     let event: EventInfo = current_running_event_info();
     if event.pid == 0 {
@@ -602,7 +601,7 @@ pub fn sleep_process_syscall(nanos: u64, reg_vals: &NonFlagRegisters) {
         (*pcb).registers.rbp = reg_vals.rbp;
         // saved from interrupt stack frame
         (*pcb).registers.rsp = reg_vals.rsp;
-        (*pcb).registers.rip = reg_vals.rcx;    // SYSCALL rcx stores RIP
+        (*pcb).registers.rip = reg_vals.rcx; // SYSCALL rcx stores RIP
         (*pcb).registers.rflags = reg_vals.r11; // SYSCALL r11 stores RFLAGS
 
         (*pcb).state = ProcessState::Blocked;
@@ -623,9 +622,6 @@ pub fn sleep_process_syscall(nanos: u64, reg_vals: &NonFlagRegisters) {
 
         x2apic::send_eoi();
 
-        core::arch::asm!(
-            "swapgs",
-            "ret"
-        );
+        core::arch::asm!("swapgs", "ret");
     }
 }
