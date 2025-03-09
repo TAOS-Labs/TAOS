@@ -1,3 +1,8 @@
+//! Deals with the XHCI controller and XHCI root hub ports
+//!
+//! XHCI Spec refers to Revision 1.2 found here
+//! https://www.intel.com/content/dam/www/public/us/en/documents/technical-specifications/extensible-host-controler-interface-usb-xhci.pdf
+
 pub mod context;
 pub mod ring_buffer;
 
@@ -6,22 +11,19 @@ use core::cmp::min;
 use crate::{constants::memory::PAGE_SIZE, debug_println, memory::frame_allocator::alloc_frame};
 use alloc::{sync::Arc, vec::Vec};
 use bitflags::bitflags;
-use ring_buffer::{ConsumerRingBuffer, ProducerRingBuffer, TransferRequestBlock, Trb, TrbTypes};
+use ring_buffer::{ConsumerRingBuffer, ProducerRingBuffer, TransferRequestBlock, TrbTypes};
 use spin::Mutex;
 use x86_64::{
     structures::paging::{OffsetPageTable, Page},
-    PhysAddr, VirtAddr,
+    PhysAddr,
 };
 
 use super::{
-    mmio,
+    mmio::{self, map_page_as_uncacheable},
     pci::{read_config, DeviceInfo},
 };
 
 const MAX_USB_DEVICES: u8 = 8;
-
-/// XHCI Spec refers to Revision 1.2 found here
-/// https://www.intel.com/content/dam/www/public/us/en/documents/technical-specifications/extensible-host-controler-interface-usb-xhci.pdf
 
 /// See section 5.3 of the xHCI spec
 #[derive(Debug, Clone, Copy)]
@@ -45,10 +47,6 @@ struct XHCICapabilities {
     runtime_register_space_offset: u32,
     /// Defines optional capabilities of this host controller
     capability_paramaters_2: u32,
-}
-
-struct XHCIDevice {
-    input_context: VirtAddr,
 }
 
 #[derive(Debug, Clone)]
@@ -128,6 +126,7 @@ bitflags! {
     }
 }
 
+#[allow(dead_code)]
 enum PortLinkStateRead {
     U0 = 0,
     U1 = 1,
@@ -184,7 +183,7 @@ pub fn initalize_xhci_hub(
     let mut info = initalize_xhciinfo(full_bar, mapper)?;
     // Turn on device
     run_host_controller(&info);
-    boot_up_all_ports(&mut info)?;
+    boot_up_all_ports(&mut info, mapper)?;
     Result::Ok(())
 }
 
@@ -452,7 +451,7 @@ fn initalize_xhciinfo(full_bar: u64, mapper: &mut OffsetPageTable) -> Result<XHC
     })
 }
 
-fn boot_up_all_ports(info: &mut XHCIInfo) -> Result<(), XHCIError> {
+fn boot_up_all_ports(info: &mut XHCIInfo, mapper: &mut OffsetPageTable) -> Result<(), XHCIError> {
     for device in 0..MAX_USB_DEVICES {
         debug_println!("Device = {device}");
         let device_offset: u64 = 0x10 * <u8 as Into<u64>>::into(device);
@@ -466,6 +465,7 @@ fn boot_up_all_ports(info: &mut XHCIInfo) -> Result<(), XHCIError> {
         if PortStatusAndControl::CurrentConnectStatus.intersects(device_connected) {
             debug_println!("PortStatusAndCtrl = {device_connected:?}");
             boot_up_usb_port(info, device, device_connected)?;
+            setup_input_context(info, device, mapper)?;
         } else {
             continue;
         }
@@ -504,7 +504,7 @@ fn boot_up_usb_port(
         event_result = unsafe { info.primary_event_ring.dequeue() };
         core::hint::spin_loop();
     }
-    let event = event_result.map_err(|_| XHCIError::Timeout)?;
+    let _event = event_result.map_err(|_| XHCIError::Timeout)?;
     // Now Enable the slot (4.3.2)
     let mut block = TransferRequestBlock {
         parameters: 0,
@@ -539,9 +539,13 @@ fn boot_up_usb_port(
     Result::Ok(())
 }
 
-fn setup_input_context(info: &mut XHCIInfo, device: u8) -> Result<(), XHCIError> {
+fn setup_input_context(
+    _info: &mut XHCIInfo,
+    _device: u8,
+    mapper: &mut OffsetPageTable,
+) -> Result<(), XHCIError> {
     let input_frame = alloc_frame().ok_or(XHCIError::MemoryAllocationFailure)?;
-
+    let _input_frame_vaddr = map_page_as_uncacheable(input_frame.start_address(), mapper);
     Result::Ok(())
 }
 

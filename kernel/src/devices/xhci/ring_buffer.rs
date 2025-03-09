@@ -1,9 +1,6 @@
-use crate::{debug_println, memory::MAPPER};
+use crate::debug_println;
 use alloc::collections::BTreeMap;
-use x86_64::{
-    structures::paging::{Mapper, OffsetPageTable, Page, PhysFrame, Size2MiB, Size4KiB},
-    PhysAddr, VirtAddr,
-};
+use x86_64::{PhysAddr, VirtAddr};
 
 /// A list of all the TRB types and the values associated with them.
 pub enum TrbTypes {
@@ -130,7 +127,7 @@ impl TransferRequestBlock {
 
     /// Sets the evaluate next TRB bit of the control field in the TRB to value.
     pub fn set_ent(&mut self, value: u32) {
-        self.control = (self.control & !0x2) | value << 1;
+        self.control = (self.control & !0x2) | (value << 1);
     }
 }
 
@@ -488,7 +485,7 @@ impl ConsumerRingBuffer {
     /// - This function preforms a raw pointer write to add the first segment into the ERST
     /// - This function assumes that both `erst_base_addr` and `segment_base` points to a valid memory region
     /// - `segment_vbase` should be the virtual address that refers to the physical address of `segment_pbase`
-    /// that is zeroed out and has enough space for their respective sizes
+    ///   that is zeroed out and has enough space for their respective sizes
     pub fn new(
         erst_base_addr: u64,
         erst_max_size: isize,
@@ -497,7 +494,7 @@ impl ConsumerRingBuffer {
         segment_size: u32,
     ) -> Result<Self, EventRingError> {
         // first check that the segment is proper size
-        if segment_size < 16 || segment_size > 4096 {
+        if !(16..=4096).contains(&segment_size) {
             return Err(EventRingError::SegmentSize);
         }
         debug_println!("erst_base {:X}", erst_base_addr);
@@ -551,7 +548,7 @@ impl ConsumerRingBuffer {
         segment_pbase: PhysAddr,
     ) -> Result<(), EventRingError> {
         // check the segment size is within the bounds
-        if segment_size < 16 || segment_size > 4096 {
+        if !(16..=4096).contains(&segment_size) {
             return Err(EventRingError::SegmentSize);
         }
 
@@ -665,11 +662,7 @@ impl ConsumerRingBuffer {
         if self.erst_count > self.count_visited {
             let completion_code = (block.status >> 24) & 0xFF;
             // if 0 then empty
-            if completion_code == 0 {
-                return true;
-            } else {
-                return false;
-            }
+            return completion_code == 0;
         }
 
         debug_println!("cycle bit: {}", block.get_cycle());
@@ -677,6 +670,10 @@ impl ConsumerRingBuffer {
         block.get_cycle() != self.ccs as u32
     }
 
+    /// Prints event rung
+    ///
+    /// # Safety
+    /// TODO
     pub unsafe fn print_ring(&self) {
         debug_println!("======PRINTING EVENT RING======");
         debug_println!("dequeue ptr: {:X}", self.dequeue as u64);

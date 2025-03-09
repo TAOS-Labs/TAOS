@@ -42,7 +42,7 @@ impl SlotContex {
     /// Sets the MTT field to value.
     /// value is expected to be one bit.
     fn set_mtt(&mut self, value: u32) {
-        self.offset_0 = (self.offset_0 & !0x2000000) | value << 25;
+        self.offset_0 = (self.offset_0 & !0x2000000) | (value << 25);
     }
 
     /// Retrieves the hub bit from the slot context.
@@ -54,7 +54,7 @@ impl SlotContex {
     /// Sets the hub field to value.
     /// value is expected to be one bit.
     fn set_hub(&mut self, value: u32) {
-        self.offset_0 = (self.offset_0 & !0x4000000) | value << 26;
+        self.offset_0 = (self.offset_0 & !0x4000000) | (value << 26);
     }
 
     /// Retrieves the context entries from the slot context.
@@ -68,7 +68,7 @@ impl SlotContex {
     /// value is expected to be 5 bits.
     /// This method should only be used if this is an input context entries.
     fn set_context_entries(&mut self, value: u32) {
-        self.offset_0 = (self.offset_0 & 0x7FFFFFF) | value << 27;
+        self.offset_0 = (self.offset_0 & 0x7FFFFFF) | (value << 27);
     }
 
     /// Retrieves the max exit latency from the slot context.
@@ -95,7 +95,7 @@ impl SlotContex {
     /// Sets the number of ports field to value.
     /// value is expected to be 8 bits.
     fn set_num_ports(&mut self, value: u32) {
-        self.offset_1 = (self.offset_1 & 0xFFFFFF) | value << 24;
+        self.offset_1 = (self.offset_1 & 0xFFFFFF) | (value << 24);
     }
 
     /// Retrieves the parent hub slot id from the slot context.
@@ -209,7 +209,7 @@ impl EndpointContext {
     /// Sets the Error Count field of the endpoint context to value.
     /// value is expected to only be 2 bits wide.
     fn set_cerr(&mut self, value: u32) {
-        self.offset_1 = (self.offset_1 & !0x6) | value << 1;
+        self.offset_1 = (self.offset_1 & !0x6) | (value << 1);
     }
 
     /// Retrieves the Endpoint Type field of the endpoint context.
@@ -222,7 +222,7 @@ impl EndpointContext {
     /// Sets the Endpoint Type field of the endpoint context to value.
     /// value is expected to be 3 bits wide.
     fn set_eptype(&mut self, value: u32) {
-        self.offset_1 = (self.offset_1 & !0x38) | value << 3;
+        self.offset_1 = (self.offset_1 & !0x38) | (value << 3);
     }
 
     /// Retrieves the Host Initiate Disable field from the endpoint context.
@@ -235,7 +235,7 @@ impl EndpointContext {
     /// Sets the Host Initiate Disable field of the endpoint context to value.
     /// value is expected to be 1 bit wide.
     fn set_hid(&mut self, value: u32) {
-        self.offset_1 = (self.offset_0 & !0x80) | value << 7;
+        self.offset_1 = (self.offset_0 & !0x80) | (value << 7);
     }
 
     /// Retrieves the Max Burst Size field from the endpoint context.
@@ -248,7 +248,7 @@ impl EndpointContext {
     /// Sets the Max Burst Size field of the endpoint context to value.
     /// value is expected to be 8 bits.
     fn set_max_burst_size(&mut self, value: u32) {
-        self.offset_1 = (self.offset_1 & !0xFF00) | value << 8;
+        self.offset_1 = (self.offset_1 & !0xFF00) | (value << 8);
     }
 
     /// Retrieves the Max Packet Size field from the endpoint context.
@@ -261,7 +261,7 @@ impl EndpointContext {
     /// Sets the Max Packet Size field of the endpoint context to value.
     /// value is expected to be 16 bits wide.
     fn set_max_packet_size(&mut self, value: u32) {
-        self.offset_1 = (self.offset_1 & 0x0000FFFF) | value << 16;
+        self.offset_1 = (self.offset_1 & 0x0000FFFF) | (value << 16);
     }
 
     /// Retrieves the Dequeue Cycle State field of from the endpoint context.
