@@ -457,13 +457,13 @@ mod tests {
     use super::*;
 
     #[test_case]
-    fn test_alloc_dealloc_frame() {
+    async fn test_alloc_dealloc_frame() {
         let frame = alloc_frame().expect("Allocation failed");
         dealloc_frame(frame);
     }
 
     #[test_case]
-    fn test_multiple_alloc_dealloc() {
+    async fn test_multiple_alloc_dealloc() {
         let alloc_count_before = with_buddy_frame_allocator(|alloc| alloc.allocated_count);
 
         let mut frames: Vec<PhysFrame> = Vec::with_capacity(100);
@@ -481,7 +481,7 @@ mod tests {
     }
 
     #[test_case]
-    fn test_alloc_frame_count() {
+    async fn test_alloc_frame_count() {
         let alloc_count_before = with_buddy_frame_allocator(|alloc| alloc.allocated_count);
 
         let frame = alloc_frame().expect("Frame allocation failed");
@@ -494,7 +494,7 @@ mod tests {
     }
 
     #[test_case]
-    fn test_dealloc_frame_count() {
+    async fn test_dealloc_frame_count() {
         let frame = alloc_frame().expect("Allocation failed");
         let alloc_count_before = with_buddy_frame_allocator(|alloc| alloc.allocated_count);
 
@@ -506,7 +506,7 @@ mod tests {
     }
 
     #[test_case]
-    fn test_ref_count() {
+    async fn test_ref_count() {
         let frame = alloc_frame().expect("Allocation failed");
 
         with_buddy_frame_allocator(|alloc| {
@@ -521,7 +521,7 @@ mod tests {
     }
 
     #[test_case]
-    fn test_alloc_block_small() {
+    async fn test_alloc_block_small() {
         let order = 1; // request 2 blocks of memory
         let (frames, alloc_count_before) = with_buddy_frame_allocator(|alloc| {
             let alloc_count_before = alloc.allocated_count;
@@ -545,7 +545,7 @@ mod tests {
     }
 
     #[test_case]
-    fn test_alloc_block_large() {
+    async fn test_alloc_block_large() {
         let order = 8; // request 256 frames of memory
         let (frames, alloc_count_before) = with_buddy_frame_allocator(|alloc| {
             let alloc_count_before = alloc.allocated_count;
@@ -569,7 +569,7 @@ mod tests {
     }
 
     #[test_case]
-    fn test_alloc_dealloc_block() {
+    async fn test_alloc_dealloc_block() {
         let order = 1;
         with_buddy_frame_allocator(|alloc| {
             let alloc_count_before = alloc.allocated_count;
@@ -585,7 +585,7 @@ mod tests {
     }
 
     #[test_case]
-    fn test_alloc_dealloc_block_large() {
+    async fn test_alloc_dealloc_block_large() {
         let order = 8;
         with_buddy_frame_allocator(|alloc| {
             let alloc_count_before = alloc.allocated_count;

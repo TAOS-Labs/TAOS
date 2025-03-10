@@ -67,9 +67,6 @@ pub fn init() -> u32 {
 
     idt::enable();
 
-    let pid = create_process(MMAP_ANON_SIMPLE);
-    schedule_process(pid);
-
     bsp_id
 }
 

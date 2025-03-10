@@ -1,5 +1,9 @@
 use core::{ffi::CStr, i64, sync::atomic::AtomicI64};
 
+use alloc::collections::btree_map::BTreeMap;
+use lazy_static::lazy_static;
+use spin::lock_api::Mutex;
+
 use crate::{
     constants::syscalls::*,
     events::{current_running_event_info, current_running_event_pid, EventInfo},
@@ -9,7 +13,10 @@ use crate::{
     },
     memory::frame_allocator::with_buddy_frame_allocator,
     processes::{
-        process::{clear_process_frames, sleep_process, ProcessState, PROCESS_TABLE},
+        process::{
+            clear_process_frames, sleep_process_int, sleep_process_syscall, ProcessState,
+            PROCESS_TABLE,
+        },
         registers::NonFlagRegisters,
     },
     serial_println,
@@ -18,7 +25,10 @@ use crate::{
 
 use core::arch::naked_asm;
 
-pub static TEST_EXIT_CODE: AtomicI64 = AtomicI64::new(i64::MIN);
+#[cfg(test)]
+lazy_static! {
+    pub static ref EXIT_CODES: Mutex<BTreeMap<u32, i64>> = Mutex::new(BTreeMap::new());
+}
 
 #[repr(C)]
 #[derive(Debug)]
@@ -135,7 +145,7 @@ pub unsafe extern "C" fn syscall_handler_impl(
     reg_vals: *const NonFlagRegisters,
 ) -> u64 {
     let syscall = unsafe { &*syscall };
-    let _reg_vals = unsafe { &*reg_vals };
+    let reg_vals = unsafe { &*reg_vals };
 
     match syscall.number as u32 {
         SYSCALL_EXIT => {
@@ -143,7 +153,7 @@ pub unsafe extern "C" fn syscall_handler_impl(
             unreachable!("sys_exit does not return");
         }
         SYSCALL_PRINT => sys_print(syscall.arg1 as *const u8),
-        SYSCALL_NANOSLEEP => sys_nanosleep(syscall.arg1, syscall.arg2),
+        SYSCALL_NANOSLEEP => sys_nanosleep_32(syscall.arg1, syscall.arg2),
         SYSCALL_FORK => sys_fork(reg_vals),
         SYSCALL_MMAP => sys_mmap(
             syscall.arg1,
@@ -153,7 +163,6 @@ pub unsafe extern "C" fn syscall_handler_impl(
             syscall.arg5 as i64,
             syscall.arg6,
         ),
-        SYSCALL_NANOSLEEP => sys_nanosleep_64(syscall.arg1, _reg_vals),
         _ => {
             panic!("Unknown syscall, {}", syscall.number);
         }
@@ -180,8 +189,6 @@ pub fn sys_exit(code: i64) -> Option<u64> {
         panic!("Calling exit from outside of process");
     }
 
-    serial_println!("Process {} exitted with code {}", event.pid, code);
-
     // Get PCB from PID
     let preemption_info = unsafe {
         let mut process_table = PROCESS_TABLE.write();
@@ -198,14 +205,14 @@ pub fn sys_exit(code: i64) -> Option<u64> {
             alloc.print_free_frames();
         });
 
+        // #[cfg(test)]
+        // {
+        //     EXIT_CODES.lock().insert(event.pid, code);
+        // }
+
         process_table.remove(&event.pid);
         ((*pcb).kernel_rsp, (*pcb).kernel_rip)
     };
-
-    #[cfg(test)]
-    {
-        TEST_EXIT_CODE.store(code, core::sync::atomic::Ordering::SeqCst);
-    }
 
     unsafe {
         // Restore kernel RSP + PC -> RIP from where it was stored in run/resume process

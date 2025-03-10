@@ -310,7 +310,7 @@ mod tests {
     /// verifies that looking up addresses 250 and 750 correctly returns the corresponding VM Areas
     /// with the expected starting addresses.
     #[test_case]
-    fn test_mm_vma_insert_find() {
+    async fn test_mm_vma_insert_find() {
         // Create a dummy PML4 frame.
         let pml4_frame = PhysFrame::containing_address(PhysAddr::new(0x1000));
         let mm = Mm::new(pml4_frame);
@@ -344,7 +344,7 @@ mod tests {
     /// The test then removes the VM Area starting at address 0 and confirms that subsequent lookup fails,
     /// ensuring that removal works correctly.
     #[test_case]
-    fn test_mm_vma_remove() {
+    async fn test_mm_vma_remove() {
         // Create a dummy PML4 frame.
         let pml4_frame = PhysFrame::containing_address(PhysAddr::new(0x1000));
         let mm = Mm::new(pml4_frame);
@@ -374,7 +374,7 @@ mod tests {
     /// - The backing pointer of the VM Area matches the anonymous backing area.
     /// - The mapping in the anonymous area correctly returns the physical frame.
     #[test_case]
-    fn test_mm_anon_vm_backing() {
+    async fn test_mm_anon_vm_backing() {
         let pml4_frame = PhysFrame::containing_address(PhysAddr::new(0x1000));
         let mm = Mm::new(pml4_frame);
         let anon_area = Arc::new(AnonVmArea::new());
@@ -424,7 +424,7 @@ mod tests {
     /// It simulates faults at two different addresses within the VM Area and maps each offset to a different frame.
     /// The test asserts that the correct physical frame is returned for each fault offset.
     #[test_case]
-    fn test_mm_anon_vm_backing2() {
+    async fn test_mm_anon_vm_backing2() {
         let pml4_frame = PhysFrame::containing_address(PhysAddr::new(0x1000));
         let mm = Mm::new(pml4_frame);
         let anon_area = Arc::new(AnonVmArea::new());
@@ -487,7 +487,7 @@ mod tests {
     /// - The backing pointer in both VM Areas is the same.
     /// - The anonymous mapping returns the same frame for the corresponding offset.
     #[test_case]
-    fn test_mm_multiple_vmas() {
+    async fn test_mm_multiple_vmas() {
         let pml4_frame1 = PhysFrame::containing_address(PhysAddr::new(0x1000));
         let mm1 = Mm::new(pml4_frame1);
         let pml4_frame2 = PhysFrame::containing_address(PhysAddr::new(0x1000));
@@ -560,7 +560,7 @@ mod tests {
     /// coalesced into a single VM Area by checking that a lookup for an address in the first region returns
     /// a VM Area with the same start as the coalesced result.
     #[test_case]
-    fn test_coalesce_left() {
+    async fn test_coalesce_left() {
         let pml4_frame = PhysFrame::containing_address(PhysAddr::new(0x1000));
         let mm = Mm::new(pml4_frame);
         let anon_area = Arc::new(AnonVmArea::new());
@@ -600,7 +600,7 @@ mod tests {
     /// Since the VM Area starting at `0` ends exactly where the first begins, they should be coalesced.
     /// A lookup of an address in the first region (e.g. `0x1500`) should return a VM Area starting at `0`.
     #[test_case]
-    fn test_coalesce_right() {
+    async fn test_coalesce_right() {
         let pml4_frame = PhysFrame::containing_address(PhysAddr::new(0x1000));
         let mm = Mm::new(pml4_frame);
         let anon_area = Arc::new(AnonVmArea::new());
@@ -638,7 +638,7 @@ mod tests {
     /// resulting in a single coalesced VM Area. The test verifies that the start address for all
     /// resulting VM Areas is the same.
     #[test_case]
-    fn test_coalesce_both() {
+    async fn test_coalesce_both() {
         let pml4_frame = PhysFrame::containing_address(PhysAddr::new(0x1000));
         let mm = Mm::new(pml4_frame);
         let anon_area = Arc::new(AnonVmArea::new());

@@ -27,8 +27,10 @@ use crate::{
     },
     prelude::*,
     processes::process::preempt_process,
-    syscalls::{memorymap::sys_mmap, syscall_handlers::{sys_exit, sys_nanosleep, sys_print}},
-    syscalls::syscall_handlers::{sys_exit, sys_nanosleep_32, sys_print},
+    syscalls::{
+        memorymap::sys_mmap,
+        syscall_handlers::{sys_exit, sys_nanosleep_32, sys_print},
+    },
 };
 
 lazy_static! {

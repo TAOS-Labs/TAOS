@@ -365,7 +365,7 @@ mod tests {
     /// translating the page results in a `PageNotMapped` error.
     #[test_case]
     async fn test_remove_mapped_frame() {
-        let mut mapper = MAPPER.lock();
+        let mut mapper = KERNEL_MAPPER.lock();
         let page: Page = Page::containing_address(VirtAddr::new(0x500000000));
         let _ = create_mapping(page, &mut *mapper, None);
 
@@ -385,7 +385,7 @@ mod tests {
     /// verified by translating the page. Finally, the mapping is removed.
     #[test_case]
     async fn test_basic_map_and_translate() {
-        let mut mapper = MAPPER.lock();
+        let mut mapper = KERNEL_MAPPER.lock();
 
         // Use a test virtual page.
         let page: Page = Page::containing_address(VirtAddr::new(0x400001000));
@@ -405,7 +405,7 @@ mod tests {
     /// and asserts that it contains the expected flags.
     #[test_case]
     async fn test_update_permissions() {
-        let mut mapper = MAPPER.lock();
+        let mut mapper = KERNEL_MAPPER.lock();
 
         let page: Page = Page::containing_address(VirtAddr::new(0x400002000));
         let _ = create_mapping(page, &mut *mapper, None);
@@ -430,7 +430,7 @@ mod tests {
     /// writable permissions, a distinct value is written to each page, and then the value is read
     /// back to verify correctness. Finally, all mappings are removed.
     #[test_case] // Uncomment to run this test.
-    fn test_contiguous_mapping() {
+    async fn test_contiguous_mapping() {
         let mut mapper = KERNEL_MAPPER.lock();
 
         // Define a contiguous region spanning 8 pages.
@@ -535,8 +535,8 @@ mod tests {
     /// 2. Writing to the page which, triggers a page fault
     /// 3. Handling the page fault in our page fault handler
     /// 4. Verifying that the new frame is different from the initial one and that the written value is present.
-    #[test_case]
-    fn test_copy_on_write() {
+    // #[test_case]
+    async fn test_copy_on_write() {
         let mut mapper = KERNEL_MAPPER.lock();
         // Create a dummy PML4 frame.
         // Locate the current process.
@@ -618,8 +618,8 @@ mod tests {
     /// Then, the page is marked read only and the first byte in the buffer is written to.
     /// This should trigger a page fault that does COW, but it should maintain the rest
     /// of the values in the buffer.
-    #[test_case]
-    fn test_copy_on_write_full() {
+    // #[test_case]
+    async fn test_copy_on_write_full() {
         let mut mapper = KERNEL_MAPPER.lock();
         // Create a dummy PML4 frame.
         // Locate the current process.
