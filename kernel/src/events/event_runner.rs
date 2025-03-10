@@ -131,8 +131,6 @@ impl EventRunner {
                 self.event_clock,
             ));
 
-            // serial_println!("Created {:?}", event.eid);
-
             Self::enqueue(&self.event_queues[priority_level], event.clone());
 
             self.pending_events.write().insert(event.eid.0);

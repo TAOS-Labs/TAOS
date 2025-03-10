@@ -163,10 +163,6 @@ pub async fn run_server(server_rx: Receiver<Bytes>, server_tx: Sender<Bytes>) {
                         PLOCK = false;
                     }
                 }
-                // let sleep = nanosleep_current_event(2_000_000_000);
-                // if sleep.is_some() {
-                //     sleep.unwrap().await;
-                // }
             }
         }
         yield_now().await;

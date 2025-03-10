@@ -227,6 +227,8 @@ pub fn sys_print(buffer: *const u8) -> u64 {
     0
 }
 
+/// Handle a nanosleep system call entered via int 0x80
+/// Uses interrupt stack to restore state
 pub fn sys_nanosleep_32(nanos: u64, rsp: u64) -> u64 {
     sleep_process_int(nanos, rsp);
     x2apic::send_eoi();
@@ -234,6 +236,8 @@ pub fn sys_nanosleep_32(nanos: u64, rsp: u64) -> u64 {
     0
 }
 
+/// Handle a nanosleep system call entered via syscall
+/// Uses manually-created NonFlagRegisters struct to restore state
 pub fn sys_nanosleep_64(nanos: u64, reg_vals: &NonFlagRegisters) -> u64 {
     sleep_process_syscall(nanos, reg_vals);
 

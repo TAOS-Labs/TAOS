@@ -146,8 +146,6 @@ pub fn schedule_blocked_process(pid: u32, // 0 as kernel/sentinel
             runner.schedule_blocked(run_process_ring3(pid), NUM_EVENT_PRIORITIES - 1, pid)
         }
     })
-
-    //todo?
 }
 
 /// Registers a new event runner to the current core

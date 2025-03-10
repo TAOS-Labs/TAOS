@@ -24,6 +24,7 @@ pub struct Await {
 unsafe impl Send for Await {}
 
 impl Await {
+    /// Creates a new AwaitProcess. Use U64 max for effectively no timeout
     pub fn new(target_event: Arc<Event>, timeout_timestamp: u64, event: Arc<Event>) -> Await {
         Await {
             target_event,
@@ -41,10 +42,11 @@ impl Await {
     }
 }
 
-/// Order SDCardReq futures with earlier timestamps given "higher" values.
+/// Order Await futures with earlier timeouts given "higher" values.
+/// This allows quick progress in the event of a timeout
 ///
 /// PID then EID to tie break.
-/// Thus, events created earlier awaken first in the very rare event of a tie.
+/// Thus, processes/events created earlier awaken first in the very rare event of a timestamp tie.
 /// This helps preventing compounding error from old events frequently blocking.
 impl Ord for Await {
     fn cmp(&self, other: &Self) -> core::cmp::Ordering {
@@ -107,6 +109,7 @@ pub struct AwaitProcess {
 unsafe impl Send for AwaitProcess {}
 
 impl AwaitProcess {
+    /// Creates a new AwaitProcess. Use U64 max for effectively no timeout
     pub fn new(target_pid: u32, timeout_timestamp: u64, event: Arc<Event>) -> AwaitProcess {
         AwaitProcess {
             target_pid,
@@ -124,7 +127,8 @@ impl AwaitProcess {
     }
 }
 
-/// Order SDCardReq futures with earlier timestamps given "higher" values.
+/// Order AwaitProcess futures with earlier timestamps given "higher" values.
+/// This allows quick progress in the event of a timeout
 ///
 /// PID then EID to tie break.
 /// Thus, events created earlier awaken first in the very rare event of a tie.
