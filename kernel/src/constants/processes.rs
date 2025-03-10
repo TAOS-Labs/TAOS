@@ -29,6 +29,8 @@ pub const FORK_SIMPLE: &[u8] = include_bytes!("../processes/debug_binaries/fork_
 // tests
 pub const TEST_SIMPLE_PROCESS: &[u8] = include_bytes!("../processes/test_binaries/test_simple_process");
 pub const TEST_EXIT_CODE: &[u8] = include_bytes!("../processes/test_binaries/test_exit_code");
+pub const TEST_PRINT_EXIT: &[u8] = include_bytes!("../processes/test_binaries/test_print_exit");
+pub const TEST_WAIT: &[u8] = include_bytes!("../processes/test_binaries/test_wait");
 
 
 pub const STACK_START: u64 = 0x7000_0000_0000;

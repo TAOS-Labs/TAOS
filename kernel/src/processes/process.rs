@@ -146,6 +146,7 @@ pub fn create_process(elf_bytes: &[u8]) -> u32 {
         let ptr = virt.as_mut_ptr::<PageTable>();
         OffsetPageTable::new(&mut *ptr, *HHDM_OFFSET)
     };
+
     let (stack_top, entry_point) = load_elf(
         elf_bytes,
         &mut mapper,

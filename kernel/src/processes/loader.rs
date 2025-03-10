@@ -7,7 +7,7 @@ use crate::{
         frame_allocator::with_generic_allocator,
         mm::{AnonVmArea, Mm, VmAreaFlags},
         paging::{create_mapping, update_permissions},
-    },
+    }, serial_println,
 };
 use alloc::sync::Arc;
 use core::ptr::{copy_nonoverlapping, write_bytes};
