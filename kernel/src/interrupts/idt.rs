@@ -17,7 +17,7 @@ use x86_64::{
 use crate::{
     constants::{
         idt::{SYSCALL_HANDLER, TIMER_VECTOR, TLB_SHOOTDOWN_VECTOR},
-        syscalls::{SYSCALL_EXIT, SYSCALL_NANOSLEEP, SYSCALL_PRINT},
+        syscalls::{SYSCALL_EXIT, SYSCALL_MMAP, SYSCALL_NANOSLEEP, SYSCALL_PRINT},
     },
     events::inc_runner_clock,
     interrupts::x2apic::{self, current_core_id, TLB_SHOOTDOWN_ADDR},
@@ -27,7 +27,7 @@ use crate::{
     },
     prelude::*,
     processes::process::preempt_process,
-    syscalls::syscall_handlers::{sys_exit, sys_nanosleep, sys_print},
+    syscalls::{memorymap::sys_mmap, syscall_handlers::{sys_exit, sys_nanosleep, sys_print}},
 };
 
 lazy_static! {
@@ -243,7 +243,7 @@ fn syscall_handler(rsp: u64) {
     let p6: u64;
     let stack_ptr: *const u64 = rsp as *const u64;
     unsafe {
-        syscall_num = *stack_ptr.add(0);
+        syscall_num = *stack_ptr.add(0) as u32;
         p1 = *stack_ptr.add(5);
         p2 = *stack_ptr.add(4);
         p3 = *stack_ptr.add(3);

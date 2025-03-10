@@ -3,7 +3,10 @@ use core::{ffi::CStr, i64, sync::atomic::AtomicI64};
 use crate::{
     constants::syscalls::*,
     events::{current_running_event_info, current_running_event_pid, EventInfo},
-    interrupts::{gdt::TSSS, x2apic::current_core_id},
+    interrupts::{
+        gdt::TSSS,
+        x2apic::{self, current_core_id},
+    },
     memory::frame_allocator::with_buddy_frame_allocator,
     processes::{
         process::{clear_process_frames, sleep_process, ProcessState, PROCESS_TABLE},
@@ -221,23 +224,6 @@ pub fn sys_exit(code: i64) -> Option<u64> {
     }
 
     Some(code as u64)
-}
-
-// Not a real system call, but useful for testing
-pub fn sys_print(buffer: *const u8) -> u64 {
-    let c_str = unsafe { CStr::from_ptr(buffer as *const i8) };
-    let str_slice = c_str.to_str().expect("Invalid UTF-8 string");
-    serial_println!("Buffer: {}", str_slice);
-
-    0
-}
-
-// hey gang
-pub fn sys_nanosleep(nanos: u64, rsp: u64) -> u64 {
-    sleep_process(rsp, nanos);
-    // x2apic::send_eoi();
-
-    0
 }
 
 // Not a real system call, but useful for testing

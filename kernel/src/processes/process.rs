@@ -5,7 +5,6 @@ use crate::{
         processes::{MAX_FILES, PROCESS_NANOS},
         syscalls::START_MMAP_ADDRESS,
     },
-    constants::processes::PROCESS_NANOS,
     debug,
     events::{
         current_running_event_info, nanosleep_current_process, runner_timestamp, schedule_process,
@@ -164,7 +163,6 @@ pub fn create_placeholder_process() -> u32 {
         },
         mmap_address: START_MMAP_ADDRESS,
         fd_table: [0; MAX_FILES],
-        next_preemption_time: 0,
         mm,
     }));
     PROCESS_TABLE.write().insert(pid, Arc::clone(&process));

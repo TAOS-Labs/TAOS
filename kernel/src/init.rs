@@ -10,9 +10,9 @@ use limine::{
 };
 
 use crate::{
-    constants::processes::FORK_SIMPLE,
+    constants::processes::{FORK_SIMPLE, MMAP_ANON_SIMPLE},
     debug, devices,
-    events::{register_event_runner, run_loop, schedule_process_on},
+    events::{register_event_runner, run_loop, schedule_process, schedule_process_on},
     interrupts::{self, idt},
     logging,
     memory::{self},
@@ -52,12 +52,14 @@ pub fn init() -> u32 {
     // Should be kept after devices in case logging gets complicated
     // Right now log writes to serial, but if it were to switch to VGA, this would be important
     logging::init(0);
-    processes::init(0);
 
     debug!("Waking cores");
     let bsp_id = wake_cores();
 
     idt::enable();
+
+    let pid = create_process(MMAP_ANON_SIMPLE);
+    schedule_process(pid);
 
     bsp_id
 }
@@ -78,7 +80,6 @@ unsafe extern "C" fn secondary_cpu_main(cpu: &Cpu) -> ! {
     interrupts::init(cpu.id);
     memory::init(cpu.id);
     logging::init(cpu.id);
-    processes::init(cpu.id);
 
     debug!("AP {} initialized", cpu.id);
 

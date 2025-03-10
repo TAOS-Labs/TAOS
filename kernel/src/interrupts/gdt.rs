@@ -57,7 +57,6 @@ lazy_static! {
                 let priv_stack_end = VirtAddr::new((priv_stack_start + RING0_STACK_SIZE as u64).as_u64() & !15);
 
                 tss.interrupt_stack_table[DOUBLE_FAULT_IST_INDEX as usize] = stack_end;
-                serial_println!("Stack end for cpu_id {} is {:#x}", i, priv_stack_end);
                 tss.privilege_stack_table[0] = priv_stack_end;
             }
         }
