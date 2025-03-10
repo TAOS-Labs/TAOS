@@ -156,14 +156,12 @@ pub async fn run_server(server_rx: Receiver<Bytes>, server_tx: Sender<Bytes>) {
                 }
                 Err(e) => serial_println!("(Server) Failed to parse message: {:?}", e),
             },
-            Err(_) => {
-                unsafe {
-                    if PLOCK {
-                        serial_println!("Got error");
-                        PLOCK = false;
-                    }
+            Err(_) => unsafe {
+                if PLOCK {
+                    serial_println!("Got error");
+                    PLOCK = false;
                 }
-            }
+            },
         }
         yield_now().await;
     }
