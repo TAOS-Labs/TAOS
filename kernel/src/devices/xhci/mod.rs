@@ -574,8 +574,7 @@ mod test {
         // call the new function
         let base_addr = page.start_address().as_u64();
         let size = page.size() as isize;
-        let _cmd_ring = ProducerRingBuffer::new(base_addr, 1, RingType::Command, size)
-            .expect("Intialization failed");
+        let _cmd_ring = ProducerRingBuffer::new(base_addr, 1, RingType::Command, size);
 
         // make sure the link trb is set correctly
         let mut trb_ptr = base_addr as *const Trb;
@@ -608,8 +607,7 @@ mod test {
         // call the new function
         let base_addr = page.start_address().as_u64();
         let size = page.size() as isize;
-        let mut cmd_ring = ProducerRingBuffer::new(base_addr, 1, RingType::Command, size)
-            .expect("Intialization failed");
+        let mut cmd_ring = ProducerRingBuffer::new(base_addr, 1, RingType::Command, size);
 
         // create a block to queue
         let mut cmd = Trb {
@@ -654,8 +652,7 @@ mod test {
         // create a small ring buffer
         let base_addr = page.start_address().as_u64();
         let size: isize = 64;
-        let mut cmd_ring = ProducerRingBuffer::new(base_addr, 1, RingType::Command, size)
-            .expect("Intialization failed");
+        let mut cmd_ring = ProducerRingBuffer::new(base_addr, 1, RingType::Command, size);
 
         // test is empty and is full funcs
         let mut result = cmd_ring.is_ring_empty();
@@ -702,82 +699,6 @@ mod test {
     }
 
     #[test_case]
-    fn prod_ring_buffer_errors() {
-        let mut mapper = MAPPER.lock();
-        let page: Page = Page::containing_address(VirtAddr::new(0x500000000));
-        let _ = create_mapping(page, &mut *mapper, None);
-
-        mmio::zero_out_page(page);
-
-        // First test the new function with unaligned address
-        let mut base_addr = page.start_address().as_u64();
-        base_addr += 1;
-        let mut size: isize = 64;
-        let mut result =
-            ProducerRingBuffer::new(base_addr, 1, RingType::Command, size).unwrap_err();
-
-        assert_eq!(result, ProducerRingError::UnalignedAddress);
-
-        // now test with unaligned size
-        base_addr -= 1;
-        size += 5;
-        result = ProducerRingBuffer::new(base_addr, 1, RingType::Command, size).unwrap_err();
-
-        assert_eq!(result, ProducerRingError::UnalignedSize);
-        size -= 5;
-
-        // make an actual proper cmd ring
-        let mut cmd_ring = ProducerRingBuffer::new(base_addr, 1, RingType::Command, size)
-            .expect("Intialization failed");
-
-        // now begin testing the setters for unaligned address
-        result = cmd_ring.set_enqueue(base_addr + 18).unwrap_err();
-        assert_eq!(result, ProducerRingError::UnalignedAddress);
-
-        result = cmd_ring.set_dequeue(base_addr + 18).unwrap_err();
-        assert_eq!(result, ProducerRingError::UnalignedAddress);
-
-        // try to enqueue a transfer type TRB
-        let mut transfer_trb = Trb {
-            parameters: 0,
-            status: 0,
-            control: 0,
-        };
-        transfer_trb.set_trb_type(TrbTypes::SetupStage as u32);
-        unsafe {
-            result = cmd_ring.enqueue(transfer_trb).unwrap_err();
-        }
-        assert_eq!(result, ProducerRingError::InvalidType);
-
-        // test enqueue buffer full error
-        let mut cmd = Trb {
-            parameters: 0,
-            status: 0,
-            control: 0,
-        };
-        cmd.set_trb_type(TrbTypes::NoOpCmd as u32);
-
-        unsafe {
-            cmd_ring.enqueue(cmd).expect("enqueue error");
-            cmd_ring.enqueue(cmd).expect("enqueue error");
-            result = cmd_ring.enqueue(cmd).unwrap_err();
-        }
-        assert_eq!(result, ProducerRingError::BufferFullError);
-
-        // create a transfer ring so we can test the invalid type error on it
-        let mut transfer_ring =
-            ProducerRingBuffer::new(base_addr, 1, RingType::Transfer, size).expect("init failed");
-
-        // test enqueue invalid type err
-        unsafe {
-            result = transfer_ring.enqueue(cmd).unwrap_err();
-        }
-        assert_eq!(result, ProducerRingError::InvalidType);
-
-        remove_mapped_frame(page, &mut *mapper);
-    }
-
-    #[test_case]
     fn prod_ring_buffer_enqueue_accross_segment() {
         let mut mapper = MAPPER.lock();
         let page: Page = Page::containing_address(VirtAddr::new(0x500000000));
@@ -788,8 +709,7 @@ mod test {
         // create a small ring buffer
         let base_addr = page.start_address().as_u64();
         let size: isize = 64;
-        let mut cmd_ring = ProducerRingBuffer::new(base_addr, 1, RingType::Command, size)
-            .expect("Intialization failed");
+        let mut cmd_ring = ProducerRingBuffer::new(base_addr, 1, RingType::Command, size);
 
         // create our no op cmd
         let mut cmd = Trb {
@@ -805,11 +725,9 @@ mod test {
         }
         // move the enqueue to the last block before the end and then the dequeue over one
         cmd_ring
-            .set_enqueue(base_addr + 32)
-            .expect("unaligned address");
+            .set_enqueue(base_addr + 32);
         cmd_ring
-            .set_dequeue(base_addr + 16)
-            .expect("unaligned address");
+            .set_dequeue(base_addr + 16);
 
         // now try to enqueue
         unsafe {
@@ -823,8 +741,7 @@ mod test {
 
         // now move dequeue so we can test that enqueue properly writes the cycle bit to 0
         cmd_ring
-            .set_dequeue(base_addr + 32)
-            .expect("unaligned address");
+            .set_dequeue(base_addr + 32);
 
         unsafe {
             cmd_ring.enqueue(cmd).expect("enqueue error");
@@ -870,8 +787,7 @@ mod test {
             segment_page.start_address(),
             segment_frame_addr,
             (page_size / size_of::<TransferRequestBlock>() as isize) as u32,
-        )
-        .expect("error initializing event ring");
+        );
 
         // verify that the ERST was properly initialized
 
@@ -896,7 +812,7 @@ mod test {
         assert_eq!(control, 0);
 
         // check that the rest of the TRB's worth of the ERST is still zeroed
-        for index in 1..(page_size / erst_entry_size) {
+        for _ in 1..(page_size / erst_entry_size) {
             unsafe {
                 trb_ptr = trb_ptr.offset(1);
                 trb = *trb_ptr;
@@ -917,7 +833,7 @@ mod test {
             trb = *trb_ptr;
         }
 
-        for index in 1..(page_size / erst_entry_size) {
+        for _ in 1..(page_size / erst_entry_size) {
             parameters = trb.parameters;
             status = trb.status;
             control = trb.control;
