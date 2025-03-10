@@ -7,7 +7,7 @@
 //! - End-of-interrupt (EOI) handling
 
 use crate::{
-    constants::{idt::TIMER_VECTOR, x2apic::CPU_FREQUENCY, MAX_CORES},
+    constants::{idt::TIMER_VECTOR, x2apic::NS_PER_TICK, MAX_CORES},
     interrupts::gdt,
     syscalls::syscall_handlers::syscall_handler_64_naked,
 };
@@ -19,7 +19,7 @@ use x86_64::{
     registers::model_specific::{GsBase, KernelGsBase, Msr},
 };
 
-// MSR register constants
+/// MSR register addresses for x2APIC control
 const IA32_APIC_BASE_MSR: u32 = 0x1B;
 const X2APIC_EOI: u32 = 0x80B;
 const X2APIC_SIVR: u32 = 0x80F;
@@ -48,6 +48,7 @@ const CHANNEL_2_PORT: u16 = 0x42;
 const COMMAND_PORT: u16 = 0x43;
 const CONTROL_PORT: u16 = 0x61;
 
+/// Errors that can occur during x2APIC operations
 #[derive(Debug)]
 pub enum X2ApicError {
     /// x2APIC feature not supported by CPU
@@ -409,5 +410,5 @@ pub fn unmask_timer() {
 
 #[inline(always)]
 pub fn nanos_to_ticks(nanos: u64) -> u64 {
-    (nanos * CPU_FREQUENCY as u64) / 1_000_000_000
+    nanos / NS_PER_TICK
 }

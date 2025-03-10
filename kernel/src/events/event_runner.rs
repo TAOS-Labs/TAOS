@@ -1,4 +1,8 @@
-use super::{futures::Sleep, Event, EventId, EventQueue, EventRunner};
+use super::{
+    futures::sleep::Sleep,
+    tasks::{CancellationToken, TaskError},
+    Event, EventId, EventQueue, EventRunner, JoinHandle,
+};
 
 use alloc::{
     collections::{binary_heap::BinaryHeap, btree_set::BTreeSet, vec_deque::VecDeque},
@@ -6,18 +10,19 @@ use alloc::{
 };
 use futures::task::waker_ref;
 use spin::rwlock::RwLock;
-use x86_64::instructions::interrupts;
+use x86_64::instructions::interrupts::{self, without_interrupts};
 
 use core::{
     future::Future,
     sync::atomic::Ordering,
-    task::{Context, Poll},
+    task::{Context, Poll, Waker},
 };
 
 use crate::{
     constants::events::{NUM_EVENT_PRIORITIES, PRIORITY_INC_DELAY},
     interrupts::x2apic::nanos_to_ticks,
 };
+use spin::Mutex;
 
 impl EventRunner {
     pub fn init() -> EventRunner {
@@ -77,6 +82,7 @@ impl EventRunner {
                         }
                     } else {
                         // Event is ready, go ahead and remove it
+                        event.completed.swap(true, Ordering::Relaxed);
                         self.pending_events.write().remove(&event.eid.0);
                     }
                 }
@@ -112,7 +118,7 @@ impl EventRunner {
         future: impl Future<Output = ()> + 'static + Send,
         priority_level: usize,
         pid: u32,
-    ) {
+    ) -> Arc<Event> {
         if priority_level >= NUM_EVENT_PRIORITIES {
             panic!("Invalid event priority: {}", priority_level);
         } else {
@@ -128,6 +134,8 @@ impl EventRunner {
             Self::enqueue(&self.event_queues[priority_level], event.clone());
 
             self.pending_events.write().insert(event.eid.0);
+
+            event.clone()
         }
     }
 
@@ -143,7 +151,7 @@ impl EventRunner {
         future: impl Future<Output = ()> + 'static + Send,
         priority_level: usize,
         pid: u32,
-    ) {
+    ) -> Arc<Event> {
         if priority_level >= NUM_EVENT_PRIORITIES {
             panic!("Invalid event priority: {}", priority_level);
         } else {
@@ -158,6 +166,8 @@ impl EventRunner {
 
             self.pending_events.write().insert(event.eid.0);
             self.blocked_events.write().insert(event.eid.0);
+
+            event.clone()
         }
     }
 
@@ -168,9 +178,60 @@ impl EventRunner {
         self.current_event.as_ref()
     }
 
+    pub fn spawn<F, T>(&mut self, future: F, priority_level: usize) -> JoinHandle<T>
+    where
+        F: Future<Output = T> + Send + 'static,
+        T: Send + 'static,
+    {
+        without_interrupts(|| {
+            let result: Arc<Mutex<Option<Result<T, TaskError>>>> = Arc::new(Mutex::new(None));
+            let waker: Arc<Mutex<Option<Waker>>> = Arc::new(Mutex::new(None));
+            let cancellation = CancellationToken::new();
+
+            // Wrap the future to store its result and handle cancellation
+            let wrapped_future = {
+                let result = result.clone();
+                let waker = waker.clone();
+                let cancellation = cancellation.clone();
+
+                async move {
+                    let output = future.await;
+                    let output = if cancellation.is_cancelled() {
+                        Err(TaskError::Cancelled)
+                    } else {
+                        Ok(output)
+                    };
+
+                    // Store the result
+                    *result.lock() = Some(output);
+
+                    // Wake up anyone waiting on the join handle
+                    if let Some(waker) = waker.lock().take() {
+                        waker.wake();
+                    }
+                }
+            };
+
+            // Schedule the wrapped future
+            let eid = without_interrupts(|| self.schedule(wrapped_future, priority_level, 0));
+
+            JoinHandle {
+                result,
+                waker,
+                eid: eid.eid,
+                cancellation,
+            }
+        })
+    }
+
     /// Increments the system timer (by one tick)
     pub fn inc_system_clock(&mut self) {
         self.system_clock += 1;
+    }
+
+    /// Increments the system timer (by one tick)
+    pub fn get_system_time(&self) -> u64 {
+        self.system_clock
     }
 
     /// Awakes the next sleeping event to be awoken, if it is time

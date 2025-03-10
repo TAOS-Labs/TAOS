@@ -2,7 +2,8 @@
 //!
 //! Handles the initialization of kernel subsystems and CPU cores.
 
-use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use bytes::Bytes;
+use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use limine::{
     request::SmpRequest,
     smp::{Cpu, RequestFlags},
@@ -11,11 +12,18 @@ use limine::{
 
 use crate::{
     debug, devices,
-    events::{register_event_runner, run_loop},
+    events::{register_event_runner, run_loop, spawn, yield_now},
     interrupts::{self, idt},
+    ipc::{
+        messages::Message,
+        mnt_manager,
+        namespace::Namespace,
+        responses::Rattach,
+        spsc::{Receiver, Sender},
+    },
     logging,
     memory::{self},
-    trace,
+    serial_println, trace,
 };
 
 extern crate alloc;
@@ -46,6 +54,8 @@ pub fn init() -> u32 {
     interrupts::init(0);
 
     memory::init(0);
+
+    register_event_runner();
     devices::init(0);
     // Should be kept after devices in case logging gets complicated
     // Right now log writes to serial, but if it were to switch to VGA, this would be important
@@ -118,5 +128,88 @@ fn wake_cores() -> u32 {
     BOOT_COMPLETE.store(true, Ordering::SeqCst);
 
     debug!("All CPUs initialized");
+
     bsp_id
+}
+
+static TEST_MOUNT_ID: AtomicU32 = AtomicU32::new(0);
+
+static mut PLOCK: bool = true;
+
+pub async fn run_server(server_rx: Receiver<Bytes>, server_tx: Sender<Bytes>) {
+    serial_println!("Server starting");
+    loop {
+        match server_rx.try_recv() {
+            Ok(msg_bytes) => match Message::parse(msg_bytes) {
+                Ok((msg, tag)) => {
+                    serial_println!("Server got message: {:?}", msg);
+                    let response = match msg {
+                        Message::Tattach(..) => {
+                            Message::Rattach(Rattach::new(tag, Bytes::new()).unwrap())
+                        }
+                        _ => continue,
+                    };
+
+                    if let Ok(resp_bytes) = response.serialize() {
+                        let _ = server_tx.send(resp_bytes).await;
+                    }
+                }
+                Err(e) => serial_println!("(Server) Failed to parse message: {:?}", e),
+            },
+            Err(_) => unsafe {
+                if PLOCK {
+                    serial_println!("Got error");
+                    PLOCK = false;
+                }
+            },
+        }
+        yield_now().await;
+    }
+}
+
+pub async fn run_client(mount_id: u32) {
+    serial_println!("Client starting");
+    let mut ns = Namespace::new();
+
+    match ns.add_mount("/test", mount_id as usize).await {
+        Ok(()) => {
+            serial_println!("Client added mount successfully");
+            match ns.walk_path("/test/somefile").await {
+                Ok(resolution) => {
+                    serial_println!("Walk succeeded: {:?}", resolution);
+                }
+                Err(e) => serial_println!("Walk failed: {:?}", e),
+            }
+        }
+        Err(e) => serial_println!("Client failed to add mount: {:?}", e),
+    }
+    serial_println!("Client finished");
+}
+
+pub async fn spawn_test() {
+    serial_println!("Starting test");
+
+    let (mount_id, _server_rx, _server_tx) = match mnt_manager.create_mount().await {
+        Ok(mount) => mount,
+        Err(e) => {
+            serial_println!("Failed to create mount: {:?}", e);
+            return;
+        }
+    };
+    serial_println!("Created mount");
+
+    TEST_MOUNT_ID.store(mount_id.0, Ordering::Release);
+
+    // Spawn server task
+    //let server_handle = spawn(0, run_server(server_rx, server_tx), 0);
+
+    yield_now().await;
+
+    let client_handle = spawn(0, run_client(mount_id.0), 0);
+
+    if let Err(e) = client_handle.await {
+        serial_println!("Client task failed: {:?}", e);
+    }
+
+    serial_println!("Test complete");
 }

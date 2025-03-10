@@ -1,7 +1,8 @@
 //! In-memory block device implementation
 
 use crate::filesys::{BlockDevice, FsError};
-use alloc::{vec, vec::Vec};
+use alloc::{boxed::Box, vec, vec::Vec};
+use async_trait::async_trait;
 use core::result::Result;
 
 /// Block device that stores data in memory
@@ -37,9 +38,10 @@ impl MemoryBlockDevice {
     }
 }
 
+#[async_trait]
 impl BlockDevice for MemoryBlockDevice {
     /// Reads block into buffer
-    fn read_block(&self, block_num: u64, buf: &mut [u8]) -> Result<(), FsError> {
+    async fn read_block(&self, block_num: u64, buf: &mut [u8]) -> Result<(), FsError> {
         self.validate_block(block_num)?;
         self.validate_buffer(buf)?;
         buf.copy_from_slice(&self.blocks[block_num as usize]);
@@ -47,7 +49,7 @@ impl BlockDevice for MemoryBlockDevice {
     }
 
     /// Writes buffer to block
-    fn write_block(&mut self, block_num: u64, buf: &[u8]) -> Result<(), FsError> {
+    async fn write_block(&mut self, block_num: u64, buf: &[u8]) -> Result<(), FsError> {
         self.validate_block(block_num)?;
         self.validate_buffer(buf)?;
         self.blocks[block_num as usize].copy_from_slice(buf);

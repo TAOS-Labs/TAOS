@@ -277,7 +277,7 @@ mod tests {
 
     // Test basic remove, as removing and then translating should fail
     #[test_case]
-    fn test_remove_mapped_frame() {
+    async fn test_remove_mapped_frame() {
         let mut mapper = MAPPER.lock();
         let page: Page = Page::containing_address(VirtAddr::new(0x500000000));
         let _ = create_mapping(page, &mut *mapper, None);
@@ -294,7 +294,7 @@ mod tests {
 
     // Test basic translation after map returns correct frame
     #[test_case]
-    fn test_basic_map_and_translate() {
+    async fn test_basic_map_and_translate() {
         let mut mapper = MAPPER.lock();
 
         // random test virtual page
@@ -310,7 +310,7 @@ mod tests {
 
     // Test that permissions are updated correctly
     #[test_case]
-    fn test_update_permissions() {
+    async fn test_update_permissions() {
         let mut mapper = MAPPER.lock();
 
         let page: Page = Page::containing_address(VirtAddr::new(0x500000000));
@@ -330,7 +330,7 @@ mod tests {
 
     // Test that contiguous mappings work correctly. Allocates 8 pages in a row.
     #[test_case]
-    fn test_contiguous_mapping() {
+    async fn test_contiguous_mapping() {
         let mut mapper = MAPPER.lock();
 
         // Define a contiguous region spanning 8 pages.
@@ -365,7 +365,7 @@ mod tests {
     // is necessary.
     // Finally, check the mapping on another core.
     #[test_case]
-    fn test_tlb_shootdowns_cross_core() {
+    async fn test_tlb_shootdowns_cross_core() {
         const AP: u32 = 1;
         const PRIORITY: usize = 3;
         const PID: u32 = 0;

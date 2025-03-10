@@ -2,11 +2,14 @@ use core::{ffi::CStr, sync::atomic::AtomicI64};
 
 use crate::{
     constants::syscalls::*,
-    events::{current_running_event_info, current_running_event_pid, EventInfo},
+    events::{current_running_event_info, EventInfo},
     interrupts::x2apic,
     memory::frame_allocator::with_bitmap_frame_allocator,
     processes::{
-        process::{clear_process_frames, sleep_process, ProcessState, PROCESS_TABLE},
+        process::{
+            clear_process_frames, sleep_process_int, sleep_process_syscall, ProcessState,
+            PROCESS_TABLE,
+        },
         registers::NonFlagRegisters,
     },
     serial_println,
@@ -41,6 +44,7 @@ pub struct SyscallRegisters {
 #[no_mangle]
 pub unsafe extern "C" fn syscall_handler_64_naked() -> ! {
     naked_asm!(
+        "cli", // Disable interrupts for now (don't want to be preempted here)
         // Swap GS to load the kernel GS base.
         "swapgs",
         // RSP2 in the TSS is scratch space - store userspace RSP for later
@@ -112,6 +116,7 @@ pub unsafe extern "C" fn syscall_handler_64_naked() -> ! {
         "swapgs",
         // Return to user mode. sysretq will use RCX (which contains the user RIP)
         // and R11 (which holds user RFLAGS).
+        "sti",
         "sysretq",
     );
 }
@@ -130,18 +135,14 @@ pub unsafe extern "C" fn syscall_handler_impl(
 ) -> u64 {
     let syscall = unsafe { &*syscall };
     let _reg_vals = unsafe { &*reg_vals };
-    serial_println!(
-        "Syscall num: {}, by PID: {}",
-        syscall.number,
-        current_running_event_pid()
-    );
+
     match syscall.number as u32 {
         SYSCALL_EXIT => {
             sys_exit(syscall.arg1 as i64);
             unreachable!("sys_exit does not return");
         }
         SYSCALL_PRINT => sys_print(syscall.arg1 as *const u8),
-        SYSCALL_NANOSLEEP => sys_nanosleep(syscall.arg1, syscall.arg2),
+        SYSCALL_NANOSLEEP => sys_nanosleep_64(syscall.arg1, _reg_vals),
         _ => {
             panic!("Unknown syscall, {}", syscall.number);
         }
@@ -153,11 +154,12 @@ pub fn sys_exit(code: i64) -> Option<u64> {
 
     // Used for testing
     if code == -1 {
-        panic!("Exitted with code -1");
+        panic!("Exited with code -1");
     }
 
     let event: EventInfo = current_running_event_info();
 
+    serial_println!("Process {} exited with code {}", event.pid, code);
     // This is for testing; this way, we can write binaries that conditionally fail tests
     if code == -1 {
         panic!("Unknown exit code, something went wrong")
@@ -166,8 +168,6 @@ pub fn sys_exit(code: i64) -> Option<u64> {
     if event.pid == 0 {
         panic!("Calling exit from outside of process");
     }
-
-    serial_println!("Process {} exitted with code {}", event.pid, code);
 
     // Get PCB from PID
     let preemption_info = unsafe {
@@ -179,6 +179,7 @@ pub fn sys_exit(code: i64) -> Option<u64> {
         let pcb = process.pcb.get();
 
         (*pcb).state = ProcessState::Terminated;
+
         clear_process_frames(&mut *pcb);
         with_bitmap_frame_allocator(|alloc| {
             alloc.print_bitmap_free_frames();
@@ -226,10 +227,19 @@ pub fn sys_print(buffer: *const u8) -> u64 {
     0
 }
 
-// hey gang
-pub fn sys_nanosleep(nanos: u64, rsp: u64) -> u64 {
-    sleep_process(rsp, nanos);
+/// Handle a nanosleep system call entered via int 0x80
+/// Uses interrupt stack to restore state
+pub fn sys_nanosleep_32(nanos: u64, rsp: u64) -> u64 {
+    sleep_process_int(nanos, rsp);
     x2apic::send_eoi();
+
+    0
+}
+
+/// Handle a nanosleep system call entered via syscall
+/// Uses manually-created NonFlagRegisters struct to restore state
+pub fn sys_nanosleep_64(nanos: u64, reg_vals: &NonFlagRegisters) -> u64 {
+    sleep_process_syscall(nanos, reg_vals);
 
     0
 }
