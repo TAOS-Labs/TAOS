@@ -2,6 +2,14 @@ pub mod loader;
 pub mod process;
 pub mod registers;
 
+use process::create_placeholder_process;
+
+pub fn init(cpu_id: u32) {
+    if cpu_id == 0 {
+        create_placeholder_process();
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use crate::{

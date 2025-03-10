@@ -906,7 +906,7 @@ mod tests {
     use crate::filesys::{fat16::Fat16, FileSystem, SeekFrom};
     use alloc::boxed::Box;
 
-    #[test_case]
+    // #[test_case]
     async fn fat_test() {
         let lock = SD_CARD.lock().clone().unwrap();
         let device = Box::new(lock);

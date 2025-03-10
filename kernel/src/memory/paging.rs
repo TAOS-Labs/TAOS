@@ -572,7 +572,7 @@ mod tests {
         let init_frame = create_mapping(page, &mut *mapper, Some(PageTableFlags::PRESENT));
 
         // Write to the page.
-        // In a real system, this would trigger a page fault to handle copy-on-write.
+        // Triggers page fault
         unsafe {
             page.start_address()
                 .as_mut_ptr::<u64>()

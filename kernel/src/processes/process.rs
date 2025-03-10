@@ -61,7 +61,6 @@ pub struct PCB {
     pub mmap_address: u64,
     pub fd_table: [u64; MAX_FILES],
     pub mm: Mm,
-    pub pml4_frame: PhysFrame<Size4KiB>, // this process' page table,
     pub namespace: Namespace,
 }
 
@@ -133,6 +132,46 @@ pub unsafe fn print_process_table(process_table: &PROCESS_TABLE) {
     serial_println!("========================");
 }
 
+pub fn create_placeholder_process() -> u32 {
+    // Build a new process address space
+    let pid = 0;
+    let process_pml4_frame = unsafe { create_process_page_table() };
+    let mm = Mm::new(process_pml4_frame);
+    let process = Arc::new(UnsafePCB::new(PCB {
+        pid,
+        state: ProcessState::New,
+        kernel_rsp: 0,
+        kernel_rip: 0,
+        registers: Registers {
+            rax: 0,
+            rbx: 0,
+            rcx: 0,
+            rdx: 0,
+            rsi: 0,
+            rdi: 0,
+            r8: 0,
+            r9: 0,
+            r10: 0,
+            r11: 0,
+            r12: 0,
+            r13: 0,
+            r14: 0,
+            r15: 0,
+            rbp: 0,
+            rsp: 0,
+            rip: 0,
+            rflags: 0x0,
+        },
+        mmap_address: START_MMAP_ADDRESS,
+        fd_table: [0; MAX_FILES],
+        next_preemption_time: 0,
+        mm,
+        namespace: Namespace::new()
+    }));
+    PROCESS_TABLE.write().insert(pid, Arc::clone(&process));
+    pid
+}
+
 pub fn create_process(elf_bytes: &[u8]) -> u32 {
     let pid = NEXT_PID.fetch_add(1, Ordering::SeqCst);
     with_buddy_frame_allocator(|alloc| {
@@ -183,7 +222,6 @@ pub fn create_process(elf_bytes: &[u8]) -> u32 {
         mmap_address: START_MMAP_ADDRESS,
         fd_table: [0; MAX_FILES],
         mm,
-        pml4_frame: process_pml4_frame,
         namespace: Namespace::new(),
     }));
     PROCESS_TABLE.write().insert(pid, Arc::clone(&process));
