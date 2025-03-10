@@ -24,12 +24,9 @@ use x86_64::{
     PrivilegeLevel, VirtAddr,
 };
 
-use crate::{
-    constants::{
-        gdt::{DOUBLE_FAULT_IST_INDEX, IST_STACK_SIZE, RING0_STACK_SIZE},
-        MAX_CORES,
-    },
-    serial_println,
+use crate::constants::{
+    gdt::{DOUBLE_FAULT_IST_INDEX, IST_STACK_SIZE, RING0_STACK_SIZE},
+    MAX_CORES,
 };
 
 /// Number of base GDT entries: null descriptor + kernel code/data + user code/data

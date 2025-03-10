@@ -205,8 +205,7 @@ pub fn sys_exit(code: i64) -> Option<u64> {
         core::arch::asm!(
             "mov rsp, {0}",
             "push {1}",
-            "stc",          // Use carry flag as sentinel to run_process that we're exiting
-            // "ret",
+            "ret",
             in(reg) preemption_info.0,
             in(reg) preemption_info.1
         );
@@ -237,6 +236,22 @@ pub fn sys_print(buffer: *const u8) -> u64 {
 pub fn sys_nanosleep(nanos: u64, rsp: u64) -> u64 {
     sleep_process(rsp, nanos);
     // x2apic::send_eoi();
+
+    0
+}
+
+// Not a real system call, but useful for testing
+pub fn sys_print(buffer: *const u8) -> u64 {
+    let c_str = unsafe { CStr::from_ptr(buffer as *const i8) };
+    let str_slice = c_str.to_str().expect("Invalid UTF-8 string");
+    serial_println!("Buffer: {}", str_slice);
+
+    0
+}
+
+pub fn sys_nanosleep(nanos: u64, rsp: u64) -> u64 {
+    sleep_process(rsp, nanos);
+    x2apic::send_eoi();
 
     0
 }

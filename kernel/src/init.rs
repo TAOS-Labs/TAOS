@@ -59,41 +59,6 @@ pub fn init() -> u32 {
 
     idt::enable();
 
-    // let addr = sys_mmap(
-    //     0x1000,
-    //     0x5000,
-    //     ProtFlags::PROT_WRITE | ProtFlags::PROT_READ,
-    //     MmapFlags::MAP_ANONYMOUS,
-    //     -1,
-    //     0,
-    // );
-
-    let parent_pid = create_process(FORK_SIMPLE);
-    schedule_process_on(0, parent_pid);
-
-    // since no other processes are running or being created we assume that
-    // the child pid is one more than the child pid
-    // let process_table = PROCESS_TABLE.read();
-    // unsafe {
-    //     print_process_table(&PROCESS_TABLE);
-    // }
-    // assert!(process_table.contains_key(&child_pid), "Child process not found in table");
-
-    // let parent_pcb = process_table.get(&parent_pid).expect("Could not get parent pcb from process table").pcb.get();
-    // let child_pcb = process_table.get(&child_pid).expect("Could not get child pcb from process table").pcb.get();
-
-    // // check that some of the fields are equivalent
-    // unsafe {
-    // assert_eq!((*parent_pcb).fd_table, (*child_pcb).fd_table);
-    // assert_eq!((*parent_pcb).kernel_rip, (*child_pcb).kernel_rip);
-    // assert_eq!((*parent_pcb).kernel_rsp, (*child_pcb).kernel_rsp);
-    // assert_eq!((*parent_pcb).registers, (*child_pcb).registers);
-    // }
-
-    // // check that the pml4 frame is set correctly
-    // unsafe {
-    // verify_page_table_walk(&mut *parent_pcb, &mut *child_pcb);
-    // }
     bsp_id
 }
 
@@ -121,6 +86,7 @@ unsafe extern "C" fn secondary_cpu_main(cpu: &Cpu) -> ! {
     while !BOOT_COMPLETE.load(Ordering::SeqCst) {
         core::hint::spin_loop();
     }
+
     register_event_runner();
     idt::enable();
 

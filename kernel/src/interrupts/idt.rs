@@ -17,7 +17,7 @@ use x86_64::{
 use crate::{
     constants::{
         idt::{SYSCALL_HANDLER, TIMER_VECTOR, TLB_SHOOTDOWN_VECTOR},
-        syscalls::{SYSCALL_EXIT, SYSCALL_MMAP, SYSCALL_PRINT},
+        syscalls::{SYSCALL_EXIT, SYSCALL_NANOSLEEP, SYSCALL_PRINT},
     },
     events::inc_runner_clock,
     interrupts::x2apic::{self, current_core_id, TLB_SHOOTDOWN_ADDR},
@@ -27,10 +27,7 @@ use crate::{
     },
     prelude::*,
     processes::process::preempt_process,
-    syscalls::{
-        memorymap::sys_mmap,
-        syscall_handlers::{sys_exit, sys_print},
-    },
+    syscalls::syscall_handlers::{sys_exit, sys_nanosleep, sys_print},
 };
 
 lazy_static! {
@@ -190,35 +187,52 @@ extern "x86-interrupt" fn page_fault_handler(
 pub extern "x86-interrupt" fn naked_syscall_handler(_: InterruptStackFrame) {
     unsafe {
         naked_asm!(
-            // Push registers to save them
-            "push r11",
-            "push rax",
-            "push rbx",
-            "push rcx",
-            "push rdx",
-            "push rsi",
-            "push rdi",
-            "push rbp",
-            "mov rdi, rsp",
+            // Push registers for potential yielding
+            "
+            push rbp
+            push r15
+            push r14
+            push r13
+            push r12
+            push r11
+            push r10
+            push r9
+            push r8
+            push rdi
+            push rsi
+            push rdx
+            push rcx
+            push rbx
+            push rax
+            ",
+            "mov  rdi, rsp",
             // Call the syscall_handler
             "call syscall_handler",
             // Restore registers
-            "mov r11, rax",
-            "pop rbp",
-            "pop rdi",
-            "pop rsi",
-            "pop rdx",
-            "pop rcx",
-            "pop rbx",
-            "pop rax",
-            "mov rax, r11",
-            "pop r11",
-            "iretq"
+            "
+            pop rax
+            pop rbx
+            pop rcx
+            pop rdx
+            pop rsi
+            pop rdi
+            pop r8
+            pop r9
+            pop r10
+            pop r11
+            pop r12
+            pop r13
+            pop r14
+            pop r15
+            pop rbp
+            iretq
+            "
         );
     }
 }
 
 #[no_mangle]
+#[allow(unused_variables, unused_assignments)] // disable until args p2-6 are used
 fn syscall_handler(rsp: u64) {
     let syscall_num: u32;
     let p1: u64;
@@ -229,13 +243,28 @@ fn syscall_handler(rsp: u64) {
     let p6: u64;
     let stack_ptr: *const u64 = rsp as *const u64;
     unsafe {
-        syscall_num = *stack_ptr.add(6) as u32;
+        syscall_num = *stack_ptr.add(0);
         p1 = *stack_ptr.add(5);
         p2 = *stack_ptr.add(4);
         p3 = *stack_ptr.add(3);
-        p4 = *stack_ptr.add(2);
-        p5 = *stack_ptr.add(1);
-        p6 = *stack_ptr.add(0);
+        p4 = *stack_ptr.add(8);
+        p5 = *stack_ptr.add(6);
+        p6 = *stack_ptr.add(7);
+    }
+
+    match syscall_num as u32 {
+        SYSCALL_EXIT => {
+            sys_exit(p1 as i64);
+        }
+        SYSCALL_PRINT => {
+            let success = sys_print(p1 as *const u8);
+        }
+        SYSCALL_NANOSLEEP => {
+            let success = sys_nanosleep(p1, p2);
+        }
+        _ => {
+            panic!("Unknown syscall, {}", syscall_num);
+        }
     }
 
     x2apic::send_eoi();
