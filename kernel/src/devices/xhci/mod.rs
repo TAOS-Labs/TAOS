@@ -6,11 +6,12 @@
 pub mod context;
 pub mod ring_buffer;
 
-use core::cmp::min;
+use core::{cmp::min, mem::MaybeUninit, ptr::copy_nonoverlapping};
 
 use crate::{constants::memory::PAGE_SIZE, debug_println, memory::frame_allocator::alloc_frame};
 use alloc::{sync::Arc, vec::Vec};
 use bitflags::bitflags;
+use context::{InputControlContext, SlotContext};
 use ring_buffer::{ConsumerRingBuffer, ProducerRingBuffer, TransferRequestBlock, TrbTypes};
 use spin::Mutex;
 use x86_64::{
@@ -541,11 +542,29 @@ fn boot_up_usb_port(
 
 fn setup_input_context(
     _info: &mut XHCIInfo,
-    _device: u8,
+    device: u8,
     mapper: &mut OffsetPageTable,
 ) -> Result<(), XHCIError> {
     let input_frame = alloc_frame().ok_or(XHCIError::MemoryAllocationFailure)?;
-    let _input_frame_vaddr = map_page_as_uncacheable(input_frame.start_address(), mapper);
+    let input_context_vaddr = map_page_as_uncacheable(input_frame.start_address(), mapper)
+        .map_err(|_| XHCIError::MemoryAllocationFailure)?;
+    mmio::zero_out_page(Page::containing_address(input_context_vaddr));
+    let input_context = MaybeUninit::<InputControlContext>::zeroed();
+    let mut input_context = unsafe { input_context.assume_init() };
+    input_context.set_add_flag(0, 1);
+    input_context.set_add_flag(1, 1);
+    unsafe { copy_nonoverlapping(&input_context, input_context_vaddr.as_mut_ptr(), 1) };
+
+    // The size of the slot context is 64 bytes or less
+    let slot_context_vaddr = input_context_vaddr + 64;
+    let slot_context = MaybeUninit::<SlotContext>::zeroed();
+    let mut slot_context = unsafe { slot_context.assume_init() };
+    slot_context.set_root_hub_port(device.into());
+    slot_context.set_context_entries(1);
+
+    unsafe { copy_nonoverlapping(&slot_context_vaddr, slot_context_vaddr.as_mut_ptr(), 1) };
+
+    let _transfer_ring_vaddr = slot_context_vaddr + 32;
     Result::Ok(())
 }
 
