@@ -145,6 +145,10 @@ pub enum ProducerRingError {
     /// Error indicating that there was an attempt to add a TRB with a type that does not belong on this ring type.
     /// For example, trying to enqueue a setup stage TRB onto a command ring or a no-op command onto a transfer ring.
     InvalidType,
+    /// Error indicating that the address passed in is not aligned to 16
+    UnalignedAddress,
+    /// Error indicating that the size passed in is not aligned to 16
+    UnalignedSize,
 }
 
 #[derive(Debug, Clone)]
@@ -177,10 +181,14 @@ impl ProducerRingBuffer {
     /// # Safety
     /// - This function preforms a raw pointer access to initialize the Link TRB of the ring
     /// - Assumes that `base_addr` points to a valid memory region of at least `size` bytes
-    pub fn new(base_addr: u64, cycle_state: u8, ring_type: RingType, size: isize) -> Self {
+    pub fn new(base_addr: u64, cycle_state: u8, ring_type: RingType, size: isize) -> Result<Self, ProducerRingError> {
         // ensure that the base address is aligned to 16
-        assert!(base_addr % 16 == 0);
-        assert!(size % 16 == 0);
+        if base_addr % 16 != 0 {
+            return Err(ProducerRingError::UnalignedAddress)
+        }
+        if size % 16 != 0 {
+            return Err(ProducerRingError::UnalignedSize)
+        }
 
         // initialize the link block at the end of this segment
         let num_blocks = size / 16;
@@ -191,22 +199,25 @@ impl ProducerRingBuffer {
             (*last_addr).control = 0x1802;
             (*last_addr).parameters = base_addr;
         }
-        ProducerRingBuffer {
+        Ok(ProducerRingBuffer {
             enqueue: base_addr as *mut Trb,
             dequeue: base_addr as *mut Trb,
             pcs: cycle_state,
             ring: ring_type,
-        }
+        })
     }
 
     /// Sets the Enqueue field to the given address.
     ///
     /// # Arguments
     /// * `addr` - The address to set `enqueue` to
-    pub fn set_enqueue(&mut self, addr: u64) {
-        assert!(addr & 16 == 0);
+    pub fn set_enqueue(&mut self, addr: u64) -> Result<(), ProducerRingError> {
+        if addr % 16 != 0 {
+            return Err(ProducerRingError::UnalignedAddress)
+        }
 
         self.enqueue = addr as *mut Trb;
+        Ok(())
     }
 
     /// Sets the Dequeue field to the given address.
@@ -214,10 +225,13 @@ impl ProducerRingBuffer {
     /// # Arguments
     /// * `addr` - The address to set `dequeue` to
     ///
-    pub fn set_dequeue(&mut self, addr: u64) {
-        assert!(addr & 16 == 0);
+    pub fn set_dequeue(&mut self, addr: u64) -> Result<(), ProducerRingError> {
+        if addr % 16 != 0 {
+            return Err(ProducerRingError::UnalignedAddress)
+        }
 
         self.dequeue = addr as *mut Trb;
+        Ok(())
     }
 
     /// Checks if the block pointed to by enqueue is a link TRB
@@ -380,7 +394,7 @@ impl EventRingSegmentTable {
 
         // create the entry
         let entry = Trb {
-            parameters: phys_address & !0xF,
+            parameters: phys_address & !0x3F,
             status: segment_size & 0xFFFF,
             control: 0,
         };
@@ -465,9 +479,11 @@ impl ConsumerRingBuffer {
         segment_vbase: VirtAddr,
         segment_pbase: PhysAddr,
         segment_size: u32,
-    ) -> Self {
+    ) -> Result<Self, EventRingError> {
         // first check that the segment is proper size
-        assert!((16..=4096).contains(&segment_size));
+        if !(16..=4096).contains(&segment_size) {
+            return Err(EventRingError::SegmentSize);
+        }
         debug_println!("erst_base {:X}", erst_base_addr);
         debug_println!("segment virtual base {:X}", segment_vbase);
 
@@ -483,14 +499,14 @@ impl ConsumerRingBuffer {
         }
 
         // create the new buffer
-        ConsumerRingBuffer {
+        Ok(ConsumerRingBuffer {
             dequeue: segment_vbase.as_u64() as *mut Trb,
             ccs: 1,
             erst,
             erst_count: 0,
             count_visited: 0,
             ers_size: segment_size,
-        }
+        })
     }
 
     /// Tries to add a new segment to the ERST.

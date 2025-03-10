@@ -333,7 +333,7 @@ fn initalize_xhciinfo(full_bar: u64, mapper: &mut OffsetPageTable) -> Result<XHC
         1,
         ring_buffer::RingType::Command,
         PAGE_SIZE.try_into().unwrap(),
-    );
+    ).expect("Error initializing producer ring.");
 
     // Allocate space for the primary event ring
     let erst_frame = alloc_frame().ok_or(XHCIError::MemoryAllocationFailure)?;
@@ -361,7 +361,7 @@ fn initalize_xhciinfo(full_bar: u64, mapper: &mut OffsetPageTable) -> Result<XHC
         ers_page.start_address(),
         er_segment_frame.start_address(),
         4096 / 16,
-    );
+    ).expect("Error initializing consumer ring.");
 
     unsafe {
         let mut addr = erst_vaddr.as_u64() as *const u64;
@@ -607,7 +607,8 @@ mod test {
         // call the new function
         let base_addr = page.start_address().as_u64();
         let size = page.size() as isize;
-        let mut cmd_ring = ProducerRingBuffer::new(base_addr, 1, RingType::Command, size);
+        let mut cmd_ring = 
+            ProducerRingBuffer::new(base_addr, 1, RingType::Command, size).expect("Error initializing producer ring");
 
         // create a block to queue
         let mut cmd = Trb {
@@ -652,7 +653,8 @@ mod test {
         // create a small ring buffer
         let base_addr = page.start_address().as_u64();
         let size: isize = 64;
-        let mut cmd_ring = ProducerRingBuffer::new(base_addr, 1, RingType::Command, size);
+        let mut cmd_ring = 
+            ProducerRingBuffer::new(base_addr, 1, RingType::Command, size).expect("Error initializing producer ring");
 
         // test is empty and is full funcs
         let mut result = cmd_ring.is_ring_empty();
@@ -709,7 +711,8 @@ mod test {
         // create a small ring buffer
         let base_addr = page.start_address().as_u64();
         let size: isize = 64;
-        let mut cmd_ring = ProducerRingBuffer::new(base_addr, 1, RingType::Command, size);
+        let mut cmd_ring = 
+            ProducerRingBuffer::new(base_addr, 1, RingType::Command, size).expect("Error initializing producer ring");
 
         // create our no op cmd
         let mut cmd = Trb {
@@ -725,9 +728,9 @@ mod test {
         }
         // move the enqueue to the last block before the end and then the dequeue over one
         cmd_ring
-            .set_enqueue(base_addr + 32);
+            .set_enqueue(base_addr + 32).expect("set_enqueue error");
         cmd_ring
-            .set_dequeue(base_addr + 16);
+            .set_dequeue(base_addr + 16).expect("set_dequeue error");
 
         // now try to enqueue
         unsafe {
@@ -741,7 +744,7 @@ mod test {
 
         // now move dequeue so we can test that enqueue properly writes the cycle bit to 0
         cmd_ring
-            .set_dequeue(base_addr + 32);
+            .set_dequeue(base_addr + 32).expect("set_dequeue error");
 
         unsafe {
             cmd_ring.enqueue(cmd).expect("enqueue error");
@@ -787,7 +790,7 @@ mod test {
             segment_page.start_address(),
             segment_frame_addr,
             (page_size / size_of::<TransferRequestBlock>() as isize) as u32,
-        );
+        ).expect("Error initializing consumer ring");
 
         // verify that the ERST was properly initialized
 
@@ -804,10 +807,10 @@ mod test {
         let mut status = trb.status;
         let mut control = trb.control;
 
-        assert_eq!(parameters, segment_address);
+        assert_eq!(parameters, segment_frame_addr.as_u64() & !0x3F);
         assert_eq!(
             status,
-            (page_size / size_of::<TransferRequestBlock>() as isize) as u32
+            (page_size / size_of::<TransferRequestBlock>() as isize) as u32 & 0xFFFF
         );
         assert_eq!(control, 0);
 
