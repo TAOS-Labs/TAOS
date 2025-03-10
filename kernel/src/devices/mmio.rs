@@ -123,20 +123,22 @@ mod tests {
             _ => panic!("We shoould have a frame allocator at this point"),
         };
         let addr_1 =
-            map_page_as_uncacheable(frames[0].unwrap().start_address().as_u64(), &mut mapper)
+            map_page_as_uncacheable(frames[0].unwrap().start_address(), &mut mapper)
                 .unwrap();
         let addr_2 =
-            map_page_as_uncacheable(frames[1].unwrap().start_address().as_u64(), &mut mapper)
+            map_page_as_uncacheable(frames[1].unwrap().start_address(), &mut mapper)
                 .unwrap();
         let addr_3 =
-            map_page_as_uncacheable(frames[2].unwrap().start_address().as_u64(), &mut mapper)
+            map_page_as_uncacheable(frames[2].unwrap().start_address(), &mut mapper)
                 .unwrap();
 
         let page: [u8; PAGE_SIZE] = [255; PAGE_SIZE];
-        let page_actual = Page::containing_address(VirtAddr::new(addr_2));
-        let addr_1_ptr = addr_1 as *mut u8;
-        let addr_2_ptr = addr_2 as *mut u8;
-        let addr_3_ptr = addr_3 as *mut u8;
+        let page_actual = Page::containing_address(VirtAddr::new(addr_2.as_u64()));
+
+        let addr_1_ptr: *mut u8 = addr_1.as_mut_ptr::<u8>() as *mut u8;
+        let addr_2_ptr : *mut u8 = addr_2.as_mut_ptr::<u8>() as *mut u8;
+        let addr_3_ptr : *mut u8 = addr_3.as_mut_ptr::<u8>() as *mut u8;
+        
         unsafe { copy_nonoverlapping(page.as_ptr(), addr_1_ptr, PAGE_SIZE) };
         unsafe { copy_nonoverlapping(page.as_ptr(), addr_2_ptr, PAGE_SIZE) };
         unsafe { copy_nonoverlapping(page.as_ptr(), addr_3_ptr, PAGE_SIZE) };

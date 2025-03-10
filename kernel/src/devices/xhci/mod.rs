@@ -548,6 +548,7 @@ fn setup_input_context(
 #[cfg(test)]
 mod test {
     use x86_64::structures::paging::Mapper;
+    use x86_64::addr::VirtAddr;
 
     use super::{
         ring_buffer::{ProducerRingBuffer, RingType, Trb, TrbTypes},
@@ -557,7 +558,7 @@ mod test {
         devices::xhci::ring_buffer::{ConsumerRingBuffer, ProducerRingError, TransferRequestBlock},
         memory::{
             paging::{create_mapping, remove_mapped_frame},
-            MAPPER,
+            MAPPER
         },
     };
 
@@ -866,7 +867,7 @@ mod test {
         let _event_ring = ConsumerRingBuffer::new(
             erst_address,
             page_size / erst_entry_size,
-            segment_address,
+            segment_page.start_address(),
             segment_frame_addr,
             (page_size / size_of::<TransferRequestBlock>() as isize) as u32,
         )
