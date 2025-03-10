@@ -27,7 +27,5 @@ jobs:
         workspaces: "kernel -> target"
     - name: lint
       run: make check
-    - name: debug stut
-      run: printenv
     - name: Build (check for errors)
       run: make build

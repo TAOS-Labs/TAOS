@@ -11,9 +11,14 @@ base_args = [
     "-smp", "2", 
     "-cpu", "Conroe-v1,+x2apic,+invtsc",
 
+    "-enable-kvm",
+    
+    # USB
+    "-device", "qemu-xhci",
+
     # Network
     "-netdev", "user,id=net0",
-    "-device", "virtio-net-pci,netdev=net0",
+    "-device", "usb-net,netdev=net0",
 
     # Audio
     "-device", "intel-hda",
@@ -26,6 +31,9 @@ base_args = [
 
     # Graphics
     "-vga", "std",
+
+    # Debugging traces
+    "-trace", "usb*",
 
     # Boot media and UEFI settings
     "-cdrom", "{image}",
