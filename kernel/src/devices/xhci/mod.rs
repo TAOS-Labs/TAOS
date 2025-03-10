@@ -298,12 +298,7 @@ fn initalize_xhciinfo(full_bar: u64, mapper: &mut OffsetPageTable) -> Result<XHC
     max_devices = min(max_devices, MAX_USB_DEVICES.into());
     unsafe { core::ptr::write_volatile(config_reg_addr, max_devices) }
     // Allocate space for DCBAAP (Device Context Base Array Pointer Register)
-    // let mut allocator_tmp = FRAME_ALLOCATOR.lock();
-    // let allocator = allocator_tmp.as_mut().ok_or(XHCIError::NoFrameAllocator)?;
-    // let frame = allocator
-    //     .allocate_frame()
-    //     .ok_or(XHCIError::MemoryAllocationFailure)?;
-    let dcbaap_frame = alloc_frame().expect("Frame allocation failed");
+    let dcbaap_frame = alloc_frame().ok_or(XHCIError::MemoryAllocationFailure)?;
     let virtual_adddr = mmio::map_page_as_uncacheable(dcbaap_frame.start_address(), mapper)
         .map_err(|_| XHCIError::MemoryAllocationFailure)?;
     // We need to zero out shit
@@ -316,10 +311,7 @@ fn initalize_xhciinfo(full_bar: u64, mapper: &mut OffsetPageTable) -> Result<XHC
     }
 
     // Allocate space for the Command Ring.
-    let cmd_frame = alloc_frame().expect("Frame allocation failed");
-    // let cmd_frame = allocator
-    //     .allocate_frame()
-    //     .ok_or(XHCIError::MemoryAllocationFailure)?;
+    let cmd_frame = alloc_frame().ok_or(XHCIError::MemoryAllocationFailure)?;
     let cmd_vaddr = mmio::map_page_as_uncacheable(cmd_frame.start_address(), mapper)
         .map_err(|_| XHCIError::MemoryAllocationFailure)?;
 
@@ -341,31 +333,16 @@ fn initalize_xhciinfo(full_bar: u64, mapper: &mut OffsetPageTable) -> Result<XHC
         1,
         ring_buffer::RingType::Command,
         PAGE_SIZE.try_into().unwrap(),
-    )
-    .expect("error initializing command_ring");
+    );
 
     // Allocate space for the primary event ring
-    let erst_frame = alloc_frame().expect("Frame allocation failed");
-    // let erst_frame = allocator
-    //     .allocate_frame()
-    //     .ok_or(XHCIError::MemoryAllocationFailure)?;
+    let erst_frame = alloc_frame().ok_or(XHCIError::MemoryAllocationFailure)?;
     let erst_vaddr = mmio::map_page_as_uncacheable(erst_frame.start_address(), mapper)
         .map_err(|_| XHCIError::MemoryAllocationFailure)?;
-    let er_segment_frame = alloc_frame().expect("Frame allocation failed");
-    debug_println!(
-        "ers frame addr: {:X}",
-        er_segment_frame.start_address().as_u64()
-    );
-    // let er_segment_frame = allocator
-    //     .allocate_frame()
-    //     .ok_or(XHCIError::MemoryAllocationFailure)?;
-    debug_println!("before er seg mao");
+    let er_segment_frame = alloc_frame().ok_or(XHCIError::MemoryAllocationFailure)?;
     let er_segment_vaddr = mmio::map_page_as_uncacheable(er_segment_frame.start_address(), mapper)
         .map_err(|_| XHCIError::MemoryAllocationFailure)?;
     debug_println!("ers vaddr: {:X}", er_segment_vaddr);
-
-    // drop allocator lock
-    // drop(allocator_tmp);
 
     // zero out pages
     let erst_page: Page = Page::containing_address(erst_vaddr);
@@ -384,8 +361,8 @@ fn initalize_xhciinfo(full_bar: u64, mapper: &mut OffsetPageTable) -> Result<XHC
         ers_page.start_address(),
         er_segment_frame.start_address(),
         4096 / 16,
-    )
-    .expect("error initializing primary event ring");
+    );
+
     unsafe {
         let mut addr = erst_vaddr.as_u64() as *const u64;
         let base_address = core::ptr::read_volatile(addr);
