@@ -189,6 +189,10 @@ pub fn sys_mmap(addr: u64, len: u64, prot: u64, flags: u64, fd: i64, offset: u64
     addr_to_return
 }
 
+pub fn sys_mprotect(addr: u64, len: u64, prot: ProtFlags) {
+
+}
+
 #[cfg(test)]
 mod tests {
     use crate::{

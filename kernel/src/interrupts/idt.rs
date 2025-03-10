@@ -28,7 +28,7 @@ use crate::{
     prelude::*,
     processes::process::preempt_process,
     syscalls::{
-        mmap::sys_mmap,
+        memorymap::sys_mmap,
         syscall_handlers::{sys_exit, sys_print},
     },
 };

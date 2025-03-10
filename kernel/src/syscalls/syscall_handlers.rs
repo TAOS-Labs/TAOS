@@ -10,7 +10,7 @@ use crate::{
         registers::NonFlagRegisters,
     },
     serial_println,
-    syscalls::{fork::sys_fork, mmap::sys_mmap},
+    syscalls::{fork::sys_fork, memorymap::sys_mmap},
 };
 
 use core::arch::naked_asm;
