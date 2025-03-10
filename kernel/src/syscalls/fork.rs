@@ -64,7 +64,6 @@ pub fn sys_fork(reg_vals: &NonFlagRegisters) -> u64 {
 
     unsafe {
         (*parent_pcb).mm.with_vma_tree_mutable(|tree| {
-            serial_println!("BOUTTA");
             for vma_entry in tree.iter_mut() {
                 let vma_lock = vma_entry.1.lock();
                 let start = vma_lock.start;
@@ -84,7 +83,6 @@ pub fn sys_fork(reg_vals: &NonFlagRegisters) -> u64 {
                             .insert_vma(child_tree, start, end, backing, flags, anon);
                     });
             }
-            serial_println!("AFTER THE FOR LOOP");
         })
     }
 
