@@ -5,6 +5,8 @@ pub mod block;
 pub mod fat16;
 pub mod vfs;
 
+use async_trait::async_trait;
+
 #[derive(Debug)]
 pub enum FsError {
     NotFound,
@@ -17,21 +19,23 @@ pub enum FsError {
     DirectoryNotEmpty,
 }
 
+#[async_trait]
 pub trait BlockDevice: Send + Sync {
-    fn read_block(&self, block_num: u64, buf: &mut [u8]) -> Result<(), FsError>;
-    fn write_block(&mut self, block_num: u64, buf: &[u8]) -> Result<(), FsError>;
+    async fn read_block(&self, block_num: u64, buf: &mut [u8]) -> Result<(), FsError>;
+    async fn write_block(&mut self, block_num: u64, buf: &[u8]) -> Result<(), FsError>;
     fn block_size(&self) -> usize;
     fn total_blocks(&self) -> u64;
 }
 
 /// Represents a file in the filesystem
+#[async_trait]
 pub trait File {
-    fn read_with_device(
+    async fn read_with_device(
         &mut self,
         device: &mut dyn BlockDevice,
         buf: &mut [u8],
     ) -> Result<usize, FsError>;
-    fn write_with_device(
+    async fn write_with_device(
         &mut self,
         device: &mut dyn BlockDevice,
         buf: &[u8],
@@ -70,17 +74,18 @@ pub enum SeekFrom {
 }
 
 /// The main filesystem trait that must be implemented by all filesystem types
+#[async_trait]
 pub trait FileSystem {
-    fn create_file(&mut self, path: &str) -> Result<(), FsError>;
-    fn create_dir(&mut self, path: &str) -> Result<(), FsError>;
-    fn remove_file(&mut self, path: &str) -> Result<(), FsError>;
-    fn remove_dir(&mut self, path: &str) -> Result<(), FsError>;
-    fn open_file(&mut self, path: &str) -> Result<usize, FsError>;
+    async fn create_file(&mut self, path: &str) -> Result<(), FsError>;
+    async fn create_dir(&mut self, path: &str) -> Result<(), FsError>;
+    async fn remove_file(&mut self, path: &str) -> Result<(), FsError>;
+    async fn remove_dir(&mut self, path: &str) -> Result<(), FsError>;
+    async fn open_file(&mut self, path: &str) -> Result<usize, FsError>;
     fn close_file(&mut self, fd: usize);
-    fn write_file(&mut self, fd: usize, buf: &[u8]) -> Result<usize, FsError>;
+    async fn write_file(&mut self, fd: usize, buf: &[u8]) -> Result<usize, FsError>;
     fn seek_file(&mut self, fd: usize, pos: SeekFrom) -> Result<u64, FsError>;
-    fn read_file(&mut self, fd: usize, buf: &mut [u8]) -> Result<usize, FsError>;
-    fn read_dir(&self, path: &str) -> Result<Vec<DirEntry>, FsError>;
-    fn metadata(&self, path: &str) -> Result<FileMetadata, FsError>;
-    fn rename(&mut self, from: &str, to: &str) -> Result<(), FsError>;
+    async fn read_file(&mut self, fd: usize, buf: &mut [u8]) -> Result<usize, FsError>;
+    async fn read_dir(&self, path: &str) -> Result<Vec<DirEntry>, FsError>;
+    async fn metadata(&self, path: &str) -> Result<FileMetadata, FsError>;
+    async fn rename(&mut self, from: &str, to: &str) -> Result<(), FsError>;
 }

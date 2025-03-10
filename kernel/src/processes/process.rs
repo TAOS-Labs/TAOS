@@ -5,6 +5,7 @@ use crate::{
         processes::{MAX_FILES, PROCESS_NANOS},
         syscalls::START_MMAP_ADDRESS,
     },
+    constants::processes::PROCESS_TIMESLICE,
     debug,
     events::{
         current_running_event_info, nanosleep_current_process, runner_timestamp, schedule_process,
@@ -14,6 +15,7 @@ use crate::{
         gdt,
         x2apic::{self, nanos_to_ticks},
     },
+    ipc::namespace::Namespace,
     memory::{
         frame_allocator::{alloc_frame, dealloc_frame, with_buddy_frame_allocator},
         mm::Mm,
@@ -46,6 +48,7 @@ pub enum ProcessState {
     Running,
     Blocked,
     Terminated,
+    Kernel,
 }
 
 #[derive(Debug, Clone)]
@@ -59,6 +62,8 @@ pub struct PCB {
     pub mmap_address: u64,
     pub fd_table: [u64; MAX_FILES],
     pub mm: Mm,
+    pub pml4_frame: PhysFrame<Size4KiB>, // this process' page table,
+    pub namespace: Namespace,
 }
 
 pub struct UnsafePCB {
@@ -72,7 +77,6 @@ impl UnsafePCB {
         }
     }
 }
-
 unsafe impl Sync for UnsafePCB {}
 type ProcessTable = Arc<RwLock<BTreeMap<u32, Arc<UnsafePCB>>>>;
 
@@ -135,7 +139,15 @@ pub fn create_placeholder_process() -> u32 {
     let pid = 0;
     let process_pml4_frame = unsafe { create_process_page_table() };
     let mm = Mm::new(process_pml4_frame);
-    let process = Arc::new(UnsafePCB::new(PCB {
+
+    let mut mapper = unsafe {
+        let virt = *HHDM_OFFSET + process_pml4_frame.start_address().as_u64();
+        let ptr = virt.as_mut_ptr::<PageTable>();
+        OffsetPageTable::new(&mut *ptr, *HHDM_OFFSET)
+    };
+    let (stack_top, entry_point) = load_elf(elf_bytes, &mut mapper, &mut MAPPER.lock());
+
+    let process = Arc::new(UnsafePCB::init(PCB {
         pid,
         state: ProcessState::New,
         kernel_rsp: 0,
@@ -218,6 +230,8 @@ pub fn create_process(elf_bytes: &[u8]) -> u32 {
         mmap_address: START_MMAP_ADDRESS,
         fd_table: [0; MAX_FILES],
         mm,
+        pml4_frame: process_pml4_frame,
+        namespace: Namespace::new(),
     }));
     PROCESS_TABLE.write().insert(pid, Arc::clone(&process));
     debug!("Created process with PID: {}", pid);
@@ -301,6 +315,8 @@ unsafe fn free_page_table(frame: PhysFrame, level: u8, hhdm_offset: u64) {
 use core::arch::asm;
 use x86_64::registers::control::{Cr3, Cr3Flags};
 
+use super::registers::NonFlagRegisters;
+
 /// run a process in ring 3
 /// # Safety
 ///
@@ -334,6 +350,7 @@ pub async unsafe fn run_process_ring3(pid: u32) {
     let registers = &(*process).registers.clone();
 
     (*process).kernel_rip = return_process as usize as u64;
+    (*process).next_preemption_time = runner_timestamp() + nanos_to_ticks(PROCESS_TIMESLICE);
 
     // Stack layout to move into user mode
     unsafe {
@@ -565,7 +582,7 @@ pub fn block_process(rsp: u64) {
     }
 }
 
-pub fn sleep_process(rsp: u64, nanos: u64) {
+pub fn sleep_process_int(nanos: u64, rsp: u64) {
     let event: EventInfo = current_running_event_info();
     if event.pid == 0 {
         return;
@@ -580,9 +597,9 @@ pub fn sleep_process(rsp: u64, nanos: u64) {
 
         let pcb = process.pcb.get();
 
-        // save registers to the PCB
-        let stack_ptr: *const u64 = rsp as *const u64;
+        let stack_ptr = rsp as *const u64;
 
+        // save registers to the PCB
         (*pcb).registers.rax = *stack_ptr.add(0);
         (*pcb).registers.rbx = *stack_ptr.add(1);
         (*pcb).registers.rcx = *stack_ptr.add(2);
@@ -622,5 +639,64 @@ pub fn sleep_process(rsp: u64, nanos: u64) {
         x2apic::send_eoi();
 
         core::arch::asm!("ret");
+    }
+}
+
+pub fn sleep_process_syscall(nanos: u64, reg_vals: &NonFlagRegisters) {
+    let event: EventInfo = current_running_event_info();
+    if event.pid == 0 {
+        return;
+    }
+
+    // Get PCB from PID
+    let preemption_info = unsafe {
+        let mut process_table = PROCESS_TABLE.write();
+        let process = process_table
+            .get_mut(&event.pid)
+            .expect("Process not found");
+
+        let pcb = process.pcb.get();
+
+        // save registers to the PCB
+
+        (*pcb).registers.rax = 0; // nanosleep return value (when not interrupted)
+        (*pcb).registers.rbx = reg_vals.rbx;
+        (*pcb).registers.rcx = reg_vals.rcx;
+        (*pcb).registers.rdx = reg_vals.rdx;
+        (*pcb).registers.rsi = reg_vals.rsi;
+        (*pcb).registers.rdi = reg_vals.rdi;
+        (*pcb).registers.r8 = reg_vals.r8;
+        (*pcb).registers.r9 = reg_vals.r9;
+        (*pcb).registers.r10 = reg_vals.r10;
+        (*pcb).registers.r11 = reg_vals.r11;
+        (*pcb).registers.r12 = reg_vals.r12;
+        (*pcb).registers.r13 = reg_vals.r13;
+        (*pcb).registers.r14 = reg_vals.r14;
+        (*pcb).registers.r15 = reg_vals.r15;
+        (*pcb).registers.rbp = reg_vals.rbp;
+        // saved from interrupt stack frame
+        (*pcb).registers.rsp = reg_vals.rsp;
+        (*pcb).registers.rip = reg_vals.rcx; // SYSCALL rcx stores RIP
+        (*pcb).registers.rflags = reg_vals.r11; // SYSCALL r11 stores RFLAGS
+
+        (*pcb).state = ProcessState::Blocked;
+
+        ((*pcb).kernel_rsp, (*pcb).kernel_rip)
+    };
+
+    unsafe {
+        nanosleep_current_process(event.pid, nanos);
+
+        // Restore kernel RSP + PC -> RIP from where it was stored in run/resume process
+        core::arch::asm!(
+            "mov rsp, {0}",
+            "push {1}",
+            in(reg) preemption_info.0,
+            in(reg) preemption_info.1
+        );
+
+        x2apic::send_eoi();
+
+        core::arch::asm!("swapgs", "ret");
     }
 }

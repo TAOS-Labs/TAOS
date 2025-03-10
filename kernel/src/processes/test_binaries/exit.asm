@@ -2,7 +2,7 @@ section .text
     global _start
 
 _start:
-    mov rax, 1 ; EXIT
+    mov rax, 60 ; EXIT
     syscall
 
 _loop:

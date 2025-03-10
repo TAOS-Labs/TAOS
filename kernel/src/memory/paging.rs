@@ -364,9 +364,9 @@ mod tests {
     /// This test creates a mapping for a given virtual page, removes it, and then verifies that
     /// translating the page results in a `PageNotMapped` error.
     #[test_case]
-    fn test_remove_mapped_frame() {
-        let mut mapper = KERNEL_MAPPER.lock();
-        let page: Page = Page::containing_address(VirtAddr::new(0x400000000));
+    async fn test_remove_mapped_frame() {
+        let mut mapper = MAPPER.lock();
+        let page: Page = Page::containing_address(VirtAddr::new(0x500000000));
         let _ = create_mapping(page, &mut *mapper, None);
 
         remove_mapped_frame(page, &mut *mapper);
@@ -384,8 +384,8 @@ mod tests {
     /// A mapping is created for a test virtual page and its returned physical frame is then
     /// verified by translating the page. Finally, the mapping is removed.
     #[test_case]
-    fn test_basic_map_and_translate() {
-        let mut mapper = KERNEL_MAPPER.lock();
+    async fn test_basic_map_and_translate() {
+        let mut mapper = MAPPER.lock();
 
         // Use a test virtual page.
         let page: Page = Page::containing_address(VirtAddr::new(0x400001000));
@@ -404,8 +404,8 @@ mod tests {
     /// read-only by removing the WRITABLE flag). The test then retrieves the page table entry (PTE)
     /// and asserts that it contains the expected flags.
     #[test_case]
-    fn test_update_permissions() {
-        let mut mapper = KERNEL_MAPPER.lock();
+    async fn test_update_permissions() {
+        let mut mapper = MAPPER.lock();
 
         let page: Page = Page::containing_address(VirtAddr::new(0x400002000));
         let _ = create_mapping(page, &mut *mapper, None);
@@ -467,7 +467,7 @@ mod tests {
     /// After that, the mapping is updated to a new frame with new contents and the new value is written.
     /// Finally, the test re-schedules a read on the alternate core and verifies that the new value is observed.
     #[test_case]
-    fn test_tlb_shootdowns_cross_core() {
+    async fn test_tlb_shootdowns_cross_core() {
         const AP: u32 = 1;
         const PRIORITY: usize = 3;
 

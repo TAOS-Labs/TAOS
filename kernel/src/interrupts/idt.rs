@@ -28,6 +28,7 @@ use crate::{
     prelude::*,
     processes::process::preempt_process,
     syscalls::{memorymap::sys_mmap, syscall_handlers::{sys_exit, sys_nanosleep, sys_print}},
+    syscalls::syscall_handlers::{sys_exit, sys_nanosleep_32, sys_print},
 };
 
 lazy_static! {
@@ -260,7 +261,7 @@ fn syscall_handler(rsp: u64) {
             let success = sys_print(p1 as *const u8);
         }
         SYSCALL_NANOSLEEP => {
-            let success = sys_nanosleep(p1, p2);
+            let success = sys_nanosleep_32(p1, rsp);
         }
         _ => {
             panic!("Unknown syscall, {}", syscall_num);
@@ -347,16 +348,17 @@ extern "x86-interrupt" fn naked_timer_handler(_: InterruptStackFrame) {
 }
 
 #[no_mangle]
-extern "C" fn timer_handler(rsp: u64) {
+fn timer_handler(rsp: u64) {
     inc_runner_clock();
-
     preempt_process(rsp);
+
     x2apic::send_eoi();
 }
 
 // TODO Technically, this design means that when TLB Shootdows happen, each core must sequentially
 // invalidate its TLB rather than doing this in parallel. While this is slow, this is of low
 // priority to fix
+#[no_mangle]
 extern "x86-interrupt" fn tlb_shootdown_handler(_: InterruptStackFrame) {
     let core = current_core_id();
     {

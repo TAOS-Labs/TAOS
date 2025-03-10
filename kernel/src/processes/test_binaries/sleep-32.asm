@@ -13,7 +13,7 @@ _start:
 
     mov rdi, 5000000000
     mov rax, rdx
-    syscall ; nanosleep
+    int 0x80 ; nanosleep
 
     mov rax, r8
     syscall ; exit
