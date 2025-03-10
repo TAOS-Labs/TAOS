@@ -5,8 +5,11 @@
 
 pub mod bitmap_frame_allocator;
 pub mod boot_frame_allocator;
+pub mod buddy_frame_allocator;
 pub mod frame_allocator;
 pub mod heap;
+pub mod mm;
+pub mod page_fault;
 pub mod paging;
 pub mod tlb;
 
@@ -31,7 +34,7 @@ extern "C" {
 
 lazy_static! {
     // The kernel mapper
-    pub static ref MAPPER: Mutex<OffsetPageTable<'static>> = Mutex::new(unsafe { paging::init() });
+    pub static ref KERNEL_MAPPER: Mutex<OffsetPageTable<'static>> = Mutex::new(unsafe { paging::init() });
     // Start of kernel virtual memory
     pub static ref HHDM_OFFSET: VirtAddr = VirtAddr::new(
         HHDM_REQUEST

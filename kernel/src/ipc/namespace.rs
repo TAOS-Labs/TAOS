@@ -9,7 +9,7 @@ use alloc::{collections::BTreeMap, string::String, vec};
 use bytes::Bytes;
 use core::sync::atomic::{AtomicU32, Ordering};
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 struct DirEntry {
     _name: String,
     mount_id: Option<usize>,
@@ -33,6 +33,15 @@ const ROOTFID: u32 = 0;
 impl Default for Namespace {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+impl Clone for Namespace {
+    fn clone(&self) -> Self {
+        Namespace {
+            root: self.root.clone(),
+            next_fid: AtomicU32::new(self.next_fid.load(Ordering::Relaxed))
+        }
     }
 }
 

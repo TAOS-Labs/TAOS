@@ -84,7 +84,8 @@ lazy_static! {
         let mut tss_selectors = [SegmentSelector::new(0, PrivilegeLevel::Ring0); MAX_CORES];
 
         for i in 0..MAX_CORES {
-            tss_selectors[i] = gdt.append(Descriptor::tss_segment(&TSSS[i]));
+            let value = gdt.append(Descriptor::tss_segment(&TSSS[i]));
+            tss_selectors[i] = value;
         }
 
         (gdt, Selectors {
