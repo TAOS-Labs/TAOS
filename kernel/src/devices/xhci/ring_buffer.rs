@@ -554,6 +554,14 @@ impl ConsumerRingBuffer {
         Ok(())
     }
 
+    /// Returns the value of the dequeue pointer.
+    /// 
+    /// # Returns
+    /// `self.dequeue` as a `u64`
+    pub fn get_dequeue(&self) -> u64 {
+        self.dequeue as u64
+    }
+    
     /// Tries to dequeue a TRB.
     ///
     /// # Returns
