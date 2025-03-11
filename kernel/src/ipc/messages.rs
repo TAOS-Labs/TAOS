@@ -1,4 +1,3 @@
-use crate::serial_println;
 
 use super::{error::ProtocolError, requests, responses};
 use bytes::{Buf, Bytes};
@@ -234,8 +233,11 @@ impl Message {
     }
 
     pub fn parse(bytes: Bytes) -> Result<(Self, u16), ProtocolError> {
-        serial_println!("Gasp!");
-        let (header, remaining) = MessageHeader::from_bytes(bytes)?;
+        // TODO had issues due to bytes being advanced in parse
+        //      Must refactor every deserialize or this function to remove such issues
+        //      ...TBD
+        //      for now just clone bytes and avoid the headache (expensive and bad for long msgs)
+        let (header, remaining) = MessageHeader::from_bytes(bytes.clone())?;
         let tag = header.tag;
 
         if header.size as usize != remaining.len() + 7 {
@@ -246,9 +248,8 @@ impl Message {
         if header.size > MAX_MESSAGE_SIZE {
             return Err(ProtocolError::MessageTooLarge);
         }
-        serial_println!("Got size: {}", header.size);
 
-        let message = Self::from_bytes(header, remaining)?;
+        let message = Self::from_bytes(header, bytes)?;
         Ok((message, tag))
     }
 

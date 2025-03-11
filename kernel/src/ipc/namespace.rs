@@ -1,3 +1,5 @@
+use crate::{serial_print, serial_println};
+
 use super::{
     error::Error,
     messages::Message,

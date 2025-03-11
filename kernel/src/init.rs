@@ -12,14 +12,10 @@ use limine::{
 
 use crate::{
     debug, devices,
-    events::{register_event_runner, run_loop, spawn, yield_now},
+    events::{nanosleep_current_event, register_event_runner, run_loop, spawn, yield_now},
     interrupts::{self, idt},
     ipc::{
-        messages::Message,
-        mnt_manager,
-        namespace::Namespace,
-        responses::Rattach,
-        spsc::{Receiver, Sender},
+        channel::RecvError, messages::Message, mnt_manager, namespace::Namespace, responses::Rattach, spsc::{self, Receiver, Sender}
     },
     logging,
     memory::{self},
@@ -134,8 +130,6 @@ fn wake_cores() -> u32 {
 
 static TEST_MOUNT_ID: AtomicU32 = AtomicU32::new(0);
 
-static mut PLOCK: bool = true;
-
 pub async fn run_server(server_rx: Receiver<Bytes>, server_tx: Sender<Bytes>) {
     serial_println!("Server starting");
     loop {
@@ -145,7 +139,8 @@ pub async fn run_server(server_rx: Receiver<Bytes>, server_tx: Sender<Bytes>) {
                     serial_println!("Server got message: {:?}", msg);
                     let response = match msg {
                         Message::Tattach(..) => {
-                            Message::Rattach(Rattach::new(tag, Bytes::new()).unwrap())
+                            // TODO how best to initialize qid? (what is qid?)
+                            Message::Rattach(Rattach::new(tag, Bytes::from_iter([0; 13])).unwrap())
                         }
                         _ => continue,
                     };
@@ -154,12 +149,12 @@ pub async fn run_server(server_rx: Receiver<Bytes>, server_tx: Sender<Bytes>) {
                         let _ = server_tx.send(resp_bytes).await;
                     }
                 }
-                Err(e) => serial_println!("(Server) Failed to parse message: {:?}", e),
+                Err(e) => serial_println!("(Server) Failed to parse message: {}", e),
             },
-            Err(_) => unsafe {
-                if PLOCK {
-                    serial_println!("Got error");
-                    PLOCK = false;
+            Err(e) => {
+                match e {
+                    spsc::RecvError::Empty => {}
+                    spsc::RecvError::Disconnected => serial_println!("Got error")
                 }
             },
         }
@@ -189,7 +184,7 @@ pub async fn run_client(mount_id: u32) {
 pub async fn spawn_test() {
     serial_println!("Starting test");
 
-    let (mount_id, _server_rx, _server_tx) = match mnt_manager.create_mount().await {
+    let (mount_id, server_rx, server_tx) = match mnt_manager.create_mount().await {
         Ok(mount) => mount,
         Err(e) => {
             serial_println!("Failed to create mount: {:?}", e);
@@ -201,7 +196,7 @@ pub async fn spawn_test() {
     TEST_MOUNT_ID.store(mount_id.0, Ordering::Release);
 
     // Spawn server task
-    //let server_handle = spawn(0, run_server(server_rx, server_tx), 0);
+    let _server_handle = spawn(0, run_server(server_rx, server_tx), 0);
 
     yield_now().await;
 

@@ -1,3 +1,4 @@
+
 use super::{
     error::ProtocolError,
     messages::{MessageHeader, MessageType, MAX_MESSAGE_SIZE},
@@ -266,7 +267,7 @@ impl Tattach {
     }
 
     pub fn deserialize(mut bytes: Bytes) -> Result<Self, ProtocolError> {
-        let mut reader = MessageReader::new(&mut bytes);
+        let mut reader = MessageReader::new(&mut bytes);   
         let header = reader.read_header()?;
         if header.message_type != MessageType::Tattach {
             return Err(ProtocolError::InvalidMessageType(header.message_type as u8));

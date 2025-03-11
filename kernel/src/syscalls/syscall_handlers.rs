@@ -124,7 +124,7 @@ pub unsafe extern "C" fn syscall_handler_64_naked() -> ! {
 /// Function that routes to different syscalls
 ///
 /// # Arguments
-/// * `syscall` - A pointer to a strut containing syscall_num, arg1...arg6 as u64
+/// * `syscall` - A pointer to a struct containing syscall_num, arg1...arg6 as u64
 ///
 /// # Safety
 /// This function is unsafe as it must dereference `syscall` to get args
