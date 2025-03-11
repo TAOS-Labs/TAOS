@@ -1,8 +1,10 @@
-use crate::serial_println;
+use crate::{constants::memory::PAGE_SIZE, serial_println};
 use alloc::{collections::btree_map::BTreeMap, sync::Arc};
 use bitflags::bitflags;
 use spin::Mutex;
-use x86_64::structures::paging::{PageTableFlags, PhysFrame, Size4KiB};
+use x86_64::{structures::paging::{Mapper, Page, PageTableFlags, PhysFrame, Size4KiB}, VirtAddr};
+
+use super::paging::remove_mapping;
 
 type VmaTree = BTreeMap<usize, Arc<Mutex<VmArea>>>;
 
@@ -135,6 +137,31 @@ impl Mm {
     /// Remove the VmArea starting at the given address.
     pub fn remove_vma(&self, start: u64, tree: &mut VmaTree) -> Option<Arc<Mutex<VmArea>>> {
         tree.remove(&(start as usize))
+    }
+
+    /// Everything is page aligned
+    pub fn shrink_vma(
+        &self,
+        old_start: u64,
+        new_start: u64,
+        _old_end: u64,
+        _new_end: u64,
+        mapper: &mut impl Mapper<Size4KiB>,
+        tree: &mut VmaTree,
+    ) {
+        let _vma = self.remove_vma(old_start, tree).unwrap();
+
+        let mut vma = _vma.lock();
+
+        for va in (old_start..new_start).step_by(PAGE_SIZE) {
+            let page = Page::containing_address(VirtAddr::new(va));
+            remove_mapping(page, mapper);
+        }
+
+        // TODO: Update reverse mappings
+
+        vma.start = new_start;
+        tree.insert(new_start as usize, _vma.clone());
     }
 
     /// Find a VmArea that contains the given virtual address.

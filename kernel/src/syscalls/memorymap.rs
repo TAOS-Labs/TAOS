@@ -1,10 +1,14 @@
-use alloc::sync::Arc;
-use bitflags::bitflags;
+use core::{cmp::max, fmt::write};
+
+use alloc::{sync::Arc, vec::Vec};
+use bitflags::{bitflags, Flags};
+use spin::lock_api::Mutex;
 
 use crate::{
+    constants::memory::PAGE_SIZE,
     events::{current_running_event_info, EventInfo},
     memory::{
-        mm::{AnonVmArea, VmAreaFlags},
+        mm::{AnonVmArea, VmArea, VmAreaFlags},
         HHDM_OFFSET,
     },
     processes::process::PROCESS_TABLE,
@@ -93,7 +97,7 @@ pub enum MmapErrors {
 }
 
 // Helper function to convert mmap flags (and prot) to VmAreaFlags.
-pub fn mmap_flags_to_vma_flags(prot: u64, mmap_flags: MmapFlags) -> VmAreaFlags {
+pub fn mmap_prot_to_vma_flags(prot: u64, mmap_flags: MmapFlags) -> VmAreaFlags {
     let mut vma_flags = VmAreaFlags::empty();
 
     // Set writable/executable based on the prot flags.
@@ -167,7 +171,7 @@ pub fn sys_mmap(addr: u64, len: u64, prot: u64, flags: u64, fd: i64, offset: u64
     // Create an instance of MmapFlags from the raw flags.
     let mmap_flags = MmapFlags::from_bits_truncate(flags);
     // Compute the VMA flags using our helper.
-    let vma_flags = mmap_flags_to_vma_flags(prot, mmap_flags);
+    let vma_flags = mmap_prot_to_vma_flags(prot, mmap_flags);
     // Determine if this is an anonymous mapping.
     let anon = mmap_flags.contains(MmapFlags::MAP_ANONYMOUS);
 
@@ -189,50 +193,108 @@ pub fn sys_mmap(addr: u64, len: u64, prot: u64, flags: u64, fd: i64, offset: u64
     addr_to_return
 }
 
-pub fn sys_mprotect(addr: u64, len: u64, prot: ProtFlags) {
+/// Handler to change protection of a region of mapped memory
+///
+/// There is no guarantee that the address given is nice about
+/// being in a VMA (Could be inside of an existing one, could be
+/// spanning multiple, etc.)
+///
+/// It is guaranteed that addr is page aligned
+/// It is NOT guaranteed that len is page aligned
+///
+/// # Arguments
+/// * `addr` - the starting virtual address of mapped memory, page aligned
+/// * `len`  - the length of the region of memory we want to update
+/// * `prot` - the protection we want to updatge to; corresponds to VMA flags
+pub fn sys_mprotect(addr: u64, len: u64, prot: ProtFlags) -> u64 {
+    let end_addr = (addr + len + PAGE_SIZE as u64 - 1) / PAGE_SIZE as u64 * PAGE_SIZE as u64;
+    let event: EventInfo = current_running_event_info();
+    let pid = event.pid;
 
+    // For testing we hardcode to one for now.
+    let process_table = PROCESS_TABLE.write();
+    let process = process_table
+        .get(&pid)
+        .expect("Could not get pcb from process table");
+    let pcb = process.pcb.get();
+
+    // new anon vma to insert based on mprotect (technically not optimal)
+    let anon_vma = Arc::new(AnonVmArea::new());
+    let new_vma = VmArea::new(addr, addr + len, anon_vma, VmAreaFlags::empty(), true);
+
+    unsafe {
+        (*pcb).mm.with_vma_tree_mutable(|tree| {
+            // figure out what VMAs we are concerned about
+            let mut overlapping: Vec<Arc<Mutex<VmArea>>> = Vec::new();
+        })
+    }
+
+    0
 }
 
+/// Handler to unmap a region of mapped memory
+///
+/// # Arguments
+/// * `addr` - the starting virtual address of mapped memory, page aligned
+/// * `len`  - the length of the region of memory we want to unmap
+pub fn sys_munmap(addr: u64, len: u64) -> u64 {
+    let end_addr = (addr + len + PAGE_SIZE as u64 - 1) / PAGE_SIZE as u64 * PAGE_SIZE as u64;
+
+    let event: EventInfo = current_running_event_info();
+    let pid = event.pid;
+
+    // For testing we hardcode to one for now.
+    let process_table = PROCESS_TABLE.write();
+    let process = process_table
+        .get(&pid)
+        .expect("Could not get pcb from process table");
+    let pcb = process.pcb.get();
+
+    let err = unsafe {
+        (*pcb).mm.with_vma_tree_mutable(|tree| {
+            // Validate if you can actually unmap this (region must be mapped)
+            let mut current_address = addr;
+
+            while current_address < end_addr {
+                if let Some(vma) = (*pcb).mm.find_vma(addr, tree) {
+                    let locked_vma = vma.lock();
+                    let vma_start = locked_vma.start;
+                    let vma_end = locked_vma.end;
+
+                    if addr <= vma_start && end_addr > vma_end {
+                        // TODO Deal with reverse mappings
+                        (*pcb).mm.remove_vma(vma_start, tree);
+                    } else {
+                        // partial mapping
+                        // TODO Deal with reverse mappings
+
+                        // If VMA is only in the region partially (from the
+                        // left side)
+                        if vma_start <= addr {
+                            // shrink this VMA from the right
+                        }
+
+                        if vma_end >= end_addr {
+                            // shrink this VMA from the left
+                        }
+                    }
+                };
+
+                current_address += PAGE_SIZE as u64
+            }
+
+            return 1;
+        })
+    };
+
+    err
+}
+
+// TODO: Mmap tests
 #[cfg(test)]
 mod tests {
     use crate::{
         constants::processes::MMAP_ANON_SIMPLE,
-        events::schedule_process,
         processes::process::{create_process, PCB, PROCESS_TABLE},
     };
-
-    fn setup() -> (u32, *mut PCB) {
-        let pid = create_process(MMAP_ANON_SIMPLE);
-        let process_table = PROCESS_TABLE.write();
-        let process = process_table
-            .get(&pid)
-            .expect("Could not get pcb from process table");
-        (pid, process.pcb.get())
-    }
-
-    // #[test_case]
-    fn test_basic_anon_mmap() {
-        let p = setup();
-        let pid = p.0;
-        let pcb = p.1;
-        unsafe {
-            let mmap_addr_before: u64 = (*pcb).mmap_address;
-            schedule_process(pid);
-            assert!(true);
-        }
-    }
-
-    // #[test_case]
-    fn test_two_anon_mmap() {
-        let p = setup();
-        let pid = p.0;
-        let pcb = p.1;
-        unsafe {
-            let mmap_addr_before: u64 = (*pcb).mmap_address;
-
-            schedule_process(pid);
-            schedule_process(pid);
-        }
-        assert!(true);
-    }
 }
