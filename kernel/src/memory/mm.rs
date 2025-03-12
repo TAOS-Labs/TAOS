@@ -2,7 +2,10 @@ use crate::{constants::memory::PAGE_SIZE, serial_println};
 use alloc::{collections::btree_map::BTreeMap, sync::Arc};
 use bitflags::bitflags;
 use spin::Mutex;
-use x86_64::{structures::paging::{Mapper, Page, PageTableFlags, PhysFrame, Size4KiB}, VirtAddr};
+use x86_64::{
+    structures::paging::{Mapper, Page, PageTableFlags, PhysFrame, Size4KiB},
+    VirtAddr,
+};
 
 use super::paging::remove_mapping;
 
@@ -135,8 +138,12 @@ impl Mm {
     }
 
     /// Remove the VmArea starting at the given address.
-    pub fn remove_vma(&self, start: u64, tree: &mut VmaTree) -> Option<Arc<Mutex<VmArea>>> {
-        tree.remove(&(start as usize))
+    pub fn remove_vma(
+        &self,
+        start: u64,
+        tree: &mut VmaTree,
+    ) -> Option<(usize, Arc<Mutex<VmArea>>)> {
+        tree.remove_entry(&(start as usize))
     }
 
     /// Everything is page aligned
@@ -144,24 +151,69 @@ impl Mm {
         &self,
         old_start: u64,
         new_start: u64,
-        _old_end: u64,
-        _new_end: u64,
+        new_end: u64,
         mapper: &mut impl Mapper<Size4KiB>,
         tree: &mut VmaTree,
-    ) {
-        let _vma = self.remove_vma(old_start, tree).unwrap();
+    ) -> Option<Arc<Mutex<VmArea>>> {
+        let vma = self.remove_vma(old_start, tree).unwrap().1;
+        {
+            let vma = vma.lock();
 
-        let mut vma = _vma.lock();
+            // remove all mappings from the shrink
+            for va in (old_start..new_start).step_by(PAGE_SIZE) {
+                let page = Page::containing_address(VirtAddr::new(va));
+                remove_mapping(page, mapper);
+            }
+            for va in (new_end..vma.end).step_by(PAGE_SIZE) {
+                let page = Page::containing_address(VirtAddr::new(va));
+                remove_mapping(page, mapper);
+            }
 
-        for va in (old_start..new_start).step_by(PAGE_SIZE) {
-            let page = Page::containing_address(VirtAddr::new(va));
-            remove_mapping(page, mapper);
+            // update AnonVma mappings 
+            let mut mappings = vma.backing.mappings.lock();
+            let mut updated_anon_vma: BTreeMap<u64, Arc<AnonVmaChain>> = BTreeMap::new();
+
+            let remove_diff = new_start - old_start;
+            let bound = new_end - old_start;
+
+            // go through all offsets; if offset is mapping,
+            for (&offset, chain) in mappings.iter_mut() {
+                // don't start until we get to a mapping that we 
+                // actually care about
+                if offset < remove_diff {
+                    continue;
+                }
+
+                // if we exceed the right bound, no reason to continue
+                if offset >= bound {
+                    break;
+                }
+
+                let new_offset = offset - remove_diff;
+                let updated_chain = Arc::new(AnonVmaChain {
+                    offset: new_offset,
+                    frame: chain.frame.clone(),
+                });
+
+                updated_anon_vma.insert(new_offset, updated_chain);
+            }
+
+            *mappings = updated_anon_vma;
         }
 
-        // TODO: Update reverse mappings
+        // if we shrunk this much, we removed the whole VMA
+        if new_start == new_end {
+            return None;
+        }
 
-        vma.start = new_start;
-        tree.insert(new_start as usize, _vma.clone());
+        {
+            let mut vma = vma.lock();
+            vma.start = new_start;
+            vma.end = new_end;
+        }
+
+        tree.insert(new_start as usize, vma.clone());
+        return self.find_vma(new_start, tree);
     }
 
     /// Find a VmArea that contains the given virtual address.
@@ -325,7 +377,10 @@ mod tests {
     use x86_64::{structures::paging::PhysFrame, PhysAddr};
 
     // (Import additional items from your crate as needed.)
-    use crate::{constants::memory::PAGE_SIZE, memory::frame_allocator::alloc_frame};
+    use crate::{
+        constants::memory::PAGE_SIZE,
+        memory::{frame_allocator::alloc_frame, paging::create_mapping, KERNEL_MAPPER},
+    };
 
     use super::*;
 
@@ -386,7 +441,7 @@ mod tests {
 
             // Remove the VMA starting at address 0.
             let removed = mm.remove_vma(0, tree).unwrap();
-            let removed_start = removed.lock().start;
+            let removed_start = removed.1.lock().start;
             let found_after = mm.find_vma(removed_start, tree);
             assert!(found_after.is_none());
         });
@@ -707,5 +762,282 @@ mod tests {
         let start3 = got_vma3.lock().start;
         assert_eq!(start1, start2);
         assert_eq!(start2, start3);
+    }
+
+    /// Tests shrinking a VMA from the left side.
+    ///
+    /// In this test, we create a VMA that spans three pages starting at 0x40000000.  
+    /// We populate its reverse mappings with one mapping per page.  
+    /// Then we shrink the VMA by removing the leftmost page, so that the new start is shifted
+    /// by one page (i.e. new_start = old_start + PAGE_SIZE) while the end remains unchanged.  
+    /// The test asserts that:
+    /// - The new VMA covers only the right two pages.
+    /// - The reverse mappings have been updated so that the surviving mappings are shifted
+    ///   (i.e. the mapping for the former second page now has offset 0).
+    #[test_case]
+    async fn test_shrink_vma_left() {
+        // setup
+        let pml4_frame = PhysFrame::containing_address(PhysAddr::new(0x1000));
+        let mm = Mm::new(pml4_frame);
+        let anon_area = Arc::new(AnonVmArea::new());
+        let old_start = 0x40000000;
+        let old_end = old_start + 3 * PAGE_SIZE as u64;
+
+        // Insert VMA and populate its reverse mappings.
+        mm.with_vma_tree_mutable(|tree| {
+            let vma = mm.insert_vma(
+                tree,
+                old_start,
+                old_end,
+                anon_area.clone(),
+                VmAreaFlags::WRITABLE,
+                true,
+            );
+            {
+                let locked_vma = vma.lock();
+                let mut mappings = locked_vma.backing.mappings.lock();
+                // For each page in the VMA, create a mapping and record its offset.
+                for i in 0..3 {
+                    let offset = i as u64 * PAGE_SIZE as u64;
+                    let va = old_start + offset;
+                    let page = Page::containing_address(VirtAddr::new(va));
+                    let mut mapper = KERNEL_MAPPER.lock();
+                    let frame = create_mapping(
+                        page,
+                        &mut *mapper,
+                        Some(PageTableFlags::PRESENT | PageTableFlags::WRITABLE),
+                    );
+                    mappings.insert(
+                        offset,
+                        Arc::new(AnonVmaChain {
+                            offset,
+                            frame: Arc::new(frame),
+                        }),
+                    );
+                }
+            }
+        });
+
+        let new_start = old_start + PAGE_SIZE as u64;
+        let new_end = old_end;
+        let shrunk = mm.with_vma_tree_mutable(|tree| {
+            let mut mapper = KERNEL_MAPPER.lock();
+            mm.shrink_vma(old_start, new_start, new_end, &mut *mapper, tree)
+        });
+        assert!(shrunk.is_some());
+        let vma = shrunk.unwrap();
+        let locked = vma.lock();
+        assert_eq!(locked.start, new_start);
+        assert_eq!(locked.end, new_end);
+        // The reverse mappings should now cover two pages.
+        let mappings = locked.backing.mappings.lock();
+        assert_eq!(mappings.len(), 2);
+        // The surviving offsets should have been shifted so that the leftmost surviving page is offset 0.
+        assert!(mappings.contains_key(&0));
+        assert!(mappings.contains_key(&(PAGE_SIZE as u64)));
+    }
+
+    /// Tests shrinking a VMA from the right side.
+    ///
+    /// In this test, a VMA spanning three pages are craeted
+    /// Its reverse mappings are populated with one mapping per page.  
+    /// We then shrink the VMA by removing the rightmost page (i.e. setting new_end = old_end - PAGE_SIZE)
+    /// while keeping the start unchanged.  
+    /// The test asserts that:
+    /// - The resulting VMA covers the left two pages.
+    /// - The reverse mappings remain unshifted (i.e. the mapping for the first page is still at offset 0,
+    ///   and the second page remains at offset PAGE_SIZE)
+    #[test_case]
+    async fn test_shrink_vma_right() {
+        let pml4_frame = PhysFrame::containing_address(PhysAddr::new(0x1000));
+        let mm = Mm::new(pml4_frame);
+        let anon_area = Arc::new(AnonVmArea::new());
+        let old_start = 0x50000000;
+        let old_end = old_start + 3 * PAGE_SIZE as u64;
+
+        mm.with_vma_tree_mutable(|tree| {
+            let vma = mm.insert_vma(
+                tree,
+                old_start,
+                old_end,
+                anon_area.clone(),
+                VmAreaFlags::WRITABLE,
+                true,
+            );
+            {
+                let locked_vma = vma.lock();
+                let mut mappings = locked_vma.backing.mappings.lock();
+                for i in 0..3 {
+                    let offset = i as u64 * PAGE_SIZE as u64;
+                    let va = old_start + offset;
+                    let page = Page::containing_address(VirtAddr::new(va));
+                    let mut mapper = KERNEL_MAPPER.lock();
+                    let frame = create_mapping(
+                        page,
+                        &mut *mapper,
+                        Some(PageTableFlags::WRITABLE | PageTableFlags::PRESENT),
+                    );
+                    mappings.insert(
+                        offset,
+                        Arc::new(AnonVmaChain {
+                            offset,
+                            frame: Arc::new(frame),
+                        }),
+                    );
+                }
+            }
+        });
+
+        // Shrink right: keep the left two pages.
+        let new_start = old_start;
+        let new_end = old_end - PAGE_SIZE as u64;
+        let shrunk = mm.with_vma_tree_mutable(|tree| {
+            let mut mapper = KERNEL_MAPPER.lock();
+            mm.shrink_vma(old_start, new_start, new_end, &mut *mapper, tree)
+        });
+        assert!(shrunk.is_some());
+        let vma = shrunk.unwrap();
+        let locked = vma.lock();
+        assert_eq!(locked.start, new_start);
+        assert_eq!(locked.end, new_end);
+        let mappings = locked.backing.mappings.lock();
+        // two mappings should remain unshifted as we only shrunk the right side
+        assert_eq!(mappings.len(), 2);
+        assert!(mappings.contains_key(&0));
+        assert!(mappings.contains_key(&(PAGE_SIZE as u64)));
+    }
+
+    /// Tests shrinking a VMA from both the left and right sides simultaneously.
+    ///
+    /// In this test, a VMA covering four pages are created and populated with
+    /// reverse mappings for each page. We then shrink the VMA by removing one page from the left
+    /// and one page from the right, so that the surviving region covers the two middle pages.
+    /// The test asserts that:
+    /// - The new VMA boundaries are updated to reflect the surviving region.
+    /// - The reverse mappings are updated so that the surviving pages have their offsets shifted
+    ///   (i.e. the leftmost surviving mapping has offset 0).
+    #[test_case]
+    async fn test_shrink_vma_both() {
+        let pml4_frame = PhysFrame::containing_address(PhysAddr::new(0x1000));
+        let mm = Mm::new(pml4_frame);
+        let anon_area = Arc::new(AnonVmArea::new());
+        let old_start = 0x60000000;
+        let old_end = old_start + 4 * PAGE_SIZE as u64;
+
+        mm.with_vma_tree_mutable(|tree| {
+            let vma = mm.insert_vma(
+                tree,
+                old_start,
+                old_end,
+                anon_area.clone(),
+                VmAreaFlags::WRITABLE,
+                true,
+            );
+            {
+                let locked_vma = vma.lock();
+                let mut mappings = locked_vma.backing.mappings.lock();
+                for i in 0..4 {
+                    let offset = i as u64 * PAGE_SIZE as u64;
+                    let va = old_start + offset;
+                    let page = Page::containing_address(VirtAddr::new(va));
+                    let mut mapper = KERNEL_MAPPER.lock();
+                    let frame = create_mapping(
+                        page,
+                        &mut *mapper,
+                        Some(PageTableFlags::WRITABLE | PageTableFlags::PRESENT),
+                    );
+                    mappings.insert(
+                        offset,
+                        Arc::new(AnonVmaChain {
+                            offset,
+                            frame: Arc::new(frame),
+                        }),
+                    );
+                }
+            }
+        });
+
+        // Shrink both sides: remove the leftmost and rightmost pages.
+        let new_start = old_start + PAGE_SIZE as u64;
+        let new_end = old_end - PAGE_SIZE as u64;
+        let shrunk = mm.with_vma_tree_mutable(|tree| {
+            let mut mapper = KERNEL_MAPPER.lock();
+            mm.shrink_vma(old_start, new_start, new_end, &mut *mapper, tree)
+        });
+        assert!(shrunk.is_some());
+
+        let vma = shrunk.unwrap();
+        let locked = vma.lock();
+        assert_eq!(locked.start, new_start);
+        assert_eq!(locked.end, new_end);
+
+        // check if backings were updated correctly, there should still
+        // be two left from after the shrink (4 allocated initially)
+        let mappings = locked.backing.mappings.lock();
+        assert_eq!(mappings.len(), 2);
+        assert!(mappings.contains_key(&0));
+        assert!(mappings.contains_key(&(PAGE_SIZE as u64)));
+    }
+
+    /// Tests shrinking a VMA completely so that no pages survive.
+    ///
+    /// In this test, a VMA covering two pages starting at 0x70000000 is created and populated with
+    /// reverse mappings for each page. We then shrink the VMA so that new_start equals new_end,
+    /// meaning that the entire VMA is unmapped.  
+    ///
+    /// This is effectively doing the same thing as a remove_vma, but could simplify code
+    /// for munmap()
+    ///
+    /// The test asserts that:
+    /// - The shrink operation returns `None`, indicating that no VMA remains.
+    #[test_case]
+    async fn test_shrink_vma_whole() {
+        let pml4_frame = PhysFrame::containing_address(PhysAddr::new(0x1000));
+        let mm = Mm::new(pml4_frame);
+        let anon_area = Arc::new(AnonVmArea::new());
+        let old_start = 0x70000000;
+        let old_end = old_start + 2 * PAGE_SIZE as u64;
+
+        mm.with_vma_tree_mutable(|tree| {
+            let vma = mm.insert_vma(
+                tree,
+                old_start,
+                old_end,
+                anon_area.clone(),
+                VmAreaFlags::WRITABLE,
+                true,
+            );
+            {
+                let locked_vma = vma.lock();
+                let mut mappings = locked_vma.backing.mappings.lock();
+                for i in 0..2 {
+                    let offset = i as u64 * PAGE_SIZE as u64;
+                    let va = old_start + offset;
+                    let page = Page::containing_address(VirtAddr::new(va));
+                    let mut mapper = KERNEL_MAPPER.lock();
+                    let frame = create_mapping(
+                        page,
+                        &mut *mapper,
+                        Some(PageTableFlags::WRITABLE | PageTableFlags::PRESENT),
+                    );
+                    mappings.insert(
+                        offset,
+                        Arc::new(AnonVmaChain {
+                            offset,
+                            frame: Arc::new(frame),
+                        }),
+                    );
+                }
+            }
+        });
+
+        // Shrink whole: new_start == new_end, so no pages remain.
+        let new_boundary = old_start + PAGE_SIZE as u64; // Remove one page (the entire VMA in this case)
+        let shrunk = mm.with_vma_tree_mutable(|tree| {
+            let mut mapper = KERNEL_MAPPER.lock();
+            mm.shrink_vma(old_start, new_boundary, new_boundary, &mut *mapper, tree)
+        });
+        // When the entire VMA is shrunk away, shrink_vma returns None.
+        assert!(shrunk.is_none());
     }
 }

@@ -1,8 +1,12 @@
-use core::{cmp::max, fmt::write};
+use core::cmp::{max, min};
 
 use alloc::{sync::Arc, vec::Vec};
-use bitflags::{bitflags, Flags};
+use bitflags::bitflags;
 use spin::lock_api::Mutex;
+use x86_64::{
+    structures::paging::{OffsetPageTable, PageTable},
+    VirtAddr,
+};
 
 use crate::{
     constants::memory::PAGE_SIZE,
@@ -251,8 +255,13 @@ pub fn sys_munmap(addr: u64, len: u64) -> u64 {
     let pcb = process.pcb.get();
 
     let err = unsafe {
+        let new_pml4_phys = (*pcb).mm.pml4_frame.start_address();
+        let new_pml4_virt = VirtAddr::new((*HHDM_OFFSET).as_u64()) + new_pml4_phys.as_u64();
+        let new_pml4_ptr: *mut PageTable = new_pml4_virt.as_mut_ptr();
+        let mut mapper =
+            OffsetPageTable::new(&mut *new_pml4_ptr, VirtAddr::new((*HHDM_OFFSET).as_u64()));
+
         (*pcb).mm.with_vma_tree_mutable(|tree| {
-            // Validate if you can actually unmap this (region must be mapped)
             let mut current_address = addr;
 
             while current_address < end_addr {
@@ -260,27 +269,21 @@ pub fn sys_munmap(addr: u64, len: u64) -> u64 {
                     let locked_vma = vma.lock();
                     let vma_start = locked_vma.start;
                     let vma_end = locked_vma.end;
+                    drop(locked_vma);
 
-                    if addr <= vma_start && end_addr > vma_end {
-                        // TODO Deal with reverse mappings
-                        (*pcb).mm.remove_vma(vma_start, tree);
-                    } else {
-                        // partial mapping
-                        // TODO Deal with reverse mappings
+                    // we want this VMA to either be entirely removed
+                    // or partially shrunk
+                    let new_start = max(vma_start, addr);
+                    let new_end = min(vma_end, end_addr);
 
-                        // If VMA is only in the region partially (from the
-                        // left side)
-                        if vma_start <= addr {
-                            // shrink this VMA from the right
-                        }
+                    (*pcb)
+                        .mm
+                        .shrink_vma(vma_start, new_start, new_end, &mut mapper, tree);
 
-                        if vma_end >= end_addr {
-                            // shrink this VMA from the left
-                        }
-                    }
-                };
-
-                current_address += PAGE_SIZE as u64
+                    current_address = new_end;
+                } else {
+                    break;
+                }
             }
 
             return 1;

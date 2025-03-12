@@ -1,4 +1,4 @@
-use core::{ffi::CStr, i64, sync::atomic::AtomicI64};
+use core::ffi::CStr;
 
 use alloc::collections::btree_map::BTreeMap;
 use lazy_static::lazy_static;
@@ -16,11 +16,11 @@ use crate::{
         current_running_event, current_running_event_info, futures::await_on::AwaitProcess,
         get_runner_time, yield_now, EventInfo,
     },
-    interrupts::x2apic::{self, current_core_id},
+    interrupts::x2apic,
     memory::frame_allocator::with_buddy_frame_allocator,
     processes::{
         process::{
-            clear_process_frames, sleep_process_int, sleep_process_syscall, ProcessState,
+             sleep_process_int, sleep_process_syscall, ProcessState,
             PROCESS_TABLE,
         },
         registers::NonFlagRegisters,
@@ -30,6 +30,8 @@ use crate::{
 };
 
 use core::arch::naked_asm;
+
+use super::memorymap::sys_munmap;
 
 lazy_static! {
     pub static ref EXIT_CODES: Mutex<BTreeMap<u32, i64>> = Mutex::new(BTreeMap::new());
@@ -169,6 +171,7 @@ pub unsafe extern "C" fn syscall_handler_impl(
             syscall.arg6,
         ),
         SYSCALL_WAIT => block_on(sys_wait(syscall.arg1 as u32)),
+        SYSCALL_MUNMAP => sys_munmap(syscall.arg1, syscall.arg2),
         _ => {
             panic!("Unknown syscall, {}", syscall.number);
         }
@@ -269,11 +272,11 @@ pub async fn sys_wait(pid: u32) -> u64 {
         pid,
         get_runner_time(3_000_000_000),
         current_running_event().unwrap(),
-    ).await;
+    )
+    .await;
 
     return *(EXIT_CODES.lock().get(&pid).unwrap()) as u64;
 }
-
 
 /// Helper function for sys_wait, not sure if necessary
 /// TODO Ask Kiran if necessary
@@ -300,4 +303,3 @@ fn block_on<F: Future>(mut future: F) -> F::Output {
         yield_now();
     }
 }
-
