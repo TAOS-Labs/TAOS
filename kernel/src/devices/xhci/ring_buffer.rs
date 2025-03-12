@@ -87,7 +87,7 @@ pub enum EventRingType {
 }
 
 #[repr(C, packed)]
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 /// A generic struct for Transfer Request Blocks (TRBs).
 /// Precise setting and getting of specific fields for a given TRB shall be done
 /// by the xHCI driver. See section 6.4 of the xHCI specs for more details.
@@ -128,6 +128,10 @@ impl TransferRequestBlock {
     /// Sets the evaluate next TRB bit of the control field in the TRB to value.
     pub fn set_ent(&mut self, value: u32) {
         self.control = (self.control & !0x2) | (value << 1);
+    }
+
+    pub fn eq(&self, other: &TransferRequestBlock) -> bool {
+        return (self.parameters == other.parameters) & (self.status == other.status) & (self.control == other.control);
     }
 }
 
@@ -443,6 +447,7 @@ pub enum EventRingError {
     ERSTFull,
 }
 
+
 #[derive(Debug, Clone)]
 /// Implements a consumer ring buffer for use with the event rings associated with the xHCI.
 pub struct ConsumerRingBuffer {
@@ -581,6 +586,7 @@ impl ConsumerRingBuffer {
         unsafe {
             block = core::ptr::read_volatile(self.dequeue);
         }
+        
         // first check if we need to look at cycle bit or completion code
         if self.erst_count > self.count_visited {
             let completion_code = (block.status >> 24) & 0xFF;
