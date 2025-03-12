@@ -181,13 +181,18 @@ impl ProducerRingBuffer {
     /// # Safety
     /// - This function preforms a raw pointer access to initialize the Link TRB of the ring
     /// - Assumes that `base_addr` points to a valid memory region of at least `size` bytes
-    pub fn new(base_addr: u64, cycle_state: u8, ring_type: RingType, size: isize) -> Result<Self, ProducerRingError> {
+    pub fn new(
+        base_addr: u64,
+        cycle_state: u8,
+        ring_type: RingType,
+        size: isize,
+    ) -> Result<Self, ProducerRingError> {
         // ensure that the base address is aligned to 16
         if base_addr % 16 != 0 {
-            return Err(ProducerRingError::UnalignedAddress)
+            return Err(ProducerRingError::UnalignedAddress);
         }
         if size % 16 != 0 {
-            return Err(ProducerRingError::UnalignedSize)
+            return Err(ProducerRingError::UnalignedSize);
         }
 
         // initialize the link block at the end of this segment
@@ -213,7 +218,7 @@ impl ProducerRingBuffer {
     /// * `addr` - The address to set `enqueue` to
     pub fn set_enqueue(&mut self, addr: u64) -> Result<(), ProducerRingError> {
         if addr % 16 != 0 {
-            return Err(ProducerRingError::UnalignedAddress)
+            return Err(ProducerRingError::UnalignedAddress);
         }
 
         self.enqueue = addr as *mut Trb;
@@ -227,7 +232,7 @@ impl ProducerRingBuffer {
     ///
     pub fn set_dequeue(&mut self, addr: u64) -> Result<(), ProducerRingError> {
         if addr % 16 != 0 {
-            return Err(ProducerRingError::UnalignedAddress)
+            return Err(ProducerRingError::UnalignedAddress);
         }
 
         self.dequeue = addr as *mut Trb;
@@ -331,6 +336,7 @@ impl ProducerRingBuffer {
         debug_println!("putting trb at address: {:X}", enqueue_addr);
         // copy the contents of block into enqueue
         // TODO: make sure this copies like I want it to
+        // Should probally be volitale so the compiler dosent bork anything
         *self.enqueue = block;
 
         // increment the enqueue pointer
@@ -555,13 +561,13 @@ impl ConsumerRingBuffer {
     }
 
     /// Returns the value of the dequeue pointer.
-    /// 
+    ///
     /// # Returns
     /// `self.dequeue` as a `u64`
     pub fn get_dequeue(&self) -> u64 {
         self.dequeue as u64
     }
-    
+
     /// Tries to dequeue a TRB.
     ///
     /// # Returns
@@ -573,9 +579,8 @@ impl ConsumerRingBuffer {
         // first get the block and see if we own it
         let block: Trb;
         unsafe {
-            block = *self.dequeue;
+            block = core::ptr::read_volatile(self.dequeue);
         }
-
         // first check if we need to look at cycle bit or completion code
         if self.erst_count > self.count_visited {
             let completion_code = (block.status >> 24) & 0xFF;
@@ -590,7 +595,6 @@ impl ConsumerRingBuffer {
 
         // move the dequeue pointer
         self.move_dequeue();
-
         Ok(block)
     }
 
@@ -645,7 +649,7 @@ impl ConsumerRingBuffer {
     /// This function preforms a raw pointer read to access the TRB that is being pointed to.
     pub unsafe fn is_empty(&self) -> bool {
         // first get the block
-        let block = *self.dequeue;
+        let block = core::ptr::read_volatile(self.dequeue);
         let parameters = block.parameters;
         let status = block.status;
         let control = block.control;

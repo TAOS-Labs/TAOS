@@ -15,8 +15,8 @@ use context::{InputControlContext, SlotContext};
 use ring_buffer::{ConsumerRingBuffer, ProducerRingBuffer, TransferRequestBlock, TrbTypes};
 use spin::Mutex;
 use x86_64::{
-    structures::paging::{OffsetPageTable, Page},
-    PhysAddr,
+    structures::paging::{mapper::TranslateResult, OffsetPageTable, Page, Translate},
+    PhysAddr, VirtAddr,
 };
 
 use super::{
@@ -333,7 +333,8 @@ fn initalize_xhciinfo(full_bar: u64, mapper: &mut OffsetPageTable) -> Result<XHC
         1,
         ring_buffer::RingType::Command,
         PAGE_SIZE.try_into().unwrap(),
-    ).expect("Error initializing producer ring.");
+    )
+    .expect("Error initializing producer ring.");
 
     // Allocate space for the primary event ring
     let erst_frame = alloc_frame().ok_or(XHCIError::MemoryAllocationFailure)?;
@@ -361,7 +362,8 @@ fn initalize_xhciinfo(full_bar: u64, mapper: &mut OffsetPageTable) -> Result<XHC
         ers_page.start_address(),
         er_segment_frame.start_address(),
         4096 / 16,
-    ).expect("Error initializing consumer ring.");
+    )
+    .expect("Error initializing consumer ring.");
 
     unsafe {
         let mut addr = erst_vaddr.as_u64() as *const u64;
@@ -442,7 +444,7 @@ fn boot_up_all_ports(info: &mut XHCIInfo, mapper: &mut OffsetPageTable) -> Resul
         // debug_println!("PortStatusAndCtrl = {device_connected:?}");
         if PortStatusAndControl::CurrentConnectStatus.intersects(device_connected) {
             debug_println!("PortStatusAndCtrl = {device_connected:?}");
-            boot_up_usb_port(info, device, device_connected)?;
+            boot_up_usb_port(info, device, device_connected, mapper)?;
             setup_input_context(info, device, mapper)?;
         } else {
             continue;
@@ -456,6 +458,7 @@ fn boot_up_usb_port(
     info: &mut XHCIInfo,
     device: u8,
     port_status: PortStatusAndControl,
+    mapper: &OffsetPageTable,
 ) -> Result<(), XHCIError> {
     let port_link_status = (port_status.bits() >> 5) & 0b1111;
     if PortStatusAndControl::PortEnabled.intersects(port_status) {
@@ -502,17 +505,22 @@ fn boot_up_usb_port(
 
     // Now wait for response
 
+    debug_println!("Before loop");
     let mut event_result = unsafe { info.primary_event_ring.dequeue() };
     while event_result.is_err() {
         event_result = unsafe { info.primary_event_ring.dequeue() };
         core::hint::spin_loop();
     }
+    debug_println!("After loop");
     let event = event_result.map_err(|_| XHCIError::Timeout)?;
     unsafe { info.primary_event_ring.is_empty() };
     debug_println!("Type = {}", event.get_trb_type());
     debug_println!("Is empty = {}", unsafe {
         info.primary_event_ring.is_empty()
     });
+    let erdp_addr =
+        info.base_address + info.capablities.runtime_register_space_offset as u64 + 0x38;
+    update_deque_ptr(erdp_addr as *mut u64, &info.primary_event_ring, mapper);
     debug_println!("Test");
     Result::Ok(())
 }
@@ -545,10 +553,38 @@ fn setup_input_context(
     Result::Ok(())
 }
 
+fn update_deque_ptr(
+    deque_pointer_register: *mut u64,
+    event_ring: &ConsumerRingBuffer,
+    mapper: &OffsetPageTable,
+) {
+    let deque = event_ring.get_dequeue();
+    // Now we need the physical addr of the deque ptr, so we grab mapper
+    // TODO: we might want to change to using mapper and translate the result
+    // This is a long lived struct, so we dont want to have mapper be part of this
+    // struct
+    let result = mapper.translate(VirtAddr::new(deque));
+    match result {
+        TranslateResult::Mapped {
+            frame,
+            offset,
+            flags: _,
+        } => {
+            let deque_physical = frame.start_address() + offset;
+            unsafe { core::ptr::write_volatile(deque_pointer_register, deque_physical.as_u64()) };
+        }
+        TranslateResult::InvalidFrameAddress(_) => {
+            panic!("deque pointer should always point to valid memory")
+        }
+        TranslateResult::NotMapped => {
+            panic!("deque pointer should always point to valid memory")
+        }
+    }
+}
+
 #[cfg(test)]
 mod test {
-    use x86_64::structures::paging::Mapper;
-    use x86_64::addr::VirtAddr;
+    use x86_64::{addr::VirtAddr, structures::paging::Mapper};
 
     use super::{
         ring_buffer::{ProducerRingBuffer, RingType, Trb, TrbTypes},
@@ -557,8 +593,9 @@ mod test {
     use crate::{
         devices::xhci::ring_buffer::{ConsumerRingBuffer, ProducerRingError, TransferRequestBlock},
         memory::{
+            frame_allocator::dealloc_frame,
             paging::{create_mapping, remove_mapped_frame},
-            MAPPER
+            MAPPER,
         },
     };
 
@@ -607,8 +644,8 @@ mod test {
         // call the new function
         let base_addr = page.start_address().as_u64();
         let size = page.size() as isize;
-        let mut cmd_ring = 
-            ProducerRingBuffer::new(base_addr, 1, RingType::Command, size).expect("Error initializing producer ring");
+        let mut cmd_ring = ProducerRingBuffer::new(base_addr, 1, RingType::Command, size)
+            .expect("Error initializing producer ring");
 
         // create a block to queue
         let mut cmd = Trb {
@@ -653,8 +690,8 @@ mod test {
         // create a small ring buffer
         let base_addr = page.start_address().as_u64();
         let size: isize = 64;
-        let mut cmd_ring = 
-            ProducerRingBuffer::new(base_addr, 1, RingType::Command, size).expect("Error initializing producer ring");
+        let mut cmd_ring = ProducerRingBuffer::new(base_addr, 1, RingType::Command, size)
+            .expect("Error initializing producer ring");
 
         // test is empty and is full funcs
         let mut result = cmd_ring.is_ring_empty();
@@ -711,8 +748,8 @@ mod test {
         // create a small ring buffer
         let base_addr = page.start_address().as_u64();
         let size: isize = 64;
-        let mut cmd_ring = 
-            ProducerRingBuffer::new(base_addr, 1, RingType::Command, size).expect("Error initializing producer ring");
+        let mut cmd_ring = ProducerRingBuffer::new(base_addr, 1, RingType::Command, size)
+            .expect("Error initializing producer ring");
 
         // create our no op cmd
         let mut cmd = Trb {
@@ -728,9 +765,11 @@ mod test {
         }
         // move the enqueue to the last block before the end and then the dequeue over one
         cmd_ring
-            .set_enqueue(base_addr + 32).expect("set_enqueue error");
+            .set_enqueue(base_addr + 32)
+            .expect("set_enqueue error");
         cmd_ring
-            .set_dequeue(base_addr + 16).expect("set_dequeue error");
+            .set_dequeue(base_addr + 16)
+            .expect("set_dequeue error");
 
         // now try to enqueue
         unsafe {
@@ -744,7 +783,8 @@ mod test {
 
         // now move dequeue so we can test that enqueue properly writes the cycle bit to 0
         cmd_ring
-            .set_dequeue(base_addr + 32).expect("set_dequeue error");
+            .set_dequeue(base_addr + 32)
+            .expect("set_dequeue error");
 
         unsafe {
             cmd_ring.enqueue(cmd).expect("enqueue error");
@@ -766,20 +806,23 @@ mod test {
     fn consumer_ring_buffer_init() {
         // first get pages for the ERST and first segment
         let mut mapper: spin::MutexGuard<'_, OffsetPageTable<'_>> = MAPPER.lock();
-        let erst_page: Page = Page::containing_address(VirtAddr::new(0x500000000));
-        let segment_page: Page = Page::containing_address(VirtAddr::new(0x600000000));
-        let _ = create_mapping(erst_page, &mut *mapper, None);
-        let _ = create_mapping(segment_page, &mut *mapper, None);
-        let segment_frame = mapper
-            .translate_page(segment_page)
-            .expect("error translating page");
+        let erst_frame = alloc_frame().unwrap();
+        let erst_page: Page =
+            Page::containing_address(mapper.phys_offset() + erst_frame.start_address().as_u64());
+        let segment_frame = alloc_frame().unwrap();
+        let segment_page: Page =
+            Page::containing_address(mapper.phys_offset() + segment_frame.start_address().as_u64());
+
+        let fake_device_frame = alloc_frame().unwrap();
+        let fake_device_page: Page = Page::containing_address(
+            mapper.phys_offset() + fake_device_frame.start_address().as_u64(),
+        );
         let segment_frame_addr = segment_frame.start_address();
 
         let erst_entry_size = 16 as isize;
 
         mmio::zero_out_page(erst_page);
         mmio::zero_out_page(segment_page);
-
         // call the initialization function
         let erst_address = erst_page.start_address().as_u64();
         let segment_address = segment_page.start_address().as_u64();
@@ -790,7 +833,8 @@ mod test {
             segment_page.start_address(),
             segment_frame_addr,
             (page_size / size_of::<TransferRequestBlock>() as isize) as u32,
-        ).expect("Error initializing consumer ring");
+        )
+        .expect("Error initializing consumer ring");
 
         // verify that the ERST was properly initialized
 
@@ -851,8 +895,8 @@ mod test {
                 trb = *trb_ptr;
             }
         }
-
-        remove_mapped_frame(erst_page, &mut *mapper);
-        remove_mapped_frame(segment_page, &mut *mapper);
+        dealloc_frame(erst_frame);
+        dealloc_frame(segment_frame);
+        dealloc_frame(fake_device_frame);
     }
 }
