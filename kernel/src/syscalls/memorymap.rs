@@ -12,7 +12,7 @@ use crate::{
     constants::memory::PAGE_SIZE,
     events::{current_running_event_info, EventInfo},
     memory::{
-        mm::{AnonVmArea, VmArea, VmAreaFlags},
+        mm::{AnonVmArea, Mm, VmArea, VmAreaFlags},
         HHDM_OFFSET,
     },
     processes::process::PROCESS_TABLE,
@@ -182,7 +182,7 @@ pub fn sys_mmap(addr: u64, len: u64, prot: u64, flags: u64, fd: i64, offset: u64
     // Insert the new VMA into the process's VMA tree.
     unsafe {
         (*pcb).mm.with_vma_tree_mutable(|tree| {
-            let _ = (*pcb).mm.insert_vma(
+            let _ = Mm::insert_vma(
                 tree,
                 begin_addr,
                 begin_addr + len,
@@ -265,7 +265,7 @@ pub fn sys_munmap(addr: u64, len: u64) -> u64 {
             let mut current_address = addr;
 
             while current_address < end_addr {
-                if let Some(vma) = (*pcb).mm.find_vma(addr, tree) {
+                if let Some(vma) = Mm::find_vma(addr, tree) {
                     let locked_vma = vma.lock();
                     let vma_start = locked_vma.start;
                     let vma_end = locked_vma.end;
@@ -276,9 +276,7 @@ pub fn sys_munmap(addr: u64, len: u64) -> u64 {
                     let new_start = max(vma_start, addr);
                     let new_end = min(vma_end, end_addr);
 
-                    (*pcb)
-                        .mm
-                        .shrink_vma(vma_start, new_start, new_end, &mut mapper, tree);
+                    Mm::shrink_vma(vma_start, new_start, new_end, &mut mapper, tree);
 
                     current_address = new_end;
                 } else {

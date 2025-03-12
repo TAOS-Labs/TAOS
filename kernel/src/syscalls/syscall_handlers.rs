@@ -19,10 +19,7 @@ use crate::{
     interrupts::x2apic,
     memory::frame_allocator::with_buddy_frame_allocator,
     processes::{
-        process::{
-             sleep_process_int, sleep_process_syscall, ProcessState,
-            PROCESS_TABLE,
-        },
+        process::{sleep_process_int, sleep_process_syscall, ProcessState, PROCESS_TABLE},
         registers::NonFlagRegisters,
     },
     serial_println,

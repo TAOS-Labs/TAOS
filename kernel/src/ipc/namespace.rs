@@ -40,7 +40,7 @@ impl Clone for Namespace {
     fn clone(&self) -> Self {
         Namespace {
             root: self.root.clone(),
-            next_fid: AtomicU32::new(self.next_fid.load(Ordering::Relaxed))
+            next_fid: AtomicU32::new(self.next_fid.load(Ordering::Relaxed)),
         }
     }
 }

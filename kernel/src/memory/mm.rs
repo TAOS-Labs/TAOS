@@ -1,3 +1,5 @@
+use core::fmt::Debug;
+
 use crate::{constants::memory::PAGE_SIZE, serial_println};
 use alloc::{collections::btree_map::BTreeMap, sync::Arc};
 use bitflags::bitflags;
@@ -47,21 +49,20 @@ impl Mm {
 
     /// Insert a new VmArea into the VMA tree.
     pub fn insert_vma(
-        &self,
         tree: &mut VmaTree,
         start: u64,
         end: u64,
-        backing: Arc<AnonVmArea>,
+        backing: Arc<dyn VmAreaBacking>,
         flags: VmAreaFlags,
         anon: bool,
     ) -> Arc<Mutex<VmArea>> {
         let left_vma = if start > 0 {
-            Mm::find_vma(&self, start - 1, tree)
+            Mm::find_vma(start - 1, tree)
         } else {
             None
         };
 
-        let right_vma = Mm::find_vma(&self, end, tree);
+        let right_vma = Mm::find_vma(end, tree);
         let coalesce_left = if start > 0 {
             left_vma
                 .as_ref()
@@ -138,24 +139,19 @@ impl Mm {
     }
 
     /// Remove the VmArea starting at the given address.
-    pub fn remove_vma(
-        &self,
-        start: u64,
-        tree: &mut VmaTree,
-    ) -> Option<(usize, Arc<Mutex<VmArea>>)> {
+    pub fn remove_vma(start: u64, tree: &mut VmaTree) -> Option<(usize, Arc<Mutex<VmArea>>)> {
         tree.remove_entry(&(start as usize))
     }
 
     /// Everything is page aligned
     pub fn shrink_vma(
-        &self,
         old_start: u64,
         new_start: u64,
         new_end: u64,
         mapper: &mut impl Mapper<Size4KiB>,
         tree: &mut VmaTree,
     ) -> Option<Arc<Mutex<VmArea>>> {
-        let vma = self.remove_vma(old_start, tree).unwrap().1;
+        let vma = Mm::remove_vma(old_start, tree).unwrap().1;
         {
             let vma = vma.lock();
 
@@ -169,16 +165,16 @@ impl Mm {
                 remove_mapping(page, mapper);
             }
 
-            // update AnonVma mappings 
-            let mut mappings = vma.backing.mappings.lock();
-            let mut updated_anon_vma: BTreeMap<u64, Arc<AnonVmaChain>> = BTreeMap::new();
+            // update AnonVma mappings
+            let mut mappings = vma.backing.mappings().lock();
+            let mut updated_anon_vma: BTreeMap<u64, Arc<VmaChain>> = BTreeMap::new();
 
             let remove_diff = new_start - old_start;
             let bound = new_end - old_start;
 
             // go through all offsets; if offset is mapping,
             for (&offset, chain) in mappings.iter_mut() {
-                // don't start until we get to a mapping that we 
+                // don't start until we get to a mapping that we
                 // actually care about
                 if offset < remove_diff {
                     continue;
@@ -190,7 +186,7 @@ impl Mm {
                 }
 
                 let new_offset = offset - remove_diff;
-                let updated_chain = Arc::new(AnonVmaChain {
+                let updated_chain = Arc::new(VmaChain {
                     offset: new_offset,
                     frame: chain.frame.clone(),
                 });
@@ -213,11 +209,11 @@ impl Mm {
         }
 
         tree.insert(new_start as usize, vma.clone());
-        return self.find_vma(new_start, tree);
+        return Mm::find_vma(new_start, tree);
     }
 
     /// Find a VmArea that contains the given virtual address.
-    pub fn find_vma(&self, addr: u64, tree: &VmaTree) -> Option<Arc<Mutex<VmArea>>> {
+    pub fn find_vma(addr: u64, tree: &VmaTree) -> Option<Arc<Mutex<VmArea>>> {
         // Look for the area with the largest start address <= addr.
         let candidate = tree.range(..=addr as usize).next_back();
         if let Some((_, vma)) = candidate {
@@ -229,7 +225,7 @@ impl Mm {
     }
 
     /// Debug fn to print vma
-    pub fn print_vma(&self, tree: &VmaTree) {
+    pub fn print_vma(tree: &VmaTree) {
         for (i, vma) in tree.iter().enumerate() {
             serial_println!("VMA {}: {:#?}", i, vma.1.lock());
         }
@@ -286,7 +282,7 @@ pub fn vma_to_page_flags(vma_flags: VmAreaFlags) -> PageTableFlags {
 pub struct VmArea {
     pub start: u64,
     pub end: u64,
-    pub backing: Arc<AnonVmArea>,
+    pub backing: Arc<dyn VmAreaBacking>,
     pub flags: VmAreaFlags,
     pub anon: bool,
 }
@@ -295,7 +291,7 @@ impl VmArea {
     pub fn new(
         start: u64,
         end: u64,
-        backing: Arc<AnonVmArea>,
+        backing: Arc<dyn VmAreaBacking>,
         flags: VmAreaFlags,
         anon: bool,
     ) -> Self {
@@ -309,9 +305,45 @@ impl VmArea {
     }
 }
 
+// A single trait for all VM Area backing stores.
+pub trait VmAreaBacking: Send + Sync + Debug {
+    /// Returns a reference to the reverse mappings.
+    fn mappings(&self) -> &Mutex<BTreeMap<u64, Arc<VmaChain>>>;
+
+    /// Insert a new reverse mapping entry.
+    fn insert_mapping(&self, chain: Arc<VmaChain>) {
+        let mut map = self.mappings().lock();
+        map.insert(chain.offset, chain);
+    }
+
+    /// Remove and return the reverse mapping entry for the given VMA and offset.
+    fn remove_mapping(&self, offset: u64) -> Option<Arc<VmaChain>> {
+        let mut map = self.mappings().lock();
+        map.remove(&offset)
+    }
+
+    /// Find a reverse mapping entry for the given VMA and offset.
+    fn find_mapping(&self, offset: u64) -> Option<Arc<VmaChain>> {
+        let map = self.mappings().lock();
+        map.get(&offset).cloned()
+    }
+
+    // /// Load a page from the backing store.
+    // /// Default implementation returns an error, meaning that this is not supported.
+    // fn load_page(&self, _page_offset: u64) -> Result<PhysFrame<Size4KiB>, ()> {
+    //     Err(())
+    // }
+    //
+    // /// Write a page to the backing store.
+    // /// Default implementation returns an error.
+    // fn write_page(&self, _page_offset: u64, _frame: &PhysFrame<Size4KiB>) -> Result<(), ()> {
+    //     Err(())
+    // }
+}
+
 /// Reverse mapping chain entry that links a VMA and its offset to a physical page.
 #[derive(Debug)]
-pub struct AnonVmaChain {
+pub struct VmaChain {
     /// The VMA that maps this page
     // pub vma: Arc<VmArea>,
     /// The page-aligned offset within the VMA
@@ -324,7 +356,7 @@ pub struct AnonVmaChain {
 #[derive(Debug)]
 pub struct AnonVmArea {
     /// Reverse mappings keyed by (VMA pointer, offset).
-    pub mappings: Mutex<BTreeMap<u64, Arc<AnonVmaChain>>>,
+    pub mappings: Mutex<BTreeMap<u64, Arc<VmaChain>>>,
 }
 
 impl AnonVmArea {
@@ -348,26 +380,27 @@ impl AnonVmArea {
     }
 
     /// Insert a new reverse mapping entry.
-    pub fn insert_mapping(&self, chain: Arc<AnonVmaChain>) {
-        // let key = AnonMappingKey {
-        //     // Use the address of the VmArea (as usize) as the unique identifier.
-        //     vma_ptr: Arc::as_ptr(&chain.vma) as usize,
-        //     offset: chain.offset,
-        // };
+    pub fn insert_mapping(&self, chain: Arc<VmaChain>) {
         let mut map = self.mappings.lock();
         map.insert(chain.offset, chain);
     }
 
     /// Remove and return the reverse mapping entry for the given VMA and offset.
-    pub fn remove_mapping(&self, offset: u64) -> Option<Arc<AnonVmaChain>> {
+    pub fn remove_mapping(&self, offset: u64) -> Option<Arc<VmaChain>> {
         let mut map = self.mappings.lock();
         map.remove(&offset)
     }
 
     /// Find a reverse mapping entry for the given VMA and offset.
-    pub fn find_mapping(&self, offset: u64) -> Option<Arc<AnonVmaChain>> {
+    pub fn find_mapping(&self, offset: u64) -> Option<Arc<VmaChain>> {
         let map = self.mappings.lock();
         map.get(&offset).cloned()
+    }
+}
+
+impl VmAreaBacking for AnonVmArea {
+    fn mappings(&self) -> &Mutex<BTreeMap<u64, Arc<VmaChain>>> {
+        &self.mappings
     }
 }
 
@@ -399,8 +432,9 @@ mod tests {
         let anon_area = Arc::new(AnonVmArea::new());
 
         mm.with_vma_tree_mutable(|tree| {
-            let _vma1 = mm.insert_vma(tree, 0, 500, anon_area.clone(), VmAreaFlags::WRITABLE, true);
-            let _vma2 = mm.insert_vma(
+            let _vma1 =
+                Mm::insert_vma(tree, 0, 500, anon_area.clone(), VmAreaFlags::WRITABLE, true);
+            let _vma2 = Mm::insert_vma(
                 tree,
                 600,
                 1000,
@@ -409,11 +443,11 @@ mod tests {
                 true,
             );
             // Test finding a VMA that covers a given address.
-            let found1 = mm.find_vma(250, tree);
+            let found1 = Mm::find_vma(250, tree);
             assert!(found1.is_some(), "Should find a VMA covering address 250");
             assert_eq!(found1.unwrap().lock().start, 0);
 
-            let found2 = mm.find_vma(750, tree);
+            let found2 = Mm::find_vma(750, tree);
             assert!(found2.is_some(), "Should find a VMA covering address 750");
             assert_eq!(found2.unwrap().lock().start, 600);
         });
@@ -434,15 +468,15 @@ mod tests {
 
         mm.with_vma_tree_mutable(|tree| {
             // Create a VmArea instance.
-            let _vma = mm.insert_vma(tree, 0, 500, anon_area.clone(), VmAreaFlags::WRITABLE, true);
+            let _vma = Mm::insert_vma(tree, 0, 500, anon_area.clone(), VmAreaFlags::WRITABLE, true);
 
-            let found = mm.find_vma(250, tree);
+            let found = Mm::find_vma(250, tree);
             assert_eq!(found.unwrap().lock().start, 0);
 
             // Remove the VMA starting at address 0.
-            let removed = mm.remove_vma(0, tree).unwrap();
+            let removed = Mm::remove_vma(0, tree).unwrap();
             let removed_start = removed.1.lock().start;
-            let found_after = mm.find_vma(removed_start, tree);
+            let found_after = Mm::find_vma(removed_start, tree);
             assert!(found_after.is_none());
         });
     }
@@ -459,12 +493,12 @@ mod tests {
     async fn test_mm_anon_vm_backing() {
         let pml4_frame = PhysFrame::containing_address(PhysAddr::new(0x1000));
         let mm = Mm::new(pml4_frame);
-        let anon_area = Arc::new(AnonVmArea::new());
+        let anon_area: Arc<dyn VmAreaBacking> = Arc::new(AnonVmArea::new());
 
         let frame1 = alloc_frame().expect("Could not allocate PhysFrame");
 
         let vm_area = mm.with_vma_tree_mutable(|tree| {
-            mm.insert_vma(
+            Mm::insert_vma(
                 tree,
                 0,
                 0x1000,
@@ -480,16 +514,14 @@ mod tests {
         let faulting_address1_round = (faulting_address1 - vm_start) & !(PAGE_SIZE as u64 - 1);
 
         // Map the vm_area and offset to the frame.
-        let chain1 = Arc::new(AnonVmaChain {
+        let chain1 = Arc::new(VmaChain {
             offset: faulting_address1_round,
             frame: frame1.into(),
         });
         anon_area.insert_mapping(chain1);
 
         mm.with_vma_tree(|tree| {
-            let found1 = mm
-                .find_vma(faulting_address1, tree)
-                .expect("Should find vma");
+            let found1 = Mm::find_vma(faulting_address1, tree).expect("Should find vma");
             // Compare backing using pointer equality.
             assert!(Arc::ptr_eq(&found1.lock().backing, &anon_area));
 
@@ -509,13 +541,13 @@ mod tests {
     async fn test_mm_anon_vm_backing2() {
         let pml4_frame = PhysFrame::containing_address(PhysAddr::new(0x1000));
         let mm = Mm::new(pml4_frame);
-        let anon_area = Arc::new(AnonVmArea::new());
+        let anon_area: Arc<dyn VmAreaBacking> = Arc::new(AnonVmArea::new());
 
         let frame1 = alloc_frame().expect("Could not allocate PhysFrame");
         let frame2 = alloc_frame().expect("Could not allocate PhysFrame");
 
         mm.with_vma_tree_mutable(|tree| {
-            let vm_area = mm.insert_vma(
+            let vm_area = Mm::insert_vma(
                 tree,
                 0,
                 0x2000,
@@ -531,11 +563,11 @@ mod tests {
             let faulting_address1_round = (faulting_address1 - vm_start) & !(PAGE_SIZE as u64 - 1);
             let faulting_address2_round = (faulting_address2 - vm_start) & !(PAGE_SIZE as u64 - 1);
 
-            let chain1 = Arc::new(AnonVmaChain {
+            let chain1 = Arc::new(VmaChain {
                 offset: faulting_address1_round,
                 frame: frame1.into(),
             });
-            let chain2 = Arc::new(AnonVmaChain {
+            let chain2 = Arc::new(VmaChain {
                 offset: faulting_address2_round,
                 frame: frame2.into(),
             });
@@ -543,9 +575,7 @@ mod tests {
             anon_area.insert_mapping(chain1);
             anon_area.insert_mapping(chain2);
 
-            let found = mm
-                .find_vma(faulting_address1, tree)
-                .expect("Should find vma");
+            let found = Mm::find_vma(faulting_address1, tree).expect("Should find vma");
             assert!(Arc::ptr_eq(&found.lock().backing, &anon_area));
 
             let found1_anon = anon_area
@@ -577,7 +607,7 @@ mod tests {
         let anon_area = Arc::new(AnonVmArea::new());
 
         let vm_area1 = mm1.with_vma_tree_mutable(|tree| {
-            mm1.insert_vma(
+            Mm::insert_vma(
                 tree,
                 0,
                 0x1000,
@@ -587,7 +617,7 @@ mod tests {
             )
         });
         let vm_area2 = mm2.with_vma_tree_mutable(|tree| {
-            mm2.insert_vma(
+            Mm::insert_vma(
                 tree,
                 0x1000,
                 0x2000,
@@ -607,20 +637,16 @@ mod tests {
 
         // Note: Both faulting offsets should be the same.
         let frame = alloc_frame().expect("Could not get frame");
-        let chain = Arc::new(AnonVmaChain {
+        let chain = Arc::new(VmaChain {
             offset: faulting_address1_round,
             frame: frame.into(),
         });
         anon_area.insert_mapping(chain);
 
-        let found1 = mm1.with_vma_tree(|tree| {
-            mm1.find_vma(faulting_address1, tree)
-                .expect("Should find vma")
-        });
-        let found2 = mm2.with_vma_tree(|tree| {
-            mm2.find_vma(faulting_address2, tree)
-                .expect("Should find vma")
-        });
+        let found1 = mm1
+            .with_vma_tree(|tree| Mm::find_vma(faulting_address1, tree).expect("Should find vma"));
+        let found2 = mm2
+            .with_vma_tree(|tree| Mm::find_vma(faulting_address2, tree).expect("Should find vma"));
         assert!(Arc::ptr_eq(&found1.lock().backing, &found2.lock().backing));
 
         let found1_anon = anon_area
@@ -648,7 +674,7 @@ mod tests {
         let anon_area = Arc::new(AnonVmArea::new());
 
         mm.with_vma_tree_mutable(|tree| {
-            let _vma1 = mm.insert_vma(
+            let _vma1 = Mm::insert_vma(
                 tree,
                 0,
                 0x1000,
@@ -656,9 +682,9 @@ mod tests {
                 VmAreaFlags::WRITABLE,
                 true,
             );
-            let got_vma1 = mm.find_vma(0x500, tree).expect("Should find vma");
+            let got_vma1 = Mm::find_vma(0x500, tree).expect("Should find vma");
 
-            let _vma2 = mm.insert_vma(
+            let _vma2 = Mm::insert_vma(
                 tree,
                 0x1000,
                 0x2000,
@@ -667,8 +693,7 @@ mod tests {
                 true,
             );
             let v1_start = got_vma1.lock().start;
-            let v2_start = mm
-                .find_vma(0x1500, tree)
+            let v2_start = Mm::find_vma(0x1500, tree)
                 .expect("Should find vma")
                 .lock()
                 .start;
@@ -688,7 +713,7 @@ mod tests {
         let anon_area = Arc::new(AnonVmArea::new());
 
         mm.with_vma_tree_mutable(|tree| {
-            let _vma1 = mm.insert_vma(
+            let _vma1 = Mm::insert_vma(
                 tree,
                 0x1000,
                 0x2000,
@@ -696,7 +721,7 @@ mod tests {
                 VmAreaFlags::WRITABLE,
                 true,
             );
-            let _vma2 = mm.insert_vma(
+            let _vma2 = Mm::insert_vma(
                 tree,
                 0,
                 0x1000,
@@ -705,7 +730,7 @@ mod tests {
                 true,
             );
         });
-        let found = mm.with_vma_tree(|tree| mm.find_vma(0x1500, tree).expect("Should find vma"));
+        let found = mm.with_vma_tree(|tree| Mm::find_vma(0x1500, tree).expect("Should find vma"));
         assert_eq!(0, found.lock().start);
     }
 
@@ -726,7 +751,7 @@ mod tests {
         let anon_area = Arc::new(AnonVmArea::new());
 
         let (got_vma1, got_vma2, got_vma3) = mm.with_vma_tree_mutable(|tree| {
-            let _vma1 = mm.insert_vma(
+            let _vma1 = Mm::insert_vma(
                 tree,
                 0,
                 0x1000,
@@ -734,9 +759,9 @@ mod tests {
                 VmAreaFlags::WRITABLE,
                 true,
             );
-            let got_vma1 = mm.find_vma(0x500, tree).expect("Should find vma");
+            let got_vma1 = Mm::find_vma(0x500, tree).expect("Should find vma");
 
-            let _vma2 = mm.insert_vma(
+            let _vma2 = Mm::insert_vma(
                 tree,
                 0x2000,
                 0x3000,
@@ -744,7 +769,7 @@ mod tests {
                 VmAreaFlags::WRITABLE,
                 true,
             );
-            let _vma3 = mm.insert_vma(
+            let _vma3 = Mm::insert_vma(
                 tree,
                 0x1000,
                 0x2000,
@@ -752,8 +777,8 @@ mod tests {
                 VmAreaFlags::WRITABLE,
                 true,
             );
-            let got_vma2 = mm.find_vma(0x1500, tree).expect("Should find vma");
-            let got_vma3 = mm.find_vma(0x2500, tree).expect("Should find vma");
+            let got_vma2 = Mm::find_vma(0x1500, tree).expect("Should find vma");
+            let got_vma3 = Mm::find_vma(0x2500, tree).expect("Should find vma");
 
             (got_vma1, got_vma2, got_vma3)
         });
@@ -785,7 +810,7 @@ mod tests {
 
         // Insert VMA and populate its reverse mappings.
         mm.with_vma_tree_mutable(|tree| {
-            let vma = mm.insert_vma(
+            let vma = Mm::insert_vma(
                 tree,
                 old_start,
                 old_end,
@@ -795,7 +820,7 @@ mod tests {
             );
             {
                 let locked_vma = vma.lock();
-                let mut mappings = locked_vma.backing.mappings.lock();
+                let mut mappings = locked_vma.backing.mappings().lock();
                 // For each page in the VMA, create a mapping and record its offset.
                 for i in 0..3 {
                     let offset = i as u64 * PAGE_SIZE as u64;
@@ -809,7 +834,7 @@ mod tests {
                     );
                     mappings.insert(
                         offset,
-                        Arc::new(AnonVmaChain {
+                        Arc::new(VmaChain {
                             offset,
                             frame: Arc::new(frame),
                         }),
@@ -822,7 +847,7 @@ mod tests {
         let new_end = old_end;
         let shrunk = mm.with_vma_tree_mutable(|tree| {
             let mut mapper = KERNEL_MAPPER.lock();
-            mm.shrink_vma(old_start, new_start, new_end, &mut *mapper, tree)
+            Mm::shrink_vma(old_start, new_start, new_end, &mut *mapper, tree)
         });
         assert!(shrunk.is_some());
         let vma = shrunk.unwrap();
@@ -830,7 +855,7 @@ mod tests {
         assert_eq!(locked.start, new_start);
         assert_eq!(locked.end, new_end);
         // The reverse mappings should now cover two pages.
-        let mappings = locked.backing.mappings.lock();
+        let mappings = locked.backing.mappings().lock();
         assert_eq!(mappings.len(), 2);
         // The surviving offsets should have been shifted so that the leftmost surviving page is offset 0.
         assert!(mappings.contains_key(&0));
@@ -856,7 +881,7 @@ mod tests {
         let old_end = old_start + 3 * PAGE_SIZE as u64;
 
         mm.with_vma_tree_mutable(|tree| {
-            let vma = mm.insert_vma(
+            let vma = Mm::insert_vma(
                 tree,
                 old_start,
                 old_end,
@@ -866,7 +891,7 @@ mod tests {
             );
             {
                 let locked_vma = vma.lock();
-                let mut mappings = locked_vma.backing.mappings.lock();
+                let mut mappings = locked_vma.backing.mappings().lock();
                 for i in 0..3 {
                     let offset = i as u64 * PAGE_SIZE as u64;
                     let va = old_start + offset;
@@ -879,7 +904,7 @@ mod tests {
                     );
                     mappings.insert(
                         offset,
-                        Arc::new(AnonVmaChain {
+                        Arc::new(VmaChain {
                             offset,
                             frame: Arc::new(frame),
                         }),
@@ -893,14 +918,14 @@ mod tests {
         let new_end = old_end - PAGE_SIZE as u64;
         let shrunk = mm.with_vma_tree_mutable(|tree| {
             let mut mapper = KERNEL_MAPPER.lock();
-            mm.shrink_vma(old_start, new_start, new_end, &mut *mapper, tree)
+            Mm::shrink_vma(old_start, new_start, new_end, &mut *mapper, tree)
         });
         assert!(shrunk.is_some());
         let vma = shrunk.unwrap();
         let locked = vma.lock();
         assert_eq!(locked.start, new_start);
         assert_eq!(locked.end, new_end);
-        let mappings = locked.backing.mappings.lock();
+        let mappings = locked.backing.mappings().lock();
         // two mappings should remain unshifted as we only shrunk the right side
         assert_eq!(mappings.len(), 2);
         assert!(mappings.contains_key(&0));
@@ -925,7 +950,7 @@ mod tests {
         let old_end = old_start + 4 * PAGE_SIZE as u64;
 
         mm.with_vma_tree_mutable(|tree| {
-            let vma = mm.insert_vma(
+            let vma = Mm::insert_vma(
                 tree,
                 old_start,
                 old_end,
@@ -935,7 +960,7 @@ mod tests {
             );
             {
                 let locked_vma = vma.lock();
-                let mut mappings = locked_vma.backing.mappings.lock();
+                let mut mappings = locked_vma.backing.mappings().lock();
                 for i in 0..4 {
                     let offset = i as u64 * PAGE_SIZE as u64;
                     let va = old_start + offset;
@@ -948,7 +973,7 @@ mod tests {
                     );
                     mappings.insert(
                         offset,
-                        Arc::new(AnonVmaChain {
+                        Arc::new(VmaChain {
                             offset,
                             frame: Arc::new(frame),
                         }),
@@ -962,7 +987,7 @@ mod tests {
         let new_end = old_end - PAGE_SIZE as u64;
         let shrunk = mm.with_vma_tree_mutable(|tree| {
             let mut mapper = KERNEL_MAPPER.lock();
-            mm.shrink_vma(old_start, new_start, new_end, &mut *mapper, tree)
+            Mm::shrink_vma(old_start, new_start, new_end, &mut *mapper, tree)
         });
         assert!(shrunk.is_some());
 
@@ -973,7 +998,7 @@ mod tests {
 
         // check if backings were updated correctly, there should still
         // be two left from after the shrink (4 allocated initially)
-        let mappings = locked.backing.mappings.lock();
+        let mappings = locked.backing.mappings().lock();
         assert_eq!(mappings.len(), 2);
         assert!(mappings.contains_key(&0));
         assert!(mappings.contains_key(&(PAGE_SIZE as u64)));
@@ -999,7 +1024,7 @@ mod tests {
         let old_end = old_start + 2 * PAGE_SIZE as u64;
 
         mm.with_vma_tree_mutable(|tree| {
-            let vma = mm.insert_vma(
+            let vma = Mm::insert_vma(
                 tree,
                 old_start,
                 old_end,
@@ -1009,7 +1034,7 @@ mod tests {
             );
             {
                 let locked_vma = vma.lock();
-                let mut mappings = locked_vma.backing.mappings.lock();
+                let mut mappings = locked_vma.backing.mappings().lock();
                 for i in 0..2 {
                     let offset = i as u64 * PAGE_SIZE as u64;
                     let va = old_start + offset;
@@ -1022,7 +1047,7 @@ mod tests {
                     );
                     mappings.insert(
                         offset,
-                        Arc::new(AnonVmaChain {
+                        Arc::new(VmaChain {
                             offset,
                             frame: Arc::new(frame),
                         }),
@@ -1035,7 +1060,7 @@ mod tests {
         let new_boundary = old_start + PAGE_SIZE as u64; // Remove one page (the entire VMA in this case)
         let shrunk = mm.with_vma_tree_mutable(|tree| {
             let mut mapper = KERNEL_MAPPER.lock();
-            mm.shrink_vma(old_start, new_boundary, new_boundary, &mut *mapper, tree)
+            Mm::shrink_vma(old_start, new_boundary, new_boundary, &mut *mapper, tree)
         });
         // When the entire VMA is shrunk away, shrink_vma returns None.
         assert!(shrunk.is_none());

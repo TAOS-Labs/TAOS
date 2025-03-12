@@ -337,7 +337,7 @@ mod tests {
         constants::memory::PAGE_SIZE,
         events::schedule_kernel_on,
         memory::{
-            mm::{AnonVmArea, VmAreaFlags},
+            mm::{AnonVmArea, Mm, VmAreaFlags},
             KERNEL_MAPPER,
         },
         processes::process::{get_current_pid, PROCESS_TABLE},
@@ -557,7 +557,7 @@ mod tests {
 
         unsafe {
             (*process.pcb.get()).mm.with_vma_tree_mutable(|tree| {
-                let _vma1 = (*process.pcb.get()).mm.insert_vma(
+                let _vma1 = Mm::insert_vma(
                     tree,
                     page.start_address().as_u64(),
                     page.start_address().as_u64() + PAGE_SIZE as u64,
@@ -637,7 +637,7 @@ mod tests {
 
         unsafe {
             (*process.pcb.get()).mm.with_vma_tree_mutable(|tree| {
-                let _vma1 = (*process.pcb.get()).mm.insert_vma(
+                let _vma1 = Mm::insert_vma(
                     tree,
                     page.start_address().as_u64(),
                     page.start_address().as_u64() + PAGE_SIZE as u64,

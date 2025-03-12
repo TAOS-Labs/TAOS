@@ -166,7 +166,7 @@ pub fn create_placeholder_process() -> u32 {
         fd_table: [0; MAX_FILES],
         next_preemption_time: 0,
         mm,
-        namespace: Namespace::new()
+        namespace: Namespace::new(),
     }));
     PROCESS_TABLE.write().insert(pid, Arc::clone(&process));
     pid

@@ -16,7 +16,7 @@ use crate::{
     constants::memory::PAGE_SIZE,
     memory::{
         frame_allocator::alloc_frame,
-        mm::{vma_to_page_flags, VmAreaFlags},
+        mm::{vma_to_page_flags, Mm, VmAreaFlags},
         paging::{create_mapping, create_mapping_to_frame, get_page_flags, update_mapping},
         HHDM_OFFSET,
     },
@@ -24,20 +24,20 @@ use crate::{
     serial_println,
 };
 
-use super::mm::{AnonVmArea, AnonVmaChain};
+use super::mm::{VmAreaBacking, VmaChain};
 
 /// Fault outcome enum to route what to do in IDT
 pub enum FaultOutcome {
     ExistingMapping {
         page: Page<Size4KiB>,
         mapper: OffsetPageTable<'static>,
-        chain: Arc<AnonVmaChain>,
+        chain: Arc<VmaChain>,
         pt_flags: PageTableFlags,
     },
     NewMapping {
         page: Page<Size4KiB>,
         mapper: OffsetPageTable<'static>,
-        backing: Arc<AnonVmArea>,
+        backing: Arc<dyn VmAreaBacking>,
         pt_flags: PageTableFlags,
     },
     CopyOnWrite {
@@ -98,10 +98,7 @@ pub fn determine_fault_cause(error_code: PageFaultErrorCode) -> FaultOutcome {
     unsafe {
         (*process.pcb.get()).mm.with_vma_tree(|tree| {
             // Find the VMA covering the faulting address.
-            let vma_arc = (*process.pcb.get())
-                .mm
-                .find_vma(faulting_address, tree)
-                .expect("Vma not found?");
+            let vma_arc = Mm::find_vma(faulting_address, tree).expect("Vma not found?");
             let vma = vma_arc.lock();
 
             // Clone the backing so we can use it later.
@@ -153,12 +150,12 @@ pub fn determine_fault_cause(error_code: PageFaultErrorCode) -> FaultOutcome {
 /// # Arguments
 /// * `page` - the page corresponding to the faulting address
 /// * `mapper` - page faulting process's page table
-/// * `chain` - AnonVmaChain that corresponds to this faulting address (offset within VMA)
+/// * `chain` - VmaChain that corresponds to this faulting address (offset within VMA)
 /// * `pt_flags` - page table flags to update to, based on VMA flags
 pub fn handle_existing_mapping(
     page: Page<Size4KiB>,
     mapper: &mut OffsetPageTable,
-    chain: Arc<AnonVmaChain>,
+    chain: Arc<VmaChain>,
     pt_flags: PageTableFlags,
 ) {
     serial_println!("Page not mapped; using existing anon chain mapping.");
@@ -170,23 +167,23 @@ pub fn handle_existing_mapping(
 /// # Arguments
 /// * `page` - the page corresponding to the faulting address
 /// * `mapper` - page faulting process's page table
-/// * `backing` - AnonVmaChain that corresponds to this faulting address (offset within VMA)
+/// * `backing` - VmaChain that corresponds to this faulting address (offset within VMA)
 /// * `pt_flags` - page table flags to update to, based on VMA flags
 pub fn handle_new_mapping(
     page: Page<Size4KiB>,
     mapper: &mut OffsetPageTable,
-    backing: &Arc<AnonVmArea>,
+    backing: &Arc<dyn VmAreaBacking>,
     pt_flags: PageTableFlags,
 ) {
     serial_println!("Page not mapped; creating a new mapping.");
     let new_frame = create_mapping(page, mapper, Some(pt_flags));
-    backing.insert_mapping(Arc::new(AnonVmaChain {
+    backing.insert_mapping(Arc::new(VmaChain {
         offset: page.start_address().as_u64(),
         frame: Arc::new(new_frame),
     }));
 }
 
-/// Handles a copy-on-write fault. Saves current data in a buffer 
+/// Handles a copy-on-write fault. Saves current data in a buffer
 /// and then copies it over after a new frame is allocated
 ///
 /// # Arguments

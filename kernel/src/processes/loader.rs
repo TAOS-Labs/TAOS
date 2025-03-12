@@ -7,7 +7,7 @@ use crate::{
         frame_allocator::with_generic_allocator,
         mm::{AnonVmArea, Mm, VmAreaFlags},
         paging::{create_mapping, update_permissions},
-    }, serial_println,
+    },
 };
 use alloc::sync::Arc;
 use core::ptr::{copy_nonoverlapping, write_bytes};
@@ -65,7 +65,7 @@ pub fn load_elf(
         // then do a kernel alias to copy data in
         for page in Page::range_inclusive(start_page, end_page) {
             mm.with_vma_tree_mutable(|tree| {
-                mm.insert_vma(
+                Mm::insert_vma(
                     tree,
                     page.start_address().as_u64(),
                     page.start_address().as_u64() + PAGE_SIZE as u64,
@@ -139,7 +139,7 @@ pub fn load_elf(
     let anon_vma = Arc::new(AnonVmArea::new());
 
     mm.with_vma_tree_mutable(|tree| {
-        mm.insert_vma(
+        Mm::insert_vma(
             tree,
             STACK_START,
             STACK_START + STACK_SIZE as u64,

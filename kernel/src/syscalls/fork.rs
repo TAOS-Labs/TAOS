@@ -7,6 +7,7 @@ use crate::{
     events::{current_running_event_info, schedule_process_on},
     memory::{
         frame_allocator::{alloc_frame, with_buddy_frame_allocator},
+        mm::Mm,
         HHDM_OFFSET,
     },
     processes::{
@@ -78,9 +79,7 @@ pub fn sys_fork(reg_vals: &NonFlagRegisters) -> u64 {
                     .mm
                     .with_vma_tree_mutable(|child_tree| {
                         serial_println!("Inserting range {:X} - {:X}", start, end);
-                        (*child_pcb.pcb.get())
-                            .mm
-                            .insert_vma(child_tree, start, end, backing, flags, anon);
+                        Mm::insert_vma(child_tree, start, end, backing, flags, anon);
                     });
             }
         })
