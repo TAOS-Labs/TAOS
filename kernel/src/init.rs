@@ -12,10 +12,10 @@ use limine::{
 
 use crate::{
     debug, devices,
-    events::{nanosleep_current_event, register_event_runner, run_loop, spawn, yield_now},
+    events::{register_event_runner, run_loop, spawn, yield_now},
     interrupts::{self, idt},
     ipc::{
-        channel::RecvError, messages::Message, mnt_manager, namespace::Namespace, responses::Rattach, spsc::{self, Receiver, Sender}
+        messages::Message, mnt_manager, namespace::Namespace, responses::Rattach, spsc::{self, Receiver, Sender}
     },
     logging,
     memory::{self},
@@ -146,6 +146,7 @@ pub async fn run_server(server_rx: Receiver<Bytes>, server_tx: Sender<Bytes>) {
                     };
 
                     if let Ok(resp_bytes) = response.serialize() {
+                        serial_println!("Responding: {:?}", resp_bytes);
                         let _ = server_tx.send(resp_bytes).await;
                     }
                 }

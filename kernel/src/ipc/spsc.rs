@@ -224,7 +224,9 @@ impl<T> Future for SendFuture<'_, T> {
         let value = this.value.take().expect("polled after completion");
 
         match this.sender.try_send(value) {
-            Ok(()) => Poll::Ready(Ok(())),
+            Ok(()) => {
+                Poll::Ready(Ok(()))
+            },
             Err(SendError::Full(value)) => {
                 this.value = Some(value);
                 unsafe {

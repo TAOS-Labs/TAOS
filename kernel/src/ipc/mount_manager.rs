@@ -76,11 +76,15 @@ impl Mount {
         self.pending
             .lock()
             .insert(tag, PendingRequest { response_tx });
+        
+        serial_println!("Data: {:?}", data);
 
         self.tx
             .send(data.serialize().unwrap())
             .await
             .map_err(|_| Error::ChannelFull)?;
+
+        serial_println!("Tx send");
 
         response_rx.await.map_err(|_| Error::NoResponse)
     }
