@@ -581,6 +581,11 @@ impl ConsumerRingBuffer {
     /// # Safety
     /// This function preforms a raw pointer access to read the TRB at `dequeue`.
     pub unsafe fn dequeue(&mut self) -> Result<Trb, EventRingError> {
+        // first check if we are in the quantum dequeue pointer state
+        if self.ers_size == 0 && !self.move_segment() {
+            return Err(EventRingError::RingEmptyError);
+        }
+    
         // first get the block and see if we own it
         let block: Trb;
         unsafe {
@@ -604,6 +609,34 @@ impl ConsumerRingBuffer {
         Ok(block)
     }
 
+    /// Attempts to move the dequeue pointer to the next segment 
+    unsafe fn move_segment(&mut self) -> bool {
+        // we need to check the next segment and see if there is something there
+        let mut entry = self.erst.get_entry(self.erst_count);
+        let mut first_block = *(entry.parameters as *mut Trb);
+        let completion_code = (first_block.status >> 24) & 0xFF;
+        if completion_code == 0 {
+            // xHC has not written here so check to see if the beginning of the ring has something
+            entry = self.erst.get_entry(0);
+            first_block = *(entry.parameters as *mut Trb);
+            if first_block.get_cycle() != (self.ccs as u32) {
+                // cycle bit does not match current cycle state so the xHC has written to it
+                self.ccs ^= 1;
+                self.erst_count = 0;
+                self.ers_size = entry.status & 0xFFFF;
+                self.dequeue = entry.parameters as *mut Trb;
+            } else {
+                // The xHC has not written to the new segment or the beginning of the ring so it is empty
+                return false;
+            }
+        } else {
+            // the xHC has written to the new segment
+            self.ers_size = entry.status & 0xFFFF;
+            self.dequeue = entry.parameters as *mut Trb;
+        }
+        return true;
+    }
+
     /// Moves `dequeue` to the next TRB to be dequeued skipping unvisited segments and looping and whatnot.
     unsafe fn move_dequeue(&mut self) {
         if self.ers_size == 1 {
@@ -618,27 +651,18 @@ impl ConsumerRingBuffer {
                 // toggle ccs and set count to 0
                 self.ccs ^= 1;
                 self.erst_count = 0;
-            }
-
-            // get the block at index count
-            let mut entry = self.erst.get_entry(self.erst_count);
-            // this may be a new segment that we have not seen
-            if self.erst_count > self.count_visited {
-                // we have not been in this segment yet, check if the xHC has written in it
-                let first_block = *(entry.parameters as *mut Trb);
-                // get the completion code to check for 0
-                let completion_code = (first_block.status >> 24) & 0xFF;
-                if completion_code == 0 {
-                    // the xHC has not written in this segment yet so skip it
-                    self.ccs ^= 1;
-                    self.erst_count = 0;
-                    entry = self.erst.get_entry(self.erst_count);
+                // get the entry
+                let entry = self.erst.get_entry(self.erst_count);
+                // set dequeue and size
+                self.dequeue = entry.parameters as *mut Trb;
+                self.ers_size = entry.status & 0xFFFF;
+            } else {
+                // need to go to a new segment
+                if !self.move_segment() {
+                    // quantum dequeue ptr state so set size to 0
+                    self.ers_size -= 1;
                 }
             }
-
-            // set dequeue and size
-            self.dequeue = entry.parameters as *mut Trb;
-            self.ers_size = entry.status & 0xFFFF;
         } else {
             // there are still blocks in this segment so just move things
             self.ers_size -= 1;
@@ -693,20 +717,21 @@ impl ConsumerRingBuffer {
 
 #[cfg(test)]
 mod test {
-    use x86_64::{addr::VirtAddr, structures::paging::Mapper};
+    use x86_64::{addr::VirtAddr, structures::paging::Mapper, structures::paging::Page, structures::paging::OffsetPageTable};
     use alloc::format;
 
     use super::{
-        ring_buffer::{ProducerRingBuffer, RingType, Trb, TrbTypes},
         *,
     };
     use crate::{
         devices::xhci::ring_buffer::{CommandRingTypes, ConsumerRingBuffer, EventRingError, EventRingType, ProducerRingError, TransferRequestBlock},
         memory::{
             frame_allocator::dealloc_frame,
+            frame_allocator::alloc_frame,
             paging::{create_mapping, remove_mapped_frame},
             MAPPER,
         },
+        devices::mmio,
     };
 
     #[test_case]
@@ -1315,6 +1340,7 @@ mod test {
         unsafe {
             trb_ptr = second_segment_vaddr as *mut Trb;
             *trb_ptr = cmd;
+            trb_ptr = trb_ptr.offset(1);
 
             assert_eq!(event_ring.dequeue().expect("dequeue error"), cmd);
             assert_eq!(event_ring.dequeue().unwrap_err(), EventRingError::RingEmptyError);
@@ -1341,6 +1367,7 @@ mod test {
         trb_ptr = first_segment_vaddr as *mut Trb;
         unsafe {
             *trb_ptr = cmd;
+            trb_ptr = trb_ptr.offset(1);
 
             assert_eq!(event_ring.dequeue().expect("dequeue error"), cmd);
             assert_eq!(event_ring.dequeue().unwrap_err(), EventRingError::RingEmptyError);
@@ -1480,6 +1507,7 @@ mod test {
         trb_ptr = first_segment_vaddr as *mut Trb;
         unsafe {
             *trb_ptr = cmd;
+            trb_ptr = trb_ptr.offset(1);
 
             assert_eq!(event_ring.dequeue().expect("dequeue error"), cmd);
             assert_eq!(event_ring.dequeue().unwrap_err(), EventRingError::RingEmptyError);
