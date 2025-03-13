@@ -2,6 +2,7 @@
 //!
 //! Handles the initialization of kernel subsystems and CPU cores.
 
+use alloc::vec;
 use bytes::Bytes;
 use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use limine::{
@@ -18,7 +19,7 @@ use crate::{
         messages::Message,
         mnt_manager,
         namespace::Namespace,
-        responses::Rattach,
+        responses::{Rattach, Rwalk},
         spsc::{self, Receiver, Sender},
     },
     logging,
@@ -143,8 +144,13 @@ pub async fn run_server(server_rx: Receiver<Bytes>, server_tx: Sender<Bytes>) {
                     serial_println!("Server got message: {:?}", msg);
                     let response = match msg {
                         Message::Tattach(..) => {
+                            // TODO proper qid
                             Message::Rattach(Rattach::new(tag, Bytes::from_iter([0; 13])).unwrap())
                         },
+                        Message::Twalk(..) => {
+                            // TODO proper wqid
+                            Message::Rwalk(Rwalk::new(tag, vec![Bytes::from_iter([0; 13])]).unwrap())
+                        }
                         //TODO
                         _ => continue,
                     };

@@ -1,3 +1,5 @@
+use crate::serial_println;
+
 use super::{
     error::Error,
     messages::Message,
@@ -99,9 +101,13 @@ impl Namespace {
                 let v = vec![Bytes::copy_from_slice(component.as_bytes())];
                 let msg = Message::Twalk(Twalk::new(0, current_fid, new_fid, v).unwrap());
 
+                serial_println!("Send Twalk");
+
                 let response = mnt_manager
                     .send_request(MountId(mount_id as u32), new_fid, msg)
                     .await?;
+
+                serial_println!("Recv Rwalk");
 
                 match response {
                     Message::Rwalk(_) => {
