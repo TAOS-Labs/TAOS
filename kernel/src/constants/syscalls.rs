@@ -10,4 +10,4 @@ pub const SYSCALL_UNMOUNT_P9: u32 = 1001;
 pub const SYSCALL_BIND_P9: u32 = 1002;
 
 // currently occupying sys_close (will thus need to replace soon)
-pub const SYSCALL_PRINT: u32 = 3; 
+pub const SYSCALL_PRINT: u32 = 3;

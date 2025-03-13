@@ -1,4 +1,3 @@
-
 use super::{error::ProtocolError, requests, responses};
 use bytes::{Buf, Bytes};
 use core::convert::TryFrom;
@@ -7,10 +6,11 @@ pub const VERSION: &[u8] = b"9P2000";
 pub const MAX_MESSAGE_SIZE: u32 = 8192;
 
 #[derive(Debug, Clone, PartialEq)]
+#[repr(C)]
 pub struct MessageHeader {
     pub size: u32,
-    pub message_type: MessageType,
     pub tag: u16,
+    pub message_type: MessageType,
 }
 
 impl MessageHeader {
@@ -22,11 +22,11 @@ impl MessageHeader {
         // Parse size (4 bytes, little-endian)
         let size = bytes.get_u32_le();
 
-        // Parse message type (1 byte)
-        let message_type = MessageType::try_from(bytes.get_u8())?;
-
         // Parse tag (2 bytes, little-endian)
         let tag = bytes.get_u16_le();
+
+        // Parse message type (1 byte)
+        let message_type = MessageType::try_from(bytes.get_u8())?;
 
         Ok((
             MessageHeader {
@@ -184,46 +184,100 @@ pub enum Message {
 impl Message {
     pub fn from_bytes(header: MessageHeader, data: Bytes) -> Result<Self, ProtocolError> {
         match header.message_type {
-            MessageType::Tversion => Ok(Message::Tversion(requests::Tversion::deserialize(data)?)),
-            MessageType::Rversion => Ok(Message::Rversion(responses::Rversion::deserialize(data)?)),
+            MessageType::Tversion => Ok(Message::Tversion(
+                requests::Tversion::deserialize_content(header, data)?,
+            )),
+            MessageType::Rversion => Ok(Message::Rversion(
+                responses::Rversion::deserialize_content(header, data)?,
+            )),
 
-            MessageType::Tauth => Ok(Message::Tauth(requests::Tauth::deserialize(data)?)),
-            MessageType::Rauth => Ok(Message::Rauth(responses::Rauth::deserialize(data)?)),
+            MessageType::Tauth => Ok(Message::Tauth(requests::Tauth::deserialize_content(
+                header, data,
+            )?)),
+            MessageType::Rauth => Ok(Message::Rauth(responses::Rauth::deserialize_content(
+                header, data,
+            )?)),
 
-            MessageType::Tattach => Ok(Message::Tattach(requests::Tattach::deserialize(data)?)),
-            MessageType::Rattach => Ok(Message::Rattach(responses::Rattach::deserialize(data)?)),
+            MessageType::Tattach => Ok(Message::Tattach(requests::Tattach::deserialize_content(
+                header, data,
+            )?)),
+            MessageType::Rattach => Ok(Message::Rattach(responses::Rattach::deserialize_content(
+                header, data,
+            )?)),
 
-            MessageType::Rerror => Ok(Message::Rerror(responses::Rerror::deserialize(data)?)),
+            MessageType::Rerror => Ok(Message::Rerror(responses::Rerror::deserialize_content(
+                header, data,
+            )?)),
 
-            MessageType::Twalk => Ok(Message::Twalk(requests::Twalk::deserialize(data)?)),
-            MessageType::Rwalk => Ok(Message::Rwalk(responses::Rwalk::deserialize(data)?)),
+            MessageType::Twalk => Ok(Message::Twalk(requests::Twalk::deserialize_content(
+                header, data,
+            )?)),
+            MessageType::Rwalk => Ok(Message::Rwalk(responses::Rwalk::deserialize_content(
+                header, data,
+            )?)),
 
-            MessageType::Topen => Ok(Message::Topen(requests::Topen::deserialize(data)?)),
-            MessageType::Ropen => Ok(Message::Ropen(responses::Ropen::deserialize(data)?)),
+            MessageType::Topen => Ok(Message::Topen(requests::Topen::deserialize_content(
+                header, data,
+            )?)),
+            MessageType::Ropen => Ok(Message::Ropen(responses::Ropen::deserialize_content(
+                header, data,
+            )?)),
 
-            MessageType::Tcreate => Ok(Message::Tcreate(requests::Tcreate::deserialize(data)?)),
-            MessageType::Rcreate => Ok(Message::Rcreate(responses::Rcreate::deserialize(data)?)),
+            MessageType::Tcreate => Ok(Message::Tcreate(requests::Tcreate::deserialize_content(
+                header, data,
+            )?)),
+            MessageType::Rcreate => Ok(Message::Rcreate(responses::Rcreate::deserialize_content(
+                header, data,
+            )?)),
 
-            MessageType::Tread => Ok(Message::Tread(requests::Tread::deserialize(data)?)),
-            MessageType::Rread => Ok(Message::Rread(responses::Rread::deserialize(data)?)),
+            MessageType::Tread => Ok(Message::Tread(requests::Tread::deserialize_content(
+                header, data,
+            )?)),
+            MessageType::Rread => Ok(Message::Rread(responses::Rread::deserialize_content(
+                header, data,
+            )?)),
 
-            MessageType::Twrite => Ok(Message::Twrite(requests::Twrite::deserialize(data)?)),
-            MessageType::Rwrite => Ok(Message::Rwrite(responses::Rwrite::deserialize(data)?)),
+            MessageType::Twrite => Ok(Message::Twrite(requests::Twrite::deserialize_content(
+                header, data,
+            )?)),
+            MessageType::Rwrite => Ok(Message::Rwrite(responses::Rwrite::deserialize_content(
+                header, data,
+            )?)),
 
-            MessageType::Tclunk => Ok(Message::Tclunk(requests::Tclunk::deserialize(data)?)),
-            MessageType::Rclunk => Ok(Message::Rclunk(responses::Rclunk::deserialize(data)?)),
+            MessageType::Tclunk => Ok(Message::Tclunk(requests::Tclunk::deserialize_content(
+                header, data,
+            )?)),
+            MessageType::Rclunk => Ok(Message::Rclunk(responses::Rclunk::deserialize_content(
+                header,
+            )?)),
 
-            MessageType::Tremove => Ok(Message::Tremove(requests::Tremove::deserialize(data)?)),
-            MessageType::Rremove => Ok(Message::Rremove(responses::Rremove::deserialize(data)?)),
+            MessageType::Tremove => Ok(Message::Tremove(requests::Tremove::deserialize_content(
+                header, data,
+            )?)),
+            MessageType::Rremove => Ok(Message::Rremove(responses::Rremove::deserialize_content(
+                header,
+            )?)),
 
-            MessageType::Tstat => Ok(Message::Tstat(requests::Tstat::deserialize(data)?)),
-            MessageType::Rstat => Ok(Message::Rstat(responses::Rstat::deserialize(data)?)),
+            MessageType::Tstat => Ok(Message::Tstat(requests::Tstat::deserialize_content(
+                header, data,
+            )?)),
+            MessageType::Rstat => Ok(Message::Rstat(responses::Rstat::deserialize_content(
+                header, data,
+            )?)),
 
-            MessageType::Twstat => Ok(Message::Twstat(requests::Twstat::deserialize(data)?)),
-            MessageType::Rwstat => Ok(Message::Rwstat(responses::Rwstat::deserialize(data)?)),
+            MessageType::Twstat => Ok(Message::Twstat(requests::Twstat::deserialize_content(
+                header, data,
+            )?)),
+            MessageType::Rwstat => Ok(Message::Rwstat(responses::Rwstat::deserialize_content(
+                header,
+            )?)),
 
-            MessageType::Tflush => Ok(Message::Tflush(requests::Tflush::deserialize(data)?)),
-            MessageType::Rflush => Ok(Message::Rflush(responses::Rflush::deserialize(data)?)),
+            MessageType::Tflush => Ok(Message::Tflush(requests::Tflush::deserialize_content(
+                header, data,
+            )?)),
+            MessageType::Rflush => Ok(Message::Rflush(responses::Rflush::deserialize_content(
+                header,
+            )?)),
 
             // Terror shouldn't be received
             MessageType::Terror => {
@@ -233,11 +287,7 @@ impl Message {
     }
 
     pub fn parse(bytes: Bytes) -> Result<(Self, u16), ProtocolError> {
-        // TODO had issues due to bytes being advanced in parse
-        //      Must refactor every deserialize or this function to remove such issues
-        //      ...TBD
-        //      for now just clone bytes and avoid the headache (expensive and bad for long msgs)
-        let (header, remaining) = MessageHeader::from_bytes(bytes.clone())?;
+        let (header, remaining) = MessageHeader::from_bytes(bytes)?;
         let tag = header.tag;
 
         if header.size as usize != remaining.len() + 7 {
@@ -249,8 +299,40 @@ impl Message {
             return Err(ProtocolError::MessageTooLarge);
         }
 
-        let message = Self::from_bytes(header, bytes)?;
+        let message = Self::from_bytes(header, remaining)?;
         Ok((message, tag))
+    }
+
+    pub fn set_tag(&mut self, tag: u16) {
+        match self {
+            Message::Tversion(m) => m.header.tag = tag,
+            Message::Rversion(m) => m.header.tag = tag,
+            Message::Tauth(m) => m.header.tag = tag,
+            Message::Rauth(m) => m.header.tag = tag,
+            Message::Tattach(m) => m.header.tag = tag,
+            Message::Rattach(m) => m.header.tag = tag,
+            Message::Rerror(m) => m.header.tag = tag,
+            Message::Twalk(m) => m.header.tag = tag,
+            Message::Rwalk(m) => m.header.tag = tag,
+            Message::Topen(m) => m.header.tag = tag,
+            Message::Ropen(m) => m.header.tag = tag,
+            Message::Tcreate(m) => m.header.tag = tag,
+            Message::Rcreate(m) => m.header.tag = tag,
+            Message::Tread(m) => m.header.tag = tag,
+            Message::Rread(m) => m.header.tag = tag,
+            Message::Twrite(m) => m.header.tag = tag,
+            Message::Rwrite(m) => m.header.tag = tag,
+            Message::Tclunk(m) => m.header.tag = tag,
+            Message::Rclunk(m) => m.header.tag = tag,
+            Message::Tremove(m) => m.header.tag = tag,
+            Message::Rremove(m) => m.header.tag = tag,
+            Message::Tstat(m) => m.header.tag = tag,
+            Message::Rstat(m) => m.header.tag = tag,
+            Message::Twstat(m) => m.header.tag = tag,
+            Message::Rwstat(m) => m.header.tag = tag,
+            Message::Tflush(m) => m.header.tag = tag,
+            Message::Rflush(m) => m.header.tag = tag,
+        }
     }
 
     pub fn serialize(&self) -> Result<Bytes, ProtocolError> {

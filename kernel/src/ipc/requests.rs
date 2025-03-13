@@ -1,4 +1,3 @@
-
 use super::{
     error::ProtocolError,
     messages::{MessageHeader, MessageType, MAX_MESSAGE_SIZE},
@@ -151,6 +150,29 @@ impl Tversion {
             version,
         })
     }
+
+    pub fn deserialize_content(
+        header: MessageHeader,
+        mut bytes: Bytes,
+    ) -> Result<Self, ProtocolError> {
+        let mut reader = MessageReader::new(&mut bytes);
+        if header.message_type != MessageType::Tversion {
+            return Err(ProtocolError::InvalidMessageType(header.message_type as u8));
+        }
+
+        let msize = reader.read_u32()?;
+        let version = reader.read_bytes()?;
+
+        if msize > MAX_MESSAGE_SIZE {
+            return Err(ProtocolError::ExceedsMaxSize);
+        }
+
+        Ok(Self {
+            header,
+            msize,
+            version,
+        })
+    }
 }
 
 impl Tauth {
@@ -198,6 +220,24 @@ impl Tauth {
             aname,
         })
     }
+    pub fn deserialize_content(
+        header: MessageHeader,
+        mut bytes: Bytes,
+    ) -> Result<Self, ProtocolError> {
+        let mut reader = MessageReader::new(&mut bytes);
+        if header.message_type != MessageType::Tauth {
+            return Err(ProtocolError::InvalidMessageType(header.message_type as u8));
+        }
+        let afid = reader.read_u32()?;
+        let uname = reader.read_bytes()?;
+        let aname = reader.read_bytes()?;
+        Ok(Self {
+            header,
+            afid,
+            uname,
+            aname,
+        })
+    }
 }
 
 impl Tflush {
@@ -220,6 +260,17 @@ impl Tflush {
     pub fn deserialize(mut bytes: Bytes) -> Result<Self, ProtocolError> {
         let mut reader = MessageReader::new(&mut bytes);
         let header = reader.read_header()?;
+        if header.message_type != MessageType::Tflush {
+            return Err(ProtocolError::InvalidMessageType(header.message_type as u8));
+        }
+        let oldtag = reader.read_u16()?;
+        Ok(Self { header, oldtag })
+    }
+    pub fn deserialize_content(
+        header: MessageHeader,
+        mut bytes: Bytes,
+    ) -> Result<Self, ProtocolError> {
+        let mut reader = MessageReader::new(&mut bytes);
         if header.message_type != MessageType::Tflush {
             return Err(ProtocolError::InvalidMessageType(header.message_type as u8));
         }
@@ -267,8 +318,31 @@ impl Tattach {
     }
 
     pub fn deserialize(mut bytes: Bytes) -> Result<Self, ProtocolError> {
-        let mut reader = MessageReader::new(&mut bytes);   
+        let mut reader = MessageReader::new(&mut bytes);
         let header = reader.read_header()?;
+        if header.message_type != MessageType::Tattach {
+            return Err(ProtocolError::InvalidMessageType(header.message_type as u8));
+        }
+
+        let fid = reader.read_u32()?;
+        let afid = reader.read_u32()?;
+        let uname = reader.read_bytes()?;
+        let aname = reader.read_bytes()?;
+
+        Ok(Self {
+            header,
+            fid,
+            afid,
+            uname,
+            aname,
+        })
+    }
+
+    pub fn deserialize_content(
+        header: MessageHeader,
+        mut bytes: Bytes,
+    ) -> Result<Self, ProtocolError> {
+        let mut reader = MessageReader::new(&mut bytes);
         if header.message_type != MessageType::Tattach {
             return Err(ProtocolError::InvalidMessageType(header.message_type as u8));
         }
@@ -336,6 +410,30 @@ impl Twalk {
             wnames,
         })
     }
+
+    pub fn deserialize_content(
+        header: MessageHeader,
+        mut bytes: Bytes,
+    ) -> Result<Self, ProtocolError> {
+        let mut reader = MessageReader::new(&mut bytes);
+        if header.message_type != MessageType::Twalk {
+            return Err(ProtocolError::InvalidMessageType(header.message_type as u8));
+        }
+        let fid = reader.read_u32()?;
+        let newfid = reader.read_u32()?;
+        let count = reader.read_u16()? as usize;
+        let mut wnames = Vec::with_capacity(count);
+        for _ in 0..count {
+            let name = reader.read_bytes()?;
+            wnames.push(name);
+        }
+        Ok(Self {
+            header,
+            fid,
+            newfid,
+            wnames,
+        })
+    }
 }
 
 impl Topen {
@@ -360,6 +458,18 @@ impl Topen {
     pub fn deserialize(mut bytes: Bytes) -> Result<Self, ProtocolError> {
         let mut reader = MessageReader::new(&mut bytes);
         let header = reader.read_header()?;
+        if header.message_type != MessageType::Topen {
+            return Err(ProtocolError::InvalidMessageType(header.message_type as u8));
+        }
+        let fid = reader.read_u32()?;
+        let mode = reader.read_u8()?;
+        Ok(Self { header, fid, mode })
+    }
+    pub fn deserialize_content(
+        header: MessageHeader,
+        mut bytes: Bytes,
+    ) -> Result<Self, ProtocolError> {
+        let mut reader = MessageReader::new(&mut bytes);
         if header.message_type != MessageType::Topen {
             return Err(ProtocolError::InvalidMessageType(header.message_type as u8));
         }
@@ -419,6 +529,26 @@ impl Tcreate {
             mode,
         })
     }
+    pub fn deserialize_content(
+        header: MessageHeader,
+        mut bytes: Bytes,
+    ) -> Result<Self, ProtocolError> {
+        let mut reader = MessageReader::new(&mut bytes);
+        if header.message_type != MessageType::Tcreate {
+            return Err(ProtocolError::InvalidMessageType(header.message_type as u8));
+        }
+        let fid = reader.read_u32()?;
+        let name = reader.read_bytes()?;
+        let perm = reader.read_u32()?;
+        let mode = reader.read_u8()?;
+        Ok(Self {
+            header,
+            fid,
+            name,
+            perm,
+            mode,
+        })
+    }
 }
 
 impl Tread {
@@ -445,6 +575,24 @@ impl Tread {
     pub fn deserialize(mut bytes: Bytes) -> Result<Self, ProtocolError> {
         let mut reader = MessageReader::new(&mut bytes);
         let header = reader.read_header()?;
+        if header.message_type != MessageType::Tread {
+            return Err(ProtocolError::InvalidMessageType(header.message_type as u8));
+        }
+        let fid = reader.read_u32()?;
+        let offset = reader.read_u64()?;
+        let count = reader.read_u32()?;
+        Ok(Self {
+            header,
+            fid,
+            offset,
+            count,
+        })
+    }
+    pub fn deserialize_content(
+        header: MessageHeader,
+        mut bytes: Bytes,
+    ) -> Result<Self, ProtocolError> {
+        let mut reader = MessageReader::new(&mut bytes);
         if header.message_type != MessageType::Tread {
             return Err(ProtocolError::InvalidMessageType(header.message_type as u8));
         }
@@ -509,6 +657,29 @@ impl Twrite {
             data,
         })
     }
+    pub fn deserialize_content(
+        header: MessageHeader,
+        mut bytes: Bytes,
+    ) -> Result<Self, ProtocolError> {
+        let mut reader = MessageReader::new(&mut bytes);
+        if header.message_type != MessageType::Twrite {
+            return Err(ProtocolError::InvalidMessageType(header.message_type as u8));
+        }
+        let fid = reader.read_u32()?;
+        let offset = reader.read_u64()?;
+        let count = reader.read_u32()?;
+        let data = reader.read_bytes()?;
+        if data.len() != count as usize {
+            return Err(ProtocolError::InvalidDataLength);
+        }
+        Ok(Self {
+            header,
+            fid,
+            offset,
+            count,
+            data,
+        })
+    }
 }
 
 impl Tclunk {
@@ -531,6 +702,17 @@ impl Tclunk {
     pub fn deserialize(mut bytes: Bytes) -> Result<Self, ProtocolError> {
         let mut reader = MessageReader::new(&mut bytes);
         let header = reader.read_header()?;
+        if header.message_type != MessageType::Tclunk {
+            return Err(ProtocolError::InvalidMessageType(header.message_type as u8));
+        }
+        let fid = reader.read_u32()?;
+        Ok(Self { header, fid })
+    }
+    pub fn deserialize_content(
+        header: MessageHeader,
+        mut bytes: Bytes,
+    ) -> Result<Self, ProtocolError> {
+        let mut reader = MessageReader::new(&mut bytes);
         if header.message_type != MessageType::Tclunk {
             return Err(ProtocolError::InvalidMessageType(header.message_type as u8));
         }
@@ -565,6 +747,17 @@ impl Tremove {
         let fid = reader.read_u32()?;
         Ok(Self { header, fid })
     }
+    pub fn deserialize_content(
+        header: MessageHeader,
+        mut bytes: Bytes,
+    ) -> Result<Self, ProtocolError> {
+        let mut reader = MessageReader::new(&mut bytes);
+        if header.message_type != MessageType::Tremove {
+            return Err(ProtocolError::InvalidMessageType(header.message_type as u8));
+        }
+        let fid = reader.read_u32()?;
+        Ok(Self { header, fid })
+    }
 }
 
 impl Tstat {
@@ -587,6 +780,17 @@ impl Tstat {
     pub fn deserialize(mut bytes: Bytes) -> Result<Self, ProtocolError> {
         let mut reader = MessageReader::new(&mut bytes);
         let header = reader.read_header()?;
+        if header.message_type != MessageType::Tstat {
+            return Err(ProtocolError::InvalidMessageType(header.message_type as u8));
+        }
+        let fid = reader.read_u32()?;
+        Ok(Self { header, fid })
+    }
+    pub fn deserialize_content(
+        header: MessageHeader,
+        mut bytes: Bytes,
+    ) -> Result<Self, ProtocolError> {
+        let mut reader = MessageReader::new(&mut bytes);
         if header.message_type != MessageType::Tstat {
             return Err(ProtocolError::InvalidMessageType(header.message_type as u8));
         }
@@ -617,6 +821,18 @@ impl Twstat {
     pub fn deserialize(mut bytes: Bytes) -> Result<Self, ProtocolError> {
         let mut reader = MessageReader::new(&mut bytes);
         let header = reader.read_header()?;
+        if header.message_type != MessageType::Twstat {
+            return Err(ProtocolError::InvalidMessageType(header.message_type as u8));
+        }
+        let fid = reader.read_u32()?;
+        let stat = reader.read_bytes()?;
+        Ok(Self { header, fid, stat })
+    }
+    pub fn deserialize_content(
+        header: MessageHeader,
+        mut bytes: Bytes,
+    ) -> Result<Self, ProtocolError> {
+        let mut reader = MessageReader::new(&mut bytes);
         if header.message_type != MessageType::Twstat {
             return Err(ProtocolError::InvalidMessageType(header.message_type as u8));
         }

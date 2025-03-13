@@ -23,8 +23,8 @@ impl MessageWriter {
 
     pub fn put_header(&mut self, msg_type: MessageType, tag: u16) -> Result<(), ProtocolError> {
         self.buf.put_u32_le(0);
-        self.buf.put_u8(msg_type as u8);
         self.buf.put_u16_le(tag);
+        self.buf.put_u8(msg_type as u8);
         Ok(())
     }
 
@@ -86,8 +86,8 @@ impl<'a> MessageReader<'a> {
             return Err(ProtocolError::ExceedsMaxSize);
         }
 
-        let message_type = MessageType::try_from(self.buf.get_u8())?;
         let tag = self.buf.get_u16_le();
+        let message_type = MessageType::try_from(self.buf.get_u8())?;
 
         Ok(MessageHeader {
             size,

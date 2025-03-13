@@ -15,7 +15,11 @@ use crate::{
     events::{register_event_runner, run_loop, spawn, yield_now},
     interrupts::{self, idt},
     ipc::{
-        messages::Message, mnt_manager, namespace::Namespace, responses::Rattach, spsc::{self, Receiver, Sender}
+        messages::Message,
+        mnt_manager,
+        namespace::Namespace,
+        responses::Rattach,
+        spsc::{self, Receiver, Sender},
     },
     logging,
     memory::{self},
@@ -146,17 +150,14 @@ pub async fn run_server(server_rx: Receiver<Bytes>, server_tx: Sender<Bytes>) {
                     };
 
                     if let Ok(resp_bytes) = response.serialize() {
-                        serial_println!("Responding: {:?}", resp_bytes);
                         let _ = server_tx.send(resp_bytes).await;
                     }
                 }
                 Err(e) => serial_println!("(Server) Failed to parse message: {}", e),
             },
-            Err(e) => {
-                match e {
-                    spsc::RecvError::Empty => {}
-                    spsc::RecvError::Disconnected => serial_println!("Got error")
-                }
+            Err(e) => match e {
+                spsc::RecvError::Empty => {}
+                spsc::RecvError::Disconnected => serial_println!("Got error"),
             },
         }
         yield_now().await;

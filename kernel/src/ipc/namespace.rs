@@ -1,5 +1,3 @@
-use crate::serial_println;
-
 use super::{
     error::Error,
     messages::Message,
@@ -100,8 +98,6 @@ impl Namespace {
                 let new_fid = self.next_fid.fetch_add(1, Ordering::Relaxed);
                 let v = vec![Bytes::copy_from_slice(component.as_bytes())];
                 let msg = Message::Twalk(Twalk::new(0, current_fid, new_fid, v).unwrap());
-
-                serial_println!("Now walk this component: {:?}", msg);
 
                 let response = mnt_manager
                     .send_request(MountId(mount_id as u32), new_fid, msg)
