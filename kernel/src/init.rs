@@ -143,9 +143,9 @@ pub async fn run_server(server_rx: Receiver<Bytes>, server_tx: Sender<Bytes>) {
                     serial_println!("Server got message: {:?}", msg);
                     let response = match msg {
                         Message::Tattach(..) => {
-                            // TODO how best to initialize qid? (what is qid?)
                             Message::Rattach(Rattach::new(tag, Bytes::from_iter([0; 13])).unwrap())
-                        }
+                        },
+                        //TODO
                         _ => continue,
                     };
 
