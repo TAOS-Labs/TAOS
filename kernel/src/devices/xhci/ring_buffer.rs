@@ -87,7 +87,7 @@ pub enum EventRingType {
 }
 
 #[repr(C, packed)]
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy)]
 /// A generic struct for Transfer Request Blocks (TRBs).
 /// Precise setting and getting of specific fields for a given TRB shall be done
 /// by the xHCI driver. See section 6.4 of the xHCI specs for more details.
@@ -130,8 +130,14 @@ impl TransferRequestBlock {
         self.control = (self.control & !0x2) | (value << 1);
     }
 
-    pub fn eq(&self, other: &TransferRequestBlock) -> bool {
-        return (self.parameters == other.parameters) & (self.status == other.status) & (self.control == other.control);
+}
+
+impl PartialEq for TransferRequestBlock {
+
+    fn eq(&self, other: &TransferRequestBlock) -> bool {
+        (self.parameters == other.parameters)
+            & (self.status == other.status)
+            & (self.control == other.control)
     }
 }
 
@@ -447,7 +453,6 @@ pub enum EventRingError {
     ERSTFull,
 }
 
-
 #[derive(Debug, Clone)]
 /// Implements a consumer ring buffer for use with the event rings associated with the xHCI.
 pub struct ConsumerRingBuffer {
@@ -585,7 +590,7 @@ impl ConsumerRingBuffer {
         if self.ers_size == 0 && !self.move_segment() {
             return Err(EventRingError::RingEmptyError);
         }
-    
+
         // first get the block and see if we own it
         let block: Trb;
         unsafe {
@@ -609,7 +614,7 @@ impl ConsumerRingBuffer {
         Ok(block)
     }
 
-    /// Attempts to move the dequeue pointer to the next segment 
+    /// Attempts to move the dequeue pointer to the next segment
     unsafe fn move_segment(&mut self) -> bool {
         // we need to check the next segment and see if there is something there
         let mut entry = self.erst.get_entry(self.erst_count);
@@ -634,7 +639,7 @@ impl ConsumerRingBuffer {
             self.ers_size = entry.status & 0xFFFF;
             self.dequeue = entry.parameters as *mut Trb;
         }
-        return true;
+        true
     }
 
     /// Moves `dequeue` to the next TRB to be dequeued skipping unvisited segments and looping and whatnot.
@@ -717,21 +722,26 @@ impl ConsumerRingBuffer {
 
 #[cfg(test)]
 mod test {
-    use x86_64::{addr::VirtAddr, structures::paging::Mapper, structures::paging::Page, structures::paging::OffsetPageTable};
     use alloc::format;
-
-    use super::{
-        *,
+    use x86_64::{
+        addr::VirtAddr,
+        structures::paging::{Mapper, OffsetPageTable, Page},
     };
+
+    use super::*;
     use crate::{
-        devices::xhci::ring_buffer::{CommandRingTypes, ConsumerRingBuffer, EventRingError, EventRingType, ProducerRingError, TransferRequestBlock},
+        devices::{
+            mmio,
+            xhci::ring_buffer::{
+                CommandRingTypes, ConsumerRingBuffer, EventRingError, EventRingType,
+                ProducerRingError, TransferRequestBlock,
+            },
+        },
         memory::{
-            frame_allocator::dealloc_frame,
-            frame_allocator::alloc_frame,
+            frame_allocator::{alloc_frame, dealloc_frame},
             paging::{create_mapping, remove_mapped_frame},
             MAPPER,
         },
-        devices::mmio,
     };
 
     #[test_case]
@@ -1074,11 +1084,15 @@ mod test {
             segment_page.start_address(),
             segment_paddr,
             SEGMENT_ENTRIES,
-        ).expect("Error initializing consumer ring");
+        )
+        .expect("Error initializing consumer ring");
 
         // test a read on an empty RingBuffer
         unsafe {
-            assert_eq!(event_ring.dequeue().unwrap_err(), EventRingError::RingEmptyError);
+            assert_eq!(
+                event_ring.dequeue().unwrap_err(),
+                EventRingError::RingEmptyError
+            );
         }
 
         // write a dummy TRB to the current head of the data segment
@@ -1099,7 +1113,10 @@ mod test {
 
         // make sure that the ring thinks it is empty again
         unsafe {
-            assert_eq!(event_ring.dequeue().unwrap_err(), EventRingError::RingEmptyError);
+            assert_eq!(
+                event_ring.dequeue().unwrap_err(),
+                EventRingError::RingEmptyError
+            );
         }
 
         // add a couple of TRBs and then read them
@@ -1117,19 +1134,22 @@ mod test {
 
         // fill in the rest of the TRB: Entries 4-16
         unsafe {
-            for i in 4..SEGMENT_ENTRIES+1 {
+            for i in 4..SEGMENT_ENTRIES + 1 {
                 trb_ptr = trb_ptr.offset(1);
                 *trb_ptr = cmd;
             }
 
-            for i in 4..SEGMENT_ENTRIES+1 {
+            for i in 4..SEGMENT_ENTRIES + 1 {
                 assert_eq!(event_ring.dequeue().expect("dequeue error"), cmd);
             }
         }
 
         // make sure that the ring thinks it is empty again
         unsafe {
-            assert_eq!(event_ring.dequeue().unwrap_err(), EventRingError::RingEmptyError);
+            assert_eq!(
+                event_ring.dequeue().unwrap_err(),
+                EventRingError::RingEmptyError
+            );
         }
 
         // make sure we properly wrap around
@@ -1143,7 +1163,10 @@ mod test {
 
         // make sure that the ring thinks it is empty again
         unsafe {
-            assert_eq!(event_ring.dequeue().unwrap_err(), EventRingError::RingEmptyError);
+            assert_eq!(
+                event_ring.dequeue().unwrap_err(),
+                EventRingError::RingEmptyError
+            );
         }
 
         remove_mapped_frame(erst_page, &mut *mapper);
@@ -1192,9 +1215,16 @@ mod test {
             first_segment_page.start_address(),
             first_segment_paddr,
             SEGMENT_ENTRIES,
-        ).expect("Error initializing consumer ring");
+        )
+        .expect("Error initializing consumer ring");
 
-        event_ring.add_segment(second_segment_page.start_address(), SEGMENT_ENTRIES, second_segment_paddr).expect("Error adding new segment to ring");
+        event_ring
+            .add_segment(
+                second_segment_page.start_address(),
+                SEGMENT_ENTRIES,
+                second_segment_paddr,
+            )
+            .expect("Error adding new segment to ring");
 
         // check the state of the ERST
 
@@ -1210,10 +1240,7 @@ mod test {
         let mut control = trb.control;
 
         assert_eq!(parameters, first_segment_paddr.as_u64() & !0x3F);
-        assert_eq!(
-            status,
-            SEGMENT_ENTRIES as u32 & 0xFFFF
-        );
+        assert_eq!(status, SEGMENT_ENTRIES as u32 & 0xFFFF);
         assert_eq!(control, 0);
 
         unsafe {
@@ -1226,10 +1253,7 @@ mod test {
         control = trb.control;
 
         assert_eq!(parameters, second_segment_paddr.as_u64() & !0x3F);
-        assert_eq!(
-            status,
-            SEGMENT_ENTRIES as u32 & 0xFFFF
-        );
+        assert_eq!(status, SEGMENT_ENTRIES as u32 & 0xFFFF);
         assert_eq!(control, 0);
 
         // check that the rest of the TRB's worth of the ERST is still zeroed
@@ -1252,7 +1276,7 @@ mod test {
         remove_mapped_frame(first_segment_page, &mut *mapper);
         remove_mapped_frame(second_segment_page, &mut *mapper);
     }
-    
+
     #[test_case]
     fn consumer_ring_buffer_multi_segment_dequeue() {
         // some constants
@@ -1295,13 +1319,21 @@ mod test {
             first_segment_page.start_address(),
             first_segment_paddr,
             SEGMENT_ENTRIES,
-        ).expect("Error initializing consumer ring");
+        )
+        .expect("Error initializing consumer ring");
 
-        event_ring.add_segment(second_segment_page.start_address(), SEGMENT_ENTRIES, second_segment_paddr);
+        event_ring.add_segment(
+            second_segment_page.start_address(),
+            SEGMENT_ENTRIES,
+            second_segment_paddr,
+        );
 
         // test a read on an empty RingBuffer
         unsafe {
-            assert_eq!(event_ring.dequeue().unwrap_err(), EventRingError::RingEmptyError);
+            assert_eq!(
+                event_ring.dequeue().unwrap_err(),
+                EventRingError::RingEmptyError
+            );
         }
 
         // make sure that we actually check the second segment
@@ -1317,7 +1349,7 @@ mod test {
         let mut trb_ptr = first_segment_vaddr as *mut Trb;
 
         // fill the first segment fully
-        for i in 1..SEGMENT_ENTRIES+1 {
+        for i in 1..SEGMENT_ENTRIES + 1 {
             unsafe {
                 *trb_ptr = cmd;
                 trb_ptr = trb_ptr.offset(1);
@@ -1325,15 +1357,23 @@ mod test {
         }
 
         // read the entire first segment
-        for i in 1..SEGMENT_ENTRIES+1 {
+        for i in 1..SEGMENT_ENTRIES + 1 {
             unsafe {
-                assert_eq!(event_ring.dequeue().expect(&format!("dequeue error for TRB {i}")), cmd);
+                assert_eq!(
+                    event_ring
+                        .dequeue()
+                        .expect(&format!("dequeue error for TRB {i}")),
+                    cmd
+                );
             }
         }
 
         // ensure the ring is empty
         unsafe {
-            assert_eq!(event_ring.dequeue().unwrap_err(), EventRingError::RingEmptyError);
+            assert_eq!(
+                event_ring.dequeue().unwrap_err(),
+                EventRingError::RingEmptyError
+            );
         }
 
         // try to read from the second segment and sanity check that we still realize we're empty
@@ -1343,23 +1383,34 @@ mod test {
             trb_ptr = trb_ptr.offset(1);
 
             assert_eq!(event_ring.dequeue().expect("dequeue error"), cmd);
-            assert_eq!(event_ring.dequeue().unwrap_err(), EventRingError::RingEmptyError);
+            assert_eq!(
+                event_ring.dequeue().unwrap_err(),
+                EventRingError::RingEmptyError
+            );
         }
 
         // fill the rest of the second segment and then dequeue it, then ensure we read as empty
-        for i in 2..SEGMENT_ENTRIES+1 {
+        for i in 2..SEGMENT_ENTRIES + 1 {
             unsafe {
                 *trb_ptr = cmd;
                 trb_ptr = trb_ptr.offset(1);
             }
         }
-        for i in 2..SEGMENT_ENTRIES+1 {
+        for i in 2..SEGMENT_ENTRIES + 1 {
             unsafe {
-                assert_eq!(event_ring.dequeue().expect(&format!("dequeue error for TRB {i}")), cmd);
+                assert_eq!(
+                    event_ring
+                        .dequeue()
+                        .expect(&format!("dequeue error for TRB {i}")),
+                    cmd
+                );
             }
         }
         unsafe {
-            assert_eq!(event_ring.dequeue().unwrap_err(), EventRingError::RingEmptyError);
+            assert_eq!(
+                event_ring.dequeue().unwrap_err(),
+                EventRingError::RingEmptyError
+            );
         }
 
         // make sure we wrap back around to the first segment with cycle set to zero, then read as empty
@@ -1370,39 +1421,58 @@ mod test {
             trb_ptr = trb_ptr.offset(1);
 
             assert_eq!(event_ring.dequeue().expect("dequeue error"), cmd);
-            assert_eq!(event_ring.dequeue().unwrap_err(), EventRingError::RingEmptyError);
+            assert_eq!(
+                event_ring.dequeue().unwrap_err(),
+                EventRingError::RingEmptyError
+            );
         }
 
         // go back around one time, the specific cycle bit shouldn't matter, but why not
-        for i in 2..SEGMENT_ENTRIES+1 {
+        for i in 2..SEGMENT_ENTRIES + 1 {
             unsafe {
                 *trb_ptr = cmd;
                 trb_ptr = trb_ptr.offset(1);
             }
         }
-        for i in 2..SEGMENT_ENTRIES+1 {
+        for i in 2..SEGMENT_ENTRIES + 1 {
             unsafe {
-                assert_eq!(event_ring.dequeue().expect(&format!("dequeue error for TRB {i}")), cmd);
+                assert_eq!(
+                    event_ring
+                        .dequeue()
+                        .expect(&format!("dequeue error for TRB {i}")),
+                    cmd
+                );
             }
         }
         unsafe {
-            assert_eq!(event_ring.dequeue().unwrap_err(), EventRingError::RingEmptyError);
+            assert_eq!(
+                event_ring.dequeue().unwrap_err(),
+                EventRingError::RingEmptyError
+            );
         }
 
         trb_ptr = second_segment_vaddr as *mut Trb;
-        for i in 1..SEGMENT_ENTRIES+1 {
+        for i in 1..SEGMENT_ENTRIES + 1 {
             unsafe {
                 *trb_ptr = cmd;
                 trb_ptr = trb_ptr.offset(1);
             }
         }
-        for i in 1..SEGMENT_ENTRIES+1 {
+        for i in 1..SEGMENT_ENTRIES + 1 {
             unsafe {
-                assert_eq!(event_ring.dequeue().expect(&format!("dequeue error for TRB {i}")), cmd);
+                assert_eq!(
+                    event_ring
+                        .dequeue()
+                        .expect(&format!("dequeue error for TRB {i}")),
+                    cmd
+                );
             }
         }
         unsafe {
-            assert_eq!(event_ring.dequeue().unwrap_err(), EventRingError::RingEmptyError);
+            assert_eq!(
+                event_ring.dequeue().unwrap_err(),
+                EventRingError::RingEmptyError
+            );
         }
 
         cmd.set_cycle(1);
@@ -1411,9 +1481,12 @@ mod test {
             *trb_ptr = cmd;
 
             assert_eq!(event_ring.dequeue().expect("dequeue error"), cmd);
-            assert_eq!(event_ring.dequeue().unwrap_err(), EventRingError::RingEmptyError);
+            assert_eq!(
+                event_ring.dequeue().unwrap_err(),
+                EventRingError::RingEmptyError
+            );
         }
-        
+
         remove_mapped_frame(erst_page, &mut *mapper);
         remove_mapped_frame(first_segment_page, &mut *mapper);
         remove_mapped_frame(second_segment_page, &mut *mapper);
@@ -1461,13 +1534,21 @@ mod test {
             first_segment_page.start_address(),
             first_segment_paddr,
             SEGMENT_ENTRIES,
-        ).expect("Error initializing consumer ring");
+        )
+        .expect("Error initializing consumer ring");
 
-        event_ring.add_segment(second_segment_page.start_address(), SEGMENT_ENTRIES, second_segment_paddr);
+        event_ring.add_segment(
+            second_segment_page.start_address(),
+            SEGMENT_ENTRIES,
+            second_segment_paddr,
+        );
 
         // test a read on an empty RingBuffer
         unsafe {
-            assert_eq!(event_ring.dequeue().unwrap_err(), EventRingError::RingEmptyError);
+            assert_eq!(
+                event_ring.dequeue().unwrap_err(),
+                EventRingError::RingEmptyError
+            );
         }
 
         // make sure that we actually check the second segment
@@ -1483,7 +1564,7 @@ mod test {
         let mut trb_ptr = first_segment_vaddr as *mut Trb;
 
         // fill the first segment fully
-        for i in 1..SEGMENT_ENTRIES+1 {
+        for i in 1..SEGMENT_ENTRIES + 1 {
             unsafe {
                 *trb_ptr = cmd;
                 trb_ptr = trb_ptr.offset(1);
@@ -1491,15 +1572,23 @@ mod test {
         }
 
         // read the entire first segment
-        for i in 1..SEGMENT_ENTRIES+1 {
+        for i in 1..SEGMENT_ENTRIES + 1 {
             unsafe {
-                assert_eq!(event_ring.dequeue().expect(&format!("dequeue error for TRB {i}")), cmd);
+                assert_eq!(
+                    event_ring
+                        .dequeue()
+                        .expect(&format!("dequeue error for TRB {i}")),
+                    cmd
+                );
             }
         }
 
         // ensure the ring is empty
         unsafe {
-            assert_eq!(event_ring.dequeue().unwrap_err(), EventRingError::RingEmptyError);
+            assert_eq!(
+                event_ring.dequeue().unwrap_err(),
+                EventRingError::RingEmptyError
+            );
         }
 
         // skip the second segment and make sure the consumer follows suite
@@ -1510,23 +1599,34 @@ mod test {
             trb_ptr = trb_ptr.offset(1);
 
             assert_eq!(event_ring.dequeue().expect("dequeue error"), cmd);
-            assert_eq!(event_ring.dequeue().unwrap_err(), EventRingError::RingEmptyError);
+            assert_eq!(
+                event_ring.dequeue().unwrap_err(),
+                EventRingError::RingEmptyError
+            );
         }
 
         // go back around one time, the specific cycle bit shouldn't matter, but why not
-        for i in 2..SEGMENT_ENTRIES+1 {
+        for i in 2..SEGMENT_ENTRIES + 1 {
             unsafe {
                 *trb_ptr = cmd;
                 trb_ptr = trb_ptr.offset(1);
             }
         }
-        for i in 2..SEGMENT_ENTRIES+1 {
+        for i in 2..SEGMENT_ENTRIES + 1 {
             unsafe {
-                assert_eq!(event_ring.dequeue().expect(&format!("dequeue error for TRB {i}")), cmd);
+                assert_eq!(
+                    event_ring
+                        .dequeue()
+                        .expect(&format!("dequeue error for TRB {i}")),
+                    cmd
+                );
             }
         }
         unsafe {
-            assert_eq!(event_ring.dequeue().unwrap_err(), EventRingError::RingEmptyError);
+            assert_eq!(
+                event_ring.dequeue().unwrap_err(),
+                EventRingError::RingEmptyError
+            );
         }
 
         cmd.set_cycle(1);
@@ -1535,9 +1635,12 @@ mod test {
             *trb_ptr = cmd;
 
             assert_eq!(event_ring.dequeue().expect("dequeue error"), cmd);
-            assert_eq!(event_ring.dequeue().unwrap_err(), EventRingError::RingEmptyError);
+            assert_eq!(
+                event_ring.dequeue().unwrap_err(),
+                EventRingError::RingEmptyError
+            );
         }
-        
+
         remove_mapped_frame(erst_page, &mut *mapper);
         remove_mapped_frame(first_segment_page, &mut *mapper);
         remove_mapped_frame(second_segment_page, &mut *mapper);

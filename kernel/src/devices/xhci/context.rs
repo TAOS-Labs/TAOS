@@ -164,7 +164,7 @@ impl SlotContext {
 /// This structure should only be 32 bytes if Context Size field in the
 /// HCCPARAMS1 register is '0', otherwise it is 64 bytes with bytes 32
 /// to 64 reserved for the xHCI
-struct EndpointContext {
+pub struct EndpointContext {
     offset_0: u32,
     offset_1: u32,
     offset_2: u32,
@@ -175,151 +175,191 @@ struct EndpointContext {
     offset_7: u32,
 }
 
-#[allow(dead_code)]
 impl EndpointContext {
     /// retrieves the Endpoint State from the endpoint context
     /// This field is only 3 bits wide and identifies the current
     /// operational state of the endpoint.
-    fn get_ep_state(&self) -> u32 {
+    pub fn get_ep_state(&self) -> u32 {
         self.offset_0 & 0x7
     }
 
     /// sets the Endpoint State field of the endpoint context to value.
     /// value is expected to be 3 bits wide.
-    fn set_ep_state(&mut self, value: u32) {
+    pub fn set_ep_state(&mut self, value: u32) {
         self.offset_0 = (self.offset_0 & !0x7) | value;
     }
 
-    /// retrieves the Mult field from the endpoint context.
-    /// This field is only 2 bits wide and identifies the maximum number of bursts
+    /// retrieves the mult field from the endpoint context.
+    /// this field is only 2 bits wide and identifies the maximum number of bursts
     /// within an interval that this endpoint supports
-    fn get_mult(&self) -> u32 {
+    pub fn get_mult(&self) -> u32 {
         (self.offset_0 >> 8) & 0x3
+    }
+
+    /// retrieves the mult field from the endpoint context.
+    /// this field is only 2 bits wide and identifies the maximum number of bursts
+    /// within an interval that this endpoint supports
+    pub fn set_mult(&mut self, value: u32) {
+        assert!(value <= 0x3);
+        self.offset_0 &= !(0x3 << 8);
+        self.offset_0 |= value << 8;
     }
 
     /// retrieves the Max Primary Streams field from the endpoint context.
     /// This field is only 5 bits wide and identifies the max number of primary
     /// stream ids this endpoint supports.
-    fn get_maxpstreams(&self) -> u32 {
+    pub fn get_maxpstreams(&self) -> u32 {
         (self.offset_0 >> 10) & 0x1F
+    }
+
+    /// retrieves the Max Primary Streams field from the endpoint context.
+    /// This field is only 5 bits wide and identifies the max number of primary
+    /// stream ids this endpoint supports.
+    pub fn set_maxpstreams(&mut self, value: u8) {
+        assert!(value <= 0x1F);
+        let value_32: u32 = value.into();
+        self.offset_0 &= !(0x1F << 10);
+        self.offset_0 |= value_32 << 10;
     }
 
     /// retrieves the Linear Stream Array field from the endpoint context.
     /// This field is only 1 bit and identifies how a stream id shall be interpreted
-    fn get_lsa(&self) -> u32 {
+    pub fn get_lsa(&self) -> u32 {
         (self.offset_0 >> 15) & 0x1
     }
 
     /// retrieves the Interval field from the endpoint context.
     /// This field is only 8 bits wide. The value returned is the period between
     /// consecutive requests to a USB endpoint in 125 microsecond increments
-    fn get_interval(&self) -> u32 {
+    pub fn get_interval(&self) -> u32 {
         (self.offset_0 >> 16) & 0xFF
+    }
+
+    /// Sets the interval (The period between consequtive enrequests to a USB
+    /// endpoint to send or recieve data). This is expressed in 125 us intrements
+    pub fn set_interval(&mut self, value: u8) {
+        let value_32: u32 = value.into();
+        self.offset_0 = self.offset_0 & !((0xFF) << 16) | (value_32 << 16);
     }
 
     /// Retrieves the Error Count from the endpoint context.
     /// This field is only 2 bits wide and identifies the number of consecutive
     /// errors allowed whiled making a TD.
-    fn get_cerr(&self) -> u32 {
+    pub fn get_cerr(&self) -> u32 {
         (self.offset_1 >> 1) & 0x3
     }
 
     /// Sets the Error Count field of the endpoint context to value.
     /// value is expected to only be 2 bits wide.
-    fn set_cerr(&mut self, value: u32) {
+    pub fn set_cerr(&mut self, value: u32) {
         self.offset_1 = (self.offset_1 & !0x6) | (value << 1);
     }
 
     /// Retrieves the Endpoint Type field of the endpoint context.
     /// This field is 3 bits wide and indicates if an endpoint context is valid
     /// and the type of endpoint it defines. Zero indicates an invalid context.
-    fn get_eptype(&self) -> u32 {
+    pub fn get_eptype(&self) -> u32 {
         (self.offset_1 >> 3) & 0x7
     }
 
     /// Sets the Endpoint Type field of the endpoint context to value.
     /// value is expected to be 3 bits wide.
-    fn set_eptype(&mut self, value: u32) {
+    pub fn set_eptype(&mut self, value: u32) {
         self.offset_1 = (self.offset_1 & !0x38) | (value << 3);
     }
 
     /// Retrieves the Host Initiate Disable field from the endpoint context.
     /// This field is only 1 bit. A value of 1 means the host initiated stream
     /// feature is disabled.
-    fn get_hid(&self) -> u32 {
+    pub fn get_hid(&self) -> u32 {
         (self.offset_1 >> 7) & 0x1
     }
 
     /// Sets the Host Initiate Disable field of the endpoint context to value.
     /// value is expected to be 1 bit wide.
-    fn set_hid(&mut self, value: u32) {
+    pub fn set_hid(&mut self, value: u32) {
         self.offset_1 = (self.offset_0 & !0x80) | (value << 7);
     }
 
     /// Retrieves the Max Burst Size field from the endpoint context.
     /// This field is only 8 bits wide and indicates the maximum number of
     /// consecutive USB transactions that should be executed per scheduling opportunity.
-    fn get_max_burst_size(&self) -> u32 {
+    pub fn get_max_burst_size(&self) -> u32 {
         (self.offset_1 >> 8) & 0xFF
     }
 
     /// Sets the Max Burst Size field of the endpoint context to value.
     /// value is expected to be 8 bits.
-    fn set_max_burst_size(&mut self, value: u32) {
+    pub fn set_max_burst_size(&mut self, value: u32) {
         self.offset_1 = (self.offset_1 & !0xFF00) | (value << 8);
     }
 
     /// Retrieves the Max Packet Size field from the endpoint context.
     /// This field is only 16 bits wide and indicates the maximum packet size in
     /// bytes that this endpoint can use
-    fn get_max_packet_size(&self) -> u32 {
+    pub fn get_max_packet_size(&self) -> u32 {
         (self.offset_1 >> 16) & 0xFFFF
     }
 
     /// Sets the Max Packet Size field of the endpoint context to value.
     /// value is expected to be 16 bits wide.
-    fn set_max_packet_size(&mut self, value: u32) {
+    pub fn set_max_packet_size(&mut self, value: u32) {
         self.offset_1 = (self.offset_1 & 0x0000FFFF) | (value << 16);
     }
 
     /// Retrieves the Dequeue Cycle State field of from the endpoint context.
     /// This field is only 1 bit and identifies the value of the xHC Consumer
     /// Cycle State (CCS) flag for the TRB.
-    fn get_dcs(&self) -> u32 {
+    pub fn get_dcs(&self) -> u32 {
         self.offset_2 & 0x1
     }
 
     /// Sets the Dequeue Cycle State field of the endpoint context to value.
     /// value is expected to be only 1 bit.
-    fn set_dcs(&mut self, value: u32) {
+    pub fn set_dcs(&mut self, value: u32) {
         self.offset_2 = (self.offset_1 & !0x1) | value;
     }
 
     /// Retrieves the TR Dequeue Pointer from the endpoint context.
     /// TODO: make sure that this method is needed cause this field might only be used by the xHC
-    fn get_trdequeue_ptr(&self) -> u64 {
+    pub fn get_trdequeue_ptr(&self) -> u64 {
         let deqptrlo: u64 = (self.offset_2 & 0xFFFFFFF0).into();
         let deqptrhi: u64 = (self.offset_3).into();
         (deqptrhi << 32) | deqptrlo
     }
 
+    /// Retrieves the TR Dequeue Pointer from the endpoint context.
+    pub fn set_trdequeue_ptr(&mut self, value: u64) {
+        assert!(value & 16 == 0);
+        let value_lo: u32 = (value & 0xFFFFFFFF)
+            .try_into()
+            .expect("Masked out high order bits");
+        let value_hi: u32 = ((value & (0xFFFFFFFF << 32)) >> 32)
+            .try_into()
+            .expect("Shifted out high order bits");
+
+        self.offset_2 &= 0xF;
+        self.offset_2 |= value_lo;
+        self.offset_3 = value_hi;
+    }
+
     /// Retrieves the Averege TRB Length field from the endpoint context.
     /// This field is only 16 bits wide and represents the length of the TRBs
     /// executed by this endpoint.
-    fn get_average_trb_len(&self) -> u32 {
+    pub fn get_average_trb_len(&self) -> u32 {
         self.offset_4 & 0xFFFF
     }
 
     /// Sets the Average TRB Length field of the endpoint context to value.
     /// value is expected to be 16 bits wide.
-    fn set_average_trb_len(&mut self, value: u32) {
+    pub fn set_average_trb_len(&mut self, value: u32) {
         self.offset_4 = (self.offset_4 & !0xFFFF) | value;
     }
 
     /// retrieves the Max Endpoint Service Time Interval Payload field from the endpoint context.
     /// This field is only 24 bits wide. if LEC (whatever that is) is 0 then this
     /// field is invalid
-    fn get_max_esit_payload(&self) -> u32 {
+    pub fn get_max_esit_payload(&self) -> u32 {
         let esitlo: u32 = (self.offset_4 >> 16) & 0xFFFF;
         let esithi: u32 = (self.offset_0 >> 24) & 0xFF;
         (esithi << 16) | esitlo

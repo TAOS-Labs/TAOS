@@ -11,8 +11,10 @@ use core::{cmp::min, mem::MaybeUninit, ptr::copy_nonoverlapping};
 use crate::{constants::memory::PAGE_SIZE, debug_println, memory::frame_allocator::alloc_frame};
 use alloc::{sync::Arc, vec::Vec};
 use bitflags::bitflags;
-use context::{InputControlContext, SlotContext};
-use ring_buffer::{ConsumerRingBuffer, ProducerRingBuffer, TransferRequestBlock, TrbTypes};
+use context::{EndpointContext, InputControlContext, SlotContext};
+use ring_buffer::{
+    ConsumerRingBuffer, ProducerRingBuffer, RingType, TransferRequestBlock, TrbTypes,
+};
 use spin::Mutex;
 use x86_64::{
     structures::paging::{mapper::TranslateResult, OffsetPageTable, Page, Translate},
@@ -445,7 +447,7 @@ fn boot_up_all_ports(info: &mut XHCIInfo, mapper: &mut OffsetPageTable) -> Resul
         if PortStatusAndControl::CurrentConnectStatus.intersects(device_connected) {
             debug_println!("PortStatusAndCtrl = {device_connected:?}");
             boot_up_usb_port(info, device, device_connected, mapper)?;
-            setup_input_context(info, device, mapper)?;
+            setup_input_context(info, device, device_connected, mapper)?;
         } else {
             continue;
         }
@@ -528,12 +530,14 @@ fn boot_up_usb_port(
 fn setup_input_context(
     _info: &mut XHCIInfo,
     device: u8,
+    port_status: PortStatusAndControl,
     mapper: &mut OffsetPageTable,
 ) -> Result<(), XHCIError> {
     let input_frame = alloc_frame().ok_or(XHCIError::MemoryAllocationFailure)?;
     let input_context_vaddr = map_page_as_uncacheable(input_frame.start_address(), mapper)
         .map_err(|_| XHCIError::MemoryAllocationFailure)?;
     mmio::zero_out_page(Page::containing_address(input_context_vaddr));
+    // Set up input control context
     let input_context = MaybeUninit::<InputControlContext>::zeroed();
     let mut input_context = unsafe { input_context.assume_init() };
     input_context.set_add_flag(0, 1);
@@ -541,6 +545,7 @@ fn setup_input_context(
     unsafe { copy_nonoverlapping(&input_context, input_context_vaddr.as_mut_ptr(), 1) };
 
     // The size of the slot context is 64 bytes or less
+    // setup input slot context
     let slot_context_vaddr = input_context_vaddr + 64;
     let slot_context = MaybeUninit::<SlotContext>::zeroed();
     let mut slot_context = unsafe { slot_context.assume_init() };
@@ -549,7 +554,33 @@ fn setup_input_context(
 
     unsafe { copy_nonoverlapping(&slot_context_vaddr, slot_context_vaddr.as_mut_ptr(), 1) };
 
-    let _transfer_ring_vaddr = slot_context_vaddr + 32;
+    // Setup transfer ring for default ctrl endpoint
+    let transfer_ring_vaddr = slot_context_vaddr + 32;
+    // TODO move to end
+    let _producer_ring_buffer = ProducerRingBuffer::new(
+        transfer_ring_vaddr.as_u64(),
+        0,
+        RingType::Command,
+        (PAGE_SIZE - 64 - 32).try_into().unwrap(),
+    )
+    .expect("Everything should be alligned");
+
+    // Initalize default ctrl endpoint 0 context
+    // TODO actually nedd to ensure this dosent straddle a page, which would be bad
+    let input_dev_ctrl_ep_0_ctxt = MaybeUninit::<EndpointContext>::zeroed();
+    let mut input_dev_ctrl_ep_0_ctxt = unsafe { input_dev_ctrl_ep_0_ctxt.assume_init() };
+    // 4 = ctrl
+    input_dev_ctrl_ep_0_ctxt.set_eptype(4);
+    // TODO: find endpo
+    let _protocol_speed_id = (port_status.bits() >> 10) & 0b111;
+    // input_dev_ctrl_ep_0_ctxt.set_max_packet_size(value);
+    input_dev_ctrl_ep_0_ctxt.set_max_burst_size(0);
+    input_dev_ctrl_ep_0_ctxt.set_trdequeue_ptr(transfer_ring_vaddr - mapper.phys_offset());
+    input_dev_ctrl_ep_0_ctxt.set_dcs(1);
+    input_dev_ctrl_ep_0_ctxt.set_interval(0);
+    input_dev_ctrl_ep_0_ctxt.set_maxpstreams(0);
+    input_dev_ctrl_ep_0_ctxt.set_mult(0);
+    input_dev_ctrl_ep_0_ctxt.set_cerr(3);
     Result::Ok(())
 }
 
