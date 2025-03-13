@@ -14,6 +14,7 @@ use crate::{
     },
     serial_println,
 };
+use syscalls::x86_64::Sysno;
 
 use core::arch::naked_asm;
 
