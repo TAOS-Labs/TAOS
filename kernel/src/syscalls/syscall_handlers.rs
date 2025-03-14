@@ -1,23 +1,38 @@
-use core::{ffi::CStr, sync::atomic::AtomicI64};
+use core::ffi::CStr;
+
+use alloc::collections::btree_map::BTreeMap;
+use lazy_static::lazy_static;
+use spin::lock_api::Mutex;
+
+use core::{
+    future::Future,
+    pin::Pin,
+    task::{Context, Poll, RawWaker, RawWakerVTable, Waker},
+};
 
 use crate::{
     constants::syscalls::*,
-    events::{current_running_event_info, EventInfo},
+    events::{
+        current_running_event, current_running_event_info, futures::await_on::AwaitProcess,
+        get_runner_time, yield_now, EventInfo,
+    },
     interrupts::x2apic,
-    memory::frame_allocator::with_bitmap_frame_allocator,
+    memory::frame_allocator::with_buddy_frame_allocator,
     processes::{
-        process::{
-            clear_process_frames, sleep_process_int, sleep_process_syscall, ProcessState,
-            PROCESS_TABLE,
-        },
+        process::{sleep_process_int, sleep_process_syscall, ProcessState, PROCESS_TABLE},
         registers::NonFlagRegisters,
     },
     serial_println,
+    syscalls::{fork::sys_fork, memorymap::sys_mmap},
 };
 
 use core::arch::naked_asm;
 
-pub static TEST_EXIT_CODE: AtomicI64 = AtomicI64::new(i64::MIN);
+use super::memorymap::sys_munmap;
+
+lazy_static! {
+    pub static ref EXIT_CODES: Mutex<BTreeMap<u32, i64>> = Mutex::new(BTreeMap::new());
+}
 
 #[repr(C)]
 #[derive(Debug)]
@@ -134,7 +149,7 @@ pub unsafe extern "C" fn syscall_handler_impl(
     reg_vals: *const NonFlagRegisters,
 ) -> u64 {
     let syscall = unsafe { &*syscall };
-    let _reg_vals = unsafe { &*reg_vals };
+    let reg_vals = unsafe { &*reg_vals };
 
     match syscall.number as u32 {
         SYSCALL_EXIT => {
@@ -142,7 +157,18 @@ pub unsafe extern "C" fn syscall_handler_impl(
             unreachable!("sys_exit does not return");
         }
         SYSCALL_PRINT => sys_print(syscall.arg1 as *const u8),
-        SYSCALL_NANOSLEEP => sys_nanosleep_64(syscall.arg1, _reg_vals),
+        SYSCALL_NANOSLEEP => sys_nanosleep_64(syscall.arg1, reg_vals),
+        SYSCALL_FORK => sys_fork(reg_vals),
+        SYSCALL_MMAP => sys_mmap(
+            syscall.arg1,
+            syscall.arg2,
+            syscall.arg3,
+            syscall.arg4,
+            syscall.arg5 as i64,
+            syscall.arg6,
+        ),
+        SYSCALL_WAIT => block_on(sys_wait(syscall.arg1 as u32)),
+        SYSCALL_MUNMAP => sys_munmap(syscall.arg1, syscall.arg2),
         _ => {
             panic!("Unknown syscall, {}", syscall.number);
         }
@@ -180,19 +206,16 @@ pub fn sys_exit(code: i64) -> Option<u64> {
 
         (*pcb).state = ProcessState::Terminated;
 
-        clear_process_frames(&mut *pcb);
-        with_bitmap_frame_allocator(|alloc| {
-            alloc.print_bitmap_free_frames();
+        // clear_process_frames(&mut *pcb);
+        with_buddy_frame_allocator(|alloc| {
+            alloc.print_free_frames();
         });
+
+        EXIT_CODES.lock().insert(event.pid, code);
 
         process_table.remove(&event.pid);
         ((*pcb).kernel_rsp, (*pcb).kernel_rip)
     };
-
-    #[cfg(test)]
-    {
-        TEST_EXIT_CODE.store(code, core::sync::atomic::Ordering::SeqCst);
-    }
 
     unsafe {
         // Restore kernel RSP + PC -> RIP from where it was stored in run/resume process
@@ -204,10 +227,6 @@ pub fn sys_exit(code: i64) -> Option<u64> {
             in(reg) preemption_info.0,
             in(reg) preemption_info.1
         );
-    }
-
-    if code == -1 {
-        panic!("Bad error code!");
     }
 
     unsafe {
@@ -242,4 +261,42 @@ pub fn sys_nanosleep_64(nanos: u64, reg_vals: &NonFlagRegisters) -> u64 {
     sleep_process_syscall(nanos, reg_vals);
 
     0
+}
+
+/// Wait on a process to finish
+pub async fn sys_wait(pid: u32) -> u64 {
+    let _waiter = AwaitProcess::new(
+        pid,
+        get_runner_time(3_000_000_000),
+        current_running_event().unwrap(),
+    )
+    .await;
+
+    return *(EXIT_CODES.lock().get(&pid).unwrap()) as u64;
+}
+
+/// Helper function for sys_wait, not sure if necessary
+/// TODO Ask Kiran if necessary
+fn noop_raw_waker() -> RawWaker {
+    fn clone(_: *const ()) -> RawWaker {
+        noop_raw_waker()
+    }
+    fn wake(_: *const ()) {}
+    fn wake_by_ref(_: *const ()) {}
+    fn drop(_: *const ()) {}
+    let vtable = &RawWakerVTable::new(clone, wake, wake_by_ref, drop);
+    RawWaker::new(core::ptr::null(), vtable)
+}
+/// Helper function for sys_wait, not sure if necessary
+fn block_on<F: Future>(mut future: F) -> F::Output {
+    let waker = unsafe { Waker::from_raw(noop_raw_waker()) };
+    let mut cx = Context::from_waker(&waker);
+    // Safety: we’re not moving the future while polling.
+    let mut future = unsafe { Pin::new_unchecked(&mut future) };
+    loop {
+        if let Poll::Ready(val) = future.as_mut().poll(&mut cx) {
+            return val;
+        }
+        yield_now();
+    }
 }
