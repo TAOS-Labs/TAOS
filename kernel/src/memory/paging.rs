@@ -526,166 +526,166 @@ mod tests {
         remove_mapped_frame(page, &mut *mapper);
     }
 
-    /// Tests the copy-on-write (COW) mechanism for a mapped page.
-    ///
-    /// In a COW scenario, the page is initially mapped as read-only. A write to the page should
-    /// trigger a fault that results in a new physical frame being allocated and mapped for that page.
-    /// In this test, we simulate this behavior by:
-    /// 1. Creating a mapping with read-only permissions.
-    /// 2. Writing to the page which, triggers a page fault
-    /// 3. Handling the page fault in our page fault handler
-    /// 4. Verifying that the new frame is different from the initial one and that the written value is present.
+    // Tests the copy-on-write (COW) mechanism for a mapped page.
+    //
+    // In a COW scenario, the page is initially mapped as read-only. A write to the page should
+    // trigger a fault that results in a new physical frame being allocated and mapped for that page.
+    // In this test, we simulate this behavior by:
+    // 1. Creating a mapping with read-only permissions.
+    // 2. Writing to the page which, triggers a page fault
+    // 3. Handling the page fault in our page fault handler
+    // 4. Verifying that the new frame is different from the initial one and that the written value is present.
     // #[test_case]
-    async fn test_copy_on_write() {
-        let mut mapper = KERNEL_MAPPER.lock();
-        // Create a dummy PML4 frame.
-        // Locate the current process.
-        let pid = get_current_pid();
-        let process = {
-            let process_table = PROCESS_TABLE.read();
-            process_table
-                .get(&pid)
-                .expect("can't find pcb in process table")
-                .clone()
-        };
-
-        const TEST_VALUE: u64 = 0x42;
-
-        let page = Page::containing_address(VirtAddr::new(0x400003000));
-
-        let anon_area = Arc::new(AnonVmArea::new());
-
-        unsafe {
-            (*process.pcb.get()).mm.with_vma_tree_mutable(|tree| {
-                let _vma1 = Mm::insert_vma(
-                    tree,
-                    page.start_address().as_u64(),
-                    page.start_address().as_u64() + PAGE_SIZE as u64,
-                    anon_area.clone(),
-                    VmAreaFlags::empty(),
-                    true,
-                );
-            });
-        }
-
-        // Create mapping with read-only permission to simulate a COW mapping.
-        let init_frame = create_mapping(page, &mut *mapper, Some(PageTableFlags::PRESENT));
-
-        // Write to the page.
-        // Triggers page fault
-        unsafe {
-            page.start_address()
-                .as_mut_ptr::<u64>()
-                .write_volatile(TEST_VALUE);
-        }
-
-        // Now, translating the page should return the new frame.
-        let frame = mapper
-            .translate_page(page)
-            .expect("Translation after COW failed");
-
-        // The new frame should be different from the original frame.
-        assert_ne!(init_frame, frame);
-
-        let read_value = unsafe { page.start_address().as_ptr::<u64>().read_volatile() };
-
-        assert_eq!(read_value, TEST_VALUE);
-
-        // should not trigger a page fault, we should be able to write now
-        unsafe {
-            page.start_address()
-                .as_mut_ptr::<u64>()
-                .write_volatile(0x20);
-        }
-
-        let new_frame = mapper
-            .translate_page(page)
-            .expect("Translation after COW failed");
-
-        // We already made this our own, no need to have done COW
-        assert_eq!(frame, new_frame);
-
-        let read_value2 = unsafe { page.start_address().as_ptr::<u64>().read_volatile() };
-
-        assert_eq!(read_value2, 0x20);
-
-        remove_mapped_frame(page, &mut *mapper);
-    }
-
-    /// Tests the copy-on-write (COW) mechanism for a mapped page.
-    ///
-    /// In a COW scenario, the page is initially mapped as writable, and a full buffer is written
-    /// Then, the page is marked read only and the first byte in the buffer is written to.
-    /// This should trigger a page fault that does COW, but it should maintain the rest
-    /// of the values in the buffer.
-    // #[test_case]
-    async fn test_copy_on_write_full() {
-        let mut mapper = KERNEL_MAPPER.lock();
-        // Create a dummy PML4 frame.
-        // Locate the current process.
-        let pid = get_current_pid();
-        let process = {
-            let process_table = PROCESS_TABLE.read();
-            process_table
-                .get(&pid)
-                .expect("can't find pcb in process table")
-                .clone()
-        };
-        const TEST_VALUE: u8 = 0x2;
-        let page = Page::containing_address(VirtAddr::new(0x400003000));
-        let anon_area = Arc::new(AnonVmArea::new());
-
-        unsafe {
-            (*process.pcb.get()).mm.with_vma_tree_mutable(|tree| {
-                let _vma1 = Mm::insert_vma(
-                    tree,
-                    page.start_address().as_u64(),
-                    page.start_address().as_u64() + PAGE_SIZE as u64,
-                    anon_area.clone(),
-                    VmAreaFlags::empty(),
-                    true,
-                );
-            });
-        }
-
-        // Create mapping with read-only permission to simulate a COW mapping.
-        let _ = create_mapping(
-            page,
-            &mut *mapper,
-            Some(PageTableFlags::PRESENT | PageTableFlags::WRITABLE),
-        );
-
-        // Write 1s to the entire buffer
-        unsafe {
-            let buf_ptr = page.start_address().as_mut_ptr::<u8>();
-            core::ptr::write_bytes(buf_ptr, 1, PAGE_SIZE);
-        }
-
-        // Make it so we page fault on write
-        update_permissions(page, &mut *mapper, PageTableFlags::PRESENT);
-
-        // Write to the page.
-        // In a real system, this would trigger a page fault to handle copy-on-write.
-        unsafe {
-            page.start_address()
-                .as_mut_ptr::<u8>()
-                .write_volatile(TEST_VALUE);
-        }
-
-        // the cow should not have messed with any data in the buffer besides what
-        // we just wrote to
-        let read_value = unsafe { page.start_address().as_ptr::<u8>().read_volatile() };
-
-        assert_eq!(read_value, TEST_VALUE);
-
-        unsafe {
-            let buf_ptr = page.start_address().as_ptr::<u8>();
-            for i in 1..PAGE_SIZE {
-                let val = *buf_ptr.add(i);
-                assert_eq!(val, 1, "Byte at offset {} is not 1 (found {})", i, val);
-            }
-        }
-
-        remove_mapped_frame(page, &mut *mapper);
-    }
+    // async fn test_copy_on_write() {
+    //     let mut mapper = KERNEL_MAPPER.lock();
+    //     // Create a dummy PML4 frame.
+    //     // Locate the current process.
+    //     let pid = get_current_pid();
+    //     let process = {
+    //         let process_table = PROCESS_TABLE.read();
+    //         process_table
+    //             .get(&pid)
+    //             .expect("can't find pcb in process table")
+    //             .clone()
+    //     };
+    //
+    //     const TEST_VALUE: u64 = 0x42;
+    //
+    //     let page = Page::containing_address(VirtAddr::new(0x400003000));
+    //
+    //     let anon_area = Arc::new(AnonVmArea::new());
+    //
+    //     unsafe {
+    //         (*process.pcb.get()).mm.with_vma_tree_mutable(|tree| {
+    //             let _vma1 = Mm::insert_vma(
+    //                 tree,
+    //                 page.start_address().as_u64(),
+    //                 page.start_address().as_u64() + PAGE_SIZE as u64,
+    //                 anon_area.clone(),
+    //                 VmAreaFlags::empty(),
+    //                 true,
+    //             );
+    //         });
+    //     }
+    //
+    //     // Create mapping with read-only permission to simulate a COW mapping.
+    //     let init_frame = create_mapping(page, &mut *mapper, Some(PageTableFlags::PRESENT));
+    //
+    //     // Write to the page.
+    //     // Triggers page fault
+    //     unsafe {
+    //         page.start_address()
+    //             .as_mut_ptr::<u64>()
+    //             .write_volatile(TEST_VALUE);
+    //     }
+    //
+    //     // Now, translating the page should return the new frame.
+    //     let frame = mapper
+    //         .translate_page(page)
+    //         .expect("Translation after COW failed");
+    //
+    //     // The new frame should be different from the original frame.
+    //     assert_ne!(init_frame, frame);
+    //
+    //     let read_value = unsafe { page.start_address().as_ptr::<u64>().read_volatile() };
+    //
+    //     assert_eq!(read_value, TEST_VALUE);
+    //
+    //     // should not trigger a page fault, we should be able to write now
+    //     unsafe {
+    //         page.start_address()
+    //             .as_mut_ptr::<u64>()
+    //             .write_volatile(0x20);
+    //     }
+    //
+    //     let new_frame = mapper
+    //         .translate_page(page)
+    //         .expect("Translation after COW failed");
+    //
+    //     // We already made this our own, no need to have done COW
+    //     assert_eq!(frame, new_frame);
+    //
+    //     let read_value2 = unsafe { page.start_address().as_ptr::<u64>().read_volatile() };
+    //
+    //     assert_eq!(read_value2, 0x20);
+    //
+    //     remove_mapped_frame(page, &mut *mapper);
+    // }
+    //
+    // /// Tests the copy-on-write (COW) mechanism for a mapped page.
+    // ///
+    // /// In a COW scenario, the page is initially mapped as writable, and a full buffer is written
+    // /// Then, the page is marked read only and the first byte in the buffer is written to.
+    // /// This should trigger a page fault that does COW, but it should maintain the rest
+    // /// of the values in the buffer.
+    // // #[test_case]
+    // async fn test_copy_on_write_full() {
+    //     let mut mapper = KERNEL_MAPPER.lock();
+    //     // Create a dummy PML4 frame.
+    //     // Locate the current process.
+    //     let pid = get_current_pid();
+    //     let process = {
+    //         let process_table = PROCESS_TABLE.read();
+    //         process_table
+    //             .get(&pid)
+    //             .expect("can't find pcb in process table")
+    //             .clone()
+    //     };
+    //     const TEST_VALUE: u8 = 0x2;
+    //     let page = Page::containing_address(VirtAddr::new(0x400003000));
+    //     let anon_area = Arc::new(AnonVmArea::new());
+    //
+    //     unsafe {
+    //         (*process.pcb.get()).mm.with_vma_tree_mutable(|tree| {
+    //             let _vma1 = Mm::insert_vma(
+    //                 tree,
+    //                 page.start_address().as_u64(),
+    //                 page.start_address().as_u64() + PAGE_SIZE as u64,
+    //                 anon_area.clone(),
+    //                 VmAreaFlags::empty(),
+    //                 true,
+    //             );
+    //         });
+    //     }
+    //
+    //     // Create mapping with read-only permission to simulate a COW mapping.
+    //     let _ = create_mapping(
+    //         page,
+    //         &mut *mapper,
+    //         Some(PageTableFlags::PRESENT | PageTableFlags::WRITABLE),
+    //     );
+    //
+    //     // Write 1s to the entire buffer
+    //     unsafe {
+    //         let buf_ptr = page.start_address().as_mut_ptr::<u8>();
+    //         core::ptr::write_bytes(buf_ptr, 1, PAGE_SIZE);
+    //     }
+    //
+    //     // Make it so we page fault on write
+    //     update_permissions(page, &mut *mapper, PageTableFlags::PRESENT);
+    //
+    //     // Write to the page.
+    //     // In a real system, this would trigger a page fault to handle copy-on-write.
+    //     unsafe {
+    //         page.start_address()
+    //             .as_mut_ptr::<u8>()
+    //             .write_volatile(TEST_VALUE);
+    //     }
+    //
+    //     // the cow should not have messed with any data in the buffer besides what
+    //     // we just wrote to
+    //     let read_value = unsafe { page.start_address().as_ptr::<u8>().read_volatile() };
+    //
+    //     assert_eq!(read_value, TEST_VALUE);
+    //
+    //     unsafe {
+    //         let buf_ptr = page.start_address().as_ptr::<u8>();
+    //         for i in 1..PAGE_SIZE {
+    //             let val = *buf_ptr.add(i);
+    //             assert_eq!(val, 1, "Byte at offset {} is not 1 (found {})", i, val);
+    //         }
+    //     }
+    //
+    //     remove_mapped_frame(page, &mut *mapper);
+    // }
 }

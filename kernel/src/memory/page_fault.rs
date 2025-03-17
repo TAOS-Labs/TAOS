@@ -1,6 +1,7 @@
 use core::ptr;
 
 use alloc::sync::Arc;
+use log::debug;
 use x86_64::{
     structures::{
         idt::PageFaultErrorCode,
@@ -176,7 +177,12 @@ pub fn handle_new_mapping(
     pt_flags: PageTableFlags,
 ) {
     serial_println!("Page not mapped; creating a new mapping.");
-    let new_frame = create_mapping(page, mapper, Some(pt_flags));
+    debug!("Diagnositcs:\n\tPage: {:#?}\n\tBacking: {:#?}\n\tPT Flags: {:#?}", page, backing, pt_flags);
+
+    let mut flags = pt_flags;
+    flags.set(PageTableFlags::PRESENT, true);
+    
+    let new_frame = create_mapping(page, mapper, Some(flags));
     backing.insert_mapping(Arc::new(VmaChain {
         offset: page.start_address().as_u64(),
         frame: Arc::new(new_frame),

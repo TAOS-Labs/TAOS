@@ -3,7 +3,7 @@
 //! Handles the initialization of kernel subsystems and CPU cores.
 
 use bytes::Bytes;
-use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
+use core::{fmt::write, sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering}};
 use limine::{
     request::SmpRequest,
     smp::{Cpu, RequestFlags},
@@ -11,7 +11,7 @@ use limine::{
 };
 
 use crate::{
-    constants::processes::{FORK_SIMPLE, MMAP_ANON_SIMPLE, TEST_SIMPLE_PROCESS, TEST_WAIT},
+    constants::processes::{FORK_SIMPLE, MMAP_ANON_SIMPLE, TEST_64_FORK_COW, TEST_FORK_COW, TEST_SIMPLE_PROCESS, TEST_SIMPLE_STACK_ACCESS, TEST_WAIT},
     debug, devices,
     events::{
         current_running_event, futures::await_on::AwaitProcess, get_runner_time,
@@ -71,6 +71,9 @@ pub fn init() -> u32 {
     let bsp_id = wake_cores();
 
     idt::enable();
+
+    let pid = create_process(TEST_FORK_COW);
+    schedule_process(pid);
 
     bsp_id
 }

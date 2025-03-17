@@ -70,8 +70,8 @@ pub fn load_elf(
                     page.start_address().as_u64(),
                     page.start_address().as_u64() + PAGE_SIZE as u64,
                     anon_vma_code_and_data.clone(),
+                    0,
                     VmAreaFlags::WRITABLE | VmAreaFlags::EXECUTE,
-                    true,
                 );
             });
 
@@ -144,8 +144,8 @@ pub fn load_elf(
             STACK_START,
             STACK_START + STACK_SIZE as u64,
             anon_vma,
+            0,
             VmAreaFlags::WRITABLE | VmAreaFlags::GROWS_DOWN,
-            true,
         );
     });
 

@@ -12,7 +12,7 @@ use crate::{
     constants::memory::PAGE_SIZE,
     events::{current_running_event_info, EventInfo},
     memory::{
-        mm::{AnonVmArea, Mm, VmArea, VmAreaFlags},
+        mm::{vma_to_page_flags, AnonVmArea, Mm, VmArea, VmAreaFlags},
         HHDM_OFFSET,
     },
     processes::process::PROCESS_TABLE,
@@ -187,8 +187,8 @@ pub fn sys_mmap(addr: u64, len: u64, prot: u64, flags: u64, fd: i64, offset: u64
                 begin_addr,
                 begin_addr + len,
                 Arc::new(anon_vma),
+                0,
                 vma_flags,
-                anon,
             );
         })
     }
@@ -210,7 +210,7 @@ pub fn sys_mmap(addr: u64, len: u64, prot: u64, flags: u64, fd: i64, offset: u64
 /// * `addr` - the starting virtual address of mapped memory, page aligned
 /// * `len`  - the length of the region of memory we want to update
 /// * `prot` - the protection we want to updatge to; corresponds to VMA flags
-pub fn sys_mprotect(addr: u64, len: u64, prot: ProtFlags) -> u64 {
+pub fn sys_mprotect(addr: u64, len: u64, prot: u64) -> u64 {
     let end_addr = (addr + len + PAGE_SIZE as u64 - 1) / PAGE_SIZE as u64 * PAGE_SIZE as u64;
     let event: EventInfo = current_running_event_info();
     let pid = event.pid;
@@ -224,7 +224,7 @@ pub fn sys_mprotect(addr: u64, len: u64, prot: ProtFlags) -> u64 {
 
     // new anon vma to insert based on mprotect (technically not optimal)
     let anon_vma = Arc::new(AnonVmArea::new());
-    let new_vma = VmArea::new(addr, addr + len, anon_vma, VmAreaFlags::empty(), true, 0);
+    let new_vma = VmArea::new(addr, addr + len, anon_vma, 0, mmap_prot_to_vma_flags(prot, MmapFlags::empty()));
 
     unsafe {
         (*pcb).mm.with_vma_tree_mutable(|tree| {
