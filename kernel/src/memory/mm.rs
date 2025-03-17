@@ -1,6 +1,6 @@
 use core::{any::Any, fmt::Debug};
 
-use crate::{constants::memory::PAGE_SIZE, serial_println};
+use crate::{constants::memory::PAGE_SIZE, interrupts::x2apic::current_core_id, serial_println};
 use alloc::{collections::btree_map::BTreeMap, sync::Arc, vec::Vec};
 use bitflags::bitflags;
 use spin::Mutex;
@@ -64,10 +64,13 @@ impl Mm {
             index_offset,
             flags,
         )));
-
         backing.insert_vma(new_vma.clone());
 
+        // serial_println!("Backing 1 is {:#?}", backing);
+
         tree.insert(start as usize, new_vma.clone());
+
+        // serial_println!("Backing 2 is {:#?}", backing);
 
         Self::coalesce_vma(new_vma, tree)
     }
@@ -78,18 +81,6 @@ impl Mm {
     pub fn coalesce_vma(candidate: Arc<Mutex<VmArea>>, tree: &mut VmaTree) -> Arc<Mutex<VmArea>> {
         let mut merged = candidate;
         let mut did_merge = false;
-
-        // Get candidate fields.
-        let (cand_start, cand_end, cand_flags, cand_backing, cand_index_offset) = {
-            let guard = merged.lock();
-            (
-                guard.start,
-                guard.end,
-                guard.flags,
-                guard.backing.clone(),
-                guard.index_offset,
-            )
-        };
 
         // // --- Attempt left merge ---
         // if cand_start > 0 {
@@ -154,6 +145,7 @@ impl Mm {
                 // We preserve the current index_offset.
                 let new_index_offset = cur_index_offset;
 
+
                 // add all right hand mappings to the current anon_vma
                 for mapping in right_guard.backing.mappings().lock().iter() {
                     cur_backing.insert_mapping(Arc::new(VmaChain::new(
@@ -164,12 +156,20 @@ impl Mm {
 
                 serial_println!("Right guard: {:#?}", right_guard);
 
-                for vma in right_guard.backing.vmas().lock().iter_mut() {
-                    let mut var = vma.lock();
-                    var.index_offset += cur_end;
-                }
+        // First, collect all the VmArea references outside the lock
+        let vmas_to_modify: Vec<Arc<Mutex<VmArea>>> = {
+            let vmas_guard = right_guard.backing.vmas().lock();
+            vmas_guard.iter().cloned().collect()
+        };
 
-                drop(right_guard);
+        // Now iterate over the collected references and modify them
+        for vma in vmas_to_modify.iter() {
+            serial_println!("Vma: {:#?}", vma);
+            let mut var = vma.lock();
+            var.index_offset += cur_end;
+        }
+
+        serial_println!("GOT HERE");
 
                 // Remove the current VMA and the right VMA from the tree.
                 tree.remove(&(cur_start as usize));
@@ -365,7 +365,7 @@ impl VmArea {
         };
 
         // Insert a clone of the new VMA into the backing's VMA list.
-        backing.insert_vma(Arc::new(Mutex::new(vma.clone())));
+        // backing.insert_vma(Arc::new(Mutex::new(vma.clone())));
         vma
     }
 }
@@ -376,12 +376,17 @@ pub trait VmAreaBacking: Send + Sync + Debug + Any {
 
     /// Returns a reference to the reverse mappings.
     fn mappings(&self) -> &Mutex<BTreeMap<u64, Arc<VmaChain>>>;
+    
     /// Returns a reference to the list of VMAs associated with this backing.
     fn vmas(&self) -> &Mutex<Vec<Arc<Mutex<VmArea>>>>;
 
     /// Insert a new VMA into the list.
     fn insert_vma(&self, vma: Arc<Mutex<VmArea>>) {
         self.vmas().lock().push(vma);
+        serial_println!("VMA VECTOR IS THIS: {:#?}", self.vmas());
+        for (i, vma) in self.vmas().lock().iter().enumerate() {
+            serial_println!("{}'th VMA's address is {:?}", i, Arc::as_ptr(vma));
+        }
     }
 
     /// Remove a VMA from the list by index.
