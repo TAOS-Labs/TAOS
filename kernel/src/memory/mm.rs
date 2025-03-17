@@ -140,11 +140,13 @@ impl Mm {
         };
 
         // Look up a VMA that starts exactly at the current VMA's end.
-        if let Some(right_vma) = tree.get(&(cur_end as usize)) {
+        if let Some(right_vma) = Self::find_vma(cur_end, tree) {
             let right_guard = right_vma.lock();
+
+
+            // TODO: VMA type check
             if right_guard.start == cur_end
                 && right_guard.flags == cur_flags
-                && Arc::ptr_eq(&right_guard.backing, &cur_backing)
             {
                 serial_println!("Coalesce identified");
                 let new_start = cur_start;
@@ -160,8 +162,11 @@ impl Mm {
                     )));
                 }
 
+                serial_println!("Right guard: {:#?}", right_guard);
+
                 for vma in right_guard.backing.vmas().lock().iter_mut() {
-                    vma.lock().index_offset += cur_end;
+                    let mut var = vma.lock();
+                    var.index_offset += cur_end;
                 }
 
                 drop(right_guard);
@@ -753,19 +758,92 @@ mod tests {
     /// Tests coalescing of adjacent VM Areas on the right.
     ///
     #[test_case]
-    async fn test_coalesce_right() {
+    async fn test_mm_coalesce_right() {
         let pml4_frame = PhysFrame::containing_address(PhysAddr::new(0x1000));
-        let mm = Mm::new(pml4_frame);
+        let mm1 = Mm::new(pml4_frame);
+        
+        let pml4_frame = PhysFrame::containing_address(PhysAddr::new(0x2000));
+        let mm2 = Mm::new(pml4_frame);
 
         let anon_area1 = Arc::new(AnonVmArea::new());
         let anon_area2 = Arc::new(AnonVmArea::new());
 
-        mm.with_vma_tree_mutable(|tree| {
-            Mm::insert_vma(tree, 0x5000, 0x7000, anon_area1.clone(), 0, VmAreaFlags::WRITABLE);
-            Mm::insert_vma(tree, 0, 0x2000, anon_area2.clone(), 0, VmAreaFlags::WRITABLE);
-            // should trigger coalesce
-            Mm::insert_vma(tree, 0, 0x5000, anon_area1.clone(), 0, VmAreaFlags::WRITABLE);
+        // add frame mappings as they should be right now
+        anon_area1.insert_mapping(Arc::new(VmaChain::new(
+            0x0000,
+            Arc::new(alloc_frame().unwrap()),
+        )));
+        anon_area1.insert_mapping(Arc::new(VmaChain::new(
+            0x1000,
+            Arc::new(alloc_frame().unwrap()),
+        )));
+
+        anon_area2.insert_mapping(Arc::new(VmaChain::new(
+            0x0000,
+            Arc::new(alloc_frame().unwrap()),
+        )));
+        anon_area2.insert_mapping(Arc::new(VmaChain::new(
+            0x1000,
+            Arc::new(alloc_frame().unwrap()),
+        )));
+        anon_area2.insert_mapping(Arc::new(VmaChain::new(
+            0x2000,
+            Arc::new(alloc_frame().unwrap()),
+        )));
+        anon_area2.insert_mapping(Arc::new(VmaChain::new(
+            0x3000,
+            Arc::new(alloc_frame().unwrap()),
+        )));
+        anon_area2.insert_mapping(Arc::new(VmaChain::new(
+            0x4000,
+            Arc::new(alloc_frame().unwrap()),
+        )));
+
+        mm1.with_vma_tree_mutable(|tree| {
+            Mm::insert_vma(
+                tree,
+                0x5000,
+                0x7000,
+                anon_area1.clone(),
+                0,
+                VmAreaFlags::WRITABLE,
+            );
+        });
+
+        mm2.with_vma_tree_mutable(|tree| {
+            Mm::insert_vma(
+                tree,
+                0,
+                0x2000,
+                anon_area1.clone(),
+                0,
+                VmAreaFlags::WRITABLE,
+            );
+        });
+
+        mm1.with_vma_tree_mutable(|tree| {
+            Mm::insert_vma(
+                tree,
+                0,
+                0x5000,
+                anon_area2.clone(),
+                0,
+                VmAreaFlags::WRITABLE,
+            );
+        });
+
+
+        mm1.with_vma_tree(|tree| {
+            let final_vma = Mm::find_vma(0, tree).unwrap();
+            let final_vma_locked = final_vma.lock();
+
+            serial_println!("Final Vma start is: {:X}", final_vma_locked.start);
+            serial_println!("Final Vma end is: {:X}", final_vma_locked.end);
+            serial_println!("Final Vma index_offset is: {:X}", final_vma_locked.index_offset);
+
+            assert_eq!(final_vma_locked.end, 0x7000);
         })
+
     }
 
     /// Tests coalescing of adjacent VM Areas on both left and right sides.
