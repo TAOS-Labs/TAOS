@@ -1,6 +1,6 @@
 use core::{any::Any, fmt::Debug};
 
-use crate::{constants::memory::PAGE_SIZE, interrupts::x2apic::current_core_id, serial_println};
+use crate::{constants::memory::PAGE_SIZE, serial_println};
 use alloc::{collections::btree_map::BTreeMap, sync::Arc, vec::Vec};
 use bitflags::bitflags;
 use spin::Mutex;
@@ -64,13 +64,19 @@ impl Mm {
             index_offset,
             flags,
         )));
-        serial_println!("BACKING BEFORE INSERTION: {:#?}", backing);
         backing.insert_vma(new_vma.clone());
-        serial_println!("BACKING AFTER INSERTION: {:#?}", backing);
 
         tree.insert(start as usize, new_vma.clone());
 
-        Self::coalesce_vma(new_vma, tree)
+        // coalesce right
+        let right_coalesce = Self::coalesce_vma(new_vma, tree);
+
+        if start > 0 && Self::find_vma(start - 1, tree).is_some() {
+            // coalesce left
+            return Self::coalesce_vma(Self::find_vma(start - 1, tree).unwrap(), tree);
+        }
+
+        right_coalesce
     }
 
     /// Attempts to coalesce the candidate VMA with its left and right neighbors.
@@ -78,45 +84,8 @@ impl Mm {
     ///use alloc::collections::BTreeMap;
     pub fn coalesce_vma(candidate: Arc<Mutex<VmArea>>, tree: &mut VmaTree) -> Arc<Mutex<VmArea>> {
         let mut merged = candidate;
-        let mut did_merge = false;
 
-        // // --- Attempt left merge ---
-        // if cand_start > 0 {
-        //     // Find the VMA with the greatest start address less than candidate.start.
-        //     if let Some((_, left_vma)) = tree.range(..cand_start).next_back() {
-        //         let left_guard = left_vma.lock();
-        //         // Conditions for merge:
-        //         // 1. left VMA ends exactly where candidate starts.
-        //         // 2. They have identical flags.
-        //         // 3. They share the same backing.
-        //         if left_guard.end == cand_start
-        //             && left_guard.flags == cand_flags
-        //             && Arc::ptr_eq(&left_guard.backing, &cand_backing)
-        //         {
-        //             let new_start = left_guard.start;
-        //             let new_end = cand_end;
-        //             // When merging, we choose the left VMA’s index_offset.
-        //             let new_index_offset = left_guard.index_offset;
-        //             drop(left_guard);
-        //
-        //             // Remove both left and candidate from the tree.
-        //             tree.remove(&new_start);
-        //             tree.remove(&cand_start);
-        //
-        //             // Create a new merged VMA.
-        //             merged = Arc::new(Mutex::new(VmArea::new(
-        //                 new_start,
-        //                 new_end,
-        //                 cand_backing.clone(),
-        //                 new_index_offset,
-        //                 cand_flags,
-        //             )));
-        //             did_merge = true;
-        //         }
-        //     }
-        // }
-
-        // --- Attempt right merge ---
+        // --- Attempt merge ---
         let (cur_start, cur_end, cur_flags, cur_backing, cur_index_offset) = {
             let guard = merged.lock();
             (
@@ -134,8 +103,6 @@ impl Mm {
 
             // TODO: VMA type check
             if right_guard.start == cur_end && right_guard.flags == cur_flags {
-                serial_println!("Coalesce identified");
-                let new_start = cur_start;
                 let new_end = right_guard.end;
                 // We preserve the current index_offset.
                 let new_index_offset = cur_index_offset;
@@ -148,8 +115,6 @@ impl Mm {
                     )));
                 }
 
-                serial_println!("Right guard: {:#?}", right_guard);
-
                 // First, collect all the VmArea references outside the lock
                 let vmas_to_modify: Vec<Arc<Mutex<VmArea>>> = {
                     let vmas_guard = right_guard.backing.vmas().lock();
@@ -159,7 +124,6 @@ impl Mm {
                 // Now iterate over the collected references and modify them
                 for vma in vmas_to_modify.iter() {
                     if Arc::as_ptr(vma) == Arc::as_ptr(&right_vma) {
-                        serial_println!("GOT TO CHECK");
                         right_guard.index_offset += cur_end;
                         continue;
                     }
@@ -167,22 +131,8 @@ impl Mm {
                     var.index_offset += cur_end;
                 }
 
-                serial_println!("GOT HERE");
-
                 // Remove the current VMA and the right VMA from the tree.
-                // tree.remove(&(cur_start as usize));
                 tree.remove(&(cur_end as usize));
-
-                // Create a new merged VMA.
-                // merged = Arc::new(Mutex::new(VmArea::new(
-                //     new_start,
-                //     new_end,
-                //     cur_backing.clone(),
-                //     new_index_offset,
-                //     cur_flags,
-                // )));
-
-                did_merge = true;
 
                 let mut guard = merged.lock();
                 guard.end = new_end;
@@ -190,15 +140,7 @@ impl Mm {
                 guard.index_offset = new_index_offset;
             }
         }
-
         merged
-
-        // if did_merge {
-        //     // Recurse to merge further if possible.
-        //     Self::coalesce_vma(merged.clone(), tree)
-        // } else {
-        //     merged
-        // }
     }
 
     /// Remove the VmArea starting at the given address.
@@ -386,10 +328,6 @@ pub trait VmAreaBacking: Send + Sync + Debug + Any {
     /// Insert a new VMA into the list.
     fn insert_vma(&self, vma: Arc<Mutex<VmArea>>) {
         self.vmas().lock().push(vma);
-        serial_println!("VMA VECTOR IS THIS: {:#?}", self.vmas());
-        for (i, vma) in self.vmas().lock().iter().enumerate() {
-            serial_println!("{}'th VMA's address is {:?}", i, Arc::as_ptr(vma));
-        }
     }
 
     /// Remove a VMA from the list by index.
@@ -735,7 +673,7 @@ mod tests {
     /// exactly at `0x1000` and ending at `0x2000`. The test verifies that the two adjacent VM Areas are
     /// coalesced into a single VM Area by checking that a lookup for an address in the first region returns
     /// a VM Area with the same start as the coalesced result.
-    // #[test_case]
+    #[test_case]
     async fn test_coalesce_left() {
         let pml4_frame = PhysFrame::containing_address(PhysAddr::new(0x1000));
         let mm = Mm::new(pml4_frame);
@@ -865,7 +803,7 @@ mod tests {
     /// When the third VM Area is inserted, it should coalesce with both the first and second,
     /// resulting in a single coalesced VM Area. The test verifies that the start address for all
     /// resulting VM Areas is the same.
-    // #[test_case]
+    #[test_case]
     async fn test_coalesce_both() {
         let pml4_frame = PhysFrame::containing_address(PhysAddr::new(0x1000));
         let mm = Mm::new(pml4_frame);
