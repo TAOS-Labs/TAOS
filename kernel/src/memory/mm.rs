@@ -64,13 +64,11 @@ impl Mm {
             index_offset,
             flags,
         )));
+        serial_println!("BACKING BEFORE INSERTION: {:#?}", backing);
         backing.insert_vma(new_vma.clone());
-
-        // serial_println!("Backing 1 is {:#?}", backing);
+        serial_println!("BACKING AFTER INSERTION: {:#?}", backing);
 
         tree.insert(start as usize, new_vma.clone());
-
-        // serial_println!("Backing 2 is {:#?}", backing);
 
         Self::coalesce_vma(new_vma, tree)
     }
@@ -132,19 +130,15 @@ impl Mm {
 
         // Look up a VMA that starts exactly at the current VMA's end.
         if let Some(right_vma) = Self::find_vma(cur_end, tree) {
-            let right_guard = right_vma.lock();
-
+            let mut right_guard = right_vma.lock();
 
             // TODO: VMA type check
-            if right_guard.start == cur_end
-                && right_guard.flags == cur_flags
-            {
+            if right_guard.start == cur_end && right_guard.flags == cur_flags {
                 serial_println!("Coalesce identified");
                 let new_start = cur_start;
                 let new_end = right_guard.end;
                 // We preserve the current index_offset.
                 let new_index_offset = cur_index_offset;
-
 
                 // add all right hand mappings to the current anon_vma
                 for mapping in right_guard.backing.mappings().lock().iter() {
@@ -156,35 +150,44 @@ impl Mm {
 
                 serial_println!("Right guard: {:#?}", right_guard);
 
-        // First, collect all the VmArea references outside the lock
-        let vmas_to_modify: Vec<Arc<Mutex<VmArea>>> = {
-            let vmas_guard = right_guard.backing.vmas().lock();
-            vmas_guard.iter().cloned().collect()
-        };
+                // First, collect all the VmArea references outside the lock
+                let vmas_to_modify: Vec<Arc<Mutex<VmArea>>> = {
+                    let vmas_guard = right_guard.backing.vmas().lock();
+                    vmas_guard.iter().cloned().collect()
+                };
 
-        // Now iterate over the collected references and modify them
-        for vma in vmas_to_modify.iter() {
-            serial_println!("Vma: {:#?}", vma);
-            let mut var = vma.lock();
-            var.index_offset += cur_end;
-        }
+                // Now iterate over the collected references and modify them
+                for vma in vmas_to_modify.iter() {
+                    if Arc::as_ptr(vma) == Arc::as_ptr(&right_vma) {
+                        serial_println!("GOT TO CHECK");
+                        right_guard.index_offset += cur_end;
+                        continue;
+                    }
+                    let mut var = vma.lock();
+                    var.index_offset += cur_end;
+                }
 
-        serial_println!("GOT HERE");
+                serial_println!("GOT HERE");
 
                 // Remove the current VMA and the right VMA from the tree.
-                tree.remove(&(cur_start as usize));
+                // tree.remove(&(cur_start as usize));
                 tree.remove(&(cur_end as usize));
 
                 // Create a new merged VMA.
-                merged = Arc::new(Mutex::new(VmArea::new(
-                    new_start,
-                    new_end,
-                    cur_backing.clone(),
-                    new_index_offset,
-                    cur_flags,
-                )));
+                // merged = Arc::new(Mutex::new(VmArea::new(
+                //     new_start,
+                //     new_end,
+                //     cur_backing.clone(),
+                //     new_index_offset,
+                //     cur_flags,
+                // )));
 
                 did_merge = true;
+
+                let mut guard = merged.lock();
+                guard.end = new_end;
+                guard.backing = cur_backing.clone();
+                guard.index_offset = new_index_offset;
             }
         }
 
@@ -376,7 +379,7 @@ pub trait VmAreaBacking: Send + Sync + Debug + Any {
 
     /// Returns a reference to the reverse mappings.
     fn mappings(&self) -> &Mutex<BTreeMap<u64, Arc<VmaChain>>>;
-    
+
     /// Returns a reference to the list of VMAs associated with this backing.
     fn vmas(&self) -> &Mutex<Vec<Arc<Mutex<VmArea>>>>;
 
@@ -766,7 +769,7 @@ mod tests {
     async fn test_mm_coalesce_right() {
         let pml4_frame = PhysFrame::containing_address(PhysAddr::new(0x1000));
         let mm1 = Mm::new(pml4_frame);
-        
+
         let pml4_frame = PhysFrame::containing_address(PhysAddr::new(0x2000));
         let mm2 = Mm::new(pml4_frame);
 
@@ -837,18 +840,19 @@ mod tests {
             );
         });
 
-
         mm1.with_vma_tree(|tree| {
             let final_vma = Mm::find_vma(0, tree).unwrap();
             let final_vma_locked = final_vma.lock();
 
             serial_println!("Final Vma start is: {:X}", final_vma_locked.start);
             serial_println!("Final Vma end is: {:X}", final_vma_locked.end);
-            serial_println!("Final Vma index_offset is: {:X}", final_vma_locked.index_offset);
+            serial_println!(
+                "Final Vma index_offset is: {:X}",
+                final_vma_locked.index_offset
+            );
 
             assert_eq!(final_vma_locked.end, 0x7000);
         })
-
     }
 
     /// Tests coalescing of adjacent VM Areas on both left and right sides.
@@ -902,10 +906,10 @@ mod tests {
 
     /// Tests shrinking a VMA from the left side.
     ///
-    /// In this test, we create a VMA that spans three pages starting at 0x40000000.  
-    /// We populate its reverse mappings with one mapping per page.  
+    /// In this test, we create a VMA that spans three pages starting at 0x40000000.
+    /// We populate its reverse mappings with one mapping per page.
     /// Then we shrink the VMA by removing the leftmost page, so that the new start is shifted
-    /// by one page (i.e. new_start = old_start + PAGE_SIZE) while the end remains unchanged.  
+    /// by one page (i.e. new_start = old_start + PAGE_SIZE) while the end remains unchanged.
     /// The test asserts that:
     /// - The new VMA covers only the right two pages.
     /// - The reverse mappings have been updated so that the surviving mappings are shifted
@@ -976,9 +980,9 @@ mod tests {
     /// Tests shrinking a VMA from the right side.
     ///
     /// In this test, a VMA spanning three pages are craeted
-    /// Its reverse mappings are populated with one mapping per page.  
+    /// Its reverse mappings are populated with one mapping per page.
     /// We then shrink the VMA by removing the rightmost page (i.e. setting new_end = old_end - PAGE_SIZE)
-    /// while keeping the start unchanged.  
+    /// while keeping the start unchanged.
     /// The test asserts that:
     /// - The resulting VMA covers the left two pages.
     /// - The reverse mappings remain unshifted (i.e. the mapping for the first page is still at offset 0,
@@ -1119,7 +1123,7 @@ mod tests {
     ///
     /// In this test, a VMA covering two pages starting at 0x70000000 is created and populated with
     /// reverse mappings for each page. We then shrink the VMA so that new_start equals new_end,
-    /// meaning that the entire VMA is unmapped.  
+    /// meaning that the entire VMA is unmapped.
     ///
     /// This is effectively doing the same thing as a remove_vma, but could simplify code
     /// for munmap()

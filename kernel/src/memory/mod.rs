@@ -21,7 +21,9 @@ use limine::request::HhdmRequest;
 use mm::{AnonVmArea, Mm, VmAreaFlags, VmaChain};
 use spin::Mutex;
 use x86_64::{
-    registers::model_specific::{Efer, EferFlags}, structures::paging::{OffsetPageTable, PhysFrame}, PhysAddr, VirtAddr
+    registers::model_specific::{Efer, EferFlags},
+    structures::paging::{OffsetPageTable, PhysFrame},
+    PhysAddr, VirtAddr,
 };
 
 use crate::serial_println;
@@ -65,93 +67,4 @@ pub fn init(cpu_id: u32) {
         }
         heap::init_heap().expect("Failed to initializen heap");
     }
-
-    let pml4_frame = PhysFrame::containing_address(PhysAddr::new(0x1000));
-    let mm1 = Mm::new(pml4_frame);
-    
-    let pml4_frame = PhysFrame::containing_address(PhysAddr::new(0x2000));
-    let mm2 = Mm::new(pml4_frame);
-
-    let anon_area1 = Arc::new(AnonVmArea::new());
-    let anon_area2 = Arc::new(AnonVmArea::new());
-
-    // add frame mappings as they should be right now
-    anon_area1.insert_mapping(Arc::new(VmaChain::new(
-        0x0000,
-        Arc::new(alloc_frame().unwrap()),
-    )));
-    anon_area1.insert_mapping(Arc::new(VmaChain::new(
-        0x1000,
-        Arc::new(alloc_frame().unwrap()),
-    )));
-
-    anon_area2.insert_mapping(Arc::new(VmaChain::new(
-        0x0000,
-        Arc::new(alloc_frame().unwrap()),
-    )));
-    anon_area2.insert_mapping(Arc::new(VmaChain::new(
-        0x1000,
-        Arc::new(alloc_frame().unwrap()),
-    )));
-    anon_area2.insert_mapping(Arc::new(VmaChain::new(
-        0x2000,
-        Arc::new(alloc_frame().unwrap()),
-    )));
-    anon_area2.insert_mapping(Arc::new(VmaChain::new(
-        0x3000,
-        Arc::new(alloc_frame().unwrap()),
-    )));
-    anon_area2.insert_mapping(Arc::new(VmaChain::new(
-        0x4000,
-        Arc::new(alloc_frame().unwrap()),
-    )));
-
-    mm1.with_vma_tree_mutable(|tree| {
-        Mm::insert_vma(
-            tree,
-            0x5000,
-            0x7000,
-            anon_area1.clone(),
-            0,
-            VmAreaFlags::WRITABLE,
-        );
-    });
-    serial_println!("Got here 1");
-
-    mm2.with_vma_tree_mutable(|tree| {
-        Mm::insert_vma(
-            tree,
-            0,
-            0x2000,
-            anon_area1.clone(),
-            0,
-            VmAreaFlags::WRITABLE,
-        );
-    });
-    serial_println!("Got here 2");
-
-    mm1.with_vma_tree_mutable(|tree| {
-        Mm::insert_vma(
-            tree,
-            0,
-            0x5000,
-            anon_area2.clone(),
-            0,
-            VmAreaFlags::WRITABLE,
-        );
-    });
-    serial_println!("Got here 3");
-
-
-
-    mm1.with_vma_tree(|tree| {
-        let final_vma = Mm::find_vma(0, tree).unwrap();
-        let final_vma_locked = final_vma.lock();
-
-        serial_println!("Final Vma start is: {:X}", final_vma_locked.start);
-        serial_println!("Final Vma end is: {:X}", final_vma_locked.end);
-        serial_println!("Final Vma index_offset is: {:X}", final_vma_locked.index_offset);
-
-        assert_eq!(final_vma_locked.end, 0x7000);
-    })
 }
