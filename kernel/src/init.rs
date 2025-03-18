@@ -72,7 +72,7 @@ pub fn init() -> u32 {
 
     idt::enable();
 
-    let pid = create_process(TEST_FORK_COW);
+    let pid = create_process(TEST_SIMPLE_STACK_ACCESS);
     schedule_process(pid);
 
     bsp_id

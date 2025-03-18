@@ -111,7 +111,8 @@ pub fn determine_fault_cause(error_code: PageFaultErrorCode) -> FaultOutcome {
 
             // Look up the segment covering this fault.
             // We use a range query to find the segment with the greatest key <= fault_offset.
-            let seg_entry = vma.segments
+            let segments = vma.segments.lock();
+            let seg_entry = segments
                 .range(..=fault_offset)
                 .next_back()
                 .expect("No segment found covering fault offset");
