@@ -64,15 +64,18 @@ pub fn determine_fault_cause(error_code: PageFaultErrorCode) -> FaultOutcome {
     use x86_64::registers::control::{Cr2, Cr3};
 
     // Read fault info.
-    let faulting_address = Cr2::read().expect("Cannot read faulting address").as_u64();
+    let faulting_address = Cr2::read()
+        .expect("Cannot read faulting address")
+        .as_u64();
 
     // Set up the page table mapper.
     let pml4 = Cr3::read().0;
     let new_pml4_phys = pml4.start_address();
     let new_pml4_virt = VirtAddr::new((*HHDM_OFFSET).as_u64()) + new_pml4_phys.as_u64();
     let new_pml4_ptr: *mut PageTable = new_pml4_virt.as_mut_ptr();
-    let mut mapper =
-        unsafe { OffsetPageTable::new(&mut *new_pml4_ptr, VirtAddr::new((*HHDM_OFFSET).as_u64())) };
+    let mut mapper = unsafe {
+        OffsetPageTable::new(&mut *new_pml4_ptr, VirtAddr::new((*HHDM_OFFSET).as_u64()))
+    };
 
     // Compute the faulting page.
     let page = Page::containing_address(VirtAddr::new(faulting_address));
@@ -99,13 +102,31 @@ pub fn determine_fault_cause(error_code: PageFaultErrorCode) -> FaultOutcome {
     unsafe {
         (*process.pcb.get()).mm.with_vma_tree(|tree| {
             // Find the VMA covering the faulting address.
-            let vma_arc = Mm::find_vma(faulting_address, tree).expect("Vma not found?");
+            let vma_arc = Mm::find_vma(faulting_address, tree)
+                .expect("Vma not found?");
             let vma = vma_arc.lock();
 
-            // Clone the backing so we can use it later.
-            let backing = Arc::clone(&vma.backing);
-            // Compute the anonymous VMA chain mapping, if any.
-            let anon_vma_chain = backing.find_mapping(page.start_address().as_u64() - vma.start);
+            // Compute the fault's offset within the VMA.
+            let fault_offset = page.start_address().as_u64() - vma.start;
+
+            // Look up the segment covering this fault.
+            // We use a range query to find the segment with the greatest key <= fault_offset.
+            let seg_entry = vma.segments
+                .range(..=fault_offset)
+                .next_back()
+                .expect("No segment found covering fault offset");
+            let seg_key = *seg_entry.0;
+            let segment = seg_entry.1;
+            if fault_offset >= segment.end {
+                panic!("Fault offset {} not covered by segment", fault_offset);
+            }
+
+            // Use the segment's backing.
+            let backing = Arc::clone(&segment.backing);
+            // Compute the mapping offset within the backing.
+            // (Assuming each segment's reverse mappings are keyed relative to its own start.)
+            let mapping_offset = fault_offset - seg_key;
+            let anon_vma_chain = backing.find_mapping(mapping_offset);
 
             let pt_flags = vma_to_page_flags(vma.flags);
 
@@ -126,8 +147,9 @@ pub fn determine_fault_cause(error_code: PageFaultErrorCode) -> FaultOutcome {
                     })
                 }
             } else {
-                // For mapped pages, check if a COW fault occurred.
-                let flags = get_page_flags(page, &mut mapper).expect("Could not get page flags");
+                // For mapped pages, check if a Copy-On-Write fault occurred.
+                let flags = get_page_flags(page, &mut mapper)
+                    .expect("Could not get page flags");
                 let cow = !vma.flags.contains(VmAreaFlags::SHARED);
                 let caused_by_write = error_code.contains(PageFaultErrorCode::CAUSED_BY_WRITE);
                 if cow && caused_by_write && flags.contains(PageTableFlags::PRESENT) {
@@ -145,6 +167,7 @@ pub fn determine_fault_cause(error_code: PageFaultErrorCode) -> FaultOutcome {
 
     outcome.expect("Failed to determine fault cause")
 }
+
 
 /// Handles a fault by using an existing anonymous VMA chain mapping.
 ///

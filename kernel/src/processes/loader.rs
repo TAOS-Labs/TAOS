@@ -70,7 +70,6 @@ pub fn load_elf(
                     page.start_address().as_u64(),
                     page.start_address().as_u64() + PAGE_SIZE as u64,
                     anon_vma_code_and_data.clone(),
-                    0,
                     VmAreaFlags::WRITABLE | VmAreaFlags::EXECUTE,
                 );
             });
@@ -136,15 +135,14 @@ pub fn load_elf(
     let _end_page: Page<Size4KiB> = Page::containing_address(stack_end);
 
     // new anon_vma that corresponds to this stack
-    let anon_vma = Arc::new(AnonVmArea::new());
+    let anon_vma_stack = Arc::new(AnonVmArea::new());
 
     mm.with_vma_tree_mutable(|tree| {
         Mm::insert_vma(
             tree,
             STACK_START,
             STACK_START + STACK_SIZE as u64,
-            anon_vma,
-            0,
+            anon_vma_stack,
             VmAreaFlags::WRITABLE | VmAreaFlags::GROWS_DOWN,
         );
     });

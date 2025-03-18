@@ -187,7 +187,6 @@ pub fn sys_mmap(addr: u64, len: u64, prot: u64, flags: u64, fd: i64, offset: u64
                 begin_addr,
                 begin_addr + len,
                 Arc::new(anon_vma),
-                0,
                 vma_flags,
             );
         })
@@ -224,7 +223,7 @@ pub fn sys_mprotect(addr: u64, len: u64, prot: u64) -> u64 {
 
     // new anon vma to insert based on mprotect (technically not optimal)
     let anon_vma = Arc::new(AnonVmArea::new());
-    let new_vma = VmArea::new(addr, addr + len, anon_vma, 0, mmap_prot_to_vma_flags(prot, MmapFlags::empty()));
+    let new_vma = VmArea::new(addr, addr + len, anon_vma, mmap_prot_to_vma_flags(prot, MmapFlags::empty()));
 
     unsafe {
         (*pcb).mm.with_vma_tree_mutable(|tree| {

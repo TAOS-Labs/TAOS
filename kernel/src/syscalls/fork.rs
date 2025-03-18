@@ -69,8 +69,7 @@ pub fn sys_fork(reg_vals: &NonFlagRegisters) -> u64 {
                 let vma_lock = vma_entry.1.lock();
                 let start = vma_lock.start;
                 let end = vma_lock.end;
-                let backing = vma_lock.backing.clone();
-                let index_offset = vma_lock.index_offset;
+                let segments = vma_lock.segments.clone();
                 let flags = vma_lock.flags;
                 drop(vma_lock);
 
@@ -79,7 +78,7 @@ pub fn sys_fork(reg_vals: &NonFlagRegisters) -> u64 {
                     .mm
                     .with_vma_tree_mutable(|child_tree| {
                         serial_println!("Inserting range {:X} - {:X}", start, end);
-                        Mm::insert_vma(child_tree, start, end, backing, index_offset, flags);
+                        Mm::insert_copied_vma(child_tree, start, end, segments, flags);
                     });
             }
         })
