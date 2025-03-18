@@ -1,7 +1,11 @@
 use crate::{constants::memory::PAGE_SIZE, serial_println};
 use alloc::{collections::btree_map::BTreeMap, sync::Arc, vec::Vec};
 use bitflags::bitflags;
-use core::{any::Any, fmt::Debug};
+use core::{
+    any::Any,
+    cmp::{max, min},
+    fmt::Debug,
+};
 use spin::Mutex;
 use x86_64::{
     structures::paging::{Mapper, Page, PageTableFlags, PhysFrame, Size4KiB},
@@ -214,10 +218,12 @@ impl Mm {
         tree.remove_entry(&(start as usize))
     }
 
-    /// Shrink a VMA.
+    /// Shrink a VMA and update its segments’ reverse mappings accordingly.
     ///
-    /// This updates the VMA and its (single) segment’s reverse mappings.
-    /// (Note: In the multiple-backings approach the reverse mapping lookup is per backing.)
+    /// This function removes all page mappings that are outside the new region and updates each
+    /// segment’s backing by adjusting their reverse mapping keys. It handles a VMA composed of
+    /// multiple segments. The segment keys (and their stored offsets) are assumed to be relative
+    /// to the VMA’s old start. After shrinking, they are shifted by `new_start - old_start`.
     pub fn shrink_vma(
         old_start: u64,
         new_start: u64,
@@ -225,55 +231,79 @@ impl Mm {
         mapper: &mut impl Mapper<Size4KiB>,
         tree: &mut VmaTree,
     ) -> Option<Arc<Mutex<VmArea>>> {
+        // Remove the VMA from the tree.
         let vma = Mm::remove_vma(old_start, tree).unwrap().1;
         {
             let mut vma_guard = vma.lock();
+            let old_vma_end = vma_guard.end;
 
             // Remove all mappings for pages that are being dropped.
             for va in (old_start..new_start).step_by(PAGE_SIZE) {
                 let page = Page::containing_address(VirtAddr::new(va));
                 remove_mapping(page, mapper);
             }
-            for va in (new_end..vma_guard.end).step_by(PAGE_SIZE) {
+            for va in (new_end..old_vma_end).step_by(PAGE_SIZE) {
                 let page = Page::containing_address(VirtAddr::new(va));
                 remove_mapping(page, mapper);
             }
 
-            // For now, we assume a single segment covering the VMA.
-            if let Some((_seg_start, segment)) = vma_guard.segments.clone().lock().iter_mut().next()
-            {
-                let remove_diff = new_start - old_start;
-                let bound = new_end - old_start;
+            let remove_diff = new_start - old_start;
+            let bound = new_end - old_start;
 
-                // Update the reverse mapping stored in the segment's backing.
-                let mut mappings = segment.backing.mappings().lock();
-                let mut updated_mappings: BTreeMap<u64, Arc<VmaChain>> = BTreeMap::new();
+            // Create a new segments map to hold updated segments.
+            let mut new_segments: BTreeMap<u64, VmAreaSegment> = BTreeMap::new();
 
-                for (&offset, chain) in mappings.iter() {
-                    if offset < remove_diff {
-                        continue;
+            let mut vma_guard_segments = vma_guard.segments.lock();
+
+            // For each segment in the VMA...
+            for (&old_seg_key, seg) in vma_guard_segments.iter() {
+                // The segment covers [old_seg_key, old_seg_key + seg_length).
+                let seg_length = seg.end - seg.start;
+                let seg_global_start = old_seg_key; // relative to old_start
+                let seg_global_end = seg_global_start + seg_length;
+
+                let inter_start = max(seg_global_start, remove_diff);
+                let inter_end = min(seg_global_end, bound);
+                if inter_start < inter_end {
+                    // New key for this segment: shift by the remove difference.
+                    let new_seg_key = inter_start - remove_diff;
+                    let new_seg_length = inter_end - inter_start;
+                    let mut new_seg = VmAreaSegment {
+                        start: 0, // normalize to 0 in the new VMA coordinate space
+                        end: new_seg_length,
+                        backing: seg.backing.clone(),
+                    };
+
+                    // Update the reverse mappings in the segment's backing.
+                    {
+                        let mut mappings = new_seg.backing.mappings().lock();
+                        // Collect current mappings so we can iterate without mutating the map.
+                        let old_mappings: Vec<(u64, Arc<VmaChain>)> =
+                            mappings.iter().map(|(k, v)| (*k, v.clone())).collect();
+                        let mut updated_mappings: BTreeMap<u64, Arc<VmaChain>> = BTreeMap::new();
+                        for (offset, chain) in old_mappings {
+                            let global_offset = old_seg_key + offset;
+                            if global_offset < remove_diff || global_offset >= bound {
+                                continue;
+                            }
+                            let new_offset = global_offset - remove_diff - new_seg_key;
+                            let updated_chain = Arc::new(VmaChain {
+                                offset: new_offset,
+                                frame: chain.frame.clone(),
+                            });
+                            updated_mappings.insert(new_offset, updated_chain);
+                        }
+                        *mappings = updated_mappings;
                     }
-                    if offset >= bound {
-                        break;
-                    }
-                    let new_offset = offset - remove_diff;
-                    let updated_chain = Arc::new(VmaChain {
-                        offset: new_offset,
-                        frame: chain.frame.clone(),
-                    });
-                    updated_mappings.insert(new_offset, updated_chain);
+
+                    new_segments.insert(new_seg_key, new_seg);
                 }
-                *mappings = updated_mappings;
-
-                // Update the segment to reflect the new size.
-                // Since the VMA itself is shifting, we normalize the segment to start at 0.
-                segment.start = 0;
-                segment.end = new_end - new_start;
             }
 
-            // Update the VMA boundaries.
+            // Update the VMA boundaries and its segments.
             vma_guard.start = new_start;
             vma_guard.end = new_end;
+            *vma_guard_segments = new_segments;
         }
 
         tree.insert(new_start as usize, vma.clone());
@@ -1349,7 +1379,7 @@ mod tests {
                     backing: anon_area4.clone(),
                 },
             );
-            let mid_vma = Mm::insert_copied_vma(
+            let _mid_vma = Mm::insert_copied_vma(
                 tree,
                 0x2000,
                 0x4000,
