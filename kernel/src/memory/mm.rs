@@ -218,6 +218,87 @@ impl Mm {
         tree.remove_entry(&(start as usize))
     }
 
+    pub fn shrink_vma_right(
+        old_start: u64,
+        new_start: u64,
+        new_end: u64,
+        mapper: &mut impl Mapper<Size4KiB>,
+        tree: &mut VmaTree,
+    ) -> (Option<Arc<Mutex<VmArea>>>, Option<Arc<Mutex<VmArea>>>) {
+        let vma = Mm::find_vma(old_start, tree).unwrap();
+
+        let vma_guard = vma.lock();
+        let old_end = vma_guard.end;
+
+        let length_of_left = new_start - old_start;
+        let length_of_right = new_end - old_end;
+
+        // make a new vma that starts at new_start and ends at new_end
+        let new_segments: BTreeMap<u64, VmAreaSegment> = BTreeMap::new();
+
+        let mut vma_segments = vma_guard.segments.lock();
+
+        // os       oe        ns          ne
+        // 0       2000        0        1000
+        // old Vma
+        // 0 - 1000
+        // segment end changes, less by oe - ne
+        // new Vma
+        // 1000 - 2000
+        // segment at 0x0
+        // segment start is oe - ne + old_segment_start
+        // segment end   is oe
+
+        let mut new_vma_segments: Vec<(u64, VmAreaSegment)> = Vec::new();
+        // For each segment in the VMA...
+        for (&old_seg_key, seg) in vma_segments.iter_mut() {
+            // go through every segment in the original VMA
+
+            // for every segment that is less than ns in terms of key
+            // update the end if needed
+
+            // for every segment that is greater than ns in terms of key
+            // remove this segment, add to new_vma_segments vector
+            // and update the start / key as needed
+
+            let seg_length = seg.end - seg.start;
+            let seg_offset = old_seg_key; // relative to old_start
+
+            if old_seg_key < new_start {
+                seg.end = new_end;
+                // do nothing, but update the end of the last segment
+            } else {
+                seg.start += new_end - new_start;
+                new_vma_segments.push((old_seg_key, seg.clone()));
+            }
+
+            // let inter_start = max(seg_global_start, length_of_left);
+            // let inter_end = min(seg_global_end, new_end - );
+            // if inter_start < inter_end {
+            //     // New key for this segment: shift by the remove difference.
+            //     let new_seg_key = inter_start - length_of_left;
+            //     let new_seg_length = inter_end - inter_start;
+            //     let mut new_seg = VmAreaSegment {
+            //         start: 0, // normalize to 0 in the new VMA coordinate space
+            //         end: new_seg_length,
+            //         backing: seg.backing.clone(),
+            //     };
+            // }
+        }
+
+        (None, None)
+    }
+
+    pub fn shrink_vma_left(
+        old_start: u64,
+        new_start: u64,
+        new_end: u64,
+        mapper: &mut impl Mapper<Size4KiB>,
+        tree: &mut VmaTree,
+    ) -> Option<Arc<Mutex<VmArea>>> {
+        return None;
+    }
+
     /// Shrink a VMA and update its segments’ reverse mappings accordingly.
     ///
     /// This function removes all page mappings that are outside the new region and updates each
@@ -253,57 +334,81 @@ impl Mm {
             // Create a new segments map to hold updated segments.
             let mut new_segments: BTreeMap<u64, VmAreaSegment> = BTreeMap::new();
 
-            let mut vma_guard_segments = vma_guard.segments.lock();
-
-            // For each segment in the VMA...
-            for (&old_seg_key, seg) in vma_guard_segments.iter() {
-                // The segment covers [old_seg_key, old_seg_key + seg_length).
-                let seg_length = seg.end - seg.start;
-                let seg_global_start = old_seg_key; // relative to old_start
-                let seg_global_end = seg_global_start + seg_length;
-
-                let inter_start = max(seg_global_start, remove_diff);
-                let inter_end = min(seg_global_end, bound);
-                if inter_start < inter_end {
-                    // New key for this segment: shift by the remove difference.
-                    let new_seg_key = inter_start - remove_diff;
-                    let new_seg_length = inter_end - inter_start;
-                    let mut new_seg = VmAreaSegment {
-                        start: 0, // normalize to 0 in the new VMA coordinate space
-                        end: new_seg_length,
-                        backing: seg.backing.clone(),
-                    };
-
-                    // Update the reverse mappings in the segment's backing.
-                    {
-                        let mut mappings = new_seg.backing.mappings().lock();
-                        // Collect current mappings so we can iterate without mutating the map.
-                        let old_mappings: Vec<(u64, Arc<VmaChain>)> =
-                            mappings.iter().map(|(k, v)| (*k, v.clone())).collect();
-                        let mut updated_mappings: BTreeMap<u64, Arc<VmaChain>> = BTreeMap::new();
-                        for (offset, chain) in old_mappings {
-                            let global_offset = old_seg_key + offset;
-                            if global_offset < remove_diff || global_offset >= bound {
-                                continue;
-                            }
-                            let new_offset = global_offset - remove_diff - new_seg_key;
-                            let updated_chain = Arc::new(VmaChain {
-                                offset: new_offset,
-                                frame: chain.frame.clone(),
-                            });
-                            updated_mappings.insert(new_offset, updated_chain);
-                        }
-                        *mappings = updated_mappings;
-                    }
-
-                    new_segments.insert(new_seg_key, new_seg);
-                }
-            }
-
-            // Update the VMA boundaries and its segments.
-            vma_guard.start = new_start;
-            vma_guard.end = new_end;
-            *vma_guard_segments = new_segments;
+            //let mut vma_segments = &vma_guard.segments;
+            //let mut vma_guard_segments = vma_segments.lock();
+            //
+            //// For each segment in the VMA...
+            //for (&old_seg_key, seg) in vma_guard_segments.iter() {
+            //    // The segment covers [old_seg_key, old_seg_key + seg_length).
+            //    let seg_length = seg.end - seg.start;
+            //    let seg_global_start = old_seg_key; // relative to old_start
+            //    let seg_global_end = seg_global_start + seg_length;
+            //
+            //    let inter_start = max(seg_global_start, remove_diff);
+            //    let inter_end = min(seg_global_end, bound);
+            //    if inter_start < inter_end {
+            //        // New key for this segment: shift by the remove difference.
+            //        let new_seg_key = inter_start - remove_diff;
+            //        let new_seg_length = inter_end - inter_start;
+            //        let new_seg = VmAreaSegment {
+            //            start: 0, // normalize to 0 in the new VMA coordinate space
+            //            end: new_seg_length,
+            //            backing: seg.backing.clone(),
+            //        };
+            //
+            //        // 0x0000 -> 0x2000
+            //        // 0x0000 -> frame1
+            //        // 0x1000 -> frame2
+            //
+            //        // 0x1000 -> 0x2000
+            //        // 0x0000 -> frame1 CHAIN IS DROPPED
+            //        // 0x1000 -> offset 0x1000
+            //        // 0x1000 -> frame2 offset 0
+            //
+            //        // munmap
+            //        // VMA from 0x0 -> 0x1000 is dropped
+            //
+            //        // mprotect
+            //        // NEW VMA
+            //        // 0x0 -> 0x1000
+            //        // 0x0 -> frame1 //// RETAINS OLD PERMISSIONS
+            //
+            //        // mprotect
+            //        // 0x0000 -> 0x2000
+            //        // 0x1000 -> 0x2000 mprotect
+            //
+            //        // 0x0000 -> 0x1000 // OLD PERMISSIONS, NEW VMA
+            //
+            //        // Update the reverse mappings in the segment's backing.
+            //        {
+            //            let mut mappings = new_seg.backing.mappings().lock();
+            //            // Collect current mappings so we can iterate without mutating the map.
+            //            let old_mappings: Vec<(u64, Arc<VmaChain>)> =
+            //                mappings.iter().map(|(k, v)| (*k, v.clone())).collect();
+            //            let mut updated_mappings: BTreeMap<u64, Arc<VmaChain>> = BTreeMap::new();
+            //            for (offset, chain) in old_mappings {
+            //                let global_offset = old_seg_key + offset;
+            //                if global_offset < remove_diff || global_offset >= bound {
+            //                    continue;
+            //                }
+            //                let new_offset = global_offset - remove_diff - new_seg_key;
+            //                let updated_chain = Arc::new(VmaChain {
+            //                    offset: new_offset,
+            //                    frame: chain.frame.clone(),
+            //                });
+            //                updated_mappings.insert(new_offset, updated_chain);
+            //            }
+            //            *mappings = updated_mappings;
+            //        }
+            //
+            //        new_segments.insert(new_seg_key, new_seg);
+            //    }
+            //}
+            //
+            //// Update the VMA boundaries and its segments.
+            //vma_guard.start = new_start;
+            //vma_guard.end = new_end;
+            //*vma_guard_segments = new_segments;
         }
 
         tree.insert(new_start as usize, vma.clone());
@@ -1480,7 +1585,7 @@ mod tests {
         let new_end = old_end;
         let shrunk = mm.with_vma_tree_mutable(|tree| {
             let mut mapper = KERNEL_MAPPER.lock();
-            Mm::shrink_vma(old_start, new_start, new_end, &mut *mapper, tree)
+            Mm::shrink_vma_left(old_start, new_start, new_end, &mut *mapper, tree)
         });
         assert!(shrunk.is_some());
         let vma = shrunk.unwrap();
@@ -1551,7 +1656,7 @@ mod tests {
         let new_end = old_end - PAGE_SIZE as u64;
         let shrunk = mm.with_vma_tree_mutable(|tree| {
             let mut mapper = KERNEL_MAPPER.lock();
-            Mm::shrink_vma(old_start, new_start, new_end, &mut *mapper, tree)
+            Mm::shrink_vma_right(old_start, new_start, new_end, &mut *mapper, tree).0
         });
         assert!(shrunk.is_some());
         let vma = shrunk.unwrap();
@@ -1620,13 +1725,26 @@ mod tests {
         // Shrink both sides: remove the leftmost and rightmost pages.
         let new_start = old_start + PAGE_SIZE as u64;
         let new_end = old_end - PAGE_SIZE as u64;
-        let shrunk = mm.with_vma_tree_mutable(|tree| {
+        let shrunk_left = mm.with_vma_tree_mutable(|tree| {
             let mut mapper = KERNEL_MAPPER.lock();
-            Mm::shrink_vma(old_start, new_start, new_end, &mut *mapper, tree)
+            Mm::shrink_vma_left(old_start, new_start, new_end, &mut *mapper, tree)
         });
-        assert!(shrunk.is_some());
+        assert!(shrunk_left.is_some());
 
-        let vma = shrunk.unwrap();
+        let vma = shrunk_left.unwrap();
+        let locked = vma.lock();
+        assert_eq!(locked.start, new_start);
+        assert_eq!(locked.end, new_end);
+
+        let new_start = old_start + PAGE_SIZE as u64;
+        let new_end = old_end - PAGE_SIZE as u64;
+        let shrunk_left = mm.with_vma_tree_mutable(|tree| {
+            let mut mapper = KERNEL_MAPPER.lock();
+            Mm::shrink_vma_right(old_start, new_start, new_end, &mut *mapper, tree).0
+        });
+        assert!(shrunk_left.is_some());
+
+        let vma = shrunk_left.unwrap();
         let locked = vma.lock();
         assert_eq!(locked.start, new_start);
         assert_eq!(locked.end, new_end);

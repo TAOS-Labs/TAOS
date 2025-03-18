@@ -280,7 +280,7 @@ pub fn sys_munmap(addr: u64, len: u64) -> u64 {
                     let new_start = max(vma_start, addr);
                     let new_end = min(vma_end, end_addr);
 
-                    Mm::shrink_vma(vma_start, new_start, new_end, &mut mapper, tree);
+                    Mm::shrink_vma_right(vma_start, new_start, new_end, &mut mapper, tree);
 
                     current_address = new_end;
                 } else {
@@ -288,7 +288,7 @@ pub fn sys_munmap(addr: u64, len: u64) -> u64 {
                 }
             }
 
-            return 1;
+            1
         })
     };
 
