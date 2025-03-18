@@ -15,7 +15,7 @@ pub enum TrbTypes {
     NoOp = 8,
     EnableSlotCmd = 9,
     DisableSlotCmd = 10,
-    AddressDeviceCard = 11,
+    AddressDeviceCmd = 11,
     CoonfigEpCmd = 12,
     EvalCentextCmd = 13,
     RestEpCmd = 14,
@@ -129,11 +129,9 @@ impl TransferRequestBlock {
     pub fn set_ent(&mut self, value: u32) {
         self.control = (self.control & !0x2) | (value << 1);
     }
-
 }
 
 impl PartialEq for TransferRequestBlock {
-
     fn eq(&self, other: &TransferRequestBlock) -> bool {
         (self.parameters == other.parameters)
             & (self.status == other.status)

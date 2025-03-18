@@ -157,7 +157,7 @@ impl SlotContext {
     }
 }
 
-#[repr(C, packed)]
+#[repr(C)]
 #[derive(Debug, Clone)]
 #[allow(dead_code)]
 /// See section 6.2.3 of the xHCI specs.
@@ -165,8 +165,8 @@ impl SlotContext {
 /// HCCPARAMS1 register is '0', otherwise it is 64 bytes with bytes 32
 /// to 64 reserved for the xHCI
 pub struct EndpointContext {
-    offset_0: u32,
-    offset_1: u32,
+    pub offset_0: u32,
+    pub offset_1: u32,
     offset_2: u32,
     offset_3: u32,
     offset_4: u32,
@@ -459,7 +459,7 @@ impl InputControlContext {
     /// bit position. Index must be >= 0 and < 32.
     pub fn get_add_flag(&self, index: u32) -> u32 {
         assert!((0..32).contains(&index));
-        (self.offset_0 >> index) & 1
+        (self.offset_1 >> index) & 1
     }
 
     /// Sets the Add Context flag at the index bit position to value.
@@ -468,6 +468,6 @@ impl InputControlContext {
     pub fn set_add_flag(&mut self, index: u32, value: u32) {
         assert!((0..32).contains(&index));
         assert!(value == 0 || value == 1);
-        self.offset_0 = (self.offset_0 & !(1 << index)) | (value << index);
+        self.offset_1 = (self.offset_1 & !(1 << index)) | (value << index);
     }
 }
