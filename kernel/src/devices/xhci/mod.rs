@@ -6,7 +6,7 @@
 pub mod context;
 pub mod ring_buffer;
 
-use core::{cmp::min, mem::MaybeUninit, ptr::copy_nonoverlapping};
+use core::cmp::min;
 
 use crate::{constants::memory::PAGE_SIZE, debug_println, memory::frame_allocator::alloc_frame};
 use alloc::{sync::Arc, vec::Vec};
@@ -447,7 +447,8 @@ fn boot_up_all_ports(info: &mut XHCIInfo, mapper: &mut OffsetPageTable) -> Resul
         if PortStatusAndControl::CurrentConnectStatus.intersects(device_connected) {
             debug_println!("PortStatusAndCtrl = {device_connected:?}");
             let slot = boot_up_usb_port(info, device, device_connected, mapper)?;
-            setup_input_context(info, slot, device_connected, mapper)?;
+            let input_context = address_device(info, slot, mapper)?;
+            configure_device(info, slot, mapper, input_context)?;
         } else {
             continue;
         }
@@ -511,81 +512,84 @@ fn boot_up_usb_port(
     Result::Ok(slot)
 }
 
-fn setup_input_context(
+fn address_device(
     info: &mut XHCIInfo,
     slot: u8,
-    port_status: PortStatusAndControl,
     mapper: &mut OffsetPageTable,
-) -> Result<(), XHCIError> {
-    let input_frame = alloc_frame().ok_or(XHCIError::MemoryAllocationFailure)?;
-    let input_context_vaddr = map_page_as_uncacheable(input_frame.start_address(), mapper)
+) -> Result<VirtAddr, XHCIError> {
+    // We need 2 pages, one for the device context, and the other for ring buffer(s)
+    // Start by setting up ring buffers
+
+    let buffer_frame = alloc_frame().ok_or(XHCIError::MemoryAllocationFailure)?;
+    let buffer_address = map_page_as_uncacheable(buffer_frame.start_address(), mapper)
         .map_err(|_| XHCIError::MemoryAllocationFailure)?;
-    mmio::zero_out_page(Page::containing_address(input_context_vaddr));
-    // Set up input control context
-    let input_context = MaybeUninit::<InputControlContext>::zeroed();
-    let mut input_context = unsafe { input_context.assume_init() };
-    input_context.set_add_flag(0, 1);
-    input_context.set_add_flag(1, 1);
-    unsafe { copy_nonoverlapping(&input_context, input_context_vaddr.as_mut_ptr(), 1) };
 
-    // The size of the slot context is 64 bytes or less
-    // setup input slot context
-    let slot_context_vaddr = input_context_vaddr + 32;
-    let slot_context = MaybeUninit::<SlotContext>::zeroed();
-    let mut slot_context = unsafe { slot_context.assume_init() };
-    slot_context.set_root_hub_port(slot.into());
-    slot_context.set_context_entries(1);
-    slot_context.set_route_string(0);
-    unsafe { copy_nonoverlapping(&slot_context, slot_context_vaddr.as_mut_ptr(), 1) };
-
-    let input_device_vadr = slot_context_vaddr + 32;
-
-    // Initalize default ctrl endpoint 0 context
-    let input_dev_ctrl_ep_0_ctxt = MaybeUninit::<EndpointContext>::zeroed();
-    let mut input_dev_ctrl_ep_0_ctxt = unsafe { input_dev_ctrl_ep_0_ctxt.assume_init() };
-    // 4 = ctrl
-    input_dev_ctrl_ep_0_ctxt.set_eptype(4);
-    let _protocol_speed_id = (port_status.bits() >> 10) & 0b111;
-    // TODO: fix max packet size to not be hard coded
-    input_dev_ctrl_ep_0_ctxt.set_max_packet_size(8);
-    input_dev_ctrl_ep_0_ctxt.set_max_burst_size(0);
-    input_dev_ctrl_ep_0_ctxt.set_dcs(1);
-    input_dev_ctrl_ep_0_ctxt.set_interval(0);
-    input_dev_ctrl_ep_0_ctxt.set_maxpstreams(0);
-    input_dev_ctrl_ep_0_ctxt.set_mult(0);
-    input_dev_ctrl_ep_0_ctxt.set_cerr(3);
-
-    // Set up output device
-    let output_device_vaddr = input_device_vadr + 32;
-    let output_dev_context = MaybeUninit::<EndpointContext>::zeroed();
-    let output_dev_content = unsafe { output_dev_context.assume_init() };
-    unsafe { copy_nonoverlapping(&output_dev_content, output_device_vaddr.as_mut_ptr(), 1) };
-
-    // Setup transfer ring for default ctrl endpoint
-    let transfer_ring_vaddr = output_device_vaddr + 32;
-    input_dev_ctrl_ep_0_ctxt.set_trdequeue_ptr(transfer_ring_vaddr - mapper.phys_offset());
-    unsafe { copy_nonoverlapping(&input_dev_ctrl_ep_0_ctxt, input_device_vadr.as_mut_ptr(), 1) };
     let _producer_ring_buffer = ProducerRingBuffer::new(
-        transfer_ring_vaddr.as_u64(),
+        buffer_address.as_u64(),
         0,
         RingType::Command,
-        (transfer_ring_vaddr - input_context_vaddr)
-            .try_into()
-            .unwrap(),
+        PAGE_SIZE.try_into().unwrap(),
     )
     .expect("Everything should be alligned");
 
+    // For device context see Figure 4-1 of xhci spec (Page 95)
+    let device_context_frame = alloc_frame().ok_or(XHCIError::MemoryAllocationFailure)?;
+    let device_context_address =
+        map_page_as_uncacheable(device_context_frame.start_address(), mapper)
+            .map_err(|_| XHCIError::MemoryAllocationFailure)?;
+    mmio::zero_out_page(Page::containing_address(device_context_address));
+
+    // Start with the input control context (ICC in this code)
+    let input_control_context_ptr: *mut InputControlContext = device_context_address.as_mut_ptr();
+    let mut icc = unsafe { *input_control_context_ptr };
+    icc.set_add_flag(0, 1);
+    icc.set_add_flag(1, 1);
+    unsafe { core::ptr::write_volatile(device_context_address.as_mut_ptr(), icc) };
+    debug_println!("Icc = {icc:?}");
+
+    // Now handle slot context
+    // TODO: Fix as it assumes 32 byte slot context
+    let slot_context_va = device_context_address + 32;
+    let slot_context_ptr: *mut SlotContext = slot_context_va.as_mut_ptr();
+    let mut slot_context = unsafe { *slot_context_ptr };
+    slot_context.set_root_hub_port(slot.into());
+    slot_context.set_context_entries(1);
+    slot_context.set_route_string(0);
+    unsafe {
+        core::ptr::write_volatile(slot_context_va.as_mut_ptr(), slot_context);
+    }
+
+    // Endpoint 0 context (Bidirectional)
+    let ep0_context_va = slot_context_va + 32;
+    let ep0_context_ptr: *mut EndpointContext = ep0_context_va.as_mut_ptr();
+    let mut endpoint_zero_context = unsafe { *ep0_context_ptr };
+
+    endpoint_zero_context.set_eptype(4);
+    // TODO: fix max packet size to not be hard coded
+    endpoint_zero_context.set_max_packet_size(8);
+    endpoint_zero_context.set_max_burst_size(0);
+    endpoint_zero_context.set_dcs(1);
+    endpoint_zero_context.set_interval(0);
+    endpoint_zero_context.set_maxpstreams(0);
+    endpoint_zero_context.set_mult(0);
+    endpoint_zero_context.set_cerr(3);
+    endpoint_zero_context.set_trdequeue_ptr(buffer_address - mapper.phys_offset());
+    unsafe {
+        core::ptr::write_volatile(ep0_context_va.as_mut_ptr(), endpoint_zero_context);
+    }
+    // Now Generate 30 contexts (out 1, in 1, out 2, in 2, ... out 15, in 15)
+    // Can zero them out, but
     // Load output to device context base array
     let slot_addr_u64 = info.base_address_array + (slot as u64 * 8) + mapper.phys_offset().as_u64();
     let slot_addr = slot_addr_u64 as *mut u64;
     unsafe {
-        core::ptr::write_volatile(slot_addr, output_device_vaddr - mapper.phys_offset());
+        core::ptr::write_volatile(slot_addr, ep0_context_va + 32 - mapper.phys_offset());
     }
 
     // Address the device
     let big_device: u32 = slot.into();
     let block = TransferRequestBlock {
-        parameters: (input_context_vaddr - mapper.phys_offset()),
+        parameters: (device_context_address - mapper.phys_offset()),
         status: 0,
         control: ((big_device << 24) | ((TrbTypes::AddressDeviceCmd as u32) << 10)),
     };
@@ -598,6 +602,37 @@ fn setup_input_context(
         (info.base_address + info.capablities.doorbell_offset as u64) as *mut u32;
     unsafe { core::ptr::write_volatile(doorbell_base, 0) };
 
+    Result::Ok(device_context_address)
+}
+
+fn configure_device(
+    info: &mut XHCIInfo,
+    slot: u8,
+    mapper: &OffsetPageTable,
+    input_context_vaddr: VirtAddr,
+) -> Result<(), XHCIError> {
+    let context_ptr: *mut InputControlContext = input_context_vaddr.as_mut_ptr();
+    let mut context = unsafe { *context_ptr };
+
+    context.set_add_flag(0, 1);
+    context.set_add_flag(1, 0);
+    // context.set_drop_flag(0, 0);
+    // context.set_drop_flag(1, 0);
+
+    let big_device: u32 = slot.into();
+    let block = TransferRequestBlock {
+        parameters: (input_context_vaddr - mapper.phys_offset()),
+        status: 0,
+        control: ((big_device << 24) | ((TrbTypes::CoonfigEpCmd as u32) << 10)),
+    };
+    unsafe {
+        info.command_ring
+            .enqueue(block)
+            .map_err(|_| XHCIError::CommandRingError)?
+    };
+    let doorbell_base: *mut u32 =
+        (info.base_address + info.capablities.doorbell_offset as u64) as *mut u32;
+    unsafe { core::ptr::write_volatile(doorbell_base, 0) };
     Result::Ok(())
 }
 

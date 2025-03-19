@@ -158,7 +158,7 @@ impl SlotContext {
 }
 
 #[repr(C)]
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy)]
 #[allow(dead_code)]
 /// See section 6.2.3 of the xHCI specs.
 /// This structure should only be 32 bytes if Context Size field in the

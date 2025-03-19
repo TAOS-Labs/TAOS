@@ -2,7 +2,7 @@
 image_path = "target/kernel.iso"
 
 [qemu]
-binary = "qemu-system-x86_64"
+binary = "/home/joseph/Builds/qemu-9.2.2/build/qemu-system-x86_64"
 base_args = [
     # Memory
     "-m", "4G",
