@@ -578,8 +578,8 @@ fn address_device(
         core::ptr::write_volatile(ep0_context_va.as_mut_ptr(), endpoint_zero_context);
     }
     // Now Generate 30 contexts (out 1, in 1, out 2, in 2, ... out 15, in 15)
-    // Can zero them out, but
-    // Load output to device context base array
+    // Can zero them out, but that should already be done
+    // Load output to device context base array (TODO: see if this belongs in configure device)
     let slot_addr_u64 = info.base_address_array + (slot as u64 * 8) + mapper.phys_offset().as_u64();
     let slot_addr = slot_addr_u64 as *mut u64;
     unsafe {
@@ -616,6 +616,9 @@ fn configure_device(
 
     context.set_add_flag(0, 1);
     context.set_add_flag(1, 0);
+    unsafe {
+        core::ptr::write_volatile(context_ptr, context);
+    }
     // context.set_drop_flag(0, 0);
     // context.set_drop_flag(1, 0);
 
