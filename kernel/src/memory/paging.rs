@@ -273,31 +273,6 @@ pub fn map_kernel_frame(
     temp_virt
 }
 
-/// Creates a mapping to a frame that page faults on first access
-///
-/// # Arguments
-/// * `page` - a virtual page
-/// * `mapper` - anything that implements the mapper trait
-/// * `flags` - the flags we want initially, will always not include PRESENT
-pub fn create_not_present_mapping(
-    page: Page,
-    mapper: &mut impl Mapper<Size4KiB>,
-    flags: Option<PageTableFlags>,
-) {
-    let frame = create_mapping(page, mapper, flags);
-    dealloc_frame(frame);
-
-    serial_println!("Create mapping?");
-
-    let mut flags = flags.unwrap_or(PageTableFlags::WRITABLE);
-
-    if flags.contains(PageTableFlags::PRESENT) {
-        flags.remove(PageTableFlags::PRESENT);
-    }
-
-    update_permissions(page, mapper, flags);
-}
-
 /// Update permissions for a specific page
 ///
 /// # Arguments

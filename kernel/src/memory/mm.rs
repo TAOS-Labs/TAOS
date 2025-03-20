@@ -1,12 +1,8 @@
 use crate::{constants::memory::PAGE_SIZE, serial_println};
 use alloc::{collections::btree_map::BTreeMap, sync::Arc, vec::Vec};
 use bitflags::bitflags;
-use core::{
-    any::Any,
-    cmp::{max, min},
-    fmt::Debug,
-};
-use spin::Mutex;
+use core::{any::Any, fmt::Debug};
+use spin::lock_api::Mutex;
 use x86_64::{
     structures::paging::{Mapper, Page, PageTableFlags, PhysFrame, Size4KiB},
     VirtAddr,
@@ -70,6 +66,16 @@ impl Mm {
         let new_vma = Self::coalesce_vma_right(new_vma.clone(), tree);
 
         new_vma
+    }
+
+    pub fn coalesce_vma(candidate: Arc<Mutex<VmArea>>, tree: &mut VmaTree) -> Arc<Mutex<VmArea>> {
+        let candidate = Self::coalesce_vma_left(candidate, tree);
+        Self::coalesce_vma_left(candidate, tree)
+    }
+
+    pub fn update_vma_permissions(vma: &Arc<Mutex<VmArea>>, flags: VmAreaFlags) {
+        let mut vma_locked = vma.lock();
+        vma_locked.flags = flags;
     }
 
     /// Insert a copied VmArea into the VMA tree.
@@ -218,12 +224,16 @@ impl Mm {
         tree.remove_entry(&(start as usize))
     }
 
-    pub fn shrink_vma_right(
+    pub fn shrink_vma(
         old_start: u64,
         new_start: u64,
         new_end: u64,
         tree: &mut VmaTree,
-    ) -> (Option<Arc<Mutex<VmArea>>>, Option<Arc<Mutex<VmArea>>>) {
+    ) -> (
+        Option<Arc<Mutex<VmArea>>>,
+        Option<Arc<Mutex<VmArea>>>,
+        Option<Arc<Mutex<VmArea>>>,
+    ) {
         // Remove the original VMA from the tree.
         let vma = Mm::remove_vma(old_start, tree).unwrap().1;
         // Record the original end of the VMA.
@@ -232,9 +242,11 @@ impl Mm {
             v.end
         };
 
-        let split_point = new_end - old_start;
+        let split_point_left = new_start - old_start;
+        let split_point_right = new_end - old_start;
 
         let mut left_segments: BTreeMap<u64, VmAreaSegment> = BTreeMap::new();
+        let mut middle_segments: BTreeMap<u64, VmAreaSegment> = BTreeMap::new();
         let mut right_segments: BTreeMap<u64, VmAreaSegment> = BTreeMap::new();
 
         {
@@ -250,32 +262,72 @@ impl Mm {
                 let seg_global_start = old_seg_key; // relative to old_start
                 let seg_global_end = seg_global_start + seg_length;
 
-                if seg_global_end <= split_point {
-                    // entire segment is in the left (surviving) region.
+                // guaranteed to be a left only segment
+                if seg_global_end <= split_point_left {
                     left_segments.insert(old_seg_key, seg.clone());
-                } else if seg_global_start >= split_point {
-                    // entire segment is in the removed region
-                    // adjust its key relative to the new vma's start
-                    right_segments.insert(old_seg_key - split_point, seg.clone());
-                } else {
-                    // the segment surrounds split
-                    // left part covers [seg_global_start, split_point).
-                    let left_part_length = split_point - seg_global_start;
+                // guaranteed to be a right only segment
+                } else if seg_global_start >= split_point_right {
+                    right_segments.insert(old_seg_key - split_point_right, seg.clone());
+                // guaranteed to be a middle only segment
+                } else if seg_global_start >= split_point_left && seg_global_end < split_point_right
+                {
+                    middle_segments.insert(old_seg_key - split_point_left, seg.clone());
+                // spans the left split
+                } else if seg_global_start < split_point_left && seg_global_end <= split_point_right
+                {
+                    let left_part_length = split_point_left - seg_global_start;
                     let left_seg = VmAreaSegment {
-                        // The backing offset remains unchanged.
                         start: seg.start,
                         end: seg.start + left_part_length,
                         backing: seg.backing.clone(),
                     };
                     left_segments.insert(old_seg_key, left_seg);
-
-                    // right part covers [split_point, seg_global_end).
-                    let right_part_length = seg_global_end - split_point;
-                    // for the right part, the new key will be 0 (relative to new vma's start)
-                    let right_seg = VmAreaSegment {
-                        // The backing offset is adjusted by the length trimmed off the front.
+                    // the middle part
+                    let middle_part_length = seg_global_end - split_point_left;
+                    let middle_seg = VmAreaSegment {
                         start: seg.start + left_part_length,
-                        end: seg.start + left_part_length + right_part_length,
+                        end: seg.start + left_part_length + middle_part_length,
+                        backing: seg.backing.clone(),
+                    };
+                    middle_segments.insert(0, middle_seg);
+                // spans the right split
+                } else if seg_global_start >= split_point_left && seg_global_end > split_point_right
+                {
+                    let middle_part_length = split_point_right - seg_global_start;
+                    let middle_seg = VmAreaSegment {
+                        start: seg.start,
+                        end: seg.start + middle_part_length,
+                        backing: seg.backing.clone(),
+                    };
+                    middle_segments.insert(old_seg_key - split_point_left, middle_seg);
+                    let right_part_length = seg_global_end - split_point_right;
+                    let right_seg = VmAreaSegment {
+                        start: seg.start + middle_part_length,
+                        end: seg.start + middle_part_length + right_part_length,
+                        backing: seg.backing.clone(),
+                    };
+                    right_segments.insert(0, right_seg);
+                // spans both splits
+                } else if seg_global_start < split_point_left && seg_global_end > split_point_right
+                {
+                    let left_part_length = split_point_left - seg_global_start;
+                    let left_seg = VmAreaSegment {
+                        start: seg.start,
+                        end: seg.start + left_part_length,
+                        backing: seg.backing.clone(),
+                    };
+                    left_segments.insert(old_seg_key, left_seg);
+                    let middle_part_length = split_point_right - split_point_left;
+                    let middle_seg = VmAreaSegment {
+                        start: seg.start + left_part_length,
+                        end: seg.start + left_part_length + middle_part_length,
+                        backing: seg.backing.clone(),
+                    };
+                    middle_segments.insert(0, middle_seg);
+                    let right_part_length = seg_global_end - split_point_right;
+                    let right_seg = VmAreaSegment {
+                        start: seg.start + left_part_length + middle_part_length,
+                        end: seg.start + left_part_length + middle_part_length + right_part_length,
                         backing: seg.backing.clone(),
                     };
                     right_segments.insert(0, right_seg);
@@ -286,15 +338,32 @@ impl Mm {
         // Update the original VMA (left part) with new boundaries and segments.
         {
             let mut vma_guard = vma.lock();
+            vma_guard.start = new_start;
             vma_guard.end = new_end;
             // Replace the old segments with the new left_segments.
-            vma_guard.segments = Arc::new(Mutex::new(left_segments));
+            vma_guard.segments = Arc::new(Mutex::new(middle_segments));
         }
         tree.insert(new_start as usize, vma.clone());
 
+        let left_vma = if !left_segments.is_empty() {
+            let left_vma = Arc::new(Mutex::new(VmArea {
+                start: old_start,
+                end: new_start,
+                segments: Arc::new(Mutex::new(left_segments)),
+                flags: {
+                    let v = vma.lock();
+                    v.flags
+                },
+            }));
+            tree.insert(left_vma.lock().start as usize, left_vma.clone());
+            Some(left_vma)
+        } else {
+            None
+        };
+
         // Create a new VMA for the right (removed) region if there are any segments.
-        let new_vma = if !right_segments.is_empty() {
-            let new_vma = Arc::new(Mutex::new(VmArea {
+        let right_vma = if !right_segments.is_empty() {
+            let right_vma = Arc::new(Mutex::new(VmArea {
                 start: new_end,
                 end: original_end,
                 segments: Arc::new(Mutex::new(right_segments)),
@@ -303,13 +372,13 @@ impl Mm {
                     v.flags
                 },
             }));
-            tree.insert(new_vma.lock().start as usize, new_vma.clone());
-            Some(new_vma)
+            tree.insert(right_vma.lock().start as usize, right_vma.clone());
+            Some(right_vma)
         } else {
             None
         };
 
-        (Some(vma), new_vma)
+        (left_vma, Some(vma), right_vma)
     }
 
     pub fn shrink_vma_left(
@@ -320,122 +389,6 @@ impl Mm {
         tree: &mut VmaTree,
     ) -> Option<Arc<Mutex<VmArea>>> {
         return None;
-    }
-
-    /// Shrink a VMA and update its segments’ reverse mappings accordingly.
-    ///
-    /// This function removes all page mappings that are outside the new region and updates each
-    /// segment’s backing by adjusting their reverse mapping keys. It handles a VMA composed of
-    /// multiple segments. The segment keys (and their stored offsets) are assumed to be relative
-    /// to the VMA’s old start. After shrinking, they are shifted by `new_start - old_start`.
-    pub fn shrink_vma(
-        old_start: u64,
-        new_start: u64,
-        new_end: u64,
-        mapper: &mut impl Mapper<Size4KiB>,
-        tree: &mut VmaTree,
-    ) -> Option<Arc<Mutex<VmArea>>> {
-        // Remove the VMA from the tree.
-        let vma = Mm::remove_vma(old_start, tree).unwrap().1;
-        {
-            let mut vma_guard = vma.lock();
-            let old_vma_end = vma_guard.end;
-
-            // Remove all mappings for pages that are being dropped.
-            for va in (old_start..new_start).step_by(PAGE_SIZE) {
-                let page = Page::containing_address(VirtAddr::new(va));
-                remove_mapping(page, mapper);
-            }
-            for va in (new_end..old_vma_end).step_by(PAGE_SIZE) {
-                let page = Page::containing_address(VirtAddr::new(va));
-                remove_mapping(page, mapper);
-            }
-
-            let remove_diff = new_start - old_start;
-            let bound = new_end - old_start;
-
-            // Create a new segments map to hold updated segments.
-            let mut new_segments: BTreeMap<u64, VmAreaSegment> = BTreeMap::new();
-
-            //let mut vma_segments = &vma_guard.segments;
-            //let mut vma_guard_segments = vma_segments.lock();
-            //
-            //// For each segment in the VMA...
-            //for (&old_seg_key, seg) in vma_guard_segments.iter() {
-            //    // The segment covers [old_seg_key, old_seg_key + seg_length).
-            //    let seg_length = seg.end - seg.start;
-            //    let seg_global_start = old_seg_key; // relative to old_start
-            //    let seg_global_end = seg_global_start + seg_length;
-            //
-            //    let inter_start = max(seg_global_start, remove_diff);
-            //    let inter_end = min(seg_global_end, bound);
-            //    if inter_start < inter_end {
-            //        // New key for this segment: shift by the remove difference.
-            //        let new_seg_key = inter_start - remove_diff;
-            //        let new_seg_length = inter_end - inter_start;
-            //        let new_seg = VmAreaSegment {
-            //            start: 0, // normalize to 0 in the new VMA coordinate space
-            //            end: new_seg_length,
-            //            backing: seg.backing.clone(),
-            //        };
-            //
-            //        // 0x0000 -> 0x2000
-            //        // 0x0000 -> frame1
-            //        // 0x1000 -> frame2
-            //
-            //        // 0x1000 -> 0x2000
-            //        // 0x0000 -> frame1 CHAIN IS DROPPED
-            //        // 0x1000 -> offset 0x1000
-            //        // 0x1000 -> frame2 offset 0
-            //
-            //        // munmap
-            //        // VMA from 0x0 -> 0x1000 is dropped
-            //
-            //        // mprotect
-            //        // NEW VMA
-            //        // 0x0 -> 0x1000
-            //        // 0x0 -> frame1 //// RETAINS OLD PERMISSIONS
-            //
-            //        // mprotect
-            //        // 0x0000 -> 0x2000
-            //        // 0x1000 -> 0x2000 mprotect
-            //
-            //        // 0x0000 -> 0x1000 // OLD PERMISSIONS, NEW VMA
-            //
-            //        // Update the reverse mappings in the segment's backing.
-            //        {
-            //            let mut mappings = new_seg.backing.mappings().lock();
-            //            // Collect current mappings so we can iterate without mutating the map.
-            //            let old_mappings: Vec<(u64, Arc<VmaChain>)> =
-            //                mappings.iter().map(|(k, v)| (*k, v.clone())).collect();
-            //            let mut updated_mappings: BTreeMap<u64, Arc<VmaChain>> = BTreeMap::new();
-            //            for (offset, chain) in old_mappings {
-            //                let global_offset = old_seg_key + offset;
-            //                if global_offset < remove_diff || global_offset >= bound {
-            //                    continue;
-            //                }
-            //                let new_offset = global_offset - remove_diff - new_seg_key;
-            //                let updated_chain = Arc::new(VmaChain {
-            //                    offset: new_offset,
-            //                    frame: chain.frame.clone(),
-            //                });
-            //                updated_mappings.insert(new_offset, updated_chain);
-            //            }
-            //            *mappings = updated_mappings;
-            //        }
-            //
-            //        new_segments.insert(new_seg_key, new_seg);
-            //    }
-            //}
-            //
-            //// Update the VMA boundaries and its segments.
-            //vma_guard.start = new_start;
-            //vma_guard.end = new_end;
-            //*vma_guard_segments = new_segments;
-        }
-
-        tree.insert(new_start as usize, vma.clone());
-        Mm::find_vma(new_start, tree)
     }
 
     /// Find a VmArea that contains the given virtual address.
@@ -1624,156 +1577,84 @@ mod tests {
         assert!(mappings.contains_key(&(PAGE_SIZE as u64)));
     }
 
-    /// Tests shrinking a VMA from the right side.
+    /// Tests shrinking (splitting) a VMA from both left and right sides when the VMA is composed
+    /// of multiple segments, with page-aligned boundaries and without modifying the VmChains (reverse mappings).
     ///
-    /// In this test, a VMA spanning three pages is created.
-    /// Its reverse mappings are populated with one mapping per page.
-    /// We then shrink the VMA by removing the rightmost page while keeping the start unchanged.
-    /// The test asserts that:
-    /// - The resulting VMA covers the left two pages.
-    /// - The reverse mappings remain unshifted.
-    // #[test_case]
-    async fn test_shrink_vma_right() {
-        let pml4_frame = PhysFrame::containing_address(PhysAddr::new(0x1000));
-        let mm = Mm::new(pml4_frame);
-        let anon_area = Arc::new(AnonVmArea::new());
-        let old_start = 0x50000000;
-        let old_end = old_start + 3 * PAGE_SIZE as u64;
-
-        mm.with_vma_tree_mutable(|tree| {
-            let vma = Mm::insert_vma(
-                tree,
-                old_start,
-                old_end,
-                anon_area.clone(),
-                VmAreaFlags::WRITABLE,
-            );
-            {
-                let locked_vma = vma.lock();
-                let segments = locked_vma.segments.lock();
-                let seg = segments.get(&0).expect("Segment missing");
-                let mut mappings = seg.backing.mappings().lock();
-                for i in 0..3 {
-                    let offset = i as u64 * PAGE_SIZE as u64;
-                    let va = old_start + offset;
-                    let page = Page::containing_address(VirtAddr::new(va));
-                    let mut mapper = KERNEL_MAPPER.lock();
-                    let frame = create_mapping(
-                        page,
-                        &mut *mapper,
-                        Some(PageTableFlags::WRITABLE | PageTableFlags::PRESENT),
-                    );
-                    mappings.insert(
-                        offset,
-                        Arc::new(VmaChain {
-                            offset,
-                            frame: Arc::new(frame),
-                        }),
-                    );
-                }
-            }
-        });
-
-        // Shrink right: keep the left two pages.
-        let new_start = old_start;
-        let new_end = old_end - PAGE_SIZE as u64;
-        let shrunk = mm.with_vma_tree_mutable(|tree| {
-            let mut mapper = KERNEL_MAPPER.lock();
-            Mm::shrink_vma_right(old_start, new_start, new_end, tree).0
-        });
-        assert!(shrunk.is_some());
-        let vma = shrunk.unwrap();
-        let locked = vma.lock();
-        assert_eq!(locked.start, new_start);
-        assert_eq!(locked.end, new_end);
-        let segments = locked.segments.lock();
-        let seg = segments.get(&0).expect("Segment missing");
-        let mappings = seg.backing.mappings().lock();
-        // Two mappings should remain.
-        assert_eq!(mappings.len(), 2);
-        assert!(mappings.contains_key(&0));
-        assert!(mappings.contains_key(&(PAGE_SIZE as u64)));
-    }
-
-    /// Tests splitting a VMA from the right side when the VMA is composed of multiple segments,
-    /// without modifying the VmChains (reverse mappings).
+    /// The original VMA spans [0x0, 0x5000) and is composed of three segments:
     ///
-    /// The original VMA spans [0x0, 0x4000) and is composed of three segments:
-    /// 1. Segment A covers [0x0, 0x1000) using `anon_area_a` with a reverse mapping at offset 0
-    ///    returning `frame_a`.
-    /// 2. Segment B covers [0x1000, 0x3000) using `anon_area_b` with two reverse mappings: - At
-    ///    offset 0 returning `frame_b1`. - At offset PAGE_SIZE returning `frame_b2`.
-    /// 3. Segment C covers [0x3000, 0x4000) using `anon_area_c` with a reverse mapping at offset 0
-    ///    returning `frame_c`.
+    /// 1. Segment A covers [0x0, 0x2000) using `anon_area_a` with a reverse mapping at offset 0 returning `frame_a`.
+    /// 2. Segment B covers [0x2000, 0x3000) using `anon_area_b` with a reverse mapping at offset 0 returning `frame_b`.
+    /// 3. Segment C covers [0x3000, 0x5000) using `anon_area_c` with a reverse mapping at offset 0 returning `frame_c`.
     ///
-    /// We then shrink the VMA so that the left (surviving) portion covers [0x0, 0x2000) and the
-    /// right (removed) portion covers [0x2000, 0x4000).
-    ///
-    /// Expected outcome: - The **left VMA** spans [0x0, 0x2000): - Contains Segment A unchanged at
-    /// key 0. - Contains the left portion of Segment B covering [0x1000, 0x2000) at key 0x1000. -
-    /// The **right VMA** spans [0x2000, 0x4000): - Contains the right portion of Segment B
-    /// covering [0x2000, 0x3000) at key 0 - Contains Segment C shifted from key 0x3000 to key
-    /// 0x1000.
+    /// We then shrink the VMA so that the surviving region becomes [0x1000, 0x4000). The function returns
+    /// a triple: (Option<left_vma>, Option<middle_vma>, Option<right_vma>), where:
+    /// - The left VMA spans [0x0, 0x1000) and should contain the left portion of Segment A.
+    /// - The middle (surviving) VMA spans [0x1000, 0x4000) and should contain:
+    ///     • The right portion of Segment A ([0x1000, 0x2000)) with new key 0.
+    ///     • All of Segment B ([0x2000, 0x3000)) with new key 0x1000.
+    ///     • The left portion of Segment C ([0x3000, 0x4000)) with new key 0x2000.
+    /// - The right VMA spans [0x4000, 0x5000) and should contain the right portion of Segment C.
     #[test_case]
-    async fn test_shrink_vma_split_right_multiple_segments() {
+    async fn test_shrink_vma_split_both_multiple_segments() {
         // Create a dummy PML4 frame and memory manager.
         let pml4_frame = PhysFrame::containing_address(PhysAddr::new(0x1000));
         let mm = Mm::new(pml4_frame);
 
-        // SETUP
-        // Define our original VMA boundaries.
+        // Original VMA boundaries: [0x0, 0x5000).
         let old_start = 0x0;
-        let old_end = 0x4000;
-        // We shrink so that the left part covers [0x0, 0x2000).
-        let new_start = 0x0;
-        let new_end = 0x2000;
+        let old_end = 0x5000;
+        // We shrink so that the surviving (middle) region becomes [0x1000, 0x4000).
+        let new_start = 0x1000;
+        let new_end = 0x4000;
 
-        // Create anonymous backings for our segments.
+        // Create anonymous backings.
         let anon_area_a = Arc::new(AnonVmArea::new());
         let anon_area_b = Arc::new(AnonVmArea::new());
         let anon_area_c = Arc::new(AnonVmArea::new());
 
-        // Allocate physical frames and set up reverse mappings.
-        // Segment A: covers [0x0, 0x1000)
-        let frame_a = Arc::new(alloc_frame().unwrap());
-        anon_area_a.insert_mapping(Arc::new(VmaChain::new(0, frame_a.clone())));
+        // Allocate physical frames and set up reverse mappings (all at offset 0).
+        // Segment A: covers [0x0, 0x2000)
+        let frame_a_a = Arc::new(alloc_frame().unwrap());
+        let frame_a_b = Arc::new(alloc_frame().unwrap());
+        anon_area_a.insert_mapping(Arc::new(VmaChain::new(0, frame_a_a.clone())));
+        anon_area_a.insert_mapping(Arc::new(VmaChain::new(0x1000, frame_a_b.clone())));
 
-        // Segment B: covers [0x1000, 0x3000)
-        let frame_b1 = Arc::new(alloc_frame().unwrap());
-        let frame_b2 = Arc::new(alloc_frame().unwrap());
-        anon_area_b.insert_mapping(Arc::new(VmaChain::new(0, frame_b1.clone())));
-        anon_area_b.insert_mapping(Arc::new(VmaChain::new(PAGE_SIZE as u64, frame_b2.clone())));
+        // Segment B: covers [0x2000, 0x3000)
+        let frame_b = Arc::new(alloc_frame().unwrap());
+        anon_area_b.insert_mapping(Arc::new(VmaChain::new(0, frame_b.clone())));
 
-        // Segment C: covers [0x3000, 0x4000)
-        let frame_c = Arc::new(alloc_frame().unwrap());
-        anon_area_c.insert_mapping(Arc::new(VmaChain::new(0, frame_c.clone())));
+        // Segment C: covers [0x3000, 0x5000)
+        let frame_c_a = Arc::new(alloc_frame().unwrap());
+        let frame_c_b = Arc::new(alloc_frame().unwrap());
+        anon_area_c.insert_mapping(Arc::new(VmaChain::new(0, frame_c_a.clone())));
+        anon_area_c.insert_mapping(Arc::new(VmaChain::new(0x1000, frame_c_b.clone())));
 
         // Build the original segments map.
         let mut segments: BTreeMap<u64, VmAreaSegment> = BTreeMap::new();
-        // Segment A at key 0, covering 0x0 - 0x1000.
+        // Segment A at key 0, covering [0x0, 0x2000).
         segments.insert(
             0,
             VmAreaSegment {
                 start: 0,
-                end: 0x1000,
+                end: 0x2000,
                 backing: anon_area_a.clone(),
             },
         );
-        // Segment B at key 0x1000, covering 0x1000 - 0x3000.
+        // Segment B at key 0x2000, covering [0x2000, 0x3000).
         segments.insert(
-            0x1000,
+            0x2000,
             VmAreaSegment {
                 start: 0,
-                end: 0x2000, // length 0x2000 (i.e. 0x3000 - 0x1000)
+                end: 0x1000,
                 backing: anon_area_b.clone(),
             },
         );
-        // Segment C at key 0x3000, covering 0x3000 - 0x4000.
+        // Segment C at key 0x3000, covering [0x3000, 0x5000).
         segments.insert(
             0x3000,
             VmAreaSegment {
                 start: 0,
-                end: 0x1000,
+                end: 0x2000,
                 backing: anon_area_c.clone(),
             },
         );
@@ -1789,76 +1670,93 @@ mod tests {
             );
         });
 
-        // Call shrink_vma_right to split the VMA into left and right parts.
-        // This function returns a tuple: (left_vma, right_vma)
-        let (left_vma_opt, right_vma_opt) = mm.with_vma_tree_mutable(|tree| {
-            Mm::shrink_vma_right(old_start, new_start, new_end, tree)
-        });
+        // Call shrink_vma to split the VMA into three parts.
+        // The function returns a triple: (Option<left_vma>, Option<middle_vma>, Option<right_vma>).
+        let (left_vma_opt, middle_vma_opt, right_vma_opt) =
+            mm.with_vma_tree_mutable(|tree| Mm::shrink_vma(old_start, new_start, new_end, tree));
 
-        assert!(left_vma_opt.is_some(), "Left VMA should exist");
-        assert!(right_vma_opt.is_some(), "Right VMA should exist");
-        let left_vma = left_vma_opt.unwrap();
-        let right_vma = right_vma_opt.unwrap();
-
-        // left VMA
+        // Verify the left VMA.
         {
+            let left_vma = left_vma_opt.expect("Left VMA should exist");
             let left_locked = left_vma.lock();
-            // Left VMA should span [0x0, 0x2000).
-            assert_eq!(left_locked.start, new_start);
-            assert_eq!(left_locked.end, new_end);
-
-            // Expect Segment A to remain intact at key 0.
-            let seg_a = left_locked.find_segment(0);
+            // Left VMA should span [0x0, 0x1000).
+            assert_eq!(left_locked.start, old_start);
+            assert_eq!(left_locked.end, new_start);
+            // Expect the left part of Segment A: originally [0x0, 0x2000) becomes left portion [0x0, 0x1000).
+            let seg_a_left = left_locked.find_segment(0);
+            assert_eq!(seg_a_left.end - seg_a_left.start, 0x1000);
+            serial_println!("Seg_A left: {:#?}", seg_a_left);
             assert_eq!(
-                seg_a.backing.find_mapping(0).unwrap().frame,
-                frame_a.clone()
-            );
-
-            // for segment b, only the left portion [0x1000, 0x2000) survives
-            // it should remain at key 0x1000 with length 0x1000
-            let seg_b_left = left_locked.find_segment(0x1000);
-            assert_eq!(seg_b_left.end - seg_b_left.start, 0x1000);
-            // check if we can get the frame still
-            assert_eq!(
-                seg_b_left
+                seg_a_left
                     .backing
-                    .find_mapping(0x0 + seg_b_left.start)
+                    .find_mapping(0 + seg_a_left.start)
                     .unwrap()
                     .frame,
-                frame_b1.clone()
+                frame_a_a.clone()
             );
         }
 
-        // right VMA
+        // Verify the middle (surviving) VMA.
         {
-            let right_locked = right_vma.lock();
-            // Right VMA should span [0x2000, 0x4000).
-            assert_eq!(right_locked.start, new_end);
-            assert_eq!(right_locked.end, old_end);
-
-            // For Segment B's right portion:
-            // Originally, Segment B spans [0x1000, 0x3000); the surviving part for the right VMA is [0x2000, 0x3000).
-            // In the right VMA coordinate space (which starts at 0x2000), the new key for this segment is 0.
-            let seg_b_right = right_locked.find_segment(0);
-            assert_eq!(seg_b_right.end - seg_b_right.start, 0x1000);
-
-            // similar to before, check if we can get the frame
+            let middle_vma = middle_vma_opt.expect("Middle VMA should exist");
+            let middle_locked = middle_vma.lock();
+            // Middle VMA should span [0x1000, 0x4000).
+            assert_eq!(middle_locked.start, new_start);
+            assert_eq!(middle_locked.end, new_end);
+            // In the middle VMA, we expect:
+            // - The right part of Segment A: originally [0x0, 0x2000) yields surviving portion [0x1000, 0x2000).
+            //   New key = 0x1000 - 0x1000 = 0, length = 0x2000 - 0x1000 = 0x1000.
+            let seg_a_right = middle_locked.find_segment(0);
+            assert_eq!(seg_a_right.end - seg_a_right.start, 0x1000);
             assert_eq!(
-                seg_b_right
+                seg_a_right
                     .backing
-                    .find_mapping(0 + seg_b_right.start)
+                    .find_mapping(0 + seg_a_right.start)
                     .unwrap()
                     .frame,
-                frame_b2.clone()
+                frame_a_b.clone()
             );
 
-            // For Segment C:
-            // Originally at key 0x3000, it should shift to key (0x3000 - 0x2000) = 0x1000 in the right VMA.
-            let seg_c = right_locked.find_segment(0x1000);
-            assert_eq!(seg_c.end - seg_c.start, 0x1000);
+            // - Segment B: originally at key 0x2000 becomes 0x2000 - 0x1000 = 0x1000, length = 0x1000.
+            let seg_b = middle_locked.find_segment(0x1000);
+            assert_eq!(seg_b.end - seg_b.start, 0x1000);
             assert_eq!(
-                seg_c.backing.find_mapping(0 + seg_c.start).unwrap().frame,
-                frame_c.clone()
+                seg_b.backing.find_mapping(0 + seg_b.start).unwrap().frame,
+                frame_b.clone()
+            );
+
+            // - The left part of Segment C: originally covering [0x3000, 0x5000) yields surviving portion [0x3000, 0x4000).
+            //   New key = 0x3000 - 0x1000 = 0x2000, length = 0x4000 - 0x3000 = 0x1000.
+            let seg_c_left = middle_locked.find_segment(0x2000);
+            assert_eq!(seg_c_left.end - seg_c_left.start, 0x1000);
+            assert_eq!(
+                seg_c_left
+                    .backing
+                    .find_mapping(0 + seg_c_left.start)
+                    .unwrap()
+                    .frame,
+                frame_c_a.clone()
+            );
+        }
+
+        // Verify the right VMA.
+        {
+            let right_vma = right_vma_opt.expect("Right VMA should exist");
+            let right_locked = right_vma.lock();
+            // Right VMA should span [0x4000, 0x5000).
+            assert_eq!(right_locked.start, new_end);
+            assert_eq!(right_locked.end, old_end);
+            // so the right portion is [0x4000, 0x5000).
+            // In the right VMA coordinate space, new key = 0x4000 - 0x4000 = 0, length = 0x5000 - 0x4000 = 0x1000.
+            let seg_c_right = right_locked.find_segment(0);
+            assert_eq!(seg_c_right.end - seg_c_right.start, 0x1000);
+            assert_eq!(
+                seg_c_right
+                    .backing
+                    .find_mapping(0 + seg_c_right.start)
+                    .unwrap()
+                    .frame,
+                frame_c_b.clone()
             );
         }
     }
@@ -1931,7 +1829,7 @@ mod tests {
         let new_end = old_end - PAGE_SIZE as u64;
         let shrunk_left = mm.with_vma_tree_mutable(|tree| {
             let mut mapper = KERNEL_MAPPER.lock();
-            Mm::shrink_vma_right(old_start, new_start, new_end, tree).0
+            Mm::shrink_vma(old_start, new_start, new_end, tree).0
         });
         assert!(shrunk_left.is_some());
 
@@ -2001,9 +1899,9 @@ mod tests {
         let new_boundary = old_start + PAGE_SIZE as u64;
         let shrunk = mm.with_vma_tree_mutable(|tree| {
             let mut mapper = KERNEL_MAPPER.lock();
-            Mm::shrink_vma(old_start, new_boundary, new_boundary, &mut *mapper, tree)
+            Mm::shrink_vma(old_start, new_boundary, new_boundary, tree)
         });
         // When the entire VMA is shrunk away, shrink_vma returns None.
-        assert!(shrunk.is_none());
+        assert!(shrunk.0.is_none());
     }
 }
