@@ -129,6 +129,16 @@ impl TransferRequestBlock {
     pub fn set_ent(&mut self, value: u32) {
         self.control = (self.control & !0x2) | (value << 1);
     }
+
+    // Retrieves the chain bit of the TRB
+    pub fn get_chain(&mut self) -> u32 {
+        (self.control >> 4) & 1
+    }
+
+    // Retrieves the chain bit of the TRB
+    pub fn set_chain(&mut self, value: u32) {
+        self.control = (self.control & !0x10) | (value << 4);
+    }
 }
 
 impl PartialEq for TransferRequestBlock {
