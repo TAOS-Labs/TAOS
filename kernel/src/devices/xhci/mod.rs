@@ -9,7 +9,7 @@ pub mod ring_buffer;
 use core::cmp::min;
 
 use crate::{constants::memory::PAGE_SIZE, debug_println, memory::frame_allocator::alloc_frame};
-use alloc::{sync::Arc, vec::Vec, boxed::Box};
+use alloc::{sync::Arc, vec::Vec};
 use bitflags::bitflags;
 use context::{EndpointContext, InputControlContext, SlotContext};
 use ring_buffer::{
@@ -67,22 +67,28 @@ struct XHCIInfo {
 #[derive(Debug, Clone, Copy)]
 #[repr(C)]
 struct DeviceDescriptor {
-    bLength: u8,
-    bDescriptorType: u8,
-    bcdUSB: u16,
-    bDeviceClass: u8,
-    bDeviceSubClass: u8,
-    bdeviceProtocol: u8,
-    bMaxPacketSize0: u8,
-    idVendor: u16,
-    idProduct: u16,
-    bcdDevice: u16,
-    iManufacturer: u8,
-    iProdcut: u8,
-    iSerialNumber: u8,
-    bNumConfigurations: u8,
+    b_length: u8,
+    b_descriptor_type: u8,
+    bcd_usb: u16,
+    b_devic_class: u8,
+    b_device_sub_class: u8,
+    b_device_protocol: u8,
+    b_max_packet_size_0: u8,
+    id_vendor: u16,
+    id_product: u16,
+    bcd_device: u16,
+    i_manufacturer: u8,
+    i_prodcut: u8,
+    i_serial_number: u8,
+    b_num_configurations: u8,
 }
 
+enum TransferType {
+    NoDataStage = 0,
+    Reserved = 1,
+    OutDataStage = 2,
+    InDataStage = 3,
+}
 
 #[derive(Debug)]
 pub enum XHCIError {
@@ -552,7 +558,7 @@ fn address_device(
     let scratch_data_addr = buffer_address + (2048);
     let mut producer_ring_buffer = ProducerRingBuffer::new(
         buffer_address.as_u64(),
-        0,
+        1,
         RingType::Transfer,
         (PAGE_SIZE / 2).try_into().unwrap(),
     )
@@ -636,7 +642,7 @@ fn address_device(
         let b_request: u8 = 6; // Get descriptor
         let descriptor_type: u8 = 1; // Device
         let descriptor_idx: u8 = 0; // Unused with Device descriptor type
-        let w_value: u16 = (descriptor_type as u16) << 8 | descriptor_idx as u16;
+        let w_value: u16 = ((descriptor_type as u16) << 8) | (descriptor_idx as u16);
         let w_idx: u16 = 0;
         let w_length: u16 = 18;
         let transfer_length: u16 = 8;
@@ -648,26 +654,22 @@ fn address_device(
                 | ((b_request as u64) << 8)
                 | (bm_request_type as u64),
             status: transfer_length as u32,
-            control: (1 << 6) | (TrbTypes::SetupStage as u32) << 10 | (3 << 16),
+            control: (1 << 6)
+                | ((TrbTypes::SetupStage as u32) << 10)
+                | ((TransferType::InDataStage as u32) << 16),
         };
         unsafe {
             producer_ring_buffer
                 .enqueue(setup_trb)
                 .map_err(|_| XHCIError::TransferRingError)?;
         }
-        
-        let doorbell_base: *mut u32 = (info.base_address
-            + info.capablities.doorbell_offset as u64
-            + (slot as u64) * 4) as *mut u32;
-        unsafe { core::ptr::write_volatile(doorbell_base, 1) };
-        
-        
-        let transfer_length: u16 = 18;
-        let td_size: u8 = 1;
+
+        let transfer_length: u16 = size_of::<DeviceDescriptor>().try_into().unwrap();
+        let td_size: u8 = 0;
         let data_trb = TransferRequestBlock {
             parameters: scratch_data_addr - mapper.phys_offset(),
             status: ((td_size as u32) << 17) | transfer_length as u32,
-            control: 1 << 16 | (TrbTypes::DataStage as u32) << 10 ,
+            control: (1 << 16) | ((TrbTypes::DataStage as u32) << 10),
         };
 
         unsafe {
@@ -675,16 +677,11 @@ fn address_device(
                 .enqueue(data_trb)
                 .map_err(|_| XHCIError::TransferRingError)?;
         }
-        let doorbell_base: *mut u32 = (info.base_address
-            + info.capablities.doorbell_offset as u64
-            + (slot as u64) * 4) as *mut u32;
-        unsafe { core::ptr::write_volatile(doorbell_base, 1) };
-        
 
         let status_trb = TransferRequestBlock {
             parameters: 0,
             status: 0,
-            control: (TrbTypes::StatusStage as u32) << 10 | (1 << 5),
+            control: ((TrbTypes::StatusStage as u32) << 10) | (1 << 5),
         };
 
         unsafe {
@@ -696,9 +693,9 @@ fn address_device(
             + info.capablities.doorbell_offset as u64
             + (slot as u64) * 4) as *mut u32;
         unsafe { core::ptr::write_volatile(doorbell_base, 1) };
-        
-        let data_to_do: *const [u8; 18] = scratch_data_addr.as_ptr();
-        let all_data = unsafe {core::ptr::read_volatile(data_to_do)};
+
+        let data_to_do: *const DeviceDescriptor = scratch_data_addr.as_ptr();
+        let all_data = unsafe { core::ptr::read_volatile(data_to_do) };
         debug_println!("data_to_do = {:?}", all_data);
         // producer_ring_buffer.
     }
