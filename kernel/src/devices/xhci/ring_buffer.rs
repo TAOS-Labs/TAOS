@@ -86,7 +86,7 @@ pub enum EventRingType {
     MfindexWrapEvent,
 }
 
-#[repr(C, packed)]
+#[repr(C)]
 #[derive(Debug, Clone, Copy)]
 /// A generic struct for Transfer Request Blocks (TRBs).
 /// Precise setting and getting of specific fields for a given TRB shall be done
@@ -352,10 +352,7 @@ impl ProducerRingBuffer {
 
         let enqueue_addr = self.enqueue as u64;
         debug_println!("putting trb at address: {:X}", enqueue_addr);
-        // copy the contents of block into enqueue
-        // TODO: make sure this copies like I want it to
-        // Should probally be volitale so the compiler dosent bork anything
-        *self.enqueue = block;
+        core::ptr::write_volatile(self.enqueue, block);
 
         // increment the enqueue pointer
         self.increment_enqueue();

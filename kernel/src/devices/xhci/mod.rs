@@ -266,7 +266,7 @@ fn get_host_controller_cap_regs(address: u64) -> XHCICapabilities {
     }
 }
 
-/// Runs a software reset of the xchi controller
+/// Runs a software reset of the xchi controller, TODO: Make asnyc
 fn reset_xchi_controller(operational_registers: u64) {
     let command_register_address = operational_registers as *mut u32;
     let mut command_data = CommandRegister::from_bits_retain(unsafe {
@@ -362,89 +362,20 @@ fn initalize_xhciinfo(full_bar: u64, mapper: &mut OffsetPageTable) -> Result<XHC
     )
     .expect("Error initializing producer ring.");
 
-    // Allocate space for the primary event ring
-    let erst_frame = alloc_frame().ok_or(XHCIError::MemoryAllocationFailure)?;
-    let erst_vaddr = mmio::map_page_as_uncacheable(erst_frame.start_address(), mapper)
-        .map_err(|_| XHCIError::MemoryAllocationFailure)?;
-    let er_segment_frame = alloc_frame().ok_or(XHCIError::MemoryAllocationFailure)?;
-    let er_segment_vaddr = mmio::map_page_as_uncacheable(er_segment_frame.start_address(), mapper)
-        .map_err(|_| XHCIError::MemoryAllocationFailure)?;
-    debug_println!("ers vaddr: {:X}", er_segment_vaddr);
-
-    // zero out pages
-    let erst_page: Page = Page::containing_address(erst_vaddr);
-    let ers_page: Page = Page::containing_address(er_segment_vaddr);
-    mmio::zero_out_page(erst_page);
-    mmio::zero_out_page(ers_page);
-
-    // get the max size of erst
-    let erst_max = (capablities.structural_paramaters_2 >> 4) & 0xF;
-    let max_size: isize = 1 << erst_max;
-
-    // try to create the ring. this initializes the segments to zero and the erst
-    let primary_event_ring = ConsumerRingBuffer::new(
-        erst_page.start_address().as_u64(),
-        max_size,
-        ers_page.start_address(),
-        er_segment_frame.start_address(),
-        4096 / 16,
-    )
-    .expect("Error initializing consumer ring.");
-
-    unsafe {
-        let mut addr = erst_vaddr.as_u64() as *const u64;
-        let base_address = core::ptr::read_volatile(addr);
-        debug_println!("Base address = 0x{base_address:X}");
-        debug_println!(
-            "Base addr should be 0x{:X}",
-            er_segment_frame.start_address().as_u64()
-        );
-
-        addr = (erst_vaddr.as_u64() + 0x8) as *const u64;
-        let size = core::ptr::read_volatile(addr);
-        debug_println!("Size = {size}");
-    }
-    unsafe {
-        primary_event_ring.print_ring();
-    }
-
     mmio::map_page_as_uncacheable(
         PhysAddr::new(full_bar + (capablities.runtime_register_space_offset as u64)),
         mapper,
     )
-    .map_err(|_| XHCIError::MemoryAllocationFailure)
-    .unwrap();
+    .map_err(|_| XHCIError::MemoryAllocationFailure)?;
 
     mmio::map_page_as_uncacheable(
         PhysAddr::new(full_bar + (capablities.doorbell_offset as u64)),
         mapper,
     )
-    .map_err(|_| XHCIError::MemoryAllocationFailure)
-    .unwrap();
-    // write the necessary data to the event ring fields of the 0th interrupter register
-    let erstsz_addr =
-        (address + (capablities.runtime_register_space_offset as u64) + 0x28) as *mut u32;
-    let erst_size: u32 = 1 & 0xFFFF;
-    let erstba_addr =
-        (address + (capablities.runtime_register_space_offset as u64) + 0x30) as *mut u64;
-    let erst_ba = erst_frame.start_address().as_u64();
-    debug_println!("event ring base address: {:X}", erst_ba);
-    let erdp_addr =
-        (address + (capablities.runtime_register_space_offset as u64) + 0x38) as *mut u64;
-    unsafe {
-        // write the number of entries in the erst to the erst size register
-        core::ptr::write_volatile(erstsz_addr, erst_size);
-        // write the base address of the erst to the event ring dequeue pointer register
-        core::ptr::write_volatile(erdp_addr, er_segment_frame.start_address().as_u64());
-        // write the base address of the erst to the erst base address register
-        core::ptr::write_volatile(erstba_addr, erst_ba);
-        let erstsz_value = core::ptr::read_volatile(erstsz_addr);
-        let erstba_value = core::ptr::read_volatile(erstba_addr);
-        let erdp_value = core::ptr::read_volatile(erdp_addr);
-        debug_println!("erstsz value: {}", erstsz_value);
-        debug_println!("erstba value: {:X}", erstba_value);
-        debug_println!("erdp value: {:X}", erdp_value);
-    }
+    .map_err(|_| XHCIError::MemoryAllocationFailure)?;
+
+    let primary_event_ring =
+        create_device_event_ring_no_info(VirtAddr::new(address), capablities, mapper, 0).unwrap();
 
     Result::Ok(XHCIInfo {
         base_address: address,
@@ -681,7 +612,7 @@ fn address_device(
         let status_trb = TransferRequestBlock {
             parameters: 0,
             status: 0,
-            control: ((TrbTypes::StatusStage as u32) << 10) | (1 << 5),
+            control: ((TrbTypes::StatusStage as u32) << 10),
         };
 
         unsafe {
@@ -702,6 +633,86 @@ fn address_device(
 
     Result::Ok(device_context_address)
 }
+
+/// Sets up an event ring for the specific interrupter
+fn create_device_event_ring(
+    info: &XHCIInfo,
+    interrupter: u16,
+    mapper: &mut OffsetPageTable,
+) -> Result<ConsumerRingBuffer, XHCIError> {
+    create_device_event_ring_no_info(
+        VirtAddr::new(info.base_address),
+        info.capablities,
+        mapper,
+        interrupter,
+    )
+}
+
+fn create_device_event_ring_no_info(
+    base_address: VirtAddr,
+    capablities: XHCICapabilities,
+    mapper: &mut OffsetPageTable,
+    interrupter: u16,
+) -> Result<ConsumerRingBuffer, XHCIError> {
+    assert!(interrupter < 1024);
+
+    // Allocate space for the primary event ring
+    let erst_frame = alloc_frame().ok_or(XHCIError::MemoryAllocationFailure)?;
+    let erst_vaddr = mmio::map_page_as_uncacheable(erst_frame.start_address(), mapper)
+        .map_err(|_| XHCIError::MemoryAllocationFailure)?;
+    let er_segment_frame = alloc_frame().ok_or(XHCIError::MemoryAllocationFailure)?;
+    let er_segment_vaddr = mmio::map_page_as_uncacheable(er_segment_frame.start_address(), mapper)
+        .map_err(|_| XHCIError::MemoryAllocationFailure)?;
+    debug_println!("ers vaddr: {:X}", er_segment_vaddr);
+
+    // zero out pages
+    let erst_page: Page = Page::containing_address(erst_vaddr);
+    let ers_page: Page = Page::containing_address(er_segment_vaddr);
+    mmio::zero_out_page(erst_page);
+    mmio::zero_out_page(ers_page);
+
+    // get the max size of erst
+    let erst_max = (capablities.structural_paramaters_2 >> 4) & 0xF;
+    let max_size: isize = 1 << erst_max;
+
+    // try to create the ring. this initializes the segments to zero and the erst
+    let event_ring = ConsumerRingBuffer::new(
+        erst_page.start_address().as_u64(),
+        max_size,
+        ers_page.start_address(),
+        er_segment_frame.start_address(),
+        4096 / 16,
+    )
+    .expect("Error initializing consumer ring.");
+
+    // write the necessary data to the event ring fields of the specifified interrupter register
+    let erstsz_addr = (base_address.as_u64()
+        + (capablities.runtime_register_space_offset as u64)
+        + ((interrupter as u64) * 32)
+        + 0x28) as *mut u32;
+    let erst_size: u32 = 1 & 0xFFFF;
+    let erstba_addr = (base_address.as_u64()
+        + (capablities.runtime_register_space_offset as u64)
+        + ((interrupter as u64) * 32)
+        + 0x30) as *mut u64;
+    let erst_ba = erst_frame.start_address().as_u64();
+    debug_println!("event ring base address: {:X}", erst_ba);
+    let erdp_addr = (base_address.as_u64()
+        + (capablities.runtime_register_space_offset as u64)
+        + ((interrupter as u64) * 32)
+        + 0x38) as *mut u64;
+    unsafe {
+        // write the number of entries in the erst to the erst size register
+        core::ptr::write_volatile(erstsz_addr, erst_size);
+        // write the base address of the erst to the event ring dequeue pointer register
+        core::ptr::write_volatile(erdp_addr, er_segment_frame.start_address().as_u64());
+        // write the base address of the erst to the erst base address register
+        core::ptr::write_volatile(erstba_addr, erst_ba);
+    }
+    Result::Ok(event_ring)
+}
+
+fn get_device_descriptor() {}
 
 fn configure_device(
     info: &mut XHCIInfo,
