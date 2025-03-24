@@ -125,6 +125,15 @@ struct DeviceEndpointDescriptor {
     b_interval: u8,
 }
 
+
+#[derive(Debug, Clone, Copy)]
+#[repr(C)]
+struct DeviceFunctionalDescriptor {
+    b_length: u8,
+    b_descriptor_type: u8,
+    b_descriptor_subtype: u8,
+}
+
 enum TransferType {
     NoDataStage = 0,
     Reserved = 1,
@@ -837,9 +846,25 @@ fn get_device_descriptor(
     let interface_vaddr = data_addr + config_descriptor.b_length.into();
     let interface_ptr: *const DeviceInterfaceDescriptor = interface_vaddr.as_ptr();
     let interface_descriptor = unsafe { core::ptr::read_volatile(interface_ptr) };
+    // let mut headers: Vec<DeviceFunctionalDescriptor> = Vec::new();
+    const HEADERS_SIZE: usize = 32;
+    let mut headers: [Option<DeviceFunctionalDescriptor>; HEADERS_SIZE] = [Option::None; HEADERS_SIZE];
     debug_println!("interface = {:?}", interface_descriptor);
+    let mut idx = 0;
+    let mut header_vaddr = interface_vaddr + interface_descriptor.b_length.into();
+    let header_ptr: *const DeviceFunctionalDescriptor = header_vaddr.as_ptr();
+    let mut header = unsafe {core::ptr::read_volatile(header_ptr)};
+    headers[idx] = Option::Some(header);
+    while header.b_descriptor_type != 5 {
+        header_vaddr = header_vaddr + header.b_length.into();
+        let header_ptr: *const DeviceFunctionalDescriptor = header_vaddr.as_ptr();
+        header = unsafe {core::ptr::read_volatile(header_ptr)};
+        debug_println!("Header = {:?}", header);
+        idx += 1;
+        headers[idx] = Option::Some(header);
+    }
     // TODO!!: fix (weird qemu stuff with other descriptors below)
-    let endpoint_vaddr = interface_vaddr + 32;
+    let endpoint_vaddr = header_vaddr;
     let endpoint_ptr: *const DeviceEndpointDescriptor = endpoint_vaddr.as_ptr();
     let endpoint_descriptor = unsafe { core::ptr::read_unaligned(endpoint_ptr) };
     debug_println!("endpoint = {:?}", endpoint_descriptor);
