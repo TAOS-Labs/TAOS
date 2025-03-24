@@ -838,17 +838,18 @@ fn get_device_descriptor(
     let interface_ptr: *const DeviceInterfaceDescriptor = interface_vaddr.as_ptr();
     let interface_descriptor = unsafe { core::ptr::read_volatile(interface_ptr) };
     debug_println!("interface = {:?}", interface_descriptor);
-    let endpoint_vaddr = interface_vaddr + interface_descriptor.b_length.into() - 1;
+    // TODO!!: fix (weird qemu stuff with other descriptors below)
+    let endpoint_vaddr = interface_vaddr + 28;
     let endpoint_ptr: *const DeviceEndpointDescriptor = endpoint_vaddr.as_ptr();
     let endpoint_descriptor = unsafe { core::ptr::read_unaligned(endpoint_ptr) };
     debug_println!("endpoint = {:?}", endpoint_descriptor);
     // let data_addr = endpoint_vaddr + endpoint_descriptor.b_length.into();
 
-    let interface_vaddr = endpoint_vaddr + endpoint_descriptor.b_length.into() + 1;
+    let interface_vaddr = endpoint_vaddr + endpoint_descriptor.b_length.into();
     let interface_ptr: *const DeviceInterfaceDescriptor = interface_vaddr.as_ptr();
     let interface_descriptor = unsafe { core::ptr::read_volatile(interface_ptr) };
     debug_println!("interface = {:?}", interface_descriptor);
-    let endpoint_vaddr = interface_vaddr + interface_descriptor.b_length.into() - 1;
+    let endpoint_vaddr = interface_vaddr + interface_descriptor.b_length.into();
     let endpoint_ptr: *const DeviceEndpointDescriptor = endpoint_vaddr.as_ptr();
     let endpoint_descriptor = unsafe { core::ptr::read_unaligned(endpoint_ptr) };
     debug_println!("endpoint = {:?}", endpoint_descriptor);
