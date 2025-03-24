@@ -977,15 +977,10 @@ fn wait_for_events(
     mapper: &OffsetPageTable,
 ) -> Result<TransferRequestBlock, XHCIError> {
     // TODO: make this async
-    // let mut count: u64 = 0;
     let mut event_result = unsafe { event_ring.dequeue() };
     while event_result.is_err() {
         event_result = unsafe { event_ring.dequeue() };
         core::hint::spin_loop();
-        // count += 1;
-        // if count % 0x1000 == 0 {
-        //     debug_println!("Still spinning");
-        // }
     }
     let event = event_result.map_err(|_| XHCIError::Timeout)?;
 
