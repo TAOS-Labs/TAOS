@@ -19,7 +19,10 @@ use crate::{
     interrupts::x2apic,
     memory::frame_allocator::with_buddy_frame_allocator,
     processes::{
-        process::{sleep_process_int, sleep_process_syscall, ProcessState, PROCESS_TABLE},
+        process::{
+            clear_process_frames, sleep_process_int, sleep_process_syscall, ProcessState,
+            PROCESS_TABLE,
+        },
         registers::NonFlagRegisters,
     },
     serial_println,
@@ -95,7 +98,8 @@ pub unsafe extern "C" fn syscall_handler_64_naked() -> ! {
         "mov [rsp+24], rdx",
         // The syscall calling convention: the user’s 4th argument was originally in RCX,
         // but because syscall overwrites RCX with the return RIP, we copy RCX into r10.
-        "mov r10, rcx",
+        // We shouldn't be doing this
+        //"mov r10, rcx",
         // Save arg4 (now in R10).
         "mov [rsp+32], r10",
         // Save arg5 (from R8).
@@ -206,7 +210,7 @@ pub fn sys_exit(code: i64) -> Option<u64> {
 
         (*pcb).state = ProcessState::Terminated;
 
-        // clear_process_frames(&mut *pcb);
+        clear_process_frames(&mut *pcb);
         with_buddy_frame_allocator(|alloc| {
             alloc.print_free_frames();
         });

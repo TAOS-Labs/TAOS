@@ -59,14 +59,14 @@ impl Default for ProtFlags {
 }
 
 impl ProtFlags {
-    pub const PROT_NONE: u64 = 1 << 0;
-    pub const PROT_READ: u64 = 1 << 1;
-    pub const PROT_WRITE: u64 = 1 << 2;
-    pub const PROT_EXEC: u64 = 1 << 3;
-    pub const PROT_SEM: u64 = 1 << 4;
-    pub const PROT_SAO: u64 = 1 << 5;
-    pub const PROT_GROWSUP: u64 = 1 << 6;
-    pub const PROT_GROWSDOWN: u64 = 1 << 7;
+    pub const PROT_NONE: u64 = 0;
+    pub const PROT_READ: u64 = 1 << 0;
+    pub const PROT_WRITE: u64 = 1 << 1;
+    pub const PROT_EXEC: u64 = 1 << 2;
+    pub const PROT_SEM: u64 = 1 << 3;
+    pub const PROT_SAO: u64 = 1 << 4;
+    pub const PROT_GROWSUP: u64 = 1 << 5;
+    pub const PROT_GROWSDOWN: u64 = 1 << 6;
 
     pub const fn new() -> Self {
         ProtFlags(0)
