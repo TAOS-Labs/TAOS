@@ -775,7 +775,7 @@ fn get_device_descriptor(
     let bm_request_type: u8 = 0b10000000;
     let b_request: u8 = 6; // Get descriptor
     let descriptor_type: u8 = 2; // Endpoint
-    let descriptor_idx: u8 = 0; // Get the first one
+    let descriptor_idx: u8 = 1; // Get the second one (FIXME: Hardcoded qemu)
     let w_value: u16 = ((descriptor_type as u16) << 8) | (descriptor_idx as u16);
     let w_idx: u16 = 0;
     let w_length: u16 = 1024;
@@ -839,20 +839,24 @@ fn get_device_descriptor(
     let interface_descriptor = unsafe { core::ptr::read_volatile(interface_ptr) };
     debug_println!("interface = {:?}", interface_descriptor);
     // TODO!!: fix (weird qemu stuff with other descriptors below)
-    let endpoint_vaddr = interface_vaddr + 28;
+    let endpoint_vaddr = interface_vaddr + 32;
     let endpoint_ptr: *const DeviceEndpointDescriptor = endpoint_vaddr.as_ptr();
     let endpoint_descriptor = unsafe { core::ptr::read_unaligned(endpoint_ptr) };
     debug_println!("endpoint = {:?}", endpoint_descriptor);
     // let data_addr = endpoint_vaddr + endpoint_descriptor.b_length.into();
 
-    let interface_vaddr = endpoint_vaddr + endpoint_descriptor.b_length.into();
-    let interface_ptr: *const DeviceInterfaceDescriptor = interface_vaddr.as_ptr();
-    let interface_descriptor = unsafe { core::ptr::read_volatile(interface_ptr) };
-    debug_println!("interface = {:?}", interface_descriptor);
-    let endpoint_vaddr = interface_vaddr + interface_descriptor.b_length.into();
-    let endpoint_ptr: *const DeviceEndpointDescriptor = endpoint_vaddr.as_ptr();
-    let endpoint_descriptor = unsafe { core::ptr::read_unaligned(endpoint_ptr) };
-    debug_println!("endpoint = {:?}", endpoint_descriptor);
+    // let interface_vaddr = endpoint_vaddr + endpoint_descriptor.b_length.into();
+    // let interface_ptr: *const DeviceInterfaceDescriptor = interface_vaddr.as_ptr();
+    // let interface_descriptor = unsafe { core::ptr::read_volatile(interface_ptr) };
+    // debug_println!("interface = {:?}", interface_descriptor);
+    // let endpoint_vaddr = interface_vaddr + interface_descriptor.b_length.into();
+    // let endpoint_ptr: *const DeviceEndpointDescriptor = endpoint_vaddr.as_ptr();
+    // let endpoint_descriptor = unsafe { core::ptr::read_unaligned(endpoint_ptr) };
+    // debug_println!("endpoint = {:?}", endpoint_descriptor);
+    // let endpoint_vaddr = endpoint_vaddr + endpoint_descriptor.b_length.into();
+    // let endpoint_ptr: *const DeviceEndpointDescriptor = endpoint_vaddr.as_ptr();
+    // let endpoint_descriptor = unsafe { core::ptr::read_unaligned(endpoint_ptr) };
+    // debug_println!("endpoint = {:?}", endpoint_descriptor);
     // TODO!!: Fix this, currently everything is 2mib pages, so this breaks
     // remove_mapped_frame(Page::containing_address(data_addr), mapper);
     Result::Ok((device_descriptor, config_descriptor))
@@ -880,7 +884,7 @@ fn configure_endpoint(
     let block = TransferRequestBlock {
         parameters: (input_context_vaddr - mapper.phys_offset()),
         status: 0,
-        control: ((big_device << 24) | ((TrbTypes::CoonfigEpCmd as u32) << 10)),
+        control: ((big_device << 24) | ((TrbTypes::ConfigEpCmd as u32) << 10)),
     };
     unsafe {
         info.command_ring
@@ -907,6 +911,16 @@ fn reconfigure_endpoint(
 
     context.set_add_flag(0, 1);
     context.set_add_flag(1, 0);
+
+
+    context.set_add_flag(2, 1);
+    context.set_add_flag(3, 1);
+
+    // let new_ctxt_ptr: *mut EndpointContext = (input_context_vaddr + (4 * 32)).as_mut_ptr();
+    // let mut ep_ctxt = unsafe {core::ptr::read_volatile(new_ctxt_ptr)};
+    // ep_ctxt.
+    // Input = idx (3)
+
     unsafe {
         core::ptr::write_volatile(context_ptr, context);
     }
@@ -917,7 +931,7 @@ fn reconfigure_endpoint(
     let block = TransferRequestBlock {
         parameters: (input_context_vaddr - mapper.phys_offset()),
         status: 0,
-        control: ((big_device << 24) | ((TrbTypes::CoonfigEpCmd as u32) << 10)),
+        control: ((big_device << 24) | ((TrbTypes::ConfigEpCmd as u32) << 10)),
     };
     unsafe {
         info.command_ring

@@ -16,7 +16,7 @@ pub enum TrbTypes {
     EnableSlotCmd = 9,
     DisableSlotCmd = 10,
     AddressDeviceCmd = 11,
-    CoonfigEpCmd = 12,
+    ConfigEpCmd = 12,
     EvalCentextCmd = 13,
     RestEpCmd = 14,
     StopEpCmd = 15,
