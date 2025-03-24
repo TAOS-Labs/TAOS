@@ -28,7 +28,7 @@ pub fn map_page_as_uncacheable(
             flags,
         } => match frame {
             MappedFrame::Size4KiB(_) => {
-                debug_println!("mapped 4KB");
+                debug_println!("mapped 4KB from {:X}", requested_phys_addr);
                 let page: Page<Size4KiB> = Page::containing_address(VirtAddr::new(offset_bar));
                 unsafe {
                     mapper
@@ -41,7 +41,7 @@ pub fn map_page_as_uncacheable(
                 }
             }
             MappedFrame::Size2MiB(_) => {
-                debug_println!("mapped 2MB");
+                debug_println!("mapped 2MB from {:X}", requested_phys_addr);
                 let page: Page<Size2MiB> = Page::containing_address(VirtAddr::new(offset_bar));
                 unsafe {
                     mapper
