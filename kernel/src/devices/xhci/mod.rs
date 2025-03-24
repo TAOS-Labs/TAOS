@@ -463,7 +463,7 @@ fn boot_up_all_ports(info: &mut XHCIInfo, mapper: &mut OffsetPageTable) -> Resul
             let mut producer_buffer = address_tuple.1;
             // Issue the get_descriptor
 
-            configure_endpoint(info, slot, mapper, input_context)?;
+            // configure_endpoint(info, slot, mapper, input_context)?;
             let mut event_ring = create_device_event_ring(info, slot as u16, mapper)?;
             let descriptor =
                 get_device_descriptor(info, &mut producer_buffer, &mut event_ring, mapper, slot)?;
@@ -887,7 +887,8 @@ fn get_device_descriptor(
     Result::Ok((device_descriptor, config_descriptor))
 }
 
-/// Issues first configure endpoint command,  
+/// Issues first configure endpoint command,  the class driver might want
+/// to re-configure the endpoint
 fn configure_endpoint(
     info: &mut XHCIInfo,
     slot: u8,
@@ -923,53 +924,6 @@ fn configure_endpoint(
     Result::Ok(())
 }
 
-fn reconfigure_endpoint(
-    info: &mut XHCIInfo,
-    slot: u8,
-    mapper: &OffsetPageTable,
-    device_descriptor: DeviceDescriptor,
-    endpoint_descriptor: DeviceEndpointDescriptor,
-    input_context_vaddr: VirtAddr,
-) -> Result<(), XHCIError> {
-    let context_ptr: *mut InputControlContext = input_context_vaddr.as_mut_ptr();
-    let mut context = unsafe { *context_ptr };
-
-    context.set_add_flag(0, 1);
-    context.set_add_flag(1, 0);
-
-
-    context.set_add_flag(2, 1);
-    context.set_add_flag(3, 1);
-
-    // let new_ctxt_ptr: *mut EndpointContext = (input_context_vaddr + (4 * 32)).as_mut_ptr();
-    // let mut ep_ctxt = unsafe {core::ptr::read_volatile(new_ctxt_ptr)};
-    // ep_ctxt.
-    // Input = idx (3)
-
-    unsafe {
-        core::ptr::write_volatile(context_ptr, context);
-    }
-    // context.set_drop_flag(0, 0);
-    // context.set_drop_flag(1, 0);
-
-    let big_device: u32 = slot.into();
-    let block = TransferRequestBlock {
-        parameters: (input_context_vaddr - mapper.phys_offset()),
-        status: 0,
-        control: ((big_device << 24) | ((TrbTypes::ConfigEpCmd as u32) << 10)),
-    };
-    unsafe {
-        info.command_ring
-            .enqueue(block)
-            .map_err(|_| XHCIError::CommandRingError)?
-    };
-    let doorbell_base: *mut u32 =
-        (info.base_address + info.capablities.doorbell_offset as u64) as *mut u32;
-    unsafe { core::ptr::write_volatile(doorbell_base, 0) };
-    wait_for_events_including_command_completion(info, mapper)?;
-
-    Result::Ok(())
-}
 
 fn wait_for_events(
     info: &XHCIInfo,
