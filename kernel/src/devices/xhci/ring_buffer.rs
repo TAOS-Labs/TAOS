@@ -750,7 +750,7 @@ mod test {
     };
 
     #[test_case]
-    fn prod_ring_buffer_init() {
+    async fn prod_ring_buffer_init() {
         // first get a page and zero init it
         let mut mapper = MAPPER.lock();
         let page: Page = Page::containing_address(VirtAddr::new(0x500000000));
@@ -783,7 +783,7 @@ mod test {
     }
 
     #[test_case]
-    fn prod_ring_buffer_enqueue() {
+    async fn prod_ring_buffer_enqueue() {
         // initialize a ring buffer we can enqueue onto
         let mut mapper = MAPPER.lock();
         let page: Page = Page::containing_address(VirtAddr::new(0x500000000));
@@ -830,7 +830,7 @@ mod test {
     }
 
     #[test_case]
-    fn prod_ring_buffer_helpers() {
+    async fn prod_ring_buffer_helpers() {
         let mut mapper = MAPPER.lock();
         let page: Page = Page::containing_address(VirtAddr::new(0x500000000));
         let _ = create_mapping(page, &mut *mapper, None);
@@ -888,7 +888,7 @@ mod test {
     }
 
     #[test_case]
-    fn prod_ring_buffer_enqueue_accross_segment() {
+    async fn prod_ring_buffer_enqueue_accross_segment() {
         let mut mapper = MAPPER.lock();
         let page: Page = Page::containing_address(VirtAddr::new(0x500000000));
         let _ = create_mapping(page, &mut *mapper, None);
@@ -953,7 +953,7 @@ mod test {
     }
 
     #[test_case]
-    fn consumer_ring_buffer_init() {
+    async fn consumer_ring_buffer_init() {
         // first get pages for the ERST and first segment
         let mut mapper: spin::MutexGuard<'_, OffsetPageTable<'_>> = MAPPER.lock();
         let erst_frame = alloc_frame().unwrap();
@@ -1056,7 +1056,7 @@ mod test {
     }
 
     #[test_case]
-    fn consumer_ring_buffer_single_segment_dequeue() {
+    async fn consumer_ring_buffer_single_segment_dequeue() {
         // some constants
         const SEGMENT_ENTRIES: u32 = 16;
         const ERST_ENTRY_SIZE: isize = 16;
@@ -1179,7 +1179,7 @@ mod test {
     }
 
     #[test_case]
-    fn consumer_ring_add_segment() {
+    async fn consumer_ring_add_segment() {
         // some constants
         const SEGMENT_ENTRIES: u32 = 16;
         const ERST_ENTRY_SIZE: isize = 16;
@@ -1283,7 +1283,7 @@ mod test {
     }
 
     #[test_case]
-    fn consumer_ring_buffer_multi_segment_dequeue() {
+    async fn consumer_ring_buffer_multi_segment_dequeue() {
         // some constants
         const SEGMENT_ENTRIES: u32 = 16;
         const ERST_ENTRY_SIZE: isize = 16;
@@ -1498,7 +1498,7 @@ mod test {
     }
 
     #[test_case]
-    fn consumer_ring_buffer_multi_segment_skip() {
+    async fn consumer_ring_buffer_multi_segment_skip() {
         // some constants
         const SEGMENT_ENTRIES: u32 = 16;
         const ERST_ENTRY_SIZE: isize = 16;

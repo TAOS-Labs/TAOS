@@ -783,7 +783,7 @@ fn get_device_descriptor(
 
     let bm_request_type: u8 = 0b10000000;
     let b_request: u8 = 6; // Get descriptor
-    let descriptor_type: u8 = 2; // Endpoint
+    let descriptor_type: u8 = 2; // Configuration 
     let descriptor_idx: u8 = 1; // Get the second one (FIXME: Hardcoded qemu)
     let w_value: u16 = ((descriptor_type as u16) << 8) | (descriptor_idx as u16);
     let w_idx: u16 = 0;

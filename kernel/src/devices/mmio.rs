@@ -110,7 +110,7 @@ mod tests {
     };
 
     #[test_case]
-    fn test_zero_out_page_4kib() {
+    async fn test_zero_out_page_4kib() {
         let mut mapper = MAPPER.lock();
         let mut allocator_tmp = FRAME_ALLOCATOR.lock();
         let mut frames: [Option<PhysFrame>; 3] = [Option::None; 3];
