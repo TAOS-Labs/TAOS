@@ -3,6 +3,7 @@
 /// Maximum number of CPU cores supported by the kernel.
 pub const MAX_CORES: usize = 2;
 
+pub mod devices;
 pub mod events;
 pub mod gdt;
 pub mod idt;

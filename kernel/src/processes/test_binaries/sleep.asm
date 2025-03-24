@@ -1,13 +1,19 @@
+section .data
+  buffer db "Hello, syscall sleep!", 0
+
 section .text
     global _start
 
 _start:
+    mov rdi, buffer
     mov rax, 3
-    int 0x80
+    mov rdx, 35
+    mov r8, 60
+    syscall ; print
 
     mov rdi, 5000000000
-    mov rax, 35
-    int 0x80
+    mov rax, rdx
+    syscall ; nanosleep
 
-    mov rax, 60
-    int 0x80
+    mov rax, r8
+    syscall ; exit

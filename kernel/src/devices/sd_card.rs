@@ -1,10 +1,13 @@
-use alloc::{sync::Arc, vec::Vec};
+use alloc::{boxed::Box, sync::Arc, vec::Vec};
+use async_trait::async_trait;
 use spin::Mutex;
 use x86_64::{structures::paging::OffsetPageTable, PhysAddr};
 
 use crate::{
+    constants::devices::SD_REQ_TIMEOUT_NANOS,
     debug_println,
     devices::pci::write_pci_command,
+    events::{current_running_event, futures::devices::SDCardReq, get_runner_time},
     filesys::{BlockDevice, FsError},
 };
 use bitflags::bitflags;
@@ -148,7 +151,8 @@ bitflags! {
 }
 
 bitflags! {
-    struct PresentState: u32 {
+    #[derive(Clone)]
+    pub struct PresentState: u32 {
         const UHS2IFDetection = 1 << 31;
         const LaneSynchronization = 1 << 30;
         const DormantState = 1 << 29;
@@ -189,8 +193,9 @@ const SD_DMA_INTERFACE: u8 = 0x1;
 const MAX_ITERATIONS: usize = 1_000;
 const SD_BLOCK_SIZE: u32 = 512;
 
+#[async_trait]
 impl BlockDevice for SDCardInfo {
-    fn read_block(&self, block_num: u64, buf: &mut [u8]) -> Result<(), FsError> {
+    async fn read_block(&self, block_num: u64, buf: &mut [u8]) -> Result<(), FsError> {
         if block_num > self.total_blocks {
             return Result::Err(FsError::IOError);
         }
@@ -200,13 +205,14 @@ impl BlockDevice for SDCardInfo {
                 .try_into()
                 .expect("Maxumum block number should not be greater than 32 bits"),
         )
+        .await
         .map_err(|_| FsError::IOError)?;
         buf.copy_from_slice(&data);
 
         Result::Ok(())
     }
 
-    fn write_block(&mut self, block_num: u64, buf: &[u8]) -> Result<(), FsError> {
+    async fn write_block(&mut self, block_num: u64, buf: &[u8]) -> Result<(), FsError> {
         if block_num > self.total_blocks {
             return Result::Err(FsError::IOError);
         }
@@ -219,9 +225,11 @@ impl BlockDevice for SDCardInfo {
                 .expect("Maximum block number should not be greater than 32 bits"),
             data,
         )
+        .await
         .map_err(|_| FsError::IOError)?;
         Result::Ok(())
     }
+
     fn block_size(&self) -> usize {
         SD_BLOCK_SIZE.try_into().expect("To be on 64 bit system")
     }
@@ -593,6 +601,8 @@ fn send_sd_command(
             } else if command_done != 0 {
                 debug_println!("Something happened 0x{command_done:X}");
             }
+
+            core::hint::spin_loop();
         }
     }
     check_no_errors(sd_card)?;
@@ -643,7 +653,7 @@ fn determine_sd_card_response(
 
 /// Reads data from a sd card, returning it as  a return value unless an Error
 /// Occurred
-pub fn read_sd_card(sd_card: &SDCardInfo, block: u32) -> Result<[u8; 512], SDCardError> {
+pub async fn read_sd_card(sd_card: &SDCardInfo, block: u32) -> Result<[u8; 512], SDCardError> {
     let internal_info = &sd_card.internal_info;
     let block_size_register_addr = (internal_info.base_address_register + 0x4) as *mut u16;
     unsafe { core::ptr::write_volatile(block_size_register_addr, 0x200) };
@@ -668,19 +678,18 @@ pub fn read_sd_card(sd_card: &SDCardInfo, block: u32) -> Result<[u8; 512], SDCar
         CommandFlags::DataPresentSelect,
     )?;
 
+    // TODO SD Card lock for safety? (OR at least for this mem address)
     let present_state_register_addr = (internal_info.base_address_register + 0x24) as *const u32;
-    let mut finished = false;
-    for _ in 0..MAX_ITERATIONS {
-        let present_state = unsafe {
-            PresentState::from_bits_retain(core::ptr::read_volatile(present_state_register_addr))
-        };
-        if PresentState::BufferReadEnable.intersects(present_state) {
-            finished = true;
-            break;
-        }
-        core::hint::spin_loop();
-    }
-    if !finished {
+
+    let read_ready = SDCardReq::new(
+        PresentState::BufferReadEnable,
+        present_state_register_addr,
+        get_runner_time(SD_REQ_TIMEOUT_NANOS),
+        current_running_event().expect("Reading from SD outside event"),
+    )
+    .await;
+
+    if read_ready.is_err() {
         debug_println!("Timedout");
         return Result::Err(SDCardError::SDTimeout);
     }
@@ -696,7 +705,11 @@ pub fn read_sd_card(sd_card: &SDCardInfo, block: u32) -> Result<[u8; 512], SDCar
 }
 
 /// Writes data to block of sd card
-pub fn write_sd_card(sd_card: &SDCardInfo, block: u32, data: [u8; 512]) -> Result<(), SDCardError> {
+pub async fn write_sd_card(
+    sd_card: &SDCardInfo,
+    block: u32,
+    data: [u8; 512],
+) -> Result<(), SDCardError> {
     let internal_info = &sd_card.internal_info;
     let block_size_register_addr = (internal_info.base_address_register + 0x4) as *mut u16;
     unsafe { core::ptr::write_volatile(block_size_register_addr, 0x200) };
@@ -717,20 +730,17 @@ pub fn write_sd_card(sd_card: &SDCardInfo, block: u32, data: [u8; 512]) -> Resul
     )?;
 
     let present_state_register_addr = (internal_info.base_address_register + 0x24) as *const u32;
-    let mut finished = false;
-    for _ in 0..MAX_ITERATIONS {
-        let present_state = unsafe {
-            PresentState::from_bits_retain(core::ptr::read_volatile(present_state_register_addr))
-        };
-        if PresentState::BufferWriteEnable.intersects(present_state) {
-            finished = true;
-            break;
-        }
-        core::hint::spin_loop();
-    }
-    if !finished {
-        let present_state = unsafe { core::ptr::read_volatile(present_state_register_addr) };
-        debug_println!("State = 0x{present_state:X}");
+
+    let write_ready = SDCardReq::new(
+        PresentState::BufferWriteEnable,
+        present_state_register_addr,
+        get_runner_time(SD_REQ_TIMEOUT_NANOS),
+        current_running_event().expect("Writing to SD outside event"),
+    )
+    .await;
+
+    if write_ready.is_err() {
+        debug_println!("Timedout");
         return Result::Err(SDCardError::SDTimeout);
     }
 

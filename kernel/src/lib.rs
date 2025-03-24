@@ -10,6 +10,9 @@
 //! The TAOS operating system
 extern crate alloc;
 
+use alloc::boxed::Box;
+use core::{future::Future, pin::Pin};
+use events::schedule_kernel;
 use x86_64::instructions::hlt;
 
 pub mod constants;
@@ -18,6 +21,7 @@ pub mod events;
 pub mod filesys;
 pub mod init;
 pub mod interrupts;
+pub mod ipc;
 pub mod logging;
 pub mod memory;
 pub mod processes;
@@ -51,32 +55,53 @@ pub fn idle_loop() -> ! {
     }
 }
 
-pub trait Testable {
-    fn run(&self);
+type BoxFuture<T> = Pin<Box<dyn Future<Output = T> + Send + 'static>>;
+
+pub trait Testable: Sync {
+    fn run(&self) -> BoxFuture<()>;
+    fn name(&self) -> &str;
 }
 
-impl<T> Testable for T
+impl<F, Fut> Testable for F
 where
-    T: Fn(),
+    F: Fn() -> Fut + Send + Sync + 'static,
+    Fut: Future<Output = ()> + Send + 'static,
 {
-    fn run(&self) {
-        serial_println!("TEST: {}...\t", core::any::type_name::<T>());
-        self();
-        serial_println!("[ok]\n");
+    fn run(&self) -> BoxFuture<()> {
+        Box::pin(self())
+    }
+
+    fn name(&self) -> &str {
+        core::any::type_name::<F>()
     }
 }
 
-#[no_mangle]
-pub fn test_runner(tests: &[&dyn Testable]) {
-    serial_print!("INFO: Running {} tests...\n", tests.len());
-    for test in tests {
-        test.run();
-    }
-    exit_qemu(QemuExitCode::Success);
+pub fn test_runner(tests: &[&(dyn Testable + Send + Sync)]) {
+    serial_println!("Running {} tests\n", tests.len());
+
+    let test_futures: alloc::vec::Vec<_> = tests
+        .iter()
+        .map(|test| {
+            let name = alloc::string::String::from(test.name());
+            (name, test.run())
+        })
+        .collect();
+
+    let future = async move {
+        for (name, fut) in test_futures {
+            serial_print!("test {}: ", name);
+            fut.await;
+            serial_println!("ok");
+        }
+        serial_println!("\ntest result: ok.");
+        exit_qemu(QemuExitCode::Success);
+    };
+
+    schedule_kernel(future, 1);
 }
 
 pub fn test_panic_handler(info: &core::panic::PanicInfo) -> ! {
-    serial_println!("[failed]\n");
+    serial_println!("FAILED");
     serial_println!("Error: {}\n", info);
     exit_qemu(QemuExitCode::Failed);
     idle_loop();
@@ -101,10 +126,15 @@ pub fn exit_qemu(exit_code: QemuExitCode) {
 #[cfg(test)]
 #[no_mangle]
 pub extern "C" fn _start() -> ! {
+    #[cfg(test)]
+    use events::run_loop;
+
     serial_println!("!!! RUNNING LIBRARY TESTS !!!");
     init::init();
     test_main();
-    idle_loop();
+    unsafe {
+        run_loop(0);
+    };
 }
 
 #[cfg(test)]
@@ -114,6 +144,8 @@ fn panic(info: &core::panic::PanicInfo) -> ! {
 }
 
 #[test_case]
-fn trivial_lib_assertion() {
-    assert_eq!(1, 1);
+fn trivial_test() -> impl Future<Output = ()> + Send + 'static {
+    async {
+        assert_eq!(1, 1);
+    }
 }
