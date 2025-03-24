@@ -10,7 +10,7 @@ use core::cmp::min;
 
 use crate::{
     constants::memory::PAGE_SIZE,
-    debug_println,
+    debug_print, debug_println,
     memory::{frame_allocator::alloc_frame, paging::remove_mapped_frame},
 };
 use alloc::{sync::Arc, vec::Vec};
@@ -74,7 +74,7 @@ struct DeviceDescriptor {
     b_length: u8,
     b_descriptor_type: u8,
     bcd_usb: u16,
-    b_devic_class: u8,
+    b_device_class: u8,
     b_device_sub_class: u8,
     b_device_protocol: u8,
     b_max_packet_size_0: u8,
@@ -82,9 +82,47 @@ struct DeviceDescriptor {
     id_product: u16,
     bcd_device: u16,
     i_manufacturer: u8,
-    i_prodcut: u8,
+    i_product: u8,
     i_serial_number: u8,
     b_num_configurations: u8,
+}
+
+#[derive(Debug, Clone, Copy)]
+#[repr(C)]
+struct DeviceConfigurationDescriptor {
+    b_length: u8,
+    b_descriptor_type: u8,
+    w_total_length: u16,
+    b_num_interfaces: u8,
+    b_configuration_value: u8,
+    i_configuration: u8,
+    bm_attributes: u8,
+    b_max_power: u8,
+}
+
+#[derive(Debug, Clone, Copy)]
+#[repr(C)]
+struct DeviceInterfaceDescriptor {
+    b_length: u8,
+    b_descriptor_type: u8,
+    b_interface_number: u8,
+    b_alternate_setting: u8,
+    b_num_endpoints: u8,
+    b_interface_class: u8,
+    b_interface_sub_class: u8,
+    b_interface_protocol: u8,
+    i_interface: u8,
+}
+
+#[derive(Debug, Clone, Copy)]
+#[repr(C)]
+struct DeviceEndpointDescriptor {
+    b_length: u8,
+    b_descriptor_type: u8,
+    b_endpoint_address: u8,
+    bm_attribute: u8,
+    w_max_packet_size: u16,
+    b_interval: u8,
 }
 
 enum TransferType {
@@ -92,6 +130,12 @@ enum TransferType {
     Reserved = 1,
     OutDataStage = 2,
     InDataStage = 3,
+}
+
+struct USBDevice {
+    descriptor: DeviceDescriptor,
+    command_ring: ProducerRingBuffer,
+    event_ring: ConsumerRingBuffer,
 }
 
 #[derive(Debug)]
@@ -211,7 +255,7 @@ pub fn initalize_xhci_hub(
     let bar_1: u64 = read_config(xhci_device.bus, xhci_device.device, 0, 0x14).into();
     let full_bar = (bar_1 << 32) | bar_0;
 
-    let mut info = initalize_xhciinfo(full_bar, mapper)?;
+    let mut info = initalize_xhci_info(full_bar, mapper)?;
     // Turn on device
     run_host_controller(&info);
     boot_up_all_ports(&mut info, mapper)?;
@@ -312,7 +356,7 @@ fn reset_xchi_controller(operational_registers: u64) {
     }
 }
 
-fn initalize_xhciinfo(full_bar: u64, mapper: &mut OffsetPageTable) -> Result<XHCIInfo, XHCIError> {
+fn initalize_xhci_info(full_bar: u64, mapper: &mut OffsetPageTable) -> Result<XHCIInfo, XHCIError> {
     let base_virtual_address =
         mmio::map_page_as_uncacheable(PhysAddr::new(full_bar), mapper).unwrap();
     let address = base_virtual_address.as_u64();
@@ -352,7 +396,6 @@ fn initalize_xhciinfo(full_bar: u64, mapper: &mut OffsetPageTable) -> Result<XHC
     // set Command Ring Control reg to starting addr of command ring.
     let crcreg_addr = (operational_start + 0x18) as *mut u64;
     let crcreg_value = cmd_frame.start_address().as_u64() | 1;
-    debug_println!("cmd ring base: {:X}", crcreg_value);
     unsafe {
         core::ptr::write_volatile(crcreg_addr, crcreg_value);
     }
@@ -411,7 +454,7 @@ fn boot_up_all_ports(info: &mut XHCIInfo, mapper: &mut OffsetPageTable) -> Resul
             let mut producer_buffer = address_tuple.1;
             // Issue the get_descriptor
 
-            configure_device(info, slot, mapper, input_context)?;
+            configure_endpoint(info, slot, mapper, input_context)?;
             let mut event_ring = create_device_event_ring(info, slot as u16, mapper)?;
             let descriptor =
                 get_device_descriptor(info, &mut producer_buffer, &mut event_ring, mapper, slot)?;
@@ -664,7 +707,7 @@ fn get_device_descriptor(
     consumer_ring_buffer: &mut ConsumerRingBuffer,
     mapper: &mut OffsetPageTable,
     slot: u8,
-) -> Result<DeviceDescriptor, XHCIError> {
+) -> Result<(DeviceDescriptor, DeviceConfigurationDescriptor), XHCIError> {
     let data_frame = alloc_frame().ok_or(XHCIError::MemoryAllocationFailure)?;
     debug_println!("Data phys_addr = {:X}", data_frame.start_address().as_u64());
     let data_addr = mmio::map_page_as_uncacheable(data_frame.start_address(), mapper)
@@ -727,14 +770,95 @@ fn get_device_descriptor(
 
     wait_for_events(info, consumer_ring_buffer, mapper)?;
     let data_to_do: *const DeviceDescriptor = data_addr.as_ptr();
-    let all_data = unsafe { core::ptr::read_volatile(data_to_do) };
-    
+    let device_descriptor = unsafe { core::ptr::read_volatile(data_to_do) };
+
+    let bm_request_type: u8 = 0b10000000;
+    let b_request: u8 = 6; // Get descriptor
+    let descriptor_type: u8 = 2; // Endpoint
+    let descriptor_idx: u8 = 0; // Get the first one
+    let w_value: u16 = ((descriptor_type as u16) << 8) | (descriptor_idx as u16);
+    let w_idx: u16 = 0;
+    let w_length: u16 = 1024;
+    let transfer_length: u16 = 8;
+
+    let setup_trb = TransferRequestBlock {
+        parameters: ((w_length as u64) << 48)
+            | ((w_idx as u64) << 32)
+            | ((w_value as u64) << 16)
+            | ((b_request as u64) << 8)
+            | (bm_request_type as u64),
+        status: transfer_length as u32,
+        control: (1 << 6)
+            | ((TrbTypes::SetupStage as u32) << 10)
+            | ((TransferType::InDataStage as u32) << 16),
+    };
+    unsafe {
+        producer_ring_buffer
+            .enqueue(setup_trb)
+            .map_err(|_| XHCIError::TransferRingError)?;
+    }
+
+    // let transfer_length: u16 = size_of::<DeviceEndpointDescriptor>().try_into().unwrap();
+    let transfer_length: u16 = 4096;
+    let td_size: u8 = 0;
+    let data_trb = TransferRequestBlock {
+        parameters: data_frame.start_address().as_u64(),
+        status: ((td_size as u32) << 17) | transfer_length as u32,
+        control: (1 << 16) | ((TrbTypes::DataStage as u32) << 10),
+    };
+
+    unsafe {
+        producer_ring_buffer
+            .enqueue(data_trb)
+            .map_err(|_| XHCIError::TransferRingError)?;
+    }
+    let interrupter_target: u32 = slot.into();
+    let status_trb = TransferRequestBlock {
+        parameters: 0,
+        status: interrupter_target << 22,
+        control: ((TrbTypes::StatusStage as u32) << 10) | (1 << 5),
+    };
+
+    unsafe {
+        producer_ring_buffer
+            .enqueue(status_trb)
+            .map_err(|_| XHCIError::TransferRingError)?;
+    }
+    let doorbell_base: *mut u32 = (info.base_address
+        + info.capablities.doorbell_offset as u64
+        + (slot as u64) * 4) as *mut u32;
+    unsafe { core::ptr::write_volatile(doorbell_base, 1) };
+
+    wait_for_events(info, consumer_ring_buffer, mapper)?;
+
+    let data_to_do: *const DeviceConfigurationDescriptor = data_addr.as_ptr();
+    let config_descriptor = unsafe { core::ptr::read_volatile(data_to_do) };
+    debug_println!("config = {:?}", config_descriptor);
+    let interface_vaddr = data_addr + config_descriptor.b_length.into();
+    let interface_ptr: *const DeviceInterfaceDescriptor = interface_vaddr.as_ptr();
+    let interface_descriptor = unsafe { core::ptr::read_volatile(interface_ptr) };
+    debug_println!("interface = {:?}", interface_descriptor);
+    let endpoint_vaddr = interface_vaddr + interface_descriptor.b_length.into() - 1;
+    let endpoint_ptr: *const DeviceEndpointDescriptor = endpoint_vaddr.as_ptr();
+    let endpoint_descriptor = unsafe { core::ptr::read_unaligned(endpoint_ptr) };
+    debug_println!("endpoint = {:?}", endpoint_descriptor);
+    // let data_addr = endpoint_vaddr + endpoint_descriptor.b_length.into();
+
+    let interface_vaddr = endpoint_vaddr + endpoint_descriptor.b_length.into() + 1;
+    let interface_ptr: *const DeviceInterfaceDescriptor = interface_vaddr.as_ptr();
+    let interface_descriptor = unsafe { core::ptr::read_volatile(interface_ptr) };
+    debug_println!("interface = {:?}", interface_descriptor);
+    let endpoint_vaddr = interface_vaddr + interface_descriptor.b_length.into() - 1;
+    let endpoint_ptr: *const DeviceEndpointDescriptor = endpoint_vaddr.as_ptr();
+    let endpoint_descriptor = unsafe { core::ptr::read_unaligned(endpoint_ptr) };
+    debug_println!("endpoint = {:?}", endpoint_descriptor);
     // TODO!!: Fix this, currently everything is 2mib pages, so this breaks
     // remove_mapped_frame(Page::containing_address(data_addr), mapper);
-    Result::Ok(all_data)
+    Result::Ok((device_descriptor, config_descriptor))
 }
 
-fn configure_device(
+/// Issues first configure endpoint command,  
+fn configure_endpoint(
     info: &mut XHCIInfo,
     slot: u8,
     mapper: &OffsetPageTable,
@@ -765,6 +889,45 @@ fn configure_device(
     let doorbell_base: *mut u32 =
         (info.base_address + info.capablities.doorbell_offset as u64) as *mut u32;
     unsafe { core::ptr::write_volatile(doorbell_base, 0) };
+    wait_for_events_including_command_completion(info, mapper)?;
+    Result::Ok(())
+}
+
+fn reconfigure_endpoint(
+    info: &mut XHCIInfo,
+    slot: u8,
+    mapper: &OffsetPageTable,
+    device_descriptor: DeviceDescriptor,
+    endpoint_descriptor: DeviceEndpointDescriptor,
+    input_context_vaddr: VirtAddr,
+) -> Result<(), XHCIError> {
+    let context_ptr: *mut InputControlContext = input_context_vaddr.as_mut_ptr();
+    let mut context = unsafe { *context_ptr };
+
+    context.set_add_flag(0, 1);
+    context.set_add_flag(1, 0);
+    unsafe {
+        core::ptr::write_volatile(context_ptr, context);
+    }
+    // context.set_drop_flag(0, 0);
+    // context.set_drop_flag(1, 0);
+
+    let big_device: u32 = slot.into();
+    let block = TransferRequestBlock {
+        parameters: (input_context_vaddr - mapper.phys_offset()),
+        status: 0,
+        control: ((big_device << 24) | ((TrbTypes::CoonfigEpCmd as u32) << 10)),
+    };
+    unsafe {
+        info.command_ring
+            .enqueue(block)
+            .map_err(|_| XHCIError::CommandRingError)?
+    };
+    let doorbell_base: *mut u32 =
+        (info.base_address + info.capablities.doorbell_offset as u64) as *mut u32;
+    unsafe { core::ptr::write_volatile(doorbell_base, 0) };
+    wait_for_events_including_command_completion(info, mapper)?;
+
     Result::Ok(())
 }
 
@@ -782,7 +945,7 @@ fn wait_for_events(
         // count += 1;
         // if count % 0x1000 == 0 {
         //     debug_println!("Still spinning");
-        // } 
+        // }
     }
     let event = event_result.map_err(|_| XHCIError::Timeout)?;
 

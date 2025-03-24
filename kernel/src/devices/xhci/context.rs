@@ -165,8 +165,8 @@ impl SlotContext {
 /// HCCPARAMS1 register is '0', otherwise it is 64 bytes with bytes 32
 /// to 64 reserved for the xHCI
 pub struct EndpointContext {
-    pub offset_0: u32,
-    pub offset_1: u32,
+    offset_0: u32,
+    offset_1: u32,
     offset_2: u32,
     offset_3: u32,
     offset_4: u32,
