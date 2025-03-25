@@ -181,6 +181,7 @@ pub struct ProducerRingBuffer {
     /// The type of this ring, either Command, Transfer, or Event
     ring: RingType,
 }
+unsafe impl Send for ProducerRingBuffer {}
 
 impl ProducerRingBuffer {
     /// Initializes and returns a new instance of a producer ring buffer or an error.
@@ -474,6 +475,7 @@ pub struct ConsumerRingBuffer {
     /// The number of TRBs remaing in the current segment.
     ers_size: u32,
 }
+unsafe impl Send for  ConsumerRingBuffer {}
 
 impl ConsumerRingBuffer {
     /// Initializes and returns a new instance of a consumer ring buffer or an error.
