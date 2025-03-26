@@ -50,7 +50,7 @@ impl Namespace {
         }
     }
 
-    pub async fn walk_path(&self, path: &str) -> Result<PathResolution, Error> {
+    pub async fn walk_path(&mut self, path: &str) -> Result<PathResolution, Error> {
         if path.is_empty() {
             return Err(Error::InvalidPath);
         }
@@ -65,7 +65,7 @@ impl Namespace {
             return Err(Error::TooManyComponents);
         }
 
-        let mut current = &self.root;
+        let mut current = &mut self.root;
         let mut current_fid = ROOTFID;
         let mut current_mount = None;
 
@@ -85,7 +85,7 @@ impl Namespace {
                         .await?;
 
                     match response {
-                        Message::Rattach(_) => {
+                        Message::Rattach(_msg) => {
                             current_fid = new_fid;
                             current_mount = Some(mount_id);
                         }
@@ -110,15 +110,23 @@ impl Namespace {
                 serial_println!("Recv Rwalk");
 
                 match response {
-                    Message::Rwalk(_) => {
+                    Message::Rwalk(_msg) => {
                         current_fid = new_fid;
                     }
                     _ => return Err(Error::NotFound),
                 }
+
+                current.children.insert(component.clone(),DirEntry {
+                    _name: component.clone(),
+                    mount_id: Some(mount_id),
+                    children: BTreeMap::new(),
+                });    
             }
 
+            serial_println!("current dir entry: {:?}", current);
+
             // Update our position in directory tree
-            match current.children.get(&component) {
+            match current.children.get_mut(&component) {
                 Some(entry) => current = entry,
                 None => return Err(Error::NotFound),
             }

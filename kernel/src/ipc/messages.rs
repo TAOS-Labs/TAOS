@@ -9,8 +9,8 @@ pub const MAX_MESSAGE_SIZE: u32 = 8192;
 #[repr(C)]
 pub struct MessageHeader {
     pub size: u32,
-    pub tag: u16,
     pub message_type: MessageType,
+    pub tag: u16,
 }
 
 impl MessageHeader {
@@ -22,11 +22,11 @@ impl MessageHeader {
         // Parse size (4 bytes, little-endian)
         let size = bytes.get_u32_le();
 
-        // Parse tag (2 bytes, little-endian)
-        let tag = bytes.get_u16_le();
-
         // Parse message type (1 byte)
         let message_type = MessageType::try_from(bytes.get_u8())?;
+
+        // Parse tag (2 bytes, little-endian)
+        let tag = bytes.get_u16_le();
 
         Ok((
             MessageHeader {

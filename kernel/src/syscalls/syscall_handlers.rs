@@ -1,18 +1,13 @@
 use core::{ffi::CStr, sync::atomic::AtomicI64};
 
 use crate::{
-    constants::syscalls::*,
-    events::{current_running_event_info, EventInfo},
-    interrupts::x2apic,
-    memory::frame_allocator::with_bitmap_frame_allocator,
-    processes::{
+    constants::syscalls::*, events::{current_running_event_info, EventInfo}, interrupts::x2apic, memory::frame_allocator::with_bitmap_frame_allocator, processes::{
         process::{
             clear_process_frames, sleep_process_int, sleep_process_syscall, ProcessState,
             PROCESS_TABLE,
         },
         registers::NonFlagRegisters,
-    },
-    serial_println,
+    }, serial_println
 };
 
 use core::arch::naked_asm;
@@ -243,3 +238,4 @@ pub fn sys_nanosleep_64(nanos: u64, reg_vals: &NonFlagRegisters) -> u64 {
 
     0
 }
+

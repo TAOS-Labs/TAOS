@@ -1,6 +1,7 @@
-use super::error::Error;
+use super::error::{Error, ProtocolError};
 use alloc::collections::BTreeMap;
 use bitflags::bitflags;
+use bytes::{Buf, BufMut, Bytes, BytesMut};
 use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -10,7 +11,27 @@ pub struct Qid {
     pub qtype: QidType,
 }
 
+impl Qid {
+    pub fn serialize(&self) -> Bytes {
+        let mut bytes = BytesMut::with_capacity(13);
+        bytes.put_u64_le(self.path);
+        bytes.put_u32_le(self.version);
+        bytes.put_u8(self.qtype as u8);
+
+        bytes.freeze()
+    }
+
+    pub fn deserialize(mut bytes: Bytes) -> Result<Self, ProtocolError> {
+        Ok(Qid {
+            path: bytes.get_u64_le(),
+            version: bytes.get_u32_le(),
+            qtype: QidType::from_u8(bytes.get_u8())?
+        })
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
 pub enum QidType {
     Dir = 0x80,
     Append = 0x40,
@@ -19,6 +40,21 @@ pub enum QidType {
     Auth = 0x08,
     TempFile = 0x04,
     File = 0x00,
+}
+
+impl QidType {
+    fn from_u8(byte: u8) -> Result<Self, ProtocolError> {
+        match byte {
+            0x80 => Ok(QidType::Dir),
+            0x40 => Ok(QidType::Append),
+            0x20 => Ok(QidType::Exclusive),
+            0x10 => Ok(QidType::Mount),
+            0x08 => Ok(QidType::Auth),
+            0x04 => Ok(QidType::TempFile),
+            0x00 => Ok(QidType::File),
+            _ => Err(ProtocolError::InvalidQid)
+        }
+    }
 }
 
 bitflags! {

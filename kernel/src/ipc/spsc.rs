@@ -1,4 +1,6 @@
 use alloc::{boxed::Box, sync::Arc, vec::Vec};
+use alloc::{sync::Arc, collections::BTreeMap};use alloc::{sync::Arc, collections::BTreeMap};
+use std::sync::Mutex;
 use core::{
     cell::UnsafeCell,
     future::Future,
@@ -26,6 +28,32 @@ const RECEIVER_DROPPED: usize = 2;
 
 unsafe impl<T: Send> Send for SpscChannel<T> {}
 unsafe impl<T: Send> Sync for SpscChannel<T> {}
+
+pub struct ChannelMapping<T> {
+    pid_to_channel: Arc<Mutex<BTreeMap<u32, SpscChannel<T>>>>, 
+}
+
+impl<T>  ChannelMapping<T> {
+    pub fn new() -> Self {
+        Self {
+            pid_to_channel: Arc::new(Mutex::new(BTreeMap::new())),
+        }
+    }
+
+    pub fn add_chhannel(&self, pid: u32, channel: SpscChannel<T>) {
+
+    }
+
+    pub fn get_chhannel(&self, pid: u32, channel: SpscChannel<T>) {
+
+    }
+
+    pub fn remove_channel(&self, pid: u32) {
+        
+    }
+
+    //register twice
+}
 
 pub struct Sender<T> {
     pub channel: Arc<SpscChannel<T>>,

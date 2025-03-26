@@ -14,3 +14,5 @@ pub const STACK_START: u64 = 0x7000_0000_0000;
 pub const STACK_SIZE: usize = 2 * 4096; // 2 pages for the stack
 
 pub const PROCESS_TIMESLICE: u64 = 50_000_000; // 50 ms, to change later
+
+pub const FS_PID: u64 = 1;

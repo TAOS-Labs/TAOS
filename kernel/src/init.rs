@@ -16,11 +16,7 @@ use crate::{
     events::{register_event_runner, run_loop, spawn, yield_now},
     interrupts::{self, idt},
     ipc::{
-        messages::Message,
-        mnt_manager,
-        namespace::Namespace,
-        responses::{Rattach, Rwalk},
-        spsc::{self, Receiver, Sender},
+        fd_table::{Qid, QidType}, messages::Message, mnt_manager, namespace::Namespace, responses::{Rattach, Rwalk}, spsc::{self, Receiver, Sender}
     },
     logging,
     memory::{self},
@@ -143,11 +139,20 @@ pub async fn run_server(server_rx: Receiver<Bytes>, server_tx: Sender<Bytes>) {
                 Ok((msg, tag)) => {
                     serial_println!("Server got message: {:?}", msg);
                     let response = match msg {
-                        Message::Tattach(..) => {
+                        Message::Tattach(_t) => {
+                            // For now, only one user/client
+                            // TODO support multiple w/ auth
+
+
+                            
                             // TODO proper qid
-                            Message::Rattach(Rattach::new(tag, Bytes::from_iter([0; 13])).unwrap())
+                            Message::Rattach(Rattach::new(tag, Qid {
+                                path: 0,
+                                version: 0,
+                                qtype: QidType::Mount
+                            }.serialize()).unwrap())
                         },
-                        Message::Twalk(..) => {
+                        Message::Twalk(_t) => {
                             // TODO proper wqid
                             Message::Rwalk(Rwalk::new(tag, vec![Bytes::from_iter([0; 13])]).unwrap())
                         }

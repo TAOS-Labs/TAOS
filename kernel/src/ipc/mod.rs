@@ -1,7 +1,7 @@
 use lazy_static::lazy_static;
 use mount_manager::MountManager;
 
-pub mod channel;
+// pub mod channel;
 pub mod error;
 pub mod fd_table;
 pub mod messages;
