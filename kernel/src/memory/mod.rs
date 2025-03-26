@@ -18,7 +18,7 @@ use boot_frame_allocator::BootIntoFrameAllocator;
 use frame_allocator::{alloc_frame, GlobalFrameAllocator, FRAME_ALLOCATOR};
 use lazy_static::lazy_static;
 use limine::request::HhdmRequest;
-use mm::{AnonVmArea, Mm, VmAreaFlags, VmaChain};
+use mm::{Mm, VmAreaFlags, VmaChain};
 use spin::Mutex;
 use x86_64::{
     registers::model_specific::{Efer, EferFlags},

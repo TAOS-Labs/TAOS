@@ -12,7 +12,7 @@ use crate::{
     constants::memory::PAGE_SIZE,
     events::{current_running_event_info, EventInfo},
     memory::{
-        mm::{vma_to_page_flags, AnonVmArea, Mm, VmArea, VmAreaFlags},
+        mm::{vma_to_page_flags, Mm, VmArea, VmAreaBackings, VmAreaFlags},
         paging::{remove_mapping, update_permissions},
         HHDM_OFFSET,
     },
@@ -189,7 +189,7 @@ pub fn sys_mmap(addr: u64, len: u64, prot: u64, flags: u64, fd: i64, offset: u64
     let pcb = process.pcb.get();
     let begin_addr = unsafe { (*pcb).mmap_address };
     let addr_to_return = begin_addr;
-    let anon_vma = AnonVmArea::new();
+    let anon_vma = VmAreaBackings::new();
 
     // Make sure we have enough virtual space.
     if begin_addr + len > (*HHDM_OFFSET).as_u64() {

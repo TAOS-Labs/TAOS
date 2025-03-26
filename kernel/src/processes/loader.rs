@@ -5,7 +5,7 @@ use crate::{
     },
     memory::{
         frame_allocator::with_generic_allocator,
-        mm::{AnonVmArea, Mm, VmAreaFlags},
+        mm::{Mm, VmAreaBackings, VmAreaFlags},
         paging::{create_mapping, update_permissions},
     },
 };
@@ -59,7 +59,7 @@ pub fn load_elf(
             PageTableFlags::PRESENT | PageTableFlags::USER_ACCESSIBLE | PageTableFlags::WRITABLE;
         let mut flags = PageTableFlags::PRESENT | PageTableFlags::USER_ACCESSIBLE;
 
-        let anon_vma_code_and_data = Arc::new(AnonVmArea::new());
+        let anon_vma_code_and_data = Arc::new(VmAreaBackings::new());
 
         // For each page in [start_page..end_page], create user mapping,
         // then do a kernel alias to copy data in
@@ -135,7 +135,7 @@ pub fn load_elf(
     let _end_page: Page<Size4KiB> = Page::containing_address(stack_end);
 
     // new anon_vma that corresponds to this stack
-    let anon_vma_stack = Arc::new(AnonVmArea::new());
+    let anon_vma_stack = Arc::new(VmAreaBackings::new());
 
     mm.with_vma_tree_mutable(|tree| {
         Mm::insert_vma(
