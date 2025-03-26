@@ -60,8 +60,10 @@ pub fn init(cpu_id: u32) {
 
         let mut mapper = MAPPER.lock();
         initalize_sd_card(&sd_card_device, &mut mapper).unwrap();
-        initalize_xhci_hub(&xhci_device, &mut mapper).unwrap();
-
         serial_println!("Sd card initalized");
+        drop(mapper);
+        initalize_xhci_hub(&xhci_device).unwrap();
+
+        serial_println!("Devices initalized")
     }
 }

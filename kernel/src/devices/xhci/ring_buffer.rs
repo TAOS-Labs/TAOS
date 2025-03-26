@@ -475,7 +475,7 @@ pub struct ConsumerRingBuffer {
     /// The number of TRBs remaing in the current segment.
     ers_size: u32,
 }
-unsafe impl Send for  ConsumerRingBuffer {}
+unsafe impl Send for ConsumerRingBuffer {}
 
 impl ConsumerRingBuffer {
     /// Initializes and returns a new instance of a consumer ring buffer or an error.

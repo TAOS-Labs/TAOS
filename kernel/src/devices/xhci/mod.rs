@@ -12,11 +12,13 @@ use core::{cmp::min, mem::MaybeUninit};
 use crate::{
     constants::memory::PAGE_SIZE,
     debug_print, debug_println,
+    devices::mmio::zero_out_page,
     memory::{frame_allocator::alloc_frame, paging::remove_mapped_frame, MAPPER},
 };
 use alloc::{sync::Arc, vec::Vec};
 use bitflags::bitflags;
 use context::{EndpointContext, InputControlContext, SlotContext};
+use ecm::find_cdc_device;
 use ring_buffer::{
     ConsumerRingBuffer, ProducerRingBuffer, RingType, TransferRequestBlock, TrbTypes,
 };
@@ -68,8 +70,6 @@ struct XHCIInfo {
     command_ring: Arc<Mutex<ProducerRingBuffer>>,
     primary_event_ring: Arc<Mutex<ConsumerRingBuffer>>,
 }
-
-
 
 #[derive(Debug, Clone, Copy)]
 #[repr(C)]
@@ -177,7 +177,7 @@ impl USBDeviceInfo {
                 .map_err(|_| XHCIError::TransferRingError)?;
         }
 
-        let transfer_length: u16 = data_addr_size.try_into().expect("Asserted would fit"); 
+        let transfer_length: u16 = data_addr_size.try_into().expect("Asserted would fit");
         let td_size: u8 = 0;
         let data_trb = TransferRequestBlock {
             parameters: data_addr.as_u64(),
@@ -206,14 +206,12 @@ impl USBDeviceInfo {
             + info.capablities.doorbell_offset as u64
             + (self.slot as u64) * 4) as *mut u32;
         unsafe { core::ptr::write_volatile(doorbell_base, 1) };
+        debug_println!("Before waiting for events");
+        let mapper = &mut MAPPER.lock();
+        debug_println!("After getting mapper");
+        wait_for_events(&info, &mut self.event_ring, self.slot.into(), mapper)?;
 
-        wait_for_events(
-            &info,
-            &mut self.event_ring,
-            self.slot.into(),
-            &mut MAPPER.lock(),
-        )?;
-
+        debug_println!("After waiting for events");
         Ok(())
     }
 }
@@ -302,7 +300,6 @@ enum PortLinkStateRead {
     Resume = 15,
 }
 
-
 pub static XHCI: Mutex<Option<XHCIInfo>> = Mutex::new(Option::None);
 
 const XHCI_CLASS_CODE: u8 = 0x0C;
@@ -327,10 +324,8 @@ pub fn find_xhci_inferface(
 }
 
 /// Initalizes an xhci_hub
-pub fn initalize_xhci_hub(
-    device: &Arc<Mutex<DeviceInfo>>,
-    mapper: &mut OffsetPageTable,
-) -> Result<(), XHCIError> {
+pub fn initalize_xhci_hub(device: &Arc<Mutex<DeviceInfo>>) -> Result<(), XHCIError> {
+    let mut mapper = MAPPER.lock();
     let device_lock = device.clone();
     let xhci_device = device_lock.lock();
     let bar_0: u64 =
@@ -338,10 +333,46 @@ pub fn initalize_xhci_hub(
     let bar_1: u64 = read_config(xhci_device.bus, xhci_device.device, 0, 0x14).into();
     let full_bar = (bar_1 << 32) | bar_0;
 
-    let mut info = initalize_xhci_info(full_bar, mapper)?;
+    let mut info = initalize_xhci_info(full_bar, &mut mapper)?;
     // Turn on device
+
     run_host_controller(&info);
-    boot_up_all_ports(&mut info, mapper)?;
+    let mut devices = boot_up_all_ports(&mut info, &mut mapper)?;
+    let mut val = XHCI.lock();
+    *val = Option::Some(info);
+    drop(val);
+    drop(mapper);
+    for device in &mut devices {
+        let mut mapper = MAPPER.lock();
+        let data_frame = alloc_frame().ok_or(XHCIError::MemoryAllocationFailure)?;
+        debug_println!("Data phys_addr = {:X}", data_frame.start_address().as_u64());
+        let data_addr = mmio::map_page_as_uncacheable(data_frame.start_address(), &mut mapper)
+            .map_err(|_| XHCIError::MemoryAllocationFailure)?;
+        drop(mapper);
+        let bm_request_type: u8 = 0b10000000;
+        let b_request: u8 = 6; // Get descriptor
+        let descriptor_type: u8 = 1; // Device
+        let descriptor_idx: u8 = 0; // Unused with Device descriptor type
+        let w_value: u16 = ((descriptor_type as u16) << 8) | (descriptor_idx as u16);
+        let w_idx: u16 = 0;
+        let w_length: u16 = 18;
+        device.send_command(
+            ((w_length as u64) << 48)
+                | ((w_idx as u64) << 32)
+                | ((w_value as u64) << 16)
+                | ((b_request as u64) << 8)
+                | (bm_request_type as u64),
+            data_frame.start_address(),
+            1024,
+        )?;
+        debug_println!("Got device descriptor uing send_command");
+        // We have the descriptor at the start of the adddress
+        let descriptor_ptr: *const USBDeviceDescriptor = data_addr.as_ptr();
+        device.descriptor = unsafe { core::ptr::read_volatile(descriptor_ptr) };
+    }
+    // Now look for devices
+    let ecm_device = find_cdc_device(&mut devices).unwrap();
+
     Result::Ok(())
 }
 
@@ -518,7 +549,10 @@ fn initalize_xhci_info(full_bar: u64, mapper: &mut OffsetPageTable) -> Result<XH
     })
 }
 
-fn boot_up_all_ports(info: &mut XHCIInfo, mapper: &mut OffsetPageTable) -> Result<Vec<USBDeviceInfo>, XHCIError> {
+fn boot_up_all_ports(
+    info: &mut XHCIInfo,
+    mapper: &mut OffsetPageTable,
+) -> Result<Vec<USBDeviceInfo>, XHCIError> {
     let mut devices = Vec::new();
     for device in 0..MAX_USB_DEVICES {
         debug_println!("Device = {device}");
@@ -543,7 +577,8 @@ fn boot_up_all_ports(info: &mut XHCIInfo, mapper: &mut OffsetPageTable) -> Resul
             let descriptor =
                 get_device_descriptor(info, &mut producer_buffer, &mut event_ring, mapper, slot)?;
             debug_println!("descriptor = {:?}", descriptor);
-
+            let device = prepare_device(info, event_ring, producer_buffer, slot, mapper)?;
+            devices.push(device);
             // Now that everything is set up, pass to upper level driver to finish it up
             // Should probally get class, so we know who to send it to
             // We need the endpoint 0 trb, and the input context
@@ -556,8 +591,8 @@ fn boot_up_all_ports(info: &mut XHCIInfo, mapper: &mut OffsetPageTable) -> Resul
 }
 
 /// Sets up the device in a struct to be passed to class drivers
-fn prepare_device<'a>(
-    info: &'a XHCIInfo,
+fn prepare_device(
+    info: &XHCIInfo,
     event_ring: ConsumerRingBuffer,
     producer_ring_buffer: ProducerRingBuffer,
     slot: u8,
@@ -646,6 +681,7 @@ fn address_device(
     let buffer_frame = alloc_frame().ok_or(XHCIError::MemoryAllocationFailure)?;
     let buffer_address = map_page_as_uncacheable(buffer_frame.start_address(), mapper)
         .map_err(|_| XHCIError::MemoryAllocationFailure)?;
+    zero_out_page(Page::containing_address(buffer_address));
     let producer_ring_buffer = ProducerRingBuffer::new(
         buffer_address.as_u64(),
         1,

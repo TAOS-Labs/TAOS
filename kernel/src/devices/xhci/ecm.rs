@@ -1,3 +1,9 @@
+use crate::{
+    debug_println,
+    devices::{mmio, xhci::XHCIError},
+    memory::{frame_allocator::alloc_frame, MAPPER},
+};
+
 use super::{
     USBDeviceConfigurationDescriptor, USBDeviceDescriptor, USBDeviceEndpointDescriptor,
     USBDeviceInfo, USBDeviceInterfaceDescriptor,
@@ -66,28 +72,127 @@ struct EthernetNetworkingFunctionalDescriptor {
     b_number_power_filters: u8,
 }
 
+#[derive(Debug, Clone, Copy)]
 enum ECMDeviceDescriptors {
     DeviceDescriptor(USBDeviceDescriptor),
     ConfigurationDescriptor(USBDeviceConfigurationDescriptor),
     InterfaceDescriptor(USBDeviceInterfaceDescriptor),
     EndpointDescriptor(USBDeviceEndpointDescriptor),
     FunctionalDescriptor(DeviceFunctionalDescriptor),
+    EthernetDescriptor(EthernetNetworkingFunctionalDescriptor),
 }
 
 const CLASS_CODE_CDC: u8 = 2;
 const SUBCLASS_CODE_ECM: u8 = 6;
 
-pub fn find_cdc_device(devices: Vec<USBDeviceInfo>) -> Option<USBDeviceInfo> {
+pub fn find_cdc_device(devices: &mut Vec<USBDeviceInfo>) -> Option<(u8, u8)> {
     for device in devices {
-        if device.descriptor.b_device_class == 2 {}
+        debug_println!("Device DESC = {:?}", device.descriptor);
+        if device.descriptor.b_device_class == CLASS_CODE_CDC {
+            for configuration in 0..device.descriptor.b_num_configurations {
+                let class_desc =
+                    get_class_descriptors_for_configuration(device, configuration).unwrap();
+                debug_println!("class_desc = {class_desc:?}");
+                for descriptor in class_desc {
+                    match descriptor {
+                        ECMDeviceDescriptors::InterfaceDescriptor(config) => {
+                            if config.b_interface_class == CLASS_CODE_CDC
+                                && config.b_interface_sub_class == SUBCLASS_CODE_ECM
+                            {
+                                return Option::Some((device.slot, configuration));
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
     }
 
     Option::None
 }
 
 fn get_class_descriptors_for_configuration(
-    device: USBDeviceInfo,
+    device: &mut USBDeviceInfo,
     configuration: u8,
-) -> Vec<ECMDeviceDescriptors> {
-    Vec::new()
+) -> Result<Vec<ECMDeviceDescriptors>, XHCIError> {
+    let data_frame = alloc_frame().ok_or(XHCIError::MemoryAllocationFailure)?;
+    debug_println!("Data phys_addr = {:X}", data_frame.start_address().as_u64());
+    let mut mapper = MAPPER.lock();
+    let data_addr = mmio::map_page_as_uncacheable(data_frame.start_address(), &mut mapper)
+        .map_err(|_| XHCIError::MemoryAllocationFailure)?;
+    drop(mapper);
+    let bm_request_type: u8 = 0b10000000;
+    let b_request: u8 = 6; // Get descriptor
+    let descriptor_type: u8 = 2; // Configuration
+    let descriptor_idx: u8 = configuration; // Get the second one (FIXME: Hardcoded qemu)
+    let w_value: u16 = ((descriptor_type as u16) << 8) | (descriptor_idx as u16);
+    let w_idx: u16 = 0;
+    let w_length: u16 = 1024;
+    let paramaters: u64 = ((w_length as u64) << 48)
+        | ((w_idx as u64) << 32)
+        | ((w_value as u64) << 16)
+        | ((b_request as u64) << 8)
+        | (bm_request_type as u64);
+
+    device
+        .send_command(paramaters, data_frame.start_address(), 1024)
+        .unwrap();
+
+    let mut descriptors = Vec::new();
+    let data_to_do: *const USBDeviceConfigurationDescriptor = data_addr.as_ptr();
+    let config_descriptor = unsafe { core::ptr::read_volatile(data_to_do) };
+    descriptors.push(ECMDeviceDescriptors::ConfigurationDescriptor(
+        config_descriptor,
+    ));
+    let interface_vaddr = data_addr + config_descriptor.b_length.into();
+    let interface_ptr: *const USBDeviceInterfaceDescriptor = interface_vaddr.as_ptr();
+    let interface_descriptor = unsafe { core::ptr::read_volatile(interface_ptr) };
+    descriptors.push(ECMDeviceDescriptors::InterfaceDescriptor(
+        interface_descriptor,
+    ));
+    // let mut headers: Vec<DeviceFunctionalDescriptor> = Vec::new();
+    let mut header_vaddr = interface_vaddr + interface_descriptor.b_length.into();
+    let header_ptr: *const DeviceFunctionalDescriptor = header_vaddr.as_ptr();
+    let mut header = unsafe { core::ptr::read_volatile(header_ptr) };
+    while header.b_descriptor_type != 5 {
+        header_vaddr = header_vaddr + header.b_length.into();
+        let header_ptr: *const DeviceFunctionalDescriptor = header_vaddr.as_ptr();
+        header = unsafe { core::ptr::read_volatile(header_ptr) };
+        if header.b_descriptor_subtype == 0xF {
+            let netwroking_ptr: *const EthernetNetworkingFunctionalDescriptor =
+                header_vaddr.as_ptr();
+            let networking_desc = unsafe { core::ptr::read_volatile(netwroking_ptr) };
+            descriptors.push(ECMDeviceDescriptors::EthernetDescriptor(networking_desc))
+        }
+    }
+    // TODO!!: fix (weird qemu stuff with other descriptors below)
+    let endpoint_vaddr = header_vaddr;
+    let endpoint_ptr: *const USBDeviceEndpointDescriptor = endpoint_vaddr.as_ptr();
+    let endpoint_descriptor = unsafe { core::ptr::read_unaligned(endpoint_ptr) };
+    descriptors.push(ECMDeviceDescriptors::EndpointDescriptor(
+        endpoint_descriptor,
+    ));
+
+    let interface_vaddr = endpoint_vaddr + endpoint_descriptor.b_length.into();
+    let interface_ptr: *const USBDeviceInterfaceDescriptor = interface_vaddr.as_ptr();
+    let interface_descriptor = unsafe { core::ptr::read_volatile(interface_ptr) };
+    descriptors.push(ECMDeviceDescriptors::InterfaceDescriptor(
+        interface_descriptor,
+    ));
+
+    let endpoint_vaddr = interface_vaddr + interface_descriptor.b_length.into();
+    let endpoint_ptr: *const USBDeviceEndpointDescriptor = endpoint_vaddr.as_ptr();
+    let endpoint_descriptor = unsafe { core::ptr::read_unaligned(endpoint_ptr) };
+    descriptors.push(ECMDeviceDescriptors::EndpointDescriptor(
+        endpoint_descriptor,
+    ));
+
+    let endpoint_vaddr = endpoint_vaddr + endpoint_descriptor.b_length.into();
+    let endpoint_ptr: *const USBDeviceEndpointDescriptor = endpoint_vaddr.as_ptr();
+    let endpoint_descriptor = unsafe { core::ptr::read_unaligned(endpoint_ptr) };
+    descriptors.push(ECMDeviceDescriptors::EndpointDescriptor(
+        endpoint_descriptor,
+    ));
+    Result::Ok(descriptors)
 }
