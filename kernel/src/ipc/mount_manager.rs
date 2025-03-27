@@ -18,7 +18,6 @@ pub struct MountId(pub u32);
 struct PendingRequest {
     response_tx: oneshot::Sender<Message>, // Store the oneshot sender for the Message
 }
-
 struct Mount {
     _mount_id: MountId,
     tx: Sender<Bytes>,

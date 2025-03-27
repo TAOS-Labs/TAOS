@@ -41,19 +41,27 @@ impl<T>  ChannelMapping<T> {
     }
 
     pub fn add_chhannel(&self, pid: u32, channel: SpscChannel<T>) {
-
+        let mut mapping = self.pid_to_channel.lock().unwrap();
+        // if mapping.contains_key(&pid) {
+        //     ERROR
+        // }
+        mapping.insert(pid, channel);
     }
 
     pub fn get_chhannel(&self, pid: u32, channel: SpscChannel<T>) {
-
+        let mapping = self.pid_to_channel.lock().unwrap();
+        mapping.get(&pid).cloned()
     }
 
     pub fn remove_channel(&self, pid: u32) {
-        
+        let mut mapping = self.pid_to_channel.lock().unwrap();
+        mapping.remove(&pid);
     }
 
     //register twice
 }
+
+
 
 pub struct Sender<T> {
     pub channel: Arc<SpscChannel<T>>,
@@ -285,3 +293,4 @@ impl<T> Future for RecvFuture<'_, T> {
         }
     }
 }
+
