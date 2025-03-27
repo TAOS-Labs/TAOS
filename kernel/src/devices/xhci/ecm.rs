@@ -1,14 +1,12 @@
 use crate::{
-    debug_println,
-    devices::{mmio, xhci::XHCIError},
-    memory::{frame_allocator::alloc_frame, MAPPER},
+    constants::memory::PAGE_SIZE, debug_println, devices::{mmio::{self, map_page_as_uncacheable, zero_out_page}, xhci::XHCIError}, memory::{frame_allocator::alloc_frame, MAPPER}
 };
 
 use super::{
-    USBDeviceConfigurationDescriptor, USBDeviceDescriptor, USBDeviceEndpointDescriptor,
-    USBDeviceInfo, USBDeviceInterfaceDescriptor,
+    context::{EndpointContext, InputControlContext}, ring_buffer::{ProducerRingBuffer, RingType, TransferRequestBlock, TrbTypes}, wait_for_events_including_command_completion, USBDeviceConfigurationDescriptor, USBDeviceDescriptor, USBDeviceEndpointDescriptor, USBDeviceInfo, USBDeviceInterfaceDescriptor, XHCI
 };
 use alloc::vec::Vec;
+use x86_64::structures::paging::Page;
 
 #[repr(u8)]
 enum USBDescriptorTypes {
@@ -82,6 +80,11 @@ enum ECMDeviceDescriptors {
     EthernetDescriptor(EthernetNetworkingFunctionalDescriptor),
 }
 
+pub struct ECMDevice {
+    standard_device: USBDeviceInfo,
+    descriptors: ECMDeviceDescriptors,
+}
+
 const CLASS_CODE_CDC: u8 = 2;
 const SUBCLASS_CODE_ECM: u8 = 6;
 
@@ -110,6 +113,110 @@ pub fn find_cdc_device(devices: &mut Vec<USBDeviceInfo>) -> Option<(u8, u8)> {
     }
 
     Option::None
+}
+
+pub fn init_cdc_device(mut device: USBDeviceInfo) -> Result<ECMDevice, XHCIError> {
+    let bm_request_type: u8 = 0b00000000;
+    let b_request: u8 = 9; // Set configuration
+                           // let descriptor_type: u8 = 2; // Configuration
+                           // let descriptor_idx: u8 = configuration; // Get the second one (FIXME: Hardcoded qemu)
+    let w_value: u16 = 1;
+    let w_idx: u16 = 0;
+    let w_length: u16 = 0;
+    let paramaters: u64 = ((w_length as u64) << 48)
+        | ((w_idx as u64) << 32)
+        | ((w_value as u64) << 16)
+        | ((b_request as u64) << 8)
+        | (bm_request_type as u64);
+    device.send_command_no_data(paramaters)?;
+
+    // let config = get_class_descriptors_for_configuration(&mut device, 1).unwrap();
+    // debug_println!("class_desc = {config:?}");
+
+    // Send configure endpoint
+    // We use endpoint 2, both in and out
+    debug_println!("device_slot = {}", device.slot);
+    let context_ptr: *mut InputControlContext = device.input_context_vaddr.as_mut_ptr();
+    let mut context = unsafe { core::ptr::read_volatile(context_ptr) };
+
+    context.set_add_flag(0, 1);
+    context.set_add_flag(1, 0);
+    // context.set_drop_flag(0, 0);
+    // context.set_drop_flag(1, 0);
+    context.set_add_flag(2, 1);
+    context.set_add_flag(3, 1);
+
+    let ep_1_context_out_addr = device.input_context_vaddr + 0x60;
+    let ep1_ctxt_out_ptr: *mut EndpointContext = ep_1_context_out_addr.as_mut_ptr();
+    let mut ep1_ctxt_out = unsafe {core::ptr::read_volatile(ep1_ctxt_out_ptr)};
+    ep1_ctxt_out.set_cerr(3);
+    ep1_ctxt_out.set_eptype(2);
+    ep1_ctxt_out.set_max_packet_size(64);
+    ep1_ctxt_out.set_dcs(1);
+    // Now setup context in 
+    let ep_1_context_in_addr = device.input_context_vaddr + 0x80;
+    let ep1_ctxt_in_ptr: *mut EndpointContext = ep_1_context_in_addr.as_mut_ptr();
+    let mut ep1_ctxt_in = unsafe {core::ptr::read_volatile(ep1_ctxt_in_ptr)};
+    ep1_ctxt_in.set_cerr(3);
+    ep1_ctxt_in.set_eptype(6);
+    ep1_ctxt_in.set_max_packet_size(64);
+    ep1_ctxt_in.set_dcs(1);
+    ep1_ctxt_in.set_average_trb_len(1_600);
+    // Set up TRB
+
+    let input_trb_buffer = alloc_frame().ok_or(XHCIError::MemoryAllocationFailure)?;
+    let mut mapper = MAPPER.lock();
+    let input_trb_address = map_page_as_uncacheable(input_trb_buffer.start_address(), &mut mapper)
+        .map_err(|_| XHCIError::MemoryAllocationFailure)?;
+    zero_out_page(Page::containing_address(input_trb_address));
+    let in_trb = ProducerRingBuffer::new(
+        input_trb_address.as_u64(),
+        1,
+        RingType::Transfer,
+        (PAGE_SIZE).try_into().unwrap(),
+    )
+    .expect("Everything should be alligned");
+    ep1_ctxt_in.set_trdequeue_ptr(input_trb_buffer.start_address().as_u64());
+
+    let output_trb_buffer = alloc_frame().ok_or(XHCIError::MemoryAllocationFailure)?;
+    let output_trb_address = map_page_as_uncacheable(output_trb_buffer.start_address(), &mut mapper)
+        .map_err(|_| XHCIError::MemoryAllocationFailure)?;
+    zero_out_page(Page::containing_address(output_trb_address));
+    let out_trb = ProducerRingBuffer::new(
+        output_trb_address.as_u64(),
+        1,
+        RingType::Transfer,
+        (PAGE_SIZE).try_into().unwrap(),
+    )
+    .expect("Everything should be alligned");
+    ep1_ctxt_out.set_trdequeue_ptr(output_trb_buffer.start_address().as_u64());
+
+    unsafe {core::ptr::write_volatile(context_ptr, context);}
+    unsafe {core::ptr::write_volatile(ep1_ctxt_in_ptr, ep1_ctxt_in);}
+    unsafe {core::ptr::write_volatile(ep1_ctxt_out_ptr, ep1_ctxt_out);}
+
+    let big_device: u32 = device.slot.into();
+    let block = TransferRequestBlock {
+        parameters: (device.input_context_vaddr - mapper.phys_offset()),
+        status: 0,
+        control: ((big_device << 24) | ((TrbTypes::ConfigEpCmd as u32) << 10)),
+    };
+    let mut info = XHCI.lock().clone().unwrap();
+    let command_ring_lock = info.command_ring.clone();
+    let mut command_ring = command_ring_lock.lock();
+    unsafe {
+        command_ring
+            .enqueue(block)
+            .map_err(|_| XHCIError::CommandRingError)?
+    };
+    drop(command_ring);
+    let doorbell_base: *mut u32 =
+        (info.base_address + info.capablities.doorbell_offset as u64) as *mut u32;
+    unsafe { core::ptr::write_volatile(doorbell_base, 0) };
+    wait_for_events_including_command_completion(&mut info, &mapper)?;
+
+
+    Result::Err(XHCIError::UnknownPort)
 }
 
 fn get_class_descriptors_for_configuration(
