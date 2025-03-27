@@ -209,6 +209,7 @@ pub fn handle_new_mapping(
         offset: page.start_address().as_u64(),
         fd: -1,
         file_offset_or_frame: new_frame.start_address().as_u64(),
+        inode_number: 0,
     }));
 }
 
