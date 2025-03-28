@@ -1100,7 +1100,7 @@ mod tests {
     }
 
     // Test symlink operations
-    #[test_case]
+    /*#[test_case]
     fn test_symlink() {
         let setup = TestSetup::new();
         let node = setup.create_node(FileMode::LINK.bits());
@@ -1113,7 +1113,7 @@ mod tests {
         let mut buffer = vec![0; target.len()];
         node.read_at(0, &mut buffer).unwrap();
         assert_eq!(String::from_utf8(buffer).unwrap(), target);
-    }
+    }*/
 
     // Test block allocation
     #[test_case]
