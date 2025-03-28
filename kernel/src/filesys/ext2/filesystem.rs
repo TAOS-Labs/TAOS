@@ -50,6 +50,9 @@ pub struct Ext2 {
     allocator: Arc<Allocator>,
 }
 
+unsafe impl Send for Ext2 {}
+unsafe impl Sync for Ext2 {}
+
 impl Ext2 {
     /// Create a new Ext2 filesystem instance
     ///
@@ -270,7 +273,7 @@ impl Ext2 {
         let size = node.size() as usize;
         let mut buffer = vec![0; size];
         node.read_at(0, &mut buffer)
-            .map_err(|e| FilesystemError::NodeError(e))?;
+            .map_err(FilesystemError::NodeError)?;
 
         Ok(buffer)
     }
@@ -315,7 +318,7 @@ impl Ext2 {
         }
 
         // Check if file already exists
-        if let Ok(_) = self.get_node(path) {
+        if self.get_node(path).is_ok() {
             return Err(FilesystemError::NodeError(NodeError::AlreadyExists));
         }
 
@@ -385,7 +388,7 @@ impl Ext2 {
         }
 
         // Check if directory already exists
-        if let Ok(_) = self.get_node(path) {
+        if self.get_node(path).is_ok() {
             return Err(FilesystemError::NodeError(NodeError::AlreadyExists));
         }
 
@@ -460,7 +463,7 @@ impl Ext2 {
         }
 
         // Check if link already exists
-        if let Ok(_) = self.get_node(path) {
+        if self.get_node(path).is_ok() {
             return Err(FilesystemError::NodeError(NodeError::AlreadyExists));
         }
 
@@ -568,7 +571,7 @@ impl Ext2 {
 
         // Decrement link count
         node.decrease_link_count()
-            .map_err(|e| FilesystemError::NodeError(e))?;
+            .map_err(FilesystemError::NodeError)?;
 
         Ok(())
     }

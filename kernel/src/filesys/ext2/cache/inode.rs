@@ -20,6 +20,7 @@ pub struct CachedInode {
     /// Whether the inode needs to be written back
     dirty: bool,
     /// Inode number (for convenience)
+    #[allow(dead_code)]
     number: u32,
 }
 
@@ -89,6 +90,7 @@ pub struct InodeLocation {
 /// Inode cache implementation
 pub struct InodeCache {
     /// The underlying block device
+    #[allow(dead_code)]
     device: Arc<dyn BlockIO>,
     /// Superblock reference
     superblock: Arc<Superblock>,
@@ -105,6 +107,9 @@ pub struct InodeCache {
     /// Clock for entry aging
     clock: MonotonicClock,
 }
+
+unsafe impl Send for InodeCache {}
+unsafe impl Sync for InodeCache {}
 
 impl InodeCache {
     /// Create a new inode cache

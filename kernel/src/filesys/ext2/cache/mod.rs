@@ -110,6 +110,7 @@ impl<V: CacheableItem> CacheEntry<V> {
 }
 
 /// Base implementation of cache functionality
+#[allow(dead_code)]
 pub(crate) struct CacheBase<K, V>
 where
     K: Eq + Hash + Clone,
@@ -120,6 +121,7 @@ where
 }
 
 /// Trait for implementing the storage backend of a cache
+#[allow(dead_code)]
 pub(crate) trait CacheStorage<K, V>
 where
     K: Eq + Hash + Clone,

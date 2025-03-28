@@ -98,7 +98,7 @@ impl IdeRegisters {
         self.lba_mid_port.write(((sector >> 8) & 0xFF) as u8);
         self.lba_high_port.write(((sector >> 16) & 0xFF) as u8);
         self.device_port
-            .write(0xE0 | ((channel << 4) as u8) | ((sector >> 24) & 0x0F) as u8);
+            .write(0xE0 | (channel << 4) | ((sector >> 24) & 0x0F) as u8);
         self.command_port
             .write(if is_write { CMD_WRITE } else { CMD_READ });
         Ok(())

@@ -63,8 +63,7 @@ impl<'a> WriteContext<'a> {
     /// Ensure all necessary blocks are allocated
     fn prepare_blocks(&mut self) -> NodeResult<()> {
         let start_block = self.offset / self.node.block_size as u64;
-        let end_block = (self.offset + self.size + self.node.block_size as u64 - 1)
-            / self.node.block_size as u64;
+        let end_block = (self.offset + self.size).div_ceil(self.node.block_size as u64);
 
         for block_idx in start_block..end_block {
             self.ensure_block_allocated(block_idx)?;
@@ -86,7 +85,6 @@ impl<'a> WriteContext<'a> {
         let new_block = self.allocator.allocate_block()?;
         self.set_block_pointer(block_idx, new_block)?;
         let mut inode = self.node.inode.lock();
-        let current_count = inode.inode().blocks_count;
         let new_count = block_idx as u32 + 1;
         inode.inode_mut().blocks_count = new_count;
         Ok(new_block)
@@ -227,6 +225,9 @@ pub struct Node {
     symlink_target: Option<String>,
     allocator: Arc<Allocator>,
 }
+
+unsafe impl Send for Node {}
+unsafe impl Sync for Node {}
 
 impl Node {
     /// Create a new node
@@ -470,26 +471,18 @@ impl Node {
                 continue;
             }
 
-            // Handle other errors from get_block_number_for_offset
-            let block = match block_result {
-                Ok(block) => block,
-                Err(e) => return Err(e),
-            };
+            let block = block_result?;
 
-            // Get the block from cache
             let cached = self
                 .block_cache
                 .get(block)
                 .map_err(|_| NodeError::CacheError)?;
             let cached = cached.lock();
 
-            // Calculate offset within the block
             let block_offset = file_offset % self.block_size as u64;
 
-            // Calculate how many bytes to copy from this block
             let to_copy = min(remaining, (self.block_size - block_offset as u32) as u64);
 
-            // Copy data from cache to buffer
             buffer[buf_offset..buf_offset + to_copy as usize]
                 .copy_from_slice(&cached.data()[block_offset as usize..][..to_copy as usize]);
 
@@ -526,9 +519,8 @@ impl Node {
             let mut buffer = vec![0u8; size];
             let blocks = inode.blocks;
 
-            // Copy the blocks data byte by byte to avoid alignment issues
-            for i in 0..size {
-                buffer[i] = unsafe { (&blocks as *const _ as *const u8).add(i).read_unaligned() };
+            for (i, byte) in buffer.iter_mut().enumerate().take(size) {
+                *byte = unsafe { (&blocks as *const _ as *const u8).add(i).read_unaligned() };
             }
 
             return Ok(String::from_utf8_lossy(&buffer).into_owned());
@@ -586,30 +578,25 @@ impl Node {
             }
 
             if entry.inode != 0 {
-                if entry.name_len > 0 && entry.name_len <= 255 {
-                    // Read name
-                    let mut name_buffer = vec![0u8; entry.name_len as usize];
-                    let name_bytes_read =
-                        self.read_raw_at(offset + entry_header_size as u64, &mut name_buffer)?;
+                let mut name_buffer = vec![0u8; entry.name_len as usize];
+                let name_bytes_read =
+                    self.read_raw_at(offset + entry_header_size as u64, &mut name_buffer)?;
 
-                    if name_bytes_read == entry.name_len as usize {
-                        let name = String::from_utf8_lossy(&name_buffer).into_owned();
+                if name_bytes_read == entry.name_len as usize {
+                    let name = String::from_utf8_lossy(&name_buffer).into_owned();
 
-                        entries.push(DirEntry {
-                            inode_no: entry.inode,
-                            name,
-                            file_type: match entry.file_type {
-                                1 => FileType::RegularFile,
-                                2 => FileType::Directory,
-                                7 => FileType::SymbolicLink,
-                                _ => FileType::Unknown,
-                            },
-                        });
-                    } else {
-                        serial_println!("Name read error at offset {}", offset);
-                    }
+                    entries.push(DirEntry {
+                        inode_no: entry.inode,
+                        name,
+                        file_type: match entry.file_type {
+                            1 => FileType::RegularFile,
+                            2 => FileType::Directory,
+                            7 => FileType::SymbolicLink,
+                            _ => FileType::Unknown,
+                        },
+                    });
                 } else {
-                    serial_println!("Invalid name_len: {}", entry.name_len);
+                    serial_println!("Name read error at offset {}", offset);
                 }
             }
 
@@ -677,8 +664,8 @@ impl Node {
         }
 
         // Free unnecessary blocks
-        let start_block = (size + self.block_size as u64 - 1) / self.block_size as u64;
-        let end_block = (current_size + self.block_size as u64 - 1) / self.block_size as u64;
+        let start_block = size.div_ceil(self.block_size as u64);
+        let end_block = current_size.div_ceil(self.block_size as u64);
 
         for block_idx in start_block..end_block {
             if let Ok(block) = self.get_block_number_for_offset(block_idx * self.block_size as u64)
@@ -753,7 +740,6 @@ impl Node {
         let mut offset = 0;
         let mut insert_pos = 0;
         let mut found_space = false;
-        let mut current_rec_len = 0;
 
         while offset < dir_size {
             let mut entry = DirectoryEntry {
@@ -773,12 +759,9 @@ impl Node {
 
             // Check for invalid entries that might cause issues
             if entry.rec_len == 0 {
-                // Invalid entry, skip to next block
                 offset = ((offset / block_size) + 1) * block_size;
                 continue;
             }
-
-            current_rec_len = entry.rec_len;
 
             // If entry is deleted, we can reuse its space
             if entry.inode == 0 && entry.rec_len as usize >= padded_size {
@@ -787,15 +770,12 @@ impl Node {
                 break;
             }
 
-            // Calculate actual size needed by this entry
             let actual_size = entry_header_size + entry.name_len as usize;
             let actual_padded_size = (actual_size + 3) & !3;
 
-            // If entry has extra padding we can use
             if entry.rec_len as usize > actual_padded_size + 8
                 && entry.rec_len as usize - actual_padded_size >= padded_size
             {
-                // We can split this entry
                 insert_pos = offset + actual_padded_size as u64;
 
                 // Adjust current entry's rec_len

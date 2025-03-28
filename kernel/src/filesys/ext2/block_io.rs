@@ -1,7 +1,7 @@
 // We want to make this replace the block IO we have right now
 // But would it matter if this is not in kernel anyways?
 
-use alloc::{collections::BTreeMap, sync::Arc, vec::Vec};
+use alloc::{collections::BTreeMap, sync::Arc, vec, vec::Vec};
 use core::cmp::min;
 use spin::Mutex;
 
@@ -30,7 +30,7 @@ pub trait BlockIO: Send + Sync {
 
     /// Returns the number of blocks
     fn size_in_blocks(&self) -> u32 {
-        (self.size_in_bytes() + self.block_size() - 1) / self.block_size()
+        self.size_in_bytes().div_ceil(self.block_size())
     }
 
     /// Read a block into the provided buffer
@@ -67,14 +67,11 @@ pub trait BlockIO: Send + Sync {
         if actual_n == self.block_size() && offset_in_block == 0 {
             self.read_block(block_number, &mut buffer[..actual_n as usize])?;
         } else {
-            let mut temp = Vec::with_capacity(self.block_size() as usize);
-            unsafe {
-                temp.set_len(self.block_size() as usize);
-                self.read_block(block_number, &mut temp)?;
-                buffer[..actual_n as usize].copy_from_slice(
-                    &temp[offset_in_block as usize..(offset_in_block + actual_n) as usize],
-                );
-            }
+            let mut temp = vec![0; self.block_size() as usize];
+            self.read_block(block_number, &mut temp)?;
+            buffer[..actual_n as usize].copy_from_slice(
+                &temp[offset_in_block as usize..(offset_in_block + actual_n) as usize],
+            );
         }
 
         Ok(actual_n)
@@ -120,15 +117,14 @@ pub trait BlockIO: Send + Sync {
         if actual_n == self.block_size() && offset_in_block == 0 {
             self.write_block(block_number, &buffer[..actual_n as usize])?;
         } else {
-            let mut temp = Vec::with_capacity(self.block_size() as usize);
-            unsafe {
-                temp.set_len(self.block_size() as usize);
-                // Read-modify-write
-                self.read_block(block_number, &mut temp)?;
-                temp[offset_in_block as usize..(offset_in_block + actual_n) as usize]
-                    .copy_from_slice(&buffer[..actual_n as usize]);
-                self.write_block(block_number, &temp)?;
-            }
+            // Initialize vector with zeros rather than using unsafe set_len
+            let mut temp = vec![0; self.block_size() as usize];
+
+            // Read-modify-write
+            self.read_block(block_number, &mut temp)?;
+            temp[offset_in_block as usize..(offset_in_block + actual_n) as usize]
+                .copy_from_slice(&buffer[..actual_n as usize]);
+            self.write_block(block_number, &temp)?;
         }
 
         Ok(actual_n)
@@ -162,7 +158,7 @@ impl BlockIO for MockDevice {
     }
 
     fn size_in_blocks(&self) -> u32 {
-        (self.size + self.block_size - 1) / self.block_size
+        self.size.div_ceil(self.block_size)
     }
 
     fn read_block(&self, block_number: u32, buffer: &mut [u8]) -> BlockResult<()> {

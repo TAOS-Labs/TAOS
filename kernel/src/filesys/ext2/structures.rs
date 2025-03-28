@@ -79,8 +79,8 @@ impl Superblock {
 
     /// Calculate number of block groups
     pub fn block_group_count(&self) -> u32 {
-        let n = (self.num_blocks + self.blocks_per_group - 1) / self.blocks_per_group;
-        let n2 = (self.num_inodes + self.inodes_per_group - 1) / self.inodes_per_group;
+        let n = self.num_blocks.div_ceil(self.blocks_per_group);
+        let n2 = self.num_inodes.div_ceil(self.inodes_per_group);
         assert_eq!(n, n2, "Inconsistent block group counts");
         n
     }

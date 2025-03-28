@@ -30,6 +30,9 @@ pub struct Allocator {
     group_locks: Vec<Mutex<()>>,
 }
 
+unsafe impl Send for Allocator {}
+unsafe impl Sync for Allocator {}
+
 impl Allocator {
     /// Create a new allocator
     pub fn new(
@@ -74,6 +77,7 @@ impl Allocator {
     }
 
     /// Test if a bit is set in a bitmap
+    #[allow(dead_code)]
     fn test_bit(bitmap: &[u8], bit: usize) -> bool {
         let byte = bit / 8;
         let bit = bit % 8;
@@ -272,17 +276,17 @@ impl Allocator {
     }
 }
 
-/*#[cfg(test)]
+#[cfg(test)]
 mod tests {
-    use super::*;
-    use super::super::block_io::MockDevice;
-    use alloc::sync::Arc;
-    use super::super::cache::block::BlockCache;
-    use alloc::vec;
+    use super::{
+        super::{block_io::MockDevice, cache::block::BlockCache},
+        *,
+    };
+    use alloc::{sync::Arc, vec};
 
     #[test_case]
     fn test_bitmap_operations() {
-        let mut bitmap = vec![0u8; 32];  // 256 bits
+        let mut bitmap = vec![0u8; 32]; // 256 bits
 
         // Test setting bits
         Allocator::set_bit(&mut bitmap, 0);
@@ -351,7 +355,7 @@ mod tests {
             let allocator = Arc::new(Allocator::new(
                 Arc::clone(&superblock),
                 Arc::clone(&bgdt),
-                Arc::clone(&block_cache)
+                Arc::clone(&block_cache),
             ));
 
             Self {
@@ -370,7 +374,7 @@ mod tests {
 
         // Allocate first block
         let block1 = setup.allocator.allocate_block().unwrap();
-        assert!(block1 > 0);  // First few blocks are reserved
+        assert!(block1 > 0); // First few blocks are reserved
 
         // Verify block is marked in bitmap
         let bgdt = &setup.bgdt[0];
@@ -394,7 +398,10 @@ mod tests {
         let bgdt = &setup.bgdt[0];
         let bitmap_block = setup.block_cache.get(bgdt.inode_bitmap_block).unwrap();
         let bitmap = bitmap_block.lock();
-        assert!(Allocator::test_bit(bitmap.data(), ((inode1 - 1) % 64) as usize));
+        assert!(Allocator::test_bit(
+            bitmap.data(),
+            ((inode1 - 1) % 64) as usize
+        ));
 
         // Free count should decrease
         assert_eq!(bgdt.unallocated_inodes, 63);
@@ -430,7 +437,10 @@ mod tests {
         let bgdt = &setup.bgdt[0];
         let bitmap_block = setup.block_cache.get(bgdt.inode_bitmap_block).unwrap();
         let bitmap = bitmap_block.lock();
-        assert!(!Allocator::test_bit(bitmap.data(), ((inode - 1) % 64) as usize));
+        assert!(!Allocator::test_bit(
+            bitmap.data(),
+            ((inode - 1) % 64) as usize
+        ));
 
         // Free count should be restored
         assert_eq!(bgdt.unallocated_inodes, 64);
@@ -444,14 +454,15 @@ mod tests {
         let mut blocks = Vec::new();
         while let Ok(block) = setup.allocator.allocate_block() {
             blocks.push(block);
-            if blocks.len() >= 253 {  // All free blocks in first group
+            if blocks.len() >= 253 {
+                // All free blocks in first group
                 break;
             }
         }
 
         // Next allocation should come from second group
         let next_block = setup.allocator.allocate_block().unwrap();
-        assert!(next_block >= 256);  // Should be in second group
+        assert!(next_block >= 256); // Should be in second group
 
         // Free all blocks
         for block in blocks {
@@ -476,4 +487,3 @@ mod tests {
         ));
     }
 }
-*/
