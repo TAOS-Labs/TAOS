@@ -1,5 +1,6 @@
 use alloc::{vec, vec::Vec};
 use core::ptr;
+use lazy_static::lazy_static;
 use limine::request::FramebufferRequest;
 use spin::Mutex;
 
@@ -457,30 +458,22 @@ impl FrameBuffer {
     }
 }
 
-/// Global framebuffer instance
-pub static FRAMEBUFFER: Mutex<Option<FrameBuffer>> = Mutex::new(None);
-
-/// Initialize the global framebuffer
-pub fn init() -> bool {
-    let mut fb_lock = FRAMEBUFFER.lock();
-
-    // Return early if already initialized
-    if fb_lock.is_some() {
-        return true;
-    }
-
-    // Get the framebuffer from the Limine response
-    if let Some(framebuffer_response) = FRAMEBUFFER_REQUEST.get_response() {
-        if let Some(framebuffer) = framebuffer_response.framebuffers().next() {
-            // Create our framebuffer wrapper
-            if let Some(fb) = FrameBuffer::new(&framebuffer) {
-                *fb_lock = Some(fb);
-                return true;
+lazy_static! {
+    /// Global framebuffer instance
+    pub static ref FRAMEBUFFER: Mutex<Option<FrameBuffer>> = {
+        // Initialize the framebuffer on first access
+        let fb_option = if let Some(framebuffer_response) = FRAMEBUFFER_REQUEST.get_response() {
+            if let Some(framebuffer) = framebuffer_response.framebuffers().next() {
+                FrameBuffer::new(&framebuffer)
+            } else {
+                None
             }
-        }
-    }
+        } else {
+            None
+        };
 
-    false
+        Mutex::new(fb_option)
+    };
 }
 
 /// Get a reference to the global framebuffer
