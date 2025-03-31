@@ -65,7 +65,7 @@ pub struct XHCIInfo {
     base_address: u64,
     capablities: XHCICapabilities,
     operational_register_address: u64,
-    base_address_array: u64,
+    base_address_array: VirtAddr,
     command_ring_base: u64,
     command_ring: Arc<Mutex<ProducerRingBuffer>>,
     primary_event_ring: Arc<Mutex<ConsumerRingBuffer>>,
@@ -581,7 +581,7 @@ fn initalize_xhci_info(full_bar: u64, mapper: &mut OffsetPageTable) -> Result<XH
         base_address: address,
         capablities,
         operational_register_address: operational_start,
-        base_address_array: dcbaap_frame.start_address().as_u64(),
+        base_address_array: virtual_adddr,
         command_ring_base: cmd_frame.start_address().as_u64(),
         command_ring: Arc::new(Mutex::new(command_ring)),
         primary_event_ring: Arc::new(Mutex::new(primary_event_ring)),
@@ -608,7 +608,7 @@ fn boot_up_all_ports(
             let slot = boot_up_usb_port(info, device, device_connected, mapper)?;
             let address_tuple = address_device(info, slot, mapper)?;
             let input_context = address_tuple.0;
-            let  producer_buffer = address_tuple.1;
+            let producer_buffer = address_tuple.1;
             // Issue the get_descriptor
 
             // configure_endpoint(info, slot, mapper, input_context)?;
@@ -726,6 +726,9 @@ fn address_device(
     // We need 2 pages, one for the device context, and the other for ring buffer(s)
     // Start by setting up ring buffers
 
+
+
+
     let buffer_frame = alloc_frame().ok_or(XHCIError::MemoryAllocationFailure)?;
     let buffer_address = map_page_as_uncacheable(buffer_frame.start_address(), mapper)
         .map_err(|_| XHCIError::MemoryAllocationFailure)?;
@@ -740,9 +743,10 @@ fn address_device(
 
     // For device context see Figure 4-1 of xhci spec (Page 95)
     let device_context_frame = alloc_frame().ok_or(XHCIError::MemoryAllocationFailure)?;
-    let device_context_address =
+    let mut device_context_address =
         map_page_as_uncacheable(device_context_frame.start_address(), mapper)
             .map_err(|_| XHCIError::MemoryAllocationFailure)?;
+    device_context_address += 0x20;
     mmio::zero_out_page(Page::containing_address(device_context_address));
 
     // Start with the input control context (ICC in this code)
@@ -755,9 +759,9 @@ fn address_device(
 
     // Now handle slot context
     // TODO: Fix as it assumes 32 byte slot context
-    let slot_context_va = device_context_address + 32;
+    let slot_context_va = device_context_address + 0x20;
     let slot_context_ptr: *mut SlotContext = slot_context_va.as_mut_ptr();
-    let mut slot_context = unsafe { *slot_context_ptr };
+    let mut slot_context = unsafe { core::ptr::read_volatile(slot_context_ptr) };
     slot_context.set_root_hub_port(slot.into());
     slot_context.set_context_entries(1);
     slot_context.set_route_string(0);
@@ -765,8 +769,15 @@ fn address_device(
         core::ptr::write_volatile(slot_context_ptr, slot_context);
     }
 
+    // let array_vaddr = info.base_address_array + slot as u64 * 8;
+    // let array_ptr: *mut u64 = array_vaddr.as_mut_ptr();
+    // debug_println!("my dcbaap = {:X}", info.base_address_array );
+    // debug_println!("my addr = {:X}", array_vaddr );
+    // debug_println!("my addr placed = {:X}", slot_context_va.as_u64() - mapper.phys_offset().as_u64() );
+    // unsafe {core::ptr::write_volatile(array_ptr, slot_context_va.as_u64() - mapper.phys_offset().as_u64());}
+
     // Endpoint 0 context (Bidirectional)
-    let ep0_context_va = slot_context_va + 32;
+    let ep0_context_va = device_context_address + 0x40;
     let ep0_context_ptr: *mut EndpointContext = ep0_context_va.as_mut_ptr();
     let mut endpoint_zero_context = unsafe { *ep0_context_ptr };
 
@@ -786,10 +797,10 @@ fn address_device(
     // Now Generate 30 contexts (out 1, in 1, out 2, in 2, ... out 15, in 15)
     // Can zero them out, but that should already be done
     // Load output to device context base array (TODO: see if this belongs in configure device)
-    let slot_addr_u64 = info.base_address_array + (slot as u64 * 8) + mapper.phys_offset().as_u64();
-    let slot_addr = slot_addr_u64 as *mut u64;
+    let slot_addr_vadr = info.base_address_array + (slot as u64 * 8);
+    let slot_addr = slot_addr_vadr.as_mut_ptr();
     unsafe {
-        core::ptr::write_volatile(slot_addr, ep0_context_va + 32 - mapper.phys_offset());
+        core::ptr::write_volatile(slot_addr, slot_context_va  - mapper.phys_offset());
     }
 
     // Address the device
@@ -811,8 +822,11 @@ fn address_device(
     unsafe { core::ptr::write_volatile(doorbell_base, 0) };
     drop(command_ring);
     wait_for_events_including_command_completion(info, mapper)?;
-    let debug_stuff = unsafe {core::ptr::read_volatile(slot_context_ptr)};
+    let debug_stuff = unsafe { core::ptr::read_volatile(slot_context_ptr) };
     debug_println!("slot context = {debug_stuff:?}");
+
+    // Now update DCBAA
+
     Result::Ok((device_context_address, producer_ring_buffer))
 }
 

@@ -1,9 +1,19 @@
 use crate::{
-    constants::memory::PAGE_SIZE, debug_println, devices::{mmio::{self, map_page_as_uncacheable, zero_out_page}, xhci::XHCIError}, memory::{frame_allocator::alloc_frame, MAPPER}
+    constants::memory::PAGE_SIZE,
+    debug_println,
+    devices::{
+        mmio::{self, map_page_as_uncacheable, zero_out_page},
+        xhci::{context::SlotContext, XHCIError},
+    },
+    memory::{frame_allocator::alloc_frame, MAPPER},
 };
 
 use super::{
-    context::{EndpointContext, InputControlContext}, ring_buffer::{ProducerRingBuffer, RingType, TransferRequestBlock, TrbTypes}, wait_for_events_including_command_completion, USBDeviceConfigurationDescriptor, USBDeviceDescriptor, USBDeviceEndpointDescriptor, USBDeviceInfo, USBDeviceInterfaceDescriptor, XHCI
+    context::{EndpointContext, InputControlContext},
+    ring_buffer::{ProducerRingBuffer, RingType, TransferRequestBlock, TrbTypes},
+    wait_for_events_including_command_completion, USBDeviceConfigurationDescriptor,
+    USBDeviceDescriptor, USBDeviceEndpointDescriptor, USBDeviceInfo, USBDeviceInterfaceDescriptor,
+    XHCI,
 };
 use alloc::vec::Vec;
 use x86_64::structures::paging::Page;
@@ -146,17 +156,26 @@ pub fn init_cdc_device(mut device: USBDeviceInfo) -> Result<ECMDevice, XHCIError
     context.set_add_flag(2, 1);
     context.set_add_flag(3, 1);
 
+    let slot_context_addr = device.input_context_vaddr + 0x20;
+    debug_println!("slot conext addr = {slot_context_addr:?}");
+    let slot_context_ptr: *mut SlotContext = slot_context_addr.as_mut_ptr();
+    let mut slot_context = unsafe { core::ptr::read_volatile(slot_context_ptr) };
+    debug_println!("Slot context = {:?}", slot_context);
+    slot_context.offset_3 = 0x10000001;
+    unsafe {
+        core::ptr::write_volatile(slot_context_ptr, slot_context);
+    }
     let ep_1_context_out_addr = device.input_context_vaddr + 0x60;
     let ep1_ctxt_out_ptr: *mut EndpointContext = ep_1_context_out_addr.as_mut_ptr();
-    let mut ep1_ctxt_out = unsafe {core::ptr::read_volatile(ep1_ctxt_out_ptr)};
+    let mut ep1_ctxt_out = unsafe { core::ptr::read_volatile(ep1_ctxt_out_ptr) };
     ep1_ctxt_out.set_cerr(3);
     ep1_ctxt_out.set_eptype(2);
     ep1_ctxt_out.set_max_packet_size(64);
     ep1_ctxt_out.set_dcs(1);
-    // Now setup context in 
+    // Now setup context in
     let ep_1_context_in_addr = device.input_context_vaddr + 0x80;
     let ep1_ctxt_in_ptr: *mut EndpointContext = ep_1_context_in_addr.as_mut_ptr();
-    let mut ep1_ctxt_in = unsafe {core::ptr::read_volatile(ep1_ctxt_in_ptr)};
+    let mut ep1_ctxt_in = unsafe { core::ptr::read_volatile(ep1_ctxt_in_ptr) };
     ep1_ctxt_in.set_cerr(3);
     ep1_ctxt_in.set_eptype(6);
     ep1_ctxt_in.set_max_packet_size(64);
@@ -179,8 +198,9 @@ pub fn init_cdc_device(mut device: USBDeviceInfo) -> Result<ECMDevice, XHCIError
     ep1_ctxt_in.set_trdequeue_ptr(input_trb_buffer.start_address().as_u64());
 
     let output_trb_buffer = alloc_frame().ok_or(XHCIError::MemoryAllocationFailure)?;
-    let output_trb_address = map_page_as_uncacheable(output_trb_buffer.start_address(), &mut mapper)
-        .map_err(|_| XHCIError::MemoryAllocationFailure)?;
+    let output_trb_address =
+        map_page_as_uncacheable(output_trb_buffer.start_address(), &mut mapper)
+            .map_err(|_| XHCIError::MemoryAllocationFailure)?;
     zero_out_page(Page::containing_address(output_trb_address));
     let out_trb = ProducerRingBuffer::new(
         output_trb_address.as_u64(),
@@ -191,9 +211,19 @@ pub fn init_cdc_device(mut device: USBDeviceInfo) -> Result<ECMDevice, XHCIError
     .expect("Everything should be alligned");
     ep1_ctxt_out.set_trdequeue_ptr(output_trb_buffer.start_address().as_u64());
 
-    unsafe {core::ptr::write_volatile(context_ptr, context);}
-    unsafe {core::ptr::write_volatile(ep1_ctxt_in_ptr, ep1_ctxt_in);}
-    unsafe {core::ptr::write_volatile(ep1_ctxt_out_ptr, ep1_ctxt_out);}
+    unsafe {
+        core::ptr::write_volatile(context_ptr, context);
+    }
+    unsafe {
+        core::ptr::write_volatile(ep1_ctxt_in_ptr, ep1_ctxt_in);
+    }
+    unsafe {
+        core::ptr::write_volatile(ep1_ctxt_out_ptr, ep1_ctxt_out);
+    }
+
+    unsafe {
+        core::ptr::write_volatile(context_ptr, context);
+    }
 
     let big_device: u32 = device.slot.into();
     let block = TransferRequestBlock {
@@ -214,7 +244,6 @@ pub fn init_cdc_device(mut device: USBDeviceInfo) -> Result<ECMDevice, XHCIError
         (info.base_address + info.capablities.doorbell_offset as u64) as *mut u32;
     unsafe { core::ptr::write_volatile(doorbell_base, 0) };
     wait_for_events_including_command_completion(&mut info, &mapper)?;
-
 
     Result::Err(XHCIError::UnknownPort)
 }

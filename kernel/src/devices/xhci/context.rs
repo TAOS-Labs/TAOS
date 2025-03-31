@@ -1,4 +1,4 @@
-#[repr(C, packed)]
+#[repr(C)]
 #[derive(Debug, Clone, Copy)]
 #[allow(dead_code)]
 /// See section 6.2.2 of xHCI specs
@@ -9,7 +9,7 @@ pub struct SlotContext {
     offset_0: u32,
     offset_1: u32,
     offset_2: u32,
-    offset_3: u32,
+    pub offset_3: u32,
     offset_4: u32,
     offset_5: u32,
     offset_6: u32,
