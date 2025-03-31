@@ -411,7 +411,7 @@ pub fn initalize_xhci_hub(device: &Arc<Mutex<DeviceInfo>>) -> Result<(), XHCIErr
     }
     // Now look for devices
     let ecm_device = find_cdc_device(&mut devices).unwrap();
-    init_cdc_device(devices.pop().unwrap());
+    let _ = init_cdc_device(devices.pop().unwrap());
     Result::Ok(())
 }
 
@@ -793,7 +793,7 @@ fn address_device(
     }
     // Now Generate 30 contexts (out 1, in 1, out 2, in 2, ... out 15, in 15)
     // Can zero them out, but that should already be done
-    // Load output to device context base array (TODO: see if this belongs in configure device)
+    // Load output to device context base array
     let slot_addr_vadr = info.base_address_array + (slot as u64 * 8);
     let slot_addr = slot_addr_vadr.as_mut_ptr();
     unsafe {
@@ -819,10 +819,6 @@ fn address_device(
     unsafe { core::ptr::write_volatile(doorbell_base, 0) };
     drop(command_ring);
     wait_for_events_including_command_completion(info, mapper)?;
-    let debug_stuff = unsafe { core::ptr::read_volatile(slot_context_ptr) };
-    debug_println!("slot context = {debug_stuff:?}");
-
-    // Now update DCBAA
 
     Result::Ok((device_context_address, producer_ring_buffer))
 }

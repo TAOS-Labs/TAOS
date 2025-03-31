@@ -1,9 +1,11 @@
+use core::mem::MaybeUninit;
+
 use crate::{
     constants::memory::PAGE_SIZE,
     debug_println,
     devices::{
         mmio::{self, map_page_as_uncacheable, zero_out_page},
-        xhci::{context::SlotContext, XHCIError},
+        xhci::{context::SlotContext, wait_for_events, XHCIError},
     },
     memory::{frame_allocator::alloc_frame, MAPPER},
 };
@@ -97,7 +99,7 @@ enum ECMDeviceDescriptors {
 
 pub struct ECMDevice {
     standard_device: USBDeviceInfo,
-    descriptors: ECMDeviceDescriptors,
+    descriptors: Vec<ECMDeviceDescriptors>,
     rx_buffer: [u8; 1536],
     tx_buffer: [u8; 1536],
 }
@@ -106,8 +108,9 @@ pub struct ECMDeviceRxToken<'a>(&'a mut [u8]);
 
 impl<'a> phy::RxToken for ECMDeviceRxToken<'a> {
     fn consume<R, F>(self, f: F) -> R
-        where
-            F: FnOnce(&mut [u8]) -> R {
+    where
+        F: FnOnce(&mut [u8]) -> R,
+    {
         let result = f(self.0);
         debug_println!("rx called");
         result
@@ -226,34 +229,25 @@ pub fn init_cdc_device(mut device: USBDeviceInfo) -> Result<ECMDevice, XHCIError
     context.set_add_flag(1, 0);
     // context.set_drop_flag(0, 0);
     // context.set_drop_flag(1, 0);
-    context.set_add_flag(2, 1);
-    context.set_add_flag(3, 1);
+    context.set_add_flag(4, 1);
+    context.set_add_flag(5, 1);
 
-    let slot_context_addr = device.input_context_vaddr + 0x20;
-    debug_println!("slot conext addr = {slot_context_addr:?}");
-    let slot_context_ptr: *mut SlotContext = slot_context_addr.as_mut_ptr();
-    let mut slot_context = unsafe { core::ptr::read_volatile(slot_context_ptr) };
-    debug_println!("Slot context = {:?}", slot_context);
-    slot_context.offset_3 = 0x10000001;
-    unsafe {
-        core::ptr::write_volatile(slot_context_ptr, slot_context);
-    }
-    let ep_1_context_out_addr = device.input_context_vaddr + 0x60;
-    let ep1_ctxt_out_ptr: *mut EndpointContext = ep_1_context_out_addr.as_mut_ptr();
-    let mut ep1_ctxt_out = unsafe { core::ptr::read_volatile(ep1_ctxt_out_ptr) };
-    ep1_ctxt_out.set_cerr(3);
-    ep1_ctxt_out.set_eptype(2);
-    ep1_ctxt_out.set_max_packet_size(64);
-    ep1_ctxt_out.set_dcs(1);
+    let ep_2_context_out_addr = device.input_context_vaddr + 0xA0;
+    let ep2_ctxt_out_ptr: *mut EndpointContext = ep_2_context_out_addr.as_mut_ptr();
+    let mut ep2_ctxt_out = unsafe { core::ptr::read_volatile(ep2_ctxt_out_ptr) };
+    ep2_ctxt_out.set_cerr(3);
+    ep2_ctxt_out.set_eptype(2);
+    ep2_ctxt_out.set_max_packet_size(64);
+    ep2_ctxt_out.set_dcs(1);
     // Now setup context in
-    let ep_1_context_in_addr = device.input_context_vaddr + 0x80;
-    let ep1_ctxt_in_ptr: *mut EndpointContext = ep_1_context_in_addr.as_mut_ptr();
-    let mut ep1_ctxt_in = unsafe { core::ptr::read_volatile(ep1_ctxt_in_ptr) };
-    ep1_ctxt_in.set_cerr(3);
-    ep1_ctxt_in.set_eptype(6);
-    ep1_ctxt_in.set_max_packet_size(64);
-    ep1_ctxt_in.set_dcs(1);
-    ep1_ctxt_in.set_average_trb_len(1_600);
+    let ep_2_context_in_addr = device.input_context_vaddr + 0xC0;
+    let ep2_ctxt_in_ptr: *mut EndpointContext = ep_2_context_in_addr.as_mut_ptr();
+    let mut ep2_ctxt_in = unsafe { core::ptr::read_volatile(ep2_ctxt_in_ptr) };
+    ep2_ctxt_in.set_cerr(3);
+    ep2_ctxt_in.set_eptype(6);
+    ep2_ctxt_in.set_max_packet_size(64);
+    ep2_ctxt_in.set_dcs(1);
+    ep2_ctxt_in.set_average_trb_len(1_600);
     // Set up TRB
 
     let input_trb_buffer = alloc_frame().ok_or(XHCIError::MemoryAllocationFailure)?;
@@ -261,37 +255,38 @@ pub fn init_cdc_device(mut device: USBDeviceInfo) -> Result<ECMDevice, XHCIError
     let input_trb_address = map_page_as_uncacheable(input_trb_buffer.start_address(), &mut mapper)
         .map_err(|_| XHCIError::MemoryAllocationFailure)?;
     zero_out_page(Page::containing_address(input_trb_address));
-    let in_trb = ProducerRingBuffer::new(
+    let mut in_trb = ProducerRingBuffer::new(
         input_trb_address.as_u64(),
         1,
         RingType::Transfer,
         (PAGE_SIZE).try_into().unwrap(),
     )
     .expect("Everything should be alligned");
-    ep1_ctxt_in.set_trdequeue_ptr(input_trb_buffer.start_address().as_u64());
+    ep2_ctxt_in.set_trdequeue_ptr(input_trb_buffer.start_address().as_u64());
 
     let output_trb_buffer = alloc_frame().ok_or(XHCIError::MemoryAllocationFailure)?;
     let output_trb_address =
         map_page_as_uncacheable(output_trb_buffer.start_address(), &mut mapper)
             .map_err(|_| XHCIError::MemoryAllocationFailure)?;
     zero_out_page(Page::containing_address(output_trb_address));
-    let out_trb = ProducerRingBuffer::new(
+    let mut out_trb = ProducerRingBuffer::new(
         output_trb_address.as_u64(),
         1,
         RingType::Transfer,
         (PAGE_SIZE).try_into().unwrap(),
     )
     .expect("Everything should be alligned");
-    ep1_ctxt_out.set_trdequeue_ptr(output_trb_buffer.start_address().as_u64());
-
+    ep2_ctxt_out.set_trdequeue_ptr(output_trb_buffer.start_address().as_u64());
+    debug_println!("EP2 ctxt out ptr = {:X}", ep_2_context_out_addr);
+    debug_println!("Deque = {:X}", output_trb_buffer.start_address().as_u64());
     unsafe {
         core::ptr::write_volatile(context_ptr, context);
     }
     unsafe {
-        core::ptr::write_volatile(ep1_ctxt_in_ptr, ep1_ctxt_in);
+        core::ptr::write_volatile(ep2_ctxt_in_ptr, ep2_ctxt_in);
     }
     unsafe {
-        core::ptr::write_volatile(ep1_ctxt_out_ptr, ep1_ctxt_out);
+        core::ptr::write_volatile(ep2_ctxt_out_ptr, ep2_ctxt_out);
     }
 
     unsafe {
@@ -328,13 +323,61 @@ pub fn init_cdc_device(mut device: USBDeviceInfo) -> Result<ECMDevice, XHCIError
             _ => {}
         }
     }
+
+    let buffer_frame = alloc_frame().ok_or(XHCIError::MemoryAllocationFailure)?;
+    let buffer_data_addr = mmio::map_page_as_uncacheable(buffer_frame.start_address(), &mut mapper)
+        .map_err(|_| XHCIError::MemoryAllocationFailure)?;
+
     drop(mapper);
-    get_eth_addr(&mut device, str_addr);
+    get_eth_addr(&mut device, str_addr)?;
 
     let config = get_class_descriptors_for_configuration(&mut device, 1).unwrap();
     debug_println!("class_desc = {config:?}");
 
+    // See if we can send something
+    let data_frame = alloc_frame().ok_or(XHCIError::MemoryAllocationFailure)?;
+    debug_println!("Data phys_addr = {:X}", data_frame.start_address().as_u64());
+    let mut mapper = MAPPER.lock();
+    let data_addr = mmio::map_page_as_uncacheable(data_frame.start_address(), &mut mapper)
+        .map_err(|_| XHCIError::MemoryAllocationFailure)?;
+    drop(mapper);
+
+    debug_println!("When sending fake frame");
+    let transfer_length: u16 = 1514;
+    let transfer_size: u8 = 1;
+    let interrupter_target = device.slot;
+    let block = TransferRequestBlock {
+        parameters: data_frame.start_address().as_u64(),
+        status: (transfer_length as u32)
+            | ((transfer_size as u32) << 17)
+            | ((interrupter_target as u32) << 22),
+        control: (1 << 5) | ((TrbTypes::Normal as u32) << 10),
+    };
+    unsafe {
+        out_trb.enqueue(block).unwrap();
+    }
+    let info = XHCI.lock().clone().unwrap();
+
+    let doorbell_base: *mut u32 = (info.base_address
+        + info.capablities.doorbell_offset as u64
+        + (device.slot as u64) * 4) as *mut u32;
+    unsafe { core::ptr::write_volatile(doorbell_base, 4) };
+    debug_println!("Before waiting for events");
+    let mut mapper = MAPPER.lock();
+    debug_println!("Got mapper");
+    wait_for_events(
+        &info,
+        &mut device.event_ring,
+        device.slot.into(),
+        &mut mapper,
+    )?;
+    debug_println!("After sending fake frame");
+    // let new_device: MaybeUninit<ECMDevice> = MaybeUninit::zeroed();
+    // let mut new_device: ECMDevice = unsafe { new_device.assume_init() };
+    // new_device.descriptors = config;
+    // new_device.standard_device = device;
     Result::Err(XHCIError::UnknownPort)
+    // Result::Ok(new_device)
 }
 
 fn get_eth_addr(device: &mut USBDeviceInfo, idx: u8) -> Result<u64, XHCIError> {
@@ -369,7 +412,7 @@ fn get_eth_addr(device: &mut USBDeviceInfo, idx: u8) -> Result<u64, XHCIError> {
             eth_vec.push(value);
         }
     }
-    let eth_string =     String::from_utf8(eth_vec).unwrap();
+    let eth_string = String::from_utf8(eth_vec).unwrap();
     let eth_num: u64 = u64::from_str_radix(&eth_string, 16).unwrap();
     debug_println!("eth nun = {eth_num:X}");
     // let eth_addr: &[u8]= unsafe {core::slice::from_raw_parts(data_pointer, 12)};
