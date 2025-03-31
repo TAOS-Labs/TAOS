@@ -726,9 +726,6 @@ fn address_device(
     // We need 2 pages, one for the device context, and the other for ring buffer(s)
     // Start by setting up ring buffers
 
-
-
-
     let buffer_frame = alloc_frame().ok_or(XHCIError::MemoryAllocationFailure)?;
     let buffer_address = map_page_as_uncacheable(buffer_frame.start_address(), mapper)
         .map_err(|_| XHCIError::MemoryAllocationFailure)?;
@@ -800,7 +797,7 @@ fn address_device(
     let slot_addr_vadr = info.base_address_array + (slot as u64 * 8);
     let slot_addr = slot_addr_vadr.as_mut_ptr();
     unsafe {
-        core::ptr::write_volatile(slot_addr, slot_context_va  - mapper.phys_offset());
+        core::ptr::write_volatile(slot_addr, slot_context_va - mapper.phys_offset());
     }
 
     // Address the device
