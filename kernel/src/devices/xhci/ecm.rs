@@ -7,6 +7,7 @@ use crate::{
     },
     memory::{frame_allocator::alloc_frame, MAPPER},
 };
+use bitflags::parser::from_str;
 use smoltcp::{
     phy::{self, Device, DeviceCapabilities, Medium},
     time::Instant,
@@ -19,7 +20,7 @@ use super::{
     USBDeviceDescriptor, USBDeviceEndpointDescriptor, USBDeviceInfo, USBDeviceInterfaceDescriptor,
     XHCI,
 };
-use alloc::vec::Vec;
+use alloc::{string::String, vec::Vec};
 use x86_64::structures::paging::Page;
 
 #[repr(u8)]
@@ -123,6 +124,7 @@ impl<'a> phy::TxToken for ECMDeviceTxToken<'a> {
         let result = f(&mut self.0[..len]);
         debug_println!("tx called {}", len);
         // TODO: send packet out
+
         result
     }
 }
@@ -335,7 +337,7 @@ pub fn init_cdc_device(mut device: USBDeviceInfo) -> Result<ECMDevice, XHCIError
     Result::Err(XHCIError::UnknownPort)
 }
 
-fn get_eth_addr(device: &mut USBDeviceInfo, idx: u8) -> Result<(), XHCIError> {
+fn get_eth_addr(device: &mut USBDeviceInfo, idx: u8) -> Result<u64, XHCIError> {
     let data_frame = alloc_frame().ok_or(XHCIError::MemoryAllocationFailure)?;
     debug_println!("Data phys_addr = {:X}", data_frame.start_address().as_u64());
     debug_println!("idx = {idx}");
@@ -360,16 +362,19 @@ fn get_eth_addr(device: &mut USBDeviceInfo, idx: u8) -> Result<(), XHCIError> {
         .send_command(paramaters, data_frame.start_address(), 1024)
         .unwrap();
     let mut eth_vec: Vec<u8> = Vec::new();
-    for str_idx in 0..32 {
+    for str_idx in 0..=24 {
         let data_pointer: *const u8 = (data_addr + str_idx).as_ptr();
         let value = unsafe { core::ptr::read_volatile(data_pointer) };
         if value >= 48 {
-            eth_vec.push(value - 48);
+            eth_vec.push(value);
         }
     }
+    let eth_string =     String::from_utf8(eth_vec).unwrap();
+    let eth_num: u64 = u64::from_str_radix(&eth_string, 16).unwrap();
+    debug_println!("eth nun = {eth_num:X}");
     // let eth_addr: &[u8]= unsafe {core::slice::from_raw_parts(data_pointer, 12)};
-    debug_println!("Eth addr = {eth_vec:?}");
-    Result::Ok(())
+    // debug_println!("Eth addr = {eth_vec:?}");
+    Result::Ok(eth_num)
 }
 
 fn get_class_descriptors_for_configuration(
