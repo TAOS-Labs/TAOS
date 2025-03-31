@@ -7,6 +7,10 @@ use crate::{
     },
     memory::{frame_allocator::alloc_frame, MAPPER},
 };
+use smoltcp::{
+    phy::{self, Device, DeviceCapabilities, Medium},
+    time::Instant,
+};
 
 use super::{
     context::{EndpointContext, InputControlContext},
@@ -93,6 +97,61 @@ enum ECMDeviceDescriptors {
 pub struct ECMDevice {
     standard_device: USBDeviceInfo,
     descriptors: ECMDeviceDescriptors,
+    rx_buffer: [u8; 1536],
+    tx_buffer: [u8; 1536],
+}
+
+pub struct ECMDeviceRxToken<'a>(&'a mut [u8]);
+
+impl<'a> phy::RxToken for ECMDeviceRxToken<'a> {
+    fn consume<R, F>(self, f: F) -> R
+        where
+            F: FnOnce(&mut [u8]) -> R {
+        let result = f(self.0);
+        debug_println!("rx called");
+        result
+    }
+}
+
+pub struct ECMDeviceTxToken<'a>(&'a mut [u8]);
+
+impl<'a> phy::TxToken for ECMDeviceTxToken<'a> {
+    fn consume<R, F>(self, len: usize, f: F) -> R
+    where
+        F: FnOnce(&mut [u8]) -> R,
+    {
+        let result = f(&mut self.0[..len]);
+        debug_println!("tx called {}", len);
+        // TODO: send packet out
+        result
+    }
+}
+
+impl phy::Device for ECMDevice {
+    type RxToken<'a>
+        = ECMDeviceRxToken<'a>
+    where
+        Self: 'a;
+    type TxToken<'a>
+        = ECMDeviceTxToken<'a>
+    where
+        Self: 'a;
+    fn receive(&mut self, timestamp: Instant) -> Option<(Self::RxToken<'_>, Self::TxToken<'_>)> {
+        Some((
+            ECMDeviceRxToken(&mut self.rx_buffer[..]),
+            ECMDeviceTxToken(&mut self.tx_buffer[..]),
+        ))
+    }
+    fn transmit(&mut self, timestamp: Instant) -> Option<Self::TxToken<'_>> {
+        Some(ECMDeviceTxToken(&mut self.tx_buffer[..]))
+    }
+    fn capabilities(&self) -> DeviceCapabilities {
+        let mut caps = DeviceCapabilities::default();
+        caps.max_transmission_unit = 1536;
+        caps.max_burst_size = Some(1);
+        caps.medium = Medium::Ethernet;
+        caps
+    }
 }
 
 const CLASS_CODE_CDC: u8 = 2;
@@ -140,9 +199,8 @@ pub fn init_cdc_device(mut device: USBDeviceInfo) -> Result<ECMDevice, XHCIError
         | (bm_request_type as u64);
     device.send_command_no_data(paramaters)?;
 
-
     let bm_request_type: u8 = 0b00000001;
-    let b_request: u8 = 11; // Set interface 
+    let b_request: u8 = 11; // Set interface
     let w_value: u16 = 1; // Alternate setting
     let w_idx: u16 = 1; // Interface number
     let w_length: u16 = 0;
