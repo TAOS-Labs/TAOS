@@ -312,7 +312,7 @@ mod tests {
         constants::memory::PAGE_SIZE,
         events::schedule_kernel_on,
         memory::{
-            mm::{Mm, VmAreaFlags},
+            mm::{AnonVmArea, Mm, VmAreaFlags},
             KERNEL_MAPPER,
         },
         processes::process::{get_current_pid, PROCESS_TABLE},
