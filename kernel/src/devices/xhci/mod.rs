@@ -11,9 +11,9 @@ use core::{cmp::min, mem::MaybeUninit};
 
 use crate::{
     constants::memory::PAGE_SIZE,
-    debug_print, debug_println,
+    debug_println,
     devices::mmio::zero_out_page,
-    memory::{frame_allocator::alloc_frame, paging::remove_mapped_frame, MAPPER},
+    memory::{frame_allocator::alloc_frame, MAPPER},
 };
 use alloc::{sync::Arc, vec::Vec};
 use bitflags::bitflags;
@@ -616,14 +616,7 @@ fn boot_up_all_ports(
             // let descriptor =
             //     get_device_descriptor(info, &mut producer_buffer, &mut event_ring, mapper, slot)?;
             // debug_println!("descriptor = {:?}", descriptor);
-            let device = prepare_device(
-                info,
-                event_ring,
-                producer_buffer,
-                slot,
-                input_context,
-                mapper,
-            )?;
+            let device = prepare_device(event_ring, producer_buffer, slot, input_context)?;
             devices.push(device);
             // Now that everything is set up, pass to upper level driver to finish it up
             // Should probally get class, so we know who to send it to
@@ -638,12 +631,10 @@ fn boot_up_all_ports(
 
 /// Sets up the device in a struct to be passed to class drivers
 fn prepare_device(
-    info: &XHCIInfo,
     event_ring: ConsumerRingBuffer,
     producer_ring_buffer: ProducerRingBuffer,
     slot: u8,
     input_context_vaddr: VirtAddr,
-    mapper: &mut OffsetPageTable,
 ) -> Result<USBDeviceInfo, XHCIError> {
     let device_descriptor: MaybeUninit<USBDeviceDescriptor> = MaybeUninit::zeroed();
     let device_descriptor = unsafe { device_descriptor.assume_init() };
@@ -901,210 +892,6 @@ fn create_device_event_ring_no_info(
     Result::Ok(event_ring)
 }
 
-// fn get_device_descriptor(
-//     info: &XHCIInfo,
-//     producer_ring_buffer: &mut ProducerRingBuffer,
-//     consumer_ring_buffer: &mut ConsumerRingBuffer,
-//     mapper: &mut OffsetPageTable,
-//     slot: u8,
-// ) -> Result<(USBDeviceDescriptor, USBDeviceConfigurationDescriptor), XHCIError> {
-//     let data_frame = alloc_frame().ok_or(XHCIError::MemoryAllocationFailure)?;
-//     debug_println!("Data phys_addr = {:X}", data_frame.start_address().as_u64());
-//     let data_addr = mmio::map_page_as_uncacheable(data_frame.start_address(), mapper)
-//         .map_err(|_| XHCIError::MemoryAllocationFailure)?;
-//     let bm_request_type: u8 = 0b10000000;
-//     let b_request: u8 = 6; // Get descriptor
-//     let descriptor_type: u8 = 1; // Device
-//     let descriptor_idx: u8 = 0; // Unused with Device descriptor type
-//     let w_value: u16 = ((descriptor_type as u16) << 8) | (descriptor_idx as u16);
-//     let w_idx: u16 = 0;
-//     let w_length: u16 = 18;
-//     let transfer_length: u16 = 8;
-
-//     let setup_trb = TransferRequestBlock {
-//         parameters: ((w_length as u64) << 48)
-//             | ((w_idx as u64) << 32)
-//             | ((w_value as u64) << 16)
-//             | ((b_request as u64) << 8)
-//             | (bm_request_type as u64),
-//         status: transfer_length as u32,
-//         control: (1 << 6)
-//             | ((TrbTypes::SetupStage as u32) << 10)
-//             | ((TransferType::InDataStage as u32) << 16),
-//     };
-//     unsafe {
-//         producer_ring_buffer
-//             .enqueue(setup_trb)
-//             .map_err(|_| XHCIError::TransferRingError)?;
-//     }
-
-//     let transfer_length: u16 = size_of::<USBDeviceDescriptor>().try_into().unwrap();
-//     let td_size: u8 = 0;
-//     let data_trb = TransferRequestBlock {
-//         parameters: data_frame.start_address().as_u64(),
-//         status: ((td_size as u32) << 17) | transfer_length as u32,
-//         control: (1 << 16) | ((TrbTypes::DataStage as u32) << 10),
-//     };
-
-//     unsafe {
-//         producer_ring_buffer
-//             .enqueue(data_trb)
-//             .map_err(|_| XHCIError::TransferRingError)?;
-//     }
-//     let interrupter_target: u32 = slot.into();
-//     let status_trb = TransferRequestBlock {
-//         parameters: 0,
-//         status: interrupter_target << 22,
-//         control: ((TrbTypes::StatusStage as u32) << 10) | (1 << 5),
-//     };
-
-//     unsafe {
-//         producer_ring_buffer
-//             .enqueue(status_trb)
-//             .map_err(|_| XHCIError::TransferRingError)?;
-//     }
-//     let doorbell_base: *mut u32 = (info.base_address
-//         + info.capablities.doorbell_offset as u64
-//         + (slot as u64) * 4) as *mut u32;
-//     unsafe { core::ptr::write_volatile(doorbell_base, 1) };
-
-//     wait_for_events(info, consumer_ring_buffer, slot.into(), mapper)?;
-//     let data_to_do: *const USBDeviceDescriptor = data_addr.as_ptr();
-//     let device_descriptor = unsafe { core::ptr::read_volatile(data_to_do) };
-
-//     let bm_request_type: u8 = 0b10000000;
-//     let b_request: u8 = 6; // Get descriptor
-//     let descriptor_type: u8 = 2; // Configuration
-//     let descriptor_idx: u8 = 1; // Get the second one (FIXME: Hardcoded qemu)
-//     let w_value: u16 = ((descriptor_type as u16) << 8) | (descriptor_idx as u16);
-//     let w_idx: u16 = 0;
-//     let w_length: u16 = 1024;
-//     let transfer_length: u16 = 8;
-
-//     let setup_trb = TransferRequestBlock {
-//         parameters: ((w_length as u64) << 48)
-//             | ((w_idx as u64) << 32)
-//             | ((w_value as u64) << 16)
-//             | ((b_request as u64) << 8)
-//             | (bm_request_type as u64),
-//         status: transfer_length as u32,
-//         control: (1 << 6)
-//             | ((TrbTypes::SetupStage as u32) << 10)
-//             | ((TransferType::InDataStage as u32) << 16),
-//     };
-//     unsafe {
-//         producer_ring_buffer
-//             .enqueue(setup_trb)
-//             .map_err(|_| XHCIError::TransferRingError)?;
-//     }
-
-//     // let transfer_length: u16 = size_of::<DeviceEndpointDescriptor>().try_into().unwrap();
-//     let transfer_length: u16 = 4096;
-//     let td_size: u8 = 0;
-//     let data_trb = TransferRequestBlock {
-//         parameters: data_frame.start_address().as_u64(),
-//         status: ((td_size as u32) << 17) | transfer_length as u32,
-//         control: (1 << 16) | ((TrbTypes::DataStage as u32) << 10),
-//     };
-
-//     unsafe {
-//         producer_ring_buffer
-//             .enqueue(data_trb)
-//             .map_err(|_| XHCIError::TransferRingError)?;
-//     }
-//     let interrupter_target: u32 = slot.into();
-//     let status_trb = TransferRequestBlock {
-//         parameters: 0,
-//         status: interrupter_target << 22,
-//         control: ((TrbTypes::StatusStage as u32) << 10) | (1 << 5),
-//     };
-
-//     unsafe {
-//         producer_ring_buffer
-//             .enqueue(status_trb)
-//             .map_err(|_| XHCIError::TransferRingError)?;
-//     }
-//     let doorbell_base: *mut u32 = (info.base_address
-//         + info.capablities.doorbell_offset as u64
-//         + (slot as u64) * 4) as *mut u32;
-//     unsafe { core::ptr::write_volatile(doorbell_base, 1) };
-
-//     wait_for_events(info, consumer_ring_buffer, slot.into(), mapper)?;
-
-//     let data_to_do: *const USBDeviceConfigurationDescriptor = data_addr.as_ptr();
-//     let config_descriptor = unsafe { core::ptr::read_volatile(data_to_do) };
-//     debug_println!("config = {:?}", config_descriptor);
-//     let interface_vaddr = data_addr + config_descriptor.b_length.into();
-//     let interface_ptr: *const USBDeviceInterfaceDescriptor = interface_vaddr.as_ptr();
-//     let interface_descriptor = unsafe { core::ptr::read_volatile(interface_ptr) };
-//     // let mut headers: Vec<DeviceFunctionalDescriptor> = Vec::new();
-//     const HEADERS_SIZE: usize = 32;
-//     let mut headers: [Option<DeviceFunctionalDescriptor>; HEADERS_SIZE] =
-//         [Option::None; HEADERS_SIZE];
-//     debug_println!("interface = {:?}", interface_descriptor);
-//     let mut idx = 0;
-//     let mut header_vaddr = interface_vaddr + interface_descriptor.b_length.into();
-//     let header_ptr: *const DeviceFunctionalDescriptor = header_vaddr.as_ptr();
-//     let mut header = unsafe { core::ptr::read_volatile(header_ptr) };
-//     headers[idx] = Option::Some(header);
-//     while header.b_descriptor_type != 5 {
-//         header_vaddr = header_vaddr + header.b_length.into();
-//         let header_ptr: *const DeviceFunctionalDescriptor = header_vaddr.as_ptr();
-//         header = unsafe { core::ptr::read_volatile(header_ptr) };
-//         debug_println!("Header = {:?}", header);
-//         idx += 1;
-//         headers[idx] = Option::Some(header);
-//     }
-//     // TODO!!: fix (weird qemu stuff with other descriptors below)
-//     let endpoint_vaddr = header_vaddr;
-//     let endpoint_ptr: *const USBDeviceEndpointDescriptor = endpoint_vaddr.as_ptr();
-//     let endpoint_descriptor = unsafe { core::ptr::read_unaligned(endpoint_ptr) };
-//     debug_println!("endpoint = {:?}", endpoint_descriptor);
-//     // TODO!!: Fix this, currently everything is 2mib pages, so this breaks
-//     // remove_mapped_frame(Page::containing_address(data_addr), mapper);
-//     Result::Ok((device_descriptor, config_descriptor))
-// }
-
-/// Issues first configure endpoint command,  the class driver might want
-/// to re-configure the endpoint
-fn configure_endpoint(
-    info: &mut XHCIInfo,
-    slot: u8,
-    mapper: &OffsetPageTable,
-    input_context_vaddr: VirtAddr,
-) -> Result<(), XHCIError> {
-    let context_ptr: *mut InputControlContext = input_context_vaddr.as_mut_ptr();
-    let mut context = unsafe { *context_ptr };
-
-    context.set_add_flag(0, 1);
-    context.set_add_flag(1, 0);
-    unsafe {
-        core::ptr::write_volatile(context_ptr, context);
-    }
-    // context.set_drop_flag(0, 0);
-    // context.set_drop_flag(1, 0);
-
-    let big_device: u32 = slot.into();
-    let block = TransferRequestBlock {
-        parameters: (input_context_vaddr - mapper.phys_offset()),
-        status: 0,
-        control: ((big_device << 24) | ((TrbTypes::ConfigEpCmd as u32) << 10)),
-    };
-    let command_ring_lock = info.command_ring.clone();
-    let mut command_ring = command_ring_lock.lock();
-    unsafe {
-        command_ring
-            .enqueue(block)
-            .map_err(|_| XHCIError::CommandRingError)?
-    };
-    drop(command_ring);
-    let doorbell_base: *mut u32 =
-        (info.base_address + info.capablities.doorbell_offset as u64) as *mut u32;
-    unsafe { core::ptr::write_volatile(doorbell_base, 0) };
-    wait_for_events_including_command_completion(info, mapper)?;
-    Result::Ok(())
-}
-
 /// Wait for an event to occur in the event ring. This should not be a
 /// command completion event.
 fn wait_for_events(
@@ -1131,7 +918,7 @@ fn wait_for_events(
         + info.capablities.runtime_register_space_offset as u64
         + 0x38
         + (32 * interrupter as u64);
-    update_deque_ptr(erdp_addr as *mut u64, &event_ring, mapper);
+    update_deque_ptr(erdp_addr as *mut u64, event_ring, mapper);
     Result::Ok(event)
 }
 

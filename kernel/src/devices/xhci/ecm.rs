@@ -1,17 +1,14 @@
-use core::mem::MaybeUninit;
-
 use crate::{
     constants::memory::PAGE_SIZE,
     debug_println,
     devices::{
         mmio::{self, map_page_as_uncacheable, zero_out_page},
-        xhci::{context::SlotContext, wait_for_events, XHCIError},
+        xhci::{wait_for_events, XHCIError},
     },
     memory::{frame_allocator::alloc_frame, MAPPER},
 };
-use bitflags::parser::from_str;
 use smoltcp::{
-    phy::{self, Device, DeviceCapabilities, Medium},
+    phy::{self, DeviceCapabilities, Medium},
     time::Instant,
 };
 
@@ -89,12 +86,12 @@ struct EthernetNetworkingFunctionalDescriptor {
 
 #[derive(Debug, Clone, Copy)]
 enum ECMDeviceDescriptors {
-    DeviceDescriptor(USBDeviceDescriptor),
-    ConfigurationDescriptor(USBDeviceConfigurationDescriptor),
-    InterfaceDescriptor(USBDeviceInterfaceDescriptor),
-    EndpointDescriptor(USBDeviceEndpointDescriptor),
-    FunctionalDescriptor(DeviceFunctionalDescriptor),
-    EthernetDescriptor(EthernetNetworkingFunctionalDescriptor),
+    Device(USBDeviceDescriptor),
+    Configuration(USBDeviceConfigurationDescriptor),
+    Interface(USBDeviceInterfaceDescriptor),
+    Endpoint(USBDeviceEndpointDescriptor),
+    Functional(DeviceFunctionalDescriptor),
+    Ethernet(EthernetNetworkingFunctionalDescriptor),
 }
 
 pub struct ECMDevice {
@@ -106,7 +103,7 @@ pub struct ECMDevice {
 
 pub struct ECMDeviceRxToken<'a>(&'a mut [u8]);
 
-impl<'a> phy::RxToken for ECMDeviceRxToken<'a> {
+impl phy::RxToken for ECMDeviceRxToken<'_> {
     fn consume<R, F>(self, f: F) -> R
     where
         F: FnOnce(&mut [u8]) -> R,
@@ -119,7 +116,7 @@ impl<'a> phy::RxToken for ECMDeviceRxToken<'a> {
 
 pub struct ECMDeviceTxToken<'a>(&'a mut [u8]);
 
-impl<'a> phy::TxToken for ECMDeviceTxToken<'a> {
+impl phy::TxToken for ECMDeviceTxToken<'_> {
     fn consume<R, F>(self, len: usize, f: F) -> R
     where
         F: FnOnce(&mut [u8]) -> R,
@@ -141,13 +138,13 @@ impl phy::Device for ECMDevice {
         = ECMDeviceTxToken<'a>
     where
         Self: 'a;
-    fn receive(&mut self, timestamp: Instant) -> Option<(Self::RxToken<'_>, Self::TxToken<'_>)> {
+    fn receive(&mut self, _timestamp: Instant) -> Option<(Self::RxToken<'_>, Self::TxToken<'_>)> {
         Some((
             ECMDeviceRxToken(&mut self.rx_buffer[..]),
             ECMDeviceTxToken(&mut self.tx_buffer[..]),
         ))
     }
-    fn transmit(&mut self, timestamp: Instant) -> Option<Self::TxToken<'_>> {
+    fn transmit(&mut self, _timestamp: Instant) -> Option<Self::TxToken<'_>> {
         Some(ECMDeviceTxToken(&mut self.tx_buffer[..]))
     }
     fn capabilities(&self) -> DeviceCapabilities {
@@ -171,15 +168,12 @@ pub fn find_cdc_device(devices: &mut Vec<USBDeviceInfo>) -> Option<(u8, u8)> {
                     get_class_descriptors_for_configuration(device, configuration).unwrap();
                 debug_println!("class_desc = {class_desc:?}");
                 for descriptor in class_desc {
-                    match descriptor {
-                        ECMDeviceDescriptors::InterfaceDescriptor(config) => {
-                            if config.b_interface_class == CLASS_CODE_CDC
-                                && config.b_interface_sub_class == SUBCLASS_CODE_ECM
-                            {
-                                return Option::Some((device.slot, configuration));
-                            }
+                    if let ECMDeviceDescriptors::Interface(config) = descriptor {
+                        if config.b_interface_class == CLASS_CODE_CDC
+                            && config.b_interface_sub_class == SUBCLASS_CODE_ECM
+                        {
+                            return Option::Some((device.slot, configuration));
                         }
-                        _ => {}
                     }
                 }
             }
@@ -192,8 +186,6 @@ pub fn find_cdc_device(devices: &mut Vec<USBDeviceInfo>) -> Option<(u8, u8)> {
 pub fn init_cdc_device(mut device: USBDeviceInfo) -> Result<ECMDevice, XHCIError> {
     let bm_request_type: u8 = 0b00000000;
     let b_request: u8 = 9; // Set configuration
-                           // let descriptor_type: u8 = 2; // Configuration
-                           // let descriptor_idx: u8 = configuration; // Get the second one (FIXME: Hardcoded qemu)
     let w_value: u16 = 1;
     let w_idx: u16 = 0;
     let w_length: u16 = 0;
@@ -316,17 +308,10 @@ pub fn init_cdc_device(mut device: USBDeviceInfo) -> Result<ECMDevice, XHCIError
     // Now get out ethernet address
     let mut str_addr: u8 = 0;
     for descriptor in config {
-        match descriptor {
-            ECMDeviceDescriptors::EthernetDescriptor(desc) => {
-                str_addr = desc.imac_address;
-            }
-            _ => {}
+        if let ECMDeviceDescriptors::Ethernet(desc) = descriptor {
+            str_addr = desc.imac_address;
         }
     }
-
-    let buffer_frame = alloc_frame().ok_or(XHCIError::MemoryAllocationFailure)?;
-    let buffer_data_addr = mmio::map_page_as_uncacheable(buffer_frame.start_address(), &mut mapper)
-        .map_err(|_| XHCIError::MemoryAllocationFailure)?;
 
     drop(mapper);
     get_eth_addr(&mut device, str_addr)?;
@@ -338,7 +323,7 @@ pub fn init_cdc_device(mut device: USBDeviceInfo) -> Result<ECMDevice, XHCIError
     let data_frame = alloc_frame().ok_or(XHCIError::MemoryAllocationFailure)?;
     debug_println!("Data phys_addr = {:X}", data_frame.start_address().as_u64());
     let mut mapper = MAPPER.lock();
-    let data_addr = mmio::map_page_as_uncacheable(data_frame.start_address(), &mut mapper)
+    mmio::map_page_as_uncacheable(data_frame.start_address(), &mut mapper)
         .map_err(|_| XHCIError::MemoryAllocationFailure)?;
     drop(mapper);
 
@@ -363,14 +348,9 @@ pub fn init_cdc_device(mut device: USBDeviceInfo) -> Result<ECMDevice, XHCIError
         + (device.slot as u64) * 4) as *mut u32;
     unsafe { core::ptr::write_volatile(doorbell_base, 4) };
     debug_println!("Before waiting for events");
-    let mut mapper = MAPPER.lock();
+    let mapper = MAPPER.lock();
     debug_println!("Got mapper");
-    wait_for_events(
-        &info,
-        &mut device.event_ring,
-        device.slot.into(),
-        &mut mapper,
-    )?;
+    wait_for_events(&info, &mut device.event_ring, device.slot.into(), &mapper)?;
     debug_println!("After sending fake frame");
     // let new_device: MaybeUninit<ECMDevice> = MaybeUninit::zeroed();
     // let mut new_device: ECMDevice = unsafe { new_device.assume_init() };
@@ -450,11 +430,9 @@ fn get_class_descriptors_for_configuration(
     let mut descriptors = Vec::new();
     let data_to_do: *const USBDeviceConfigurationDescriptor = data_addr.as_ptr();
     let config_descriptor = unsafe { core::ptr::read_volatile(data_to_do) };
-    descriptors.push(ECMDeviceDescriptors::ConfigurationDescriptor(
-        config_descriptor,
-    ));
+    descriptors.push(ECMDeviceDescriptors::Configuration(config_descriptor));
     let total_size: usize = config_descriptor.w_total_length.into();
-    let mut bytes_read: usize = config_descriptor.b_length.try_into().unwrap();
+    let mut bytes_read: usize = config_descriptor.b_length.into();
 
     while bytes_read < total_size {
         let desc_vaddr = data_addr + bytes_read.try_into().unwrap();
@@ -465,17 +443,13 @@ fn get_class_descriptors_for_configuration(
                 // Interface
                 let interface_ptr: *const USBDeviceInterfaceDescriptor = desc_vaddr.as_ptr();
                 let interface_descriptor = unsafe { core::ptr::read_unaligned(interface_ptr) };
-                descriptors.push(ECMDeviceDescriptors::InterfaceDescriptor(
-                    interface_descriptor,
-                ));
+                descriptors.push(ECMDeviceDescriptors::Interface(interface_descriptor));
             }
             5 => {
                 // Endpoint
                 let endpoint_ptr: *const USBDeviceEndpointDescriptor = desc_vaddr.as_ptr();
                 let endpoint_descriptor = unsafe { core::ptr::read_unaligned(endpoint_ptr) };
-                descriptors.push(ECMDeviceDescriptors::EndpointDescriptor(
-                    endpoint_descriptor,
-                ));
+                descriptors.push(ECMDeviceDescriptors::Endpoint(endpoint_descriptor));
             }
             0x24 | 0x25 => {
                 // CS Interface / CS Endpoint
@@ -483,7 +457,7 @@ fn get_class_descriptors_for_configuration(
                     let networking_ptr: *const EthernetNetworkingFunctionalDescriptor =
                         desc_vaddr.as_ptr();
                     let networking_desc = unsafe { core::ptr::read_unaligned(networking_ptr) };
-                    descriptors.push(ECMDeviceDescriptors::EthernetDescriptor(networking_desc));
+                    descriptors.push(ECMDeviceDescriptors::Ethernet(networking_desc));
                 }
             }
             _ => {
