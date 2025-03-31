@@ -140,6 +140,19 @@ pub fn init_cdc_device(mut device: USBDeviceInfo) -> Result<ECMDevice, XHCIError
         | (bm_request_type as u64);
     device.send_command_no_data(paramaters)?;
 
+
+    let bm_request_type: u8 = 0b00000001;
+    let b_request: u8 = 11; // Set interface 
+    let w_value: u16 = 1; // Alternate setting
+    let w_idx: u16 = 1; // Interface number
+    let w_length: u16 = 0;
+    let paramaters: u64 = ((w_length as u64) << 48)
+        | ((w_idx as u64) << 32)
+        | ((w_value as u64) << 16)
+        | ((b_request as u64) << 8)
+        | (bm_request_type as u64);
+    device.send_command_no_data(paramaters)?;
+
     let config = get_class_descriptors_for_configuration(&mut device, 1).unwrap();
     debug_println!("class_desc = {config:?}");
 
