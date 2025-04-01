@@ -72,7 +72,7 @@ pub fn load_elf(
                     anon_vma_code_and_data.clone(),
                     VmAreaFlags::WRITABLE | VmAreaFlags::EXECUTE,
                     None,
-                    0
+                    0,
                 );
             });
 

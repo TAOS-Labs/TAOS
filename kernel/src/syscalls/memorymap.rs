@@ -217,7 +217,13 @@ pub fn sys_mmap(addr: u64, len: u64, prot: u64, flags: u64, fd: i64, offset: u64
         };
         let pcb = pcb.pcb.get();
 
-        file = unsafe { Some((*pcb).fd_table[fd as usize].clone().expect("No file associated with this fd."))};
+        file = unsafe {
+            Some(
+                (*pcb).fd_table[fd as usize]
+                    .clone()
+                    .expect("No file associated with this fd."),
+            )
+        };
     }
 
     // Insert the new VMA into the process's VMA tree.

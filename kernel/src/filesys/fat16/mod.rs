@@ -1,11 +1,21 @@
 //! FAT16 filesystem implementation
 
-use crate::{constants::processes::MAX_FILES, processes::process::{get_current_pid, PROCESS_TABLE}};
+use crate::{
+    constants::processes::MAX_FILES,
+    processes::process::{get_current_pid, PROCESS_TABLE},
+};
 
 use super::*;
-use alloc::{collections::{btree_map::BTreeMap, BinaryHeap}, sync::Arc, vec};
+use alloc::{
+    collections::{btree_map::BTreeMap, BinaryHeap},
+    sync::Arc,
+    vec,
+};
+use core::{
+    cmp::{max, min},
+    ops::Add,
+};
 use spin::lock_api::Mutex;
-use core::{cmp::{max, min}, ops::Add};
 
 mod boot_sector;
 mod constants;
@@ -544,14 +554,14 @@ impl FileSystem for Fat16<'_> {
                 .clone()
         };
         let pcb = pcb.pcb.get();
-        let next_fd = unsafe {*((*pcb).next_fd.lock()) as usize };
+        let next_fd = unsafe { *((*pcb).next_fd.lock()) as usize };
 
         unsafe {
             (*(*pcb).next_fd.lock()) = next_fd as u64;
         }
 
         assert!(next_fd < MAX_FILES);
-        unsafe {(*pcb).fd_table[next_fd]  = Some(Arc::new(Mutex::new(file)))};
+        unsafe { (*pcb).fd_table[next_fd] = Some(Arc::new(Mutex::new(file))) };
         Ok(next_fd)
     }
 
@@ -566,10 +576,17 @@ impl FileSystem for Fat16<'_> {
         };
         let pcb = pcb.pcb.get();
 
-        let mut file = unsafe { (*pcb).fd_table[fd].clone().expect("No file associated with this fd.")};
+        let mut file = unsafe {
+            (*pcb).fd_table[fd]
+                .clone()
+                .expect("No file associated with this fd.")
+        };
         let mut locked_file = file.lock();
 
-        assert!(locked_file.valid, "Cannot close an invailid file descriptor.");
+        assert!(
+            locked_file.valid,
+            "Cannot close an invailid file descriptor."
+        );
 
         locked_file.valid = false;
         locked_file.current_cluster = 0;
@@ -595,7 +612,11 @@ impl FileSystem for Fat16<'_> {
         };
         let pcb = pcb.pcb.get();
 
-        let mut file = unsafe { (*pcb).fd_table[fd].clone().expect("No file associated with this fd.")};
+        let mut file = unsafe {
+            (*pcb).fd_table[fd]
+                .clone()
+                .expect("No file associated with this fd.")
+        };
         let mut locked_file = file.lock();
 
         while bytes_written < buf.len() {
@@ -637,14 +658,15 @@ impl FileSystem for Fat16<'_> {
                     .await?;
                 if fat_entry.is_end_of_chain() {
                     let new_cluster = locked_file.allocate_cluster(&mut *self.device).await?;
-                    locked_file.write_fat_entry(
-                        &mut *self.device,
-                        locked_file.current_cluster,
-                        FatEntry {
-                            cluster: new_cluster,
-                        },
-                    )
-                    .await?;
+                    locked_file
+                        .write_fat_entry(
+                            &mut *self.device,
+                            locked_file.current_cluster,
+                            FatEntry {
+                                cluster: new_cluster,
+                            },
+                        )
+                        .await?;
                     locked_file.current_cluster = new_cluster;
                 } else {
                     locked_file.current_cluster = fat_entry.cluster;
@@ -652,7 +674,8 @@ impl FileSystem for Fat16<'_> {
             }
         }
 
-        locked_file.update_directory_entry(&mut *self.device, locked_file.size)
+        locked_file
+            .update_directory_entry(&mut *self.device, locked_file.size)
             .await?;
         Ok(bytes_written)
     }
@@ -668,29 +691,37 @@ impl FileSystem for Fat16<'_> {
         };
         let pcb = pcb.pcb.get();
 
-        let mut file = unsafe { (*pcb).fd_table[fd].clone().expect("No file associated with this fd.")};
+        let mut file = unsafe {
+            (*pcb).fd_table[fd]
+                .clone()
+                .expect("No file associated with this fd.")
+        };
         let mut locked_file = file.lock();
 
         let new_pos = match pos {
             SeekFrom::Start(offset) => offset,
             SeekFrom::End(offset) => {
                 if offset < 0 {
-                    locked_file.size
+                    locked_file
+                        .size
                         .checked_sub(offset.unsigned_abs())
                         .ok_or(FsError::InvalidOffset)?
                 } else {
-                    locked_file.size
+                    locked_file
+                        .size
                         .checked_add(offset as u64)
                         .ok_or(FsError::InvalidOffset)?
                 }
             }
             SeekFrom::Current(offset) => {
                 if offset < 0 {
-                    locked_file.position
+                    locked_file
+                        .position
                         .checked_sub(offset.unsigned_abs())
                         .ok_or(FsError::InvalidOffset)?
                 } else {
-                    locked_file.position
+                    locked_file
+                        .position
                         .checked_add(offset as u64)
                         .ok_or(FsError::InvalidOffset)?
                 }
@@ -716,7 +747,11 @@ impl FileSystem for Fat16<'_> {
         };
         let pcb = pcb.pcb.get();
 
-        let mut file = unsafe { (*pcb).fd_table[fd].clone().expect("No file associated with this fd.")};
+        let mut file = unsafe {
+            (*pcb).fd_table[fd]
+                .clone()
+                .expect("No file associated with this fd.")
+        };
         let mut locked_file = file.lock();
 
         if locked_file.position >= locked_file.size {
@@ -725,7 +760,10 @@ impl FileSystem for Fat16<'_> {
 
         let mut bytes_read = 0;
         let mut buf_offset = 0;
-        let bytes_to_read = min(buf.len(), (locked_file.size - locked_file.position) as usize);
+        let bytes_to_read = min(
+            buf.len(),
+            (locked_file.size - locked_file.position) as usize,
+        );
 
         while bytes_read < bytes_to_read {
             let cluster_offset = (locked_file.position % locked_file.cluster_size as u64) as usize;

@@ -10,7 +10,7 @@ pub const TEST_64_PRINT_EXIT: &[u8] =
 pub const TEST_64_FORK_EXIT: &[u8] =
     include_bytes!("../processes/debug_binaries/test_64_fork_simple");
 pub const TEST_64_FORK_COW: &[u8] = include_bytes!("../processes/debug_binaries/test_64_fork_cow");
-pub const TEST_MMAP_ALLOC:  &[u8] = include_bytes!("../processes/debug_binaries/test_mmap_alloc");
+pub const TEST_MMAP_ALLOC: &[u8] = include_bytes!("../processes/debug_binaries/test_mmap_alloc");
 
 pub const SYSCALL_32BIT_TEST: &[u8] =
     include_bytes!("../processes/debug_binaries/test_asm_32bit_syscall");

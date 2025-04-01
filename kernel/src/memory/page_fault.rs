@@ -157,7 +157,10 @@ pub fn determine_fault_cause(error_code: PageFaultErrorCode) -> FaultOutcome {
                             mapper,
                             offset: 0,
                             pt_flags,
-                            file: segment.file.clone().expect("could not get file from segment"),
+                            file: segment
+                                .file
+                                .clone()
+                                .expect("could not get file from segment"),
                         })
                     } else {
                         Some(FaultOutcome::ExistingMapping {
@@ -174,7 +177,10 @@ pub fn determine_fault_cause(error_code: PageFaultErrorCode) -> FaultOutcome {
                             mapper,
                             offset: 0,
                             pt_flags,
-                            file: segment.file.clone().expect("could not get file from segment"),
+                            file: segment
+                                .file
+                                .clone()
+                                .expect("could not get file from segment"),
                         })
                     } else {
                         Some(FaultOutcome::NewMapping {
@@ -228,14 +234,25 @@ pub fn handle_existing_mapping(
     );
 }
 
-pub fn handle_existing_file_mapping(page: Page<Size4KiB>, mapper: &mut OffsetPageTable, offset: u64, pt_flags: PageTableFlags, file: Arc<Mutex<Fat16File>>) {
+pub fn handle_existing_file_mapping(
+    page: Page<Size4KiB>,
+    mapper: &mut OffsetPageTable,
+    offset: u64,
+    pt_flags: PageTableFlags,
+    file: Arc<Mutex<Fat16File>>,
+) {
     // TODO
 }
 
-pub fn handle_new_file_mapping(page: Page<Size4KiB>, mapper: &mut OffsetPageTable, offset: u64, pt_flags: PageTableFlags, file: Arc<Mutex<Fat16File>>) {
+pub fn handle_new_file_mapping(
+    page: Page<Size4KiB>,
+    mapper: &mut OffsetPageTable,
+    offset: u64,
+    pt_flags: PageTableFlags,
+    file: Arc<Mutex<Fat16File>>,
+) {
     // TODO
 }
-
 
 /// Handles a fault by creating a new mapping and inserting it into the backing.
 ///

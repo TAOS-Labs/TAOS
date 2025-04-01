@@ -33,7 +33,7 @@ pub struct Fat16File {
     pub entry_position: u64,
 
     /// Page cache
-    pub page_cache: BTreeMap<u64, PhysFrame>
+    pub page_cache: BTreeMap<u64, PhysFrame>,
 }
 
 #[async_trait]

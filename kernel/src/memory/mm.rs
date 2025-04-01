@@ -700,8 +700,24 @@ mod tests {
         let anon_area = Arc::new(VmAreaBackings::new());
 
         mm.with_vma_tree_mutable(|tree| {
-            let _vma1 = Mm::insert_vma(tree, 0, 500, anon_area.clone(), VmAreaFlags::WRITABLE, None, 0);
-            let _vma2 = Mm::insert_vma(tree, 600, 1000, anon_area.clone(), VmAreaFlags::WRITABLE, None, 0);
+            let _vma1 = Mm::insert_vma(
+                tree,
+                0,
+                500,
+                anon_area.clone(),
+                VmAreaFlags::WRITABLE,
+                None,
+                0,
+            );
+            let _vma2 = Mm::insert_vma(
+                tree,
+                600,
+                1000,
+                anon_area.clone(),
+                VmAreaFlags::WRITABLE,
+                None,
+                0,
+            );
             // Test finding a VMA that covers a given address.
             let found1 = Mm::find_vma(250, tree);
             assert!(found1.is_some(), "Should find a VMA covering address 250");
@@ -729,7 +745,15 @@ mod tests {
 
         mm.with_vma_tree_mutable(|tree| {
             // Create a VmArea instance.
-            let _vma = Mm::insert_vma(tree, 0, 500, anon_area.clone(), VmAreaFlags::WRITABLE, None, 0);
+            let _vma = Mm::insert_vma(
+                tree,
+                0,
+                500,
+                anon_area.clone(),
+                VmAreaFlags::WRITABLE,
+                None,
+                0,
+            );
 
             let found = Mm::find_vma(250, tree);
             assert_eq!(found.unwrap().lock().start, 0);
@@ -761,7 +785,15 @@ mod tests {
         let frame1 = alloc_frame().expect("Could not allocate PhysFrame");
 
         let vm_area = mm.with_vma_tree_mutable(|tree| {
-            Mm::insert_vma(tree, 0, 0x1000, anon_area.clone(), VmAreaFlags::WRITABLE, None, 0)
+            Mm::insert_vma(
+                tree,
+                0,
+                0x1000,
+                anon_area.clone(),
+                VmAreaFlags::WRITABLE,
+                None,
+                0,
+            )
         });
 
         // Calculate the faulting address's aligned offset.
@@ -810,7 +842,15 @@ mod tests {
         let frame2 = alloc_frame().expect("Could not allocate PhysFrame");
 
         mm.with_vma_tree_mutable(|tree| {
-            let vm_area = Mm::insert_vma(tree, 0, 0x2000, anon_area.clone(), VmAreaFlags::WRITABLE, None, 0);
+            let vm_area = Mm::insert_vma(
+                tree,
+                0,
+                0x2000,
+                anon_area.clone(),
+                VmAreaFlags::WRITABLE,
+                None,
+                0,
+            );
 
             let vm_start = vm_area.lock().start;
             let faulting_address1: u64 = 0x500;
@@ -875,7 +915,15 @@ mod tests {
         let anon_area = Arc::new(VmAreaBackings::new());
 
         let vm_area1 = mm1.with_vma_tree_mutable(|tree| {
-            Mm::insert_vma(tree, 0, 0x1000, anon_area.clone(), VmAreaFlags::WRITABLE, None, 0)
+            Mm::insert_vma(
+                tree,
+                0,
+                0x1000,
+                anon_area.clone(),
+                VmAreaFlags::WRITABLE,
+                None,
+                0,
+            )
         });
         let vm_area2 = mm2.with_vma_tree_mutable(|tree| {
             Mm::insert_vma(

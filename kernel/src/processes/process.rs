@@ -4,17 +4,25 @@ use crate::{
     constants::{
         processes::{MAX_FILES, PROCESS_NANOS, PROCESS_TIMESLICE},
         syscalls::START_MMAP_ADDRESS,
-    }, debug, events::{
+    },
+    debug,
+    events::{
         current_running_event_info, nanosleep_current_process, runner_timestamp, schedule_process,
         EventInfo,
-    }, filesys::fat16::Fat16File, interrupts::{
+    },
+    filesys::fat16::Fat16File,
+    interrupts::{
         gdt,
         x2apic::{self, nanos_to_ticks},
-    }, ipc::namespace::Namespace, memory::{
+    },
+    ipc::namespace::Namespace,
+    memory::{
         frame_allocator::{alloc_frame, dealloc_frame, with_buddy_frame_allocator},
         mm::Mm,
         HHDM_OFFSET, KERNEL_MAPPER,
-    }, processes::{loader::load_elf, registers::Registers}, serial_println
+    },
+    processes::{loader::load_elf, registers::Registers},
+    serial_println,
 };
 use alloc::{collections::BTreeMap, sync::Arc};
 use core::{
@@ -268,10 +276,12 @@ pub fn clear_process_frames(pcb: &mut PCB) {
             free_page_table(pdpt_frame, 3, HHDM_OFFSET.as_u64());
         }
     }
-    serial_println!("Attempting to deallocate frame {:#x}", pml4_frame.start_address());
+    serial_println!(
+        "Attempting to deallocate frame {:#x}",
+        pml4_frame.start_address()
+    );
     dealloc_frame(pml4_frame);
     serial_println!("Deallocated frame {:#x}", pml4_frame.start_address());
-
 }
 
 /// Helper function to recursively multi level page tables
@@ -294,10 +304,12 @@ unsafe fn free_page_table(frame: PhysFrame, level: u8, hhdm_offset: u64) {
         } else {
             // Free level one page
             let page_frame = PhysFrame::containing_address(entry.addr());
-            serial_println!("Attempting to deallocate frame {:#x}", page_frame.start_address());
+            serial_println!(
+                "Attempting to deallocate frame {:#x}",
+                page_frame.start_address()
+            );
             dealloc_frame(page_frame);
             serial_println!("Deallocated frame {:#x}", page_frame.start_address());
-
         }
         serial_println!("FREEING ENTRY {:#?}", entry);
         entry.set_unused();
