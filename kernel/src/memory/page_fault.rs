@@ -1,4 +1,5 @@
 use core::ptr;
+use core::slice;
 
 use alloc::sync::Arc;
 use log::debug;
@@ -263,47 +264,45 @@ pub async fn handle_new_file_mapping(
 ) {
     serial_println!("Creating a new mapping for a file-backed page.");
 
-    // Allocate a new frame for this page
+    // allocate a frame for that offset of the file
     let frame = alloc_frame().expect("Failed to allocate frame for file-backed page");
 
-    // Read file data into a temporary buffer
-    // why do you need a temporary buffer can you not just use the virtual address startingwith the page
-    let mut buffer: [u8; PAGE_SIZE as usize] = [0; PAGE_SIZE as usize];
-    {
-        let pid = get_current_pid();
-        let pcb = {
-            let process_table = PROCESS_TABLE.read();
-            process_table
-                .get(&pid)
-                .expect("can't find pcb in process table")
-                .clone()
-        };
-        let pcb = pcb.pcb.get();
+    let pid = get_current_pid();
+    let pcb = {
+        let process_table = PROCESS_TABLE.read();
+        process_table
+            .get(&pid)
+            .expect("can't find pcb in process table")
+            .clone()
+    };
+    let pcb = pcb.pcb.get();
 
-        let mut file = unsafe {
-            (*pcb).fd_table[fd]
-                .clone()
-                .expect("No file associated with this fd.")
-        };
-        let mut locked_file = file.lock();
+    let file = unsafe {
+        (*pcb).fd_table[fd]
+            .clone()
+            .expect("No file associated with this fd.")
+    };
+
+    // Store the frame in the file’s page cache
+    let mut locked_file = file.lock();
+    locked_file.page_cache.insert(offset, frame);
+
+    // Create mapping between faulting page and frame
+    create_mapping_to_frame(page, mapper, Some(pt_flags), frame);
+    let ptr = page.start_address().as_u64() as *mut u8;
+    let buffer: &mut [u8] = unsafe { slice::from_raw_parts_mut(ptr, PAGE_SIZE) };
+    {
+
+        // Now that the virtual address is mapped, use it to memcpy the file at an offset to the frame
         FILESYSTEM
             .get()
             .expect("Could not get filesystem")
             .lock()
-            .read_file(fd, &mut buffer)
+            .read_file(fd, buffer)
             .await
             .expect("could not read file");
 
-        // Store the frame in the file’s page cache
-        locked_file.page_cache.insert(offset, frame);
     }
-
-    // Copy the data from the buffer
-    unsafe {
-        let ptr = page.start_address().as_u64() as *mut u8;
-        ptr::copy_nonoverlapping(buffer.as_ptr(), ptr, PAGE_SIZE);
-    }
-    create_mapping_to_frame(page, mapper, Some(pt_flags), frame);
 }
 
 /// Handles a fault by creating a new mapping and inserting it into the backing.

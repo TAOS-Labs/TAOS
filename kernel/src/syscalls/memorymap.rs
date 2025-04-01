@@ -1,8 +1,7 @@
 use core::cmp::{max, min};
 
-use alloc::{sync::Arc, vec::Vec};
+use alloc::sync::Arc;
 use bitflags::bitflags;
-use spin::lock_api::Mutex;
 use x86_64::{
     structures::paging::{OffsetPageTable, Page, PageTable},
     VirtAddr,
@@ -49,42 +48,17 @@ bitflags! {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct ProtFlags(u64);
-
-impl Default for ProtFlags {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl ProtFlags {
-    pub const PROT_NONE: u64 = 0;
-    pub const PROT_READ: u64 = 1 << 0;
-    pub const PROT_WRITE: u64 = 1 << 1;
-    pub const PROT_EXEC: u64 = 1 << 2;
-    pub const PROT_SEM: u64 = 1 << 3;
-    pub const PROT_SAO: u64 = 1 << 4;
-    pub const PROT_GROWSUP: u64 = 1 << 5;
-    pub const PROT_GROWSDOWN: u64 = 1 << 6;
-
-    pub const fn new() -> Self {
-        ProtFlags(0)
-    }
-
-    // creates ProtFlags with inputted flags
-    pub const fn with_flags(self, flag: u64) -> Self {
-        ProtFlags(self.0 | flag)
-    }
-
-    // Checks if ProtFlags contains input flags
-    pub const fn contains(self, flag: u64) -> bool {
-        (self.0 & flag) != 0
-    }
-
-    // returns the ProtFlags
-    pub const fn bits(self) -> u64 {
-        self.0
+bitflags! {
+    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+    pub struct ProtFlags: u64 {
+        const PROT_NONE = 0;
+        const PROT_READ = 1 << 0;
+        const PROT_WRITE = 1 << 1;
+        const PROT_EXEC = 1 << 2;
+        const PROT_SEM = 1 << 3;
+        const PROT_SAO = 1 << 4;
+        const PROT_GROWSUP = 1 << 5;
+        const PROT_GROWSDOWN = 1 << 6;
     }
 }
 
@@ -112,13 +86,13 @@ pub fn prot_to_vma_flags(prot: u64, vma_flags: VmAreaFlags) -> VmAreaFlags {
     flags.remove(VmAreaFlags::EXECUTE);
     flags.remove(VmAreaFlags::GROWS_DOWN);
 
-    if prot & ProtFlags::PROT_WRITE != 0 {
+    if prot & ProtFlags::PROT_WRITE.bits() != 0 {
         flags.insert(VmAreaFlags::WRITABLE);
     }
-    if prot & ProtFlags::PROT_EXEC != 0 {
+    if prot & ProtFlags::PROT_EXEC.bits() != 0 {
         flags.insert(VmAreaFlags::EXECUTE);
     }
-    if prot & ProtFlags::PROT_GROWSDOWN != 0 {
+    if prot & ProtFlags::PROT_GROWSDOWN.bits() != 0 {
         flags.insert(VmAreaFlags::GROWS_DOWN);
     }
 
@@ -130,10 +104,10 @@ pub fn mmap_prot_to_vma_flags(prot: u64, mmap_flags: MmapFlags) -> VmAreaFlags {
     let mut vma_flags = VmAreaFlags::empty();
 
     // Set writable/executable based on the prot flags.
-    if prot & ProtFlags::PROT_WRITE != 0 {
+    if prot & ProtFlags::PROT_WRITE.bits() != 0 {
         vma_flags.set(VmAreaFlags::WRITABLE, true);
     }
-    if prot & ProtFlags::PROT_EXEC != 0 {
+    if prot & ProtFlags::PROT_EXEC.bits() != 0 {
         vma_flags.set(VmAreaFlags::EXECUTE, true);
     }
 
@@ -455,8 +429,23 @@ pub fn sys_munmap(addr: u64, len: u64) -> u64 {
 // TODO: Mmap tests
 #[cfg(test)]
 mod tests {
+    use super::{MmapFlags, ProtFlags};
     use crate::{
-        constants::processes::MMAP_ANON_SIMPLE,
-        processes::process::{create_process, PCB, PROCESS_TABLE},
+        constants::{memory::PAGE_SIZE, processes::MMAP_ANON_SIMPLE},
+        devices::sd_card::SD_CARD,
+        events::{futures::sleep, schedule_kernel, schedule_kernel_on},
+        filesys::{fat16::Fat16, FileSystem, FILESYSTEM},
+        processes::process::{create_process, get_current_pid, PCB, PROCESS_TABLE},
+        serial_println,
+        syscalls::{memorymap::sys_mmap, syscall_handlers::sys_nanosleep_32},
     };
+    use alloc::boxed::Box;
+
+    #[test_case]
+    async fn mmap_file_read_test() {
+        for i in 0..100_000_000u64 {}
+        serial_println!("finished for loop");
+
+        for i in 0..100_000_00u64 {}
+    }
 }

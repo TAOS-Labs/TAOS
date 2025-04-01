@@ -41,7 +41,7 @@ struct SDCardInfoInternal {
 #[derive(Debug, Clone)]
 #[allow(dead_code)]
 /// Represents an SD Card. Is used by all functions that interface with
-/// an sd card, and is returned by initalize_sd_card  
+/// an sd card, and is returned by initalize_sd_card
 pub struct SDCardInfo {
     /// Stores data that can be determined without needing to fully initalize
     /// the card, most importantly the base address register

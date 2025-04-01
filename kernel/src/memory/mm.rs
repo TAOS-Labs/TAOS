@@ -1,4 +1,4 @@
-use crate::{filesys::fat16::Fat16File, serial_println};
+use crate::serial_println;
 use alloc::{collections::btree_map::BTreeMap, sync::Arc, vec::Vec};
 use bitflags::bitflags;
 use core::fmt::Debug;

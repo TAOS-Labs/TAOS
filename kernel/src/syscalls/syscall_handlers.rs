@@ -292,7 +292,7 @@ fn noop_raw_waker() -> RawWaker {
     RawWaker::new(core::ptr::null(), vtable)
 }
 /// Helper function for sys_wait, not sure if necessary
-fn block_on<F: Future>(mut future: F) -> F::Output {
+pub fn block_on<F: Future>(mut future: F) -> F::Output {
     let waker = unsafe { Waker::from_raw(noop_raw_waker()) };
     let mut cx = Context::from_waker(&waker);
     // Safety: we’re not moving the future while polling.

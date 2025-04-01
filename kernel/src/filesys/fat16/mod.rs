@@ -992,6 +992,7 @@ mod tests {
 
     use crate::filesys::{fat16::Fat16, FileSystem, SeekFrom};
     use alloc::boxed::Box;
+    use crate::serial_println;
 
     // #[test_case]
     async fn fat_test() {
@@ -1002,6 +1003,8 @@ mod tests {
         let mut fs = Fat16::format(device)
             .await
             .expect("Failed to format filesystem");
+
+        serial_println!("Formatted disk!");
 
         // Test directory operations
         fs.create_dir("/test_dir")

@@ -1,3 +1,4 @@
+use crate::{events::schedule_kernel_on, syscalls::syscall_handlers::block_on};
 use alloc::{boxed::Box, string::String, vec::Vec};
 use core::{cell::OnceCell, result::Result};
 use fat16::Fat16;
@@ -9,7 +10,7 @@ pub mod vfs;
 
 use async_trait::async_trait;
 
-use crate::devices::sd_card::SD_CARD;
+use crate::{devices::sd_card::SD_CARD, serial_println};
 
 #[derive(Debug)]
 pub enum FsError {
@@ -96,18 +97,22 @@ pub trait FileSystem {
 
 pub static FILESYSTEM: Once<Mutex<Fat16<'_>>> = Once::new();
 
-pub async fn init(cpu_id: u32) {
+pub fn init(cpu_id: u32) {
     if cpu_id == 0 {
-        let lock = SD_CARD.lock().clone().unwrap();
-        let device = Box::new(lock);
+        schedule_kernel_on(
+            0,
+            async {
+                let lock = SD_CARD.lock().clone().unwrap();
+                let device = Box::new(lock);
 
-        let fs = async {
-            Fat16::format(device)
-                .await
-                .expect("Could not format Fat16 filesystem")
-        }
-        .await;
-
-        unsafe {FILESYSTEM.call_once(|| fs.into())};
+                let fs = block_on(async {
+                    Fat16::format(device)
+                        .await
+                        .expect("Could not format Fat16 filesystem")
+                });
+                FILESYSTEM.call_once(|| fs.into());
+            },
+            3,
+        );
     }
 }

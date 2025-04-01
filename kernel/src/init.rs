@@ -11,10 +11,18 @@ use limine::{
 };
 
 use crate::{
-    constants::processes::TEST_SIMPLE_STACK_ACCESS,
+    constants::{
+        memory::PAGE_SIZE,
+        processes::{MMAP_ANON_SIMPLE, TEST_SIMPLE_STACK_ACCESS},
+    },
     debug, devices,
-    events::{register_event_runner, run_loop, schedule_process, spawn, yield_now},
+    devices::sd_card::SD_CARD,
+    events::{
+        futures::sleep, register_event_runner, run_loop, schedule_kernel, schedule_kernel_on,
+        schedule_process, spawn, yield_now,
+    },
     filesys,
+    filesys::{fat16::Fat16, FileSystem, FILESYSTEM},
     interrupts::{self, idt},
     ipc::{
         messages::Message,
@@ -25,10 +33,18 @@ use crate::{
     },
     logging,
     memory::{self},
-    processes::{self, process::create_process},
-    serial_println, trace,
+    processes::{
+        self,
+        process::{create_process, get_current_pid, PCB, PROCESS_TABLE},
+    },
+    serial_println,
+    syscalls::{
+        memorymap::{sys_mmap, MmapFlags, ProtFlags},
+        syscall_handlers::sys_nanosleep_32,
+    },
+    trace,
 };
-
+use alloc::boxed::Box;
 extern crate alloc;
 
 /// Limine base revision request
@@ -70,6 +86,60 @@ pub fn init() -> u32 {
     let bsp_id = wake_cores();
 
     idt::enable();
+    schedule_kernel_on(
+        0,
+        async {
+            serial_println!("RUNNING SCHEDULED KERNEL EVENT");
+            let lock = SD_CARD.lock().clone().unwrap();
+            let device = Box::new(lock);
+
+            // Format the filesystem
+            let mut filesystem = Fat16::format(device)
+                .await
+                .expect("Failed to format filesystem");
+
+            filesystem.create_file("/testfile.txt").await;
+            serial_println!("created file");
+            let fd = filesystem
+                .open_file("/testfile.txt")
+                .await
+                .expect("could not open file");
+            let pid = get_current_pid();
+            let pcb = {
+                let process_table = PROCESS_TABLE.read();
+                process_table
+                    .get(&pid)
+                    .expect("can't find pcb in process table")
+                    .clone()
+            };
+            let pcb = pcb.pcb.get();
+
+            let file = unsafe {
+                (*pcb).fd_table[fd]
+                    .clone()
+                    .expect("No file associated with this fd.")
+            };
+            let mut buf: [u8; PAGE_SIZE * 2 as usize] = [b'A'; PAGE_SIZE * 2 as usize];
+
+            filesystem.write_file(fd, &buf).await;
+            let addr = sys_mmap(
+                0x0,
+                PAGE_SIZE.try_into().unwrap(),
+                ProtFlags::PROT_READ.bits() as u64,
+                MmapFlags::MAP_PRIVATE.bits() as u64,
+                fd as i64,
+                PAGE_SIZE.try_into().unwrap(),
+            ) as *mut u8;
+            for i in 0..4096 {
+                unsafe {
+                    serial_println!("At iteration {}", i);
+                    let c = *addr.add(i);
+                    serial_println!("Byte at offset {} is {:#?}", i, c);
+                }
+            }
+        },
+        3,
+    );
 
     let pid = create_process(TEST_SIMPLE_STACK_ACCESS);
     schedule_process(pid);
