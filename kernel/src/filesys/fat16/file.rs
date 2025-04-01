@@ -3,6 +3,7 @@
 use super::{constants::*, fat_entry::FatEntry, *};
 
 /// Represents an open file on a FAT16 filesystem
+#[derive(Clone, Debug)]
 pub struct Fat16File {
     /// Whether file is valid/open
     pub valid: bool,

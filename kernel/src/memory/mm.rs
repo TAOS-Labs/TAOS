@@ -1,4 +1,4 @@
-use crate::{constants::memory::PAGE_SIZE, serial_println};
+use crate::{constants::memory::PAGE_SIZE, filesys::{fat16::Fat16File, File}, serial_println};
 use alloc::{collections::btree_map::BTreeMap, sync::Arc, vec::Vec};
 use bitflags::bitflags;
 use core::{any::Any, fmt::Debug};
@@ -524,6 +524,10 @@ pub struct VmAreaSegment {
     pub end: u64,
     /// The backing for this segment.
     pub backing: Arc<VmAreaBackings>,
+    /// File struct backed by this segment
+    pub file: Fat16File,
+    /// page offset
+    pub pg_offset: u64,
 }
 
 // /// A trait for all VM Area backing stores.
