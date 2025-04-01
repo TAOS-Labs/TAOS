@@ -43,6 +43,7 @@ pub trait File {
     fn seek(&mut self, pos: SeekFrom) -> Result<u64, FsError>;
     fn flush(&mut self) -> Result<(), FsError>;
     fn size(&self) -> u64;
+    fn add_page_cache_entry(&mut self, file_offset: u64);
 }
 
 #[derive(Debug, Clone)]

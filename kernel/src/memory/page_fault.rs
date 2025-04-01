@@ -16,7 +16,7 @@ use x86_64::{
 
 use crate::{
     constants::memory::PAGE_SIZE,
-    filesys::fat16::Fat16File,
+    filesys::{fat16::Fat16File, File},
     memory::{
         frame_allocator::alloc_frame,
         mm::{vma_to_page_flags, Mm, VmAreaFlags},
@@ -143,44 +143,46 @@ pub fn determine_fault_cause(error_code: PageFaultErrorCode) -> FaultOutcome {
 
             let pt_flags = vma_to_page_flags(vma.flags);
 
-            if !segment.file.is_none() {
-                let file = segment.file.clone().unwrap();
-                let page_cache = &file.lock().page_cache;
-                let file_offset = segment.pg_offset + fault_offset;
-            }
+            // if !segment.file.is_none() {
+            //     let file = segment.file.clone().unwrap();
+            //     let page_cache = &file.lock().page_cache;
+            //     let file_offset = segment.pg_offset + fault_offset;
+            // }
 
             outcome = if !is_mapped {
-                if let Some(chain) = anon_vma_chain {
-                    if !segment.file.is_none() {
+
+                // if there is a backing file
+                if (!segment.file.is_none()) {
+                    let mut file = segment.file.clone().unwrap();
+                    let mut locked_file = file.lock();
+                    let page_cache = &locked_file.page_cache;
+                    let file_offset = segment.pg_offset + fault_offset;
+                    if  page_cache.contains_key(&file_offset) {
                         Some(FaultOutcome::ExistingFileMapping {
                             page,
                             mapper,
-                            offset: 0,
+                            offset: file_offset,
                             pt_flags,
-                            file: segment
-                                .file
-                                .clone()
-                                .expect("could not get file from segment"),
-                        })
-                    } else {
+                            file: file.clone() })
+                    }
+                    else {
+                        locked_file.add_page_cache_entry(file_offset);
+                        Some(FaultOutcome::NewFileMapping { 
+                            page,
+                            mapper,
+                            offset: file_offset,
+                            pt_flags,
+                            file: file.clone()})
+                    }
+                }
+                // if there is no file backing, handle it as an anonymous page
+                else {
+                    if let Some(chain) = anon_vma_chain {
                         Some(FaultOutcome::ExistingMapping {
                             page,
                             mapper,
                             chain,
                             pt_flags,
-                        })
-                    }
-                } else {
-                    if !segment.file.is_none() {
-                        Some(FaultOutcome::ExistingFileMapping {
-                            page,
-                            mapper,
-                            offset: 0,
-                            pt_flags,
-                            file: segment
-                                .file
-                                .clone()
-                                .expect("could not get file from segment"),
                         })
                     } else {
                         Some(FaultOutcome::NewMapping {
@@ -252,6 +254,7 @@ pub fn handle_new_file_mapping(
     file: Arc<Mutex<Fat16File>>,
 ) {
     // TODO
+    // create mapping from faulting address to new frame and copy over contents of physical frame into 
 }
 
 /// Handles a fault by creating a new mapping and inserting it into the backing.

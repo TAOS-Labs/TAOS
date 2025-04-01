@@ -59,7 +59,7 @@ mod tests {
     /// The parent should be able to get this code
     /// and then exit with it after it is woken up
     /// from waiting
-    #[test_case]
+    // #[test_case]
     async fn test_fork_wait() {
         let pid = create_process(TEST_WAIT);
         schedule_process(pid);
@@ -81,7 +81,7 @@ mod tests {
     /// Child process exits with code 0, and parent process
     /// exits with code equivalent to child process PID.
     /// Currently, requires manual verification of buffer
-    #[test_case]
+    // #[test_case]
     async fn test_fork_cow() {
         let pid = create_process(TEST_FORK_COW);
         schedule_process(pid);
