@@ -300,8 +300,8 @@ pub async fn handle_new_file_mapping(
 
     // Copy the data from the buffer
     unsafe {
-        let frame_ptr = frame.start_address().as_u64() as *mut u8;
-        ptr::copy_nonoverlapping(buffer.as_ptr(), frame_ptr, PAGE_SIZE);
+        let ptr = page.start_address().as_u64() as *mut u8;
+        ptr::copy_nonoverlapping(buffer.as_ptr(), ptr, PAGE_SIZE);
     }
     create_mapping_to_frame(page, mapper, Some(pt_flags), frame);
 }
