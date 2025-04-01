@@ -1,8 +1,11 @@
 //! FAT16 filesystem implementation
 
+use crate::{constants::processes::MAX_FILES, processes::process::{get_current_pid, PROCESS_TABLE}};
+
 use super::*;
-use alloc::{collections::BinaryHeap, vec};
-use core::cmp::{max, min};
+use alloc::{collections::{btree_map::BTreeMap, BinaryHeap}, sync::Arc, vec};
+use spin::lock_api::Mutex;
+use core::{cmp::{max, min}, ops::Add};
 
 mod boot_sector;
 mod constants;
@@ -529,54 +532,81 @@ impl FileSystem for Fat16<'_> {
             fat_start: self.fat_start,
             data_start: self.data_start,
             entry_position: entry_pos,
+            page_cache: BTreeMap::new(),
         };
-
-        let fd = if let Some(reused_fd) = self.reuse_fds.pop() {
-            assert!(!self.fd_table[reused_fd].valid);
-            self.fd_table[reused_fd] = file;
-            reused_fd
-        } else {
-            let new_fd = self.fd_counter;
-            self.fd_table.push(file);
-            self.fd_counter += 1;
-            new_fd
+        // Locate the current process.
+        let pid = get_current_pid();
+        let pcb = {
+            let process_table = PROCESS_TABLE.read();
+            process_table
+                .get(&pid)
+                .expect("can't find pcb in process table")
+                .clone()
         };
+        let pcb = pcb.pcb.get();
+        let next_fd = unsafe {*((*pcb).next_fd.lock()) as usize };
 
-        assert!(fd != usize::MAX, "File Descriptor is not a valid value.");
-        Ok(fd)
+        unsafe {
+            (*(*pcb).next_fd.lock()) = next_fd as u64;
+        }
+
+        assert!(next_fd < MAX_FILES);
+        unsafe {(*pcb).fd_table[next_fd]  = Some(Arc::new(Mutex::new(file)))};
+        Ok(next_fd)
     }
 
     fn close_file(&mut self, fd: usize) {
-        let file: &mut Fat16File = self.fd_table.get_mut(fd).expect("Invalid file descriptor.");
-        assert!(file.valid, "Cannot close an invailid file descriptor.");
+        let pid = get_current_pid();
+        let pcb = {
+            let process_table = PROCESS_TABLE.read();
+            process_table
+                .get(&pid)
+                .expect("can't find pcb in process table")
+                .clone()
+        };
+        let pcb = pcb.pcb.get();
 
-        file.valid = false;
-        file.current_cluster = 0;
-        file.position = 0;
-        file.size = 0_u64;
-        file.cluster_size = 0;
-        file.fat_start = 0;
-        file.data_start = 0;
-        file.entry_position = 0;
+        let mut file = unsafe { (*pcb).fd_table[fd].clone().expect("No file associated with this fd.")};
+        let mut locked_file = file.lock();
 
-        self.reuse_fds.push(fd);
+        assert!(locked_file.valid, "Cannot close an invailid file descriptor.");
+
+        locked_file.valid = false;
+        locked_file.current_cluster = 0;
+        locked_file.position = 0;
+        locked_file.size = 0_u64;
+        locked_file.cluster_size = 0;
+        locked_file.fat_start = 0;
+        locked_file.data_start = 0;
+        locked_file.entry_position = 0;
     }
 
     async fn write_file(&mut self, fd: usize, buf: &[u8]) -> Result<usize, FsError> {
         let mut bytes_written = 0;
         let mut buf_offset = 0;
 
-        let file: &mut Fat16File = self.fd_table.get_mut(fd).expect("Invalid file descriptor.");
+        let pid = get_current_pid();
+        let pcb = {
+            let process_table = PROCESS_TABLE.read();
+            process_table
+                .get(&pid)
+                .expect("can't find pcb in process table")
+                .clone()
+        };
+        let pcb = pcb.pcb.get();
+
+        let mut file = unsafe { (*pcb).fd_table[fd].clone().expect("No file associated with this fd.")};
+        let mut locked_file = file.lock();
 
         while bytes_written < buf.len() {
-            let cluster_offset = (file.position % file.cluster_size as u64) as usize;
-            let bytes_left_in_cluster = file.cluster_size - cluster_offset;
+            let cluster_offset = (locked_file.position % locked_file.cluster_size as u64) as usize;
+            let bytes_left_in_cluster = locked_file.cluster_size - cluster_offset;
             let chunk_size = min(bytes_left_in_cluster, buf.len() - bytes_written);
 
-            let sector = file.cluster_to_sector(file.current_cluster);
-            let mut cluster_data = vec![0u8; file.cluster_size];
+            let sector = locked_file.cluster_to_sector(locked_file.current_cluster);
+            let mut cluster_data = vec![0u8; locked_file.cluster_size];
 
-            let sectors_per_cluster = file.cluster_size / SECTOR_SIZE;
+            let sectors_per_cluster = locked_file.cluster_size / SECTOR_SIZE;
             for i in 0..sectors_per_cluster {
                 let mut sector_data = vec![0u8; SECTOR_SIZE];
                 self.device
@@ -598,92 +628,114 @@ impl FileSystem for Fat16<'_> {
 
             bytes_written += chunk_size;
             buf_offset += chunk_size;
-            file.position += chunk_size as u64;
-            file.size = max(file.size, file.position);
+            locked_file.position += chunk_size as u64;
+            locked_file.size = max(locked_file.size, locked_file.position);
 
-            if cluster_offset + chunk_size == file.cluster_size {
-                let fat_entry = file
-                    .read_fat_entry(&mut *self.device, file.current_cluster)
+            if cluster_offset + chunk_size == locked_file.cluster_size {
+                let fat_entry = locked_file
+                    .read_fat_entry(&mut *self.device, locked_file.current_cluster)
                     .await?;
                 if fat_entry.is_end_of_chain() {
-                    let new_cluster = file.allocate_cluster(&mut *self.device).await?;
-                    file.write_fat_entry(
+                    let new_cluster = locked_file.allocate_cluster(&mut *self.device).await?;
+                    locked_file.write_fat_entry(
                         &mut *self.device,
-                        file.current_cluster,
+                        locked_file.current_cluster,
                         FatEntry {
                             cluster: new_cluster,
                         },
                     )
                     .await?;
-                    file.current_cluster = new_cluster;
+                    locked_file.current_cluster = new_cluster;
                 } else {
-                    file.current_cluster = fat_entry.cluster;
+                    locked_file.current_cluster = fat_entry.cluster;
                 }
             }
         }
 
-        file.update_directory_entry(&mut *self.device, file.size)
+        locked_file.update_directory_entry(&mut *self.device, locked_file.size)
             .await?;
         Ok(bytes_written)
     }
 
     fn seek_file(&mut self, fd: usize, pos: SeekFrom) -> Result<u64, FsError> {
-        let file: &mut Fat16File = self.fd_table.get_mut(fd).expect("Invalid file descriptor.");
+        let pid = get_current_pid();
+        let pcb = {
+            let process_table = PROCESS_TABLE.read();
+            process_table
+                .get(&pid)
+                .expect("can't find pcb in process table")
+                .clone()
+        };
+        let pcb = pcb.pcb.get();
+
+        let mut file = unsafe { (*pcb).fd_table[fd].clone().expect("No file associated with this fd.")};
+        let mut locked_file = file.lock();
 
         let new_pos = match pos {
             SeekFrom::Start(offset) => offset,
             SeekFrom::End(offset) => {
                 if offset < 0 {
-                    file.size
+                    locked_file.size
                         .checked_sub(offset.unsigned_abs())
                         .ok_or(FsError::InvalidOffset)?
                 } else {
-                    file.size
+                    locked_file.size
                         .checked_add(offset as u64)
                         .ok_or(FsError::InvalidOffset)?
                 }
             }
             SeekFrom::Current(offset) => {
                 if offset < 0 {
-                    file.position
+                    locked_file.position
                         .checked_sub(offset.unsigned_abs())
                         .ok_or(FsError::InvalidOffset)?
                 } else {
-                    file.position
+                    locked_file.position
                         .checked_add(offset as u64)
                         .ok_or(FsError::InvalidOffset)?
                 }
             }
         };
 
-        if new_pos > file.size {
+        if new_pos > locked_file.size {
             return Err(FsError::InvalidOffset);
         }
 
-        file.position = new_pos;
+        locked_file.position = new_pos;
         Ok(new_pos)
     }
 
     async fn read_file(&mut self, fd: usize, buf: &mut [u8]) -> Result<usize, FsError> {
-        let file: &mut Fat16File = self.fd_table.get_mut(fd).expect("Invalid file descriptor.");
+        let pid = get_current_pid();
+        let pcb = {
+            let process_table = PROCESS_TABLE.read();
+            process_table
+                .get(&pid)
+                .expect("can't find pcb in process table")
+                .clone()
+        };
+        let pcb = pcb.pcb.get();
 
-        if file.position >= file.size {
+        let mut file = unsafe { (*pcb).fd_table[fd].clone().expect("No file associated with this fd.")};
+        let mut locked_file = file.lock();
+
+        if locked_file.position >= locked_file.size {
             return Ok(0);
         }
 
         let mut bytes_read = 0;
         let mut buf_offset = 0;
-        let bytes_to_read = min(buf.len(), (file.size - file.position) as usize);
+        let bytes_to_read = min(buf.len(), (locked_file.size - locked_file.position) as usize);
 
         while bytes_read < bytes_to_read {
-            let cluster_offset = (file.position % file.cluster_size as u64) as usize;
-            let bytes_left_in_cluster = file.cluster_size - cluster_offset;
+            let cluster_offset = (locked_file.position % locked_file.cluster_size as u64) as usize;
+            let bytes_left_in_cluster = locked_file.cluster_size - cluster_offset;
             let chunk_size = min(bytes_left_in_cluster, bytes_to_read - bytes_read);
 
-            let sector = file.cluster_to_sector(file.current_cluster);
-            let mut cluster_data = vec![0u8; file.cluster_size];
+            let sector = locked_file.cluster_to_sector(locked_file.current_cluster);
+            let mut cluster_data = vec![0u8; locked_file.cluster_size];
 
-            let sectors_per_cluster = file.cluster_size / SECTOR_SIZE;
+            let sectors_per_cluster = locked_file.cluster_size / SECTOR_SIZE;
             for i in 0..sectors_per_cluster {
                 let mut sector_data = vec![0u8; SECTOR_SIZE];
                 self.device
@@ -698,16 +750,16 @@ impl FileSystem for Fat16<'_> {
 
             bytes_read += chunk_size;
             buf_offset += chunk_size;
-            file.position += chunk_size as u64;
+            locked_file.position += chunk_size as u64;
 
-            if cluster_offset + chunk_size == file.cluster_size {
-                let next_cluster = file
-                    .read_fat_entry(&mut *self.device, file.current_cluster)
+            if cluster_offset + chunk_size == locked_file.cluster_size {
+                let next_cluster = locked_file
+                    .read_fat_entry(&mut *self.device, locked_file.current_cluster)
                     .await?;
                 if next_cluster.is_end_of_chain() {
                     break;
                 }
-                file.current_cluster = next_cluster.cluster;
+                locked_file.current_cluster = next_cluster.cluster;
             }
         }
 

@@ -2,17 +2,21 @@ use core::ptr;
 
 use alloc::sync::Arc;
 use log::debug;
+use spin::lock_api::Mutex;
 use x86_64::{
     structures::{
         idt::PageFaultErrorCode,
         paging::{
-            mapper::TranslateResult, OffsetPageTable, Page, PageTable, PageTableFlags, PhysFrame, Size4KiB, Translate
+            mapper::TranslateResult, OffsetPageTable, Page, PageTable, PageTableFlags, PhysFrame,
+            Size4KiB, Translate,
         },
-    }, PhysAddr, VirtAddr
+    },
+    PhysAddr, VirtAddr,
 };
 
 use crate::{
     constants::memory::PAGE_SIZE,
+    filesys::fat16::Fat16File,
     memory::{
         frame_allocator::alloc_frame,
         mm::{vma_to_page_flags, Mm, VmAreaFlags},
@@ -39,6 +43,20 @@ pub enum FaultOutcome {
         backing: Arc<VmAreaBackings>,
         pt_flags: PageTableFlags,
     },
+    ExistingFileMapping {
+        page: Page<Size4KiB>,
+        mapper: OffsetPageTable<'static>,
+        offset: u64,
+        pt_flags: PageTableFlags,
+        file: Arc<Mutex<Fat16File>>,
+    },
+    NewFileMapping {
+        page: Page<Size4KiB>,
+        mapper: OffsetPageTable<'static>,
+        offset: u64,
+        pt_flags: PageTableFlags,
+        file: Arc<Mutex<Fat16File>>,
+    },
     CopyOnWrite {
         page: Page<Size4KiB>,
         mapper: OffsetPageTable<'static>,
@@ -62,18 +80,15 @@ pub fn determine_fault_cause(error_code: PageFaultErrorCode) -> FaultOutcome {
     use x86_64::registers::control::{Cr2, Cr3};
 
     // Read fault info.
-    let faulting_address = Cr2::read()
-        .expect("Cannot read faulting address")
-        .as_u64();
+    let faulting_address = Cr2::read().expect("Cannot read faulting address").as_u64();
 
     // Set up the page table mapper.
     let pml4 = Cr3::read().0;
     let new_pml4_phys = pml4.start_address();
     let new_pml4_virt = VirtAddr::new((*HHDM_OFFSET).as_u64()) + new_pml4_phys.as_u64();
     let new_pml4_ptr: *mut PageTable = new_pml4_virt.as_mut_ptr();
-    let mut mapper = unsafe {
-        OffsetPageTable::new(&mut *new_pml4_ptr, VirtAddr::new((*HHDM_OFFSET).as_u64()))
-    };
+    let mut mapper =
+        unsafe { OffsetPageTable::new(&mut *new_pml4_ptr, VirtAddr::new((*HHDM_OFFSET).as_u64())) };
 
     // Compute the faulting page.
     let page = Page::containing_address(VirtAddr::new(faulting_address));
@@ -100,8 +115,7 @@ pub fn determine_fault_cause(error_code: PageFaultErrorCode) -> FaultOutcome {
     unsafe {
         (*process.pcb.get()).mm.with_vma_tree(|tree| {
             // Find the VMA covering the faulting address.
-            let vma_arc = Mm::find_vma(faulting_address, tree)
-                .expect("Vma not found?");
+            let vma_arc = Mm::find_vma(faulting_address, tree).expect("Vma not found?");
             let vma = vma_arc.lock();
 
             // Compute the fault's offset within the VMA.
@@ -129,26 +143,51 @@ pub fn determine_fault_cause(error_code: PageFaultErrorCode) -> FaultOutcome {
 
             let pt_flags = vma_to_page_flags(vma.flags);
 
+            if !segment.file.is_none() {
+                let file = segment.file.clone().unwrap();
+                let page_cache = &file.lock().page_cache;
+                let file_offset = segment.pg_offset + fault_offset;
+            }
+
             outcome = if !is_mapped {
                 if let Some(chain) = anon_vma_chain {
-                    Some(FaultOutcome::ExistingMapping {
-                        page,
-                        mapper,
-                        chain,
-                        pt_flags,
-                    })
+                    if !segment.file.is_none() {
+                        Some(FaultOutcome::ExistingFileMapping {
+                            page,
+                            mapper,
+                            offset: 0,
+                            pt_flags,
+                            file: segment.file.clone().expect("could not get file from segment"),
+                        })
+                    } else {
+                        Some(FaultOutcome::ExistingMapping {
+                            page,
+                            mapper,
+                            chain,
+                            pt_flags,
+                        })
+                    }
                 } else {
-                    Some(FaultOutcome::NewMapping {
-                        page,
-                        mapper,
-                        backing,
-                        pt_flags,
-                    })
+                    if !segment.file.is_none() {
+                        Some(FaultOutcome::ExistingFileMapping {
+                            page,
+                            mapper,
+                            offset: 0,
+                            pt_flags,
+                            file: segment.file.clone().expect("could not get file from segment"),
+                        })
+                    } else {
+                        Some(FaultOutcome::NewMapping {
+                            page,
+                            mapper,
+                            backing,
+                            pt_flags,
+                        })
+                    }
                 }
             } else {
                 // For mapped pages, check if a Copy-On-Write fault occurred.
-                let flags = get_page_flags(page, &mut mapper)
-                    .expect("Could not get page flags");
+                let flags = get_page_flags(page, &mut mapper).expect("Could not get page flags");
                 let cow = !vma.flags.contains(VmAreaFlags::SHARED);
                 let caused_by_write = error_code.contains(PageFaultErrorCode::CAUSED_BY_WRITE);
                 if cow && caused_by_write && flags.contains(PageTableFlags::PRESENT) {
@@ -167,7 +206,6 @@ pub fn determine_fault_cause(error_code: PageFaultErrorCode) -> FaultOutcome {
     outcome.expect("Failed to determine fault cause")
 }
 
-
 /// Handles a fault by using an existing anonymous VMA chain mapping.
 ///
 /// # Arguments
@@ -182,8 +220,22 @@ pub fn handle_existing_mapping(
     pt_flags: PageTableFlags,
 ) {
     serial_println!("Page not mapped; using existing anon chain mapping.");
-    create_mapping_to_frame(page, mapper, Some(pt_flags), PhysFrame::containing_address(PhysAddr::new(chain.file_offset_or_frame)));
+    create_mapping_to_frame(
+        page,
+        mapper,
+        Some(pt_flags),
+        PhysFrame::containing_address(PhysAddr::new(chain.file_offset_or_frame)),
+    );
 }
+
+pub fn handle_existing_file_mapping(page: Page<Size4KiB>, mapper: &mut OffsetPageTable, offset: u64, pt_flags: PageTableFlags, file: Arc<Mutex<Fat16File>>) {
+    // TODO
+}
+
+pub fn handle_new_file_mapping(page: Page<Size4KiB>, mapper: &mut OffsetPageTable, offset: u64, pt_flags: PageTableFlags, file: Arc<Mutex<Fat16File>>) {
+    // TODO
+}
+
 
 /// Handles a fault by creating a new mapping and inserting it into the backing.
 ///
@@ -199,11 +251,14 @@ pub fn handle_new_mapping(
     pt_flags: PageTableFlags,
 ) {
     serial_println!("Page not mapped; creating a new mapping.");
-    debug!("Diagnositcs:\n\tPage: {:#?}\n\tBacking: {:#?}\n\tPT Flags: {:#?}", page, backing, pt_flags);
+    debug!(
+        "Diagnositcs:\n\tPage: {:#?}\n\tBacking: {:#?}\n\tPT Flags: {:#?}",
+        page, backing, pt_flags
+    );
 
     let mut flags = pt_flags;
     flags.set(PageTableFlags::PRESENT, true);
-    
+
     let new_frame = create_mapping(page, mapper, Some(flags));
     backing.insert_mapping(Arc::new(VmaChain {
         offset: page.start_address().as_u64(),

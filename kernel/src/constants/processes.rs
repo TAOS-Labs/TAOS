@@ -34,7 +34,7 @@ pub const TEST_WAIT: &[u8] = include_bytes!("../processes/test_binaries/test_wai
 pub const TEST_FORK_COW: &[u8] = include_bytes!("../processes/test_binaries/test_fork_cow");
 
 pub const STACK_START: u64 = 0x7000_0000_0000;
-pub const MAX_FILES: usize = 4;
+pub const MAX_FILES: usize = 1024;
 pub const PROCESS_NANOS: u64 = 50_000_000;
 pub const STACK_SIZE: usize = 2 * 4096; // 2 pages for the stack
 

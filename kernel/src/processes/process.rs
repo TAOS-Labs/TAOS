@@ -4,33 +4,26 @@ use crate::{
     constants::{
         processes::{MAX_FILES, PROCESS_NANOS, PROCESS_TIMESLICE},
         syscalls::START_MMAP_ADDRESS,
-    },
-    debug,
-    events::{
+    }, debug, events::{
         current_running_event_info, nanosleep_current_process, runner_timestamp, schedule_process,
         EventInfo,
-    },
-    interrupts::{
+    }, filesys::fat16::Fat16File, interrupts::{
         gdt,
         x2apic::{self, nanos_to_ticks},
-    },
-    ipc::namespace::Namespace,
-    memory::{
+    }, ipc::namespace::Namespace, memory::{
         frame_allocator::{alloc_frame, dealloc_frame, with_buddy_frame_allocator},
         mm::Mm,
         HHDM_OFFSET, KERNEL_MAPPER,
-    },
-    processes::{loader::load_elf, registers::Registers},
-    serial_println,
+    }, processes::{loader::load_elf, registers::Registers}, serial_println
 };
 use alloc::{collections::BTreeMap, sync::Arc};
 use core::{
     arch::naked_asm,
     borrow::BorrowMut,
     cell::UnsafeCell,
-    sync::atomic::{AtomicU32, Ordering},
+    sync::atomic::{AtomicU32, AtomicU64, Ordering},
 };
-use spin::rwlock::RwLock;
+use spin::{lock_api::Mutex, rwlock::RwLock};
 use x86_64::{
     instructions::interrupts,
     structures::paging::{OffsetPageTable, PageTable, PhysFrame, Size4KiB},
@@ -51,6 +44,7 @@ pub enum ProcessState {
 }
 
 #[derive(Debug, Clone)]
+/// TODO:Put locks around all of this for supporting multithreadings
 pub struct PCB {
     pub pid: u32,
     pub state: ProcessState,
@@ -59,7 +53,8 @@ pub struct PCB {
     pub next_preemption_time: u64,
     pub registers: Registers,
     pub mmap_address: u64,
-    pub fd_table: [u64; MAX_FILES],
+    pub fd_table: [Option<Arc<Mutex<Fat16File>>>; MAX_FILES],
+    pub next_fd: Arc<Mutex<u64>>,
     pub mm: Mm,
     pub namespace: Namespace,
 }
@@ -163,7 +158,8 @@ pub fn create_placeholder_process() -> u32 {
             rflags: 0x0,
         },
         mmap_address: START_MMAP_ADDRESS,
-        fd_table: [0; MAX_FILES],
+        fd_table: [const { None }; MAX_FILES],
+        next_fd: Arc::new(Mutex::new(0)),
         next_preemption_time: 0,
         mm,
         namespace: Namespace::new(),
@@ -220,7 +216,8 @@ pub fn create_process(elf_bytes: &[u8]) -> u32 {
             rflags: 0x202,
         },
         mmap_address: START_MMAP_ADDRESS,
-        fd_table: [0; MAX_FILES],
+        fd_table: [const { None }; MAX_FILES],
+        next_fd: Arc::new(Mutex::new(0)),
         mm,
         namespace: Namespace::new(),
     }));

@@ -22,8 +22,8 @@ use crate::{
     events::inc_runner_clock,
     interrupts::x2apic::{self, current_core_id, TLB_SHOOTDOWN_ADDR},
     memory::page_fault::{
-        determine_fault_cause, handle_cow_fault, handle_existing_mapping, handle_new_mapping,
-        FaultOutcome,
+        determine_fault_cause, handle_cow_fault, handle_existing_file_mapping,
+        handle_existing_mapping, handle_new_file_mapping, handle_new_mapping, FaultOutcome,
     },
     prelude::*,
     processes::process::preempt_process,
@@ -163,6 +163,15 @@ extern "x86-interrupt" fn page_fault_handler(
         } => {
             handle_existing_mapping(page, &mut mapper, chain, pt_flags);
         }
+        FaultOutcome::ExistingFileMapping {
+            page,
+            mut mapper,
+            offset,
+            pt_flags,
+            file,
+        } => {
+            handle_existing_file_mapping(page, &mut mapper, offset, pt_flags, file);
+        }
         FaultOutcome::NewMapping {
             page,
             mut mapper,
@@ -170,6 +179,15 @@ extern "x86-interrupt" fn page_fault_handler(
             pt_flags,
         } => {
             handle_new_mapping(page, &mut mapper, &backing, pt_flags);
+        }
+        FaultOutcome::NewFileMapping {
+            page,
+            mut mapper,
+            offset,
+            pt_flags,
+            file,
+        } => {
+            handle_new_file_mapping(page, &mut mapper, offset, pt_flags, file);
         }
         FaultOutcome::CopyOnWrite {
             page,

@@ -297,7 +297,6 @@ mod tests {
 
         // check that some of the fields are equivalent
         unsafe {
-            assert_eq!((*parent_pcb).fd_table, (*child_pcb).fd_table);
             assert_eq!((*parent_pcb).kernel_rip, (*child_pcb).kernel_rip);
             assert_eq!((*parent_pcb).kernel_rsp, (*child_pcb).kernel_rsp);
             assert_eq!((*parent_pcb).registers, (*child_pcb).registers);
