@@ -6,11 +6,9 @@ use x86_64::{
     structures::{
         idt::PageFaultErrorCode,
         paging::{
-            mapper::TranslateResult, OffsetPageTable, Page, PageTable, PageTableFlags, Size4KiB,
-            Translate,
+            mapper::TranslateResult, OffsetPageTable, Page, PageTable, PageTableFlags, PhysFrame, Size4KiB, Translate
         },
-    },
-    VirtAddr,
+    }, PhysAddr, VirtAddr
 };
 
 use crate::{
@@ -25,7 +23,7 @@ use crate::{
     serial_println,
 };
 
-use super::mm::{VmAreaBacking, VmaChain};
+use super::mm::{VmAreaBackings, VmaChain};
 
 /// Fault outcome enum to route what to do in IDT
 pub enum FaultOutcome {
@@ -38,7 +36,7 @@ pub enum FaultOutcome {
     NewMapping {
         page: Page<Size4KiB>,
         mapper: OffsetPageTable<'static>,
-        backing: Arc<dyn VmAreaBacking>,
+        backing: Arc<VmAreaBackings>,
         pt_flags: PageTableFlags,
     },
     CopyOnWrite {
@@ -184,7 +182,7 @@ pub fn handle_existing_mapping(
     pt_flags: PageTableFlags,
 ) {
     serial_println!("Page not mapped; using existing anon chain mapping.");
-    create_mapping_to_frame(page, mapper, Some(pt_flags), *chain.frame);
+    create_mapping_to_frame(page, mapper, Some(pt_flags), PhysFrame::containing_address(PhysAddr::new(chain.file_offset_or_frame)));
 }
 
 /// Handles a fault by creating a new mapping and inserting it into the backing.
@@ -197,7 +195,7 @@ pub fn handle_existing_mapping(
 pub fn handle_new_mapping(
     page: Page<Size4KiB>,
     mapper: &mut OffsetPageTable,
-    backing: &Arc<dyn VmAreaBacking>,
+    backing: &Arc<VmAreaBackings>,
     pt_flags: PageTableFlags,
 ) {
     serial_println!("Page not mapped; creating a new mapping.");
@@ -209,7 +207,8 @@ pub fn handle_new_mapping(
     let new_frame = create_mapping(page, mapper, Some(flags));
     backing.insert_mapping(Arc::new(VmaChain {
         offset: page.start_address().as_u64(),
-        frame: Arc::new(new_frame),
+        fd: -1,
+        file_offset_or_frame: new_frame.start_address().as_u64(),
     }));
 }
 

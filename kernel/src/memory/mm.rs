@@ -52,7 +52,7 @@ impl Mm {
         tree: &mut VmaTree,
         start: u64,
         end: u64,
-        initial_backing: Arc<dyn VmAreaBacking>,
+        initial_backing: Arc<VmAreaBackings>,
         flags: VmAreaFlags,
     ) -> Arc<Mutex<VmArea>> {
         let new_vma = Arc::new(Mutex::new(VmArea::new(
@@ -470,7 +470,7 @@ impl VmArea {
     pub fn new(
         start: u64,
         end: u64,
-        initial_backing: Arc<dyn VmAreaBacking>,
+        initial_backing: Arc<VmAreaBackings>,
         flags: VmAreaFlags,
     ) -> Self {
         let mut segments = BTreeMap::new();
@@ -523,73 +523,74 @@ pub struct VmAreaSegment {
     /// End offset relative to the VmArea's start.
     pub end: u64,
     /// The backing for this segment.
-    pub backing: Arc<dyn VmAreaBacking>,
+    pub backing: Arc<VmAreaBackings>,
 }
 
-/// A trait for all VM Area backing stores.
-pub trait VmAreaBacking: Send + Sync + Debug + Any {
-    fn as_any(&self) -> &dyn Any;
+// /// A trait for all VM Area backing stores.
+// pub trait VmAreaBacking: Send + Sync + Debug + Any {
+//     fn as_any(&self) -> &dyn Any;
 
-    /// Returns a reference to the reverse mappings.
-    fn mappings(&self) -> &Mutex<BTreeMap<u64, Arc<VmaChain>>>;
+//     /// Returns a reference to the reverse mappings.
+//     fn mappings(&self) -> &Mutex<BTreeMap<u64, Arc<VmaChain>>>;
 
-    /// Returns a reference to the list of VMAs associated with this backing.
-    fn vmas(&self) -> &Mutex<Vec<Arc<Mutex<VmArea>>>>;
+//     /// Returns a reference to the list of VMAs associated with this backing.
+//     fn vmas(&self) -> &Mutex<Vec<Arc<Mutex<VmArea>>>>;
 
-    /// Insert a new VMA into the list.
-    fn insert_vma(&self, vma: Arc<Mutex<VmArea>>) {
-        self.vmas().lock().push(vma);
-    }
+//     /// Insert a new VMA into the list.
+//     fn insert_vma(&self, vma: Arc<Mutex<VmArea>>) {
+//         self.vmas().lock().push(vma);
+//     }
 
-    /// Remove a VMA from the list by index.
-    fn remove_vma(&self, index: usize) {
-        self.vmas().lock().swap_remove(index);
-    }
+//     /// Remove a VMA from the list by index.
+//     fn remove_vma(&self, index: usize) {
+//         self.vmas().lock().swap_remove(index);
+//     }
 
-    /// Insert a new reverse mapping entry.
-    fn insert_mapping(&self, chain: Arc<VmaChain>) {
-        let mut map = self.mappings().lock();
-        map.insert(chain.offset, chain);
-    }
+//     /// Insert a new reverse mapping entry.
+//     fn insert_mapping(&self, chain: Arc<VmaChain>) {
+//         let mut map = self.mappings().lock();
+//         map.insert(chain.offset, chain);
+//     }
 
-    /// Remove and return the reverse mapping entry for the given offset.
-    fn remove_mapping(&self, offset: u64) -> Option<Arc<VmaChain>> {
-        let mut map = self.mappings().lock();
-        map.remove(&offset)
-    }
+//     /// Remove and return the reverse mapping entry for the given offset.
+//     fn remove_mapping(&self, offset: u64) -> Option<Arc<VmaChain>> {
+//         let mut map = self.mappings().lock();
+//         map.remove(&offset)
+//     }
 
-    /// Find a reverse mapping entry for the given offset.
-    fn find_mapping(&self, offset: u64) -> Option<Arc<VmaChain>> {
-        let map = self.mappings().lock();
-        map.get(&offset).cloned()
-    }
-}
+//     /// Find a reverse mapping entry for the given offset.
+//     fn find_mapping(&self, offset: u64) -> Option<Arc<VmaChain>> {
+//         let map = self.mappings().lock();
+//         map.get(&offset).cloned()
+//     }
+// }
 
 /// Reverse mapping chain entry linking an offset to a physical page.
 #[derive(Debug)]
 pub struct VmaChain {
     pub offset: u64,
-    pub frame: Arc<PhysFrame>,
+    pub fd: i64,
+    pub file_offset_or_frame: u64,
 }
 
 impl VmaChain {
-    pub fn new(offset: u64, frame: Arc<PhysFrame>) -> Self {
-        VmaChain { offset, frame }
+    pub fn new(offset: u64, fd: i64, file_offset_or_frame: u64) -> Self {
+        VmaChain { offset, fd, file_offset_or_frame }
     }
 }
 
 /// Anonymous VM area for managing reverse mappings for anonymous pages.
 #[derive(Debug)]
-pub struct AnonVmArea {
+pub struct VmAreaBackings {
     /// Reverse mappings keyed by offset.
     pub mappings: Mutex<BTreeMap<u64, Arc<VmaChain>>>,
     pub vmas: Mutex<Vec<Arc<Mutex<VmArea>>>>,
 }
 
-impl AnonVmArea {
-    /// Create a new AnonVmArea with an empty mapping.
+impl VmAreaBackings {
+    /// Create a new VmAreaBackings with an empty mapping.
     pub fn new() -> Self {
-        AnonVmArea {
+        VmAreaBackings {
             mappings: Mutex::new(BTreeMap::new()),
             vmas: Mutex::new(Vec::new()),
         }
@@ -599,10 +600,10 @@ impl AnonVmArea {
     pub fn print_mappings(&self) {
         for e in self.mappings.lock().iter() {
             serial_println!(
-                "Key: {}, Offset: {}, Frame: {:#?}",
+                "Key: {}, Offset: {}, Frame: {:#X}",
                 e.0,
                 e.1.offset,
-                e.1.frame
+                e.1.file_offset_or_frame
             );
         }
     }
@@ -634,20 +635,6 @@ impl AnonVmArea {
     }
 }
 
-impl VmAreaBacking for AnonVmArea {
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-
-    fn mappings(&self) -> &Mutex<BTreeMap<u64, Arc<VmaChain>>> {
-        &self.mappings
-    }
-
-    fn vmas(&self) -> &Mutex<Vec<Arc<Mutex<VmArea>>>> {
-        &self.vmas
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -658,7 +645,7 @@ mod tests {
     use crate::{
         constants::memory::PAGE_SIZE,
         memory::{
-            frame_allocator::alloc_frame, paging::create_mapping, AnonVmArea, Mm, VmAreaFlags,
+            frame_allocator::alloc_frame, paging::create_mapping, Mm, VmAreaFlags,
             VmaChain, KERNEL_MAPPER,
         },
     };
@@ -666,7 +653,7 @@ mod tests {
     /// Tests insertion and lookup of VM Areas in the memory manager.
     ///
     /// This test creates a memory manager (`Mm`) with a dummy PML4 frame and a
-    /// new anonymous backing area (`AnonVmArea`). It inserts two VM Areas into
+    /// new anonymous backing area (`VmAreaBackings`). It inserts two VM Areas into
     /// the internal VMA tree: one covering addresses `[0, 500)` and another
     /// covering `[600, 1000)`. The test then verifies that looking up addresses
     /// 250 and 750 correctly returns the corresponding VM Areas with the
@@ -676,7 +663,7 @@ mod tests {
         // Create a dummy PML4 frame.
         let pml4_frame = PhysFrame::containing_address(PhysAddr::new(0x1000));
         let mm = Mm::new(pml4_frame);
-        let anon_area = Arc::new(AnonVmArea::new());
+        let anon_area = Arc::new(VmAreaBackings::new());
 
         mm.with_vma_tree_mutable(|tree| {
             let _vma1 = Mm::insert_vma(tree, 0, 500, anon_area.clone(), VmAreaFlags::WRITABLE);
@@ -704,7 +691,7 @@ mod tests {
         // Create a dummy PML4 frame.
         let pml4_frame = PhysFrame::containing_address(PhysAddr::new(0x1000));
         let mm = Mm::new(pml4_frame);
-        let anon_area = Arc::new(AnonVmArea::new());
+        let anon_area = Arc::new(VmAreaBackings::new());
 
         mm.with_vma_tree_mutable(|tree| {
             // Create a VmArea instance.
@@ -735,7 +722,7 @@ mod tests {
     async fn test_anon_vm_backing() {
         let pml4_frame = PhysFrame::containing_address(PhysAddr::new(0x1000));
         let mm = Mm::new(pml4_frame);
-        let anon_area: Arc<dyn VmAreaBacking> = Arc::new(AnonVmArea::new());
+        let anon_area: Arc<VmAreaBackings> = Arc::new(VmAreaBackings::new());
 
         let frame1 = alloc_frame().expect("Could not allocate PhysFrame");
 
@@ -751,7 +738,8 @@ mod tests {
         // Map the vm_area and offset to the frame.
         let chain1 = Arc::new(VmaChain {
             offset: faulting_address1_round,
-            frame: frame1.into(),
+            fd: -1,
+            file_offset_or_frame: frame1.start_address().as_u64(),
         });
         anon_area.insert_mapping(chain1);
 
@@ -766,7 +754,7 @@ mod tests {
             let found1_anon = anon_area
                 .find_mapping(faulting_address1_round)
                 .expect("Mapping not found");
-            assert_eq!(found1_anon.frame.start_address(), frame1.start_address());
+            assert_eq!(found1_anon.file_offset_or_frame, frame1.start_address().as_u64());
         });
     }
 
@@ -779,7 +767,7 @@ mod tests {
     async fn test_anon_vm_backing2() {
         let pml4_frame = PhysFrame::containing_address(PhysAddr::new(0x1000));
         let mm = Mm::new(pml4_frame);
-        let anon_area: Arc<dyn VmAreaBacking> = Arc::new(AnonVmArea::new());
+        let anon_area: Arc<VmAreaBackings> = Arc::new(VmAreaBackings::new());
 
         let frame1 = alloc_frame().expect("Could not allocate PhysFrame");
         let frame2 = alloc_frame().expect("Could not allocate PhysFrame");
@@ -796,11 +784,13 @@ mod tests {
 
             let chain1 = Arc::new(VmaChain {
                 offset: faulting_address1_round,
-                frame: frame1.into(),
+                fd: -1,
+                file_offset_or_frame: frame1.start_address().as_u64(),
             });
             let chain2 = Arc::new(VmaChain {
                 offset: faulting_address2_round,
-                frame: frame2.into(),
+                fd: -1,
+                file_offset_or_frame: frame2.start_address().as_u64(),
             });
 
             anon_area.insert_mapping(chain1);
@@ -816,12 +806,12 @@ mod tests {
             let found1_anon = anon_area
                 .find_mapping(faulting_address1_round)
                 .expect("Mapping not found");
-            assert_eq!(found1_anon.frame.start_address(), frame1.start_address());
+            assert_eq!(found1_anon.file_offset_or_frame, frame1.start_address().as_u64());
 
             let found2_anon = anon_area
                 .find_mapping(faulting_address2_round)
                 .expect("Mapping not found");
-            assert_eq!(found2_anon.frame.start_address(), frame2.start_address());
+            assert_eq!(found2_anon.file_offset_or_frame, frame2.start_address().as_u64());
         });
     }
 
@@ -839,7 +829,7 @@ mod tests {
         let mm1 = Mm::new(pml4_frame1);
         let pml4_frame2 = PhysFrame::containing_address(PhysAddr::new(0x1000));
         let mm2 = Mm::new(pml4_frame2);
-        let anon_area = Arc::new(AnonVmArea::new());
+        let anon_area = Arc::new(VmAreaBackings::new());
 
         let vm_area1 = mm1.with_vma_tree_mutable(|tree| {
             Mm::insert_vma(tree, 0, 0x1000, anon_area.clone(), VmAreaFlags::WRITABLE)
@@ -866,7 +856,8 @@ mod tests {
         let frame = alloc_frame().expect("Could not get frame");
         let chain = Arc::new(VmaChain {
             offset: faulting_address1_round,
-            frame: frame.into(),
+            fd: -1,
+            file_offset_or_frame: frame.start_address().as_u64(),
         });
         anon_area.insert_mapping(chain);
 
@@ -885,8 +876,8 @@ mod tests {
             .find_mapping(faulting_address2_round)
             .expect("Mapping not found");
         assert_eq!(
-            found1_anon.frame.start_address(),
-            found2_anon.frame.start_address()
+            found1_anon.file_offset_or_frame,
+            found2_anon.file_offset_or_frame
         );
     }
 
@@ -918,14 +909,14 @@ mod tests {
     async fn test_coalesce_left() {
         let pml4_frame = PhysFrame::containing_address(PhysAddr::new(0x1000));
         let mm = Mm::new(pml4_frame);
-        let anon_area1 = Arc::new(AnonVmArea::new());
-        let anon_area2 = Arc::new(AnonVmArea::new());
+        let anon_area1 = Arc::new(VmAreaBackings::new());
+        let anon_area2 = Arc::new(VmAreaBackings::new());
 
         let aa1_frame = Arc::new(alloc_frame().unwrap());
-        anon_area1.insert_mapping(Arc::new(VmaChain::new(0x0, aa1_frame.clone())));
+        anon_area1.insert_mapping(Arc::new(VmaChain::new(0x0, -1, aa1_frame.start_address().as_u64())));
 
         let aa2_frame = Arc::new(alloc_frame().unwrap());
-        anon_area2.insert_mapping(Arc::new(VmaChain::new(0x0, aa2_frame.clone())));
+        anon_area2.insert_mapping(Arc::new(VmaChain::new(0x0, -1, aa2_frame.start_address().as_u64())));
 
         mm.with_vma_tree_mutable(|tree| {
             let _vma1 = Mm::insert_vma(
@@ -957,8 +948,8 @@ mod tests {
                     .backing
                     .find_mapping(0)
                     .unwrap()
-                    .frame,
-                aa1_frame.clone()
+                    .file_offset_or_frame,
+                aa1_frame.start_address().as_u64()
             );
 
             assert_eq!(
@@ -967,8 +958,8 @@ mod tests {
                     .backing
                     .find_mapping(0)
                     .unwrap()
-                    .frame,
-                aa2_frame.clone()
+                    .file_offset_or_frame,
+                aa2_frame.start_address().as_u64()
             );
         })
     }
@@ -996,15 +987,15 @@ mod tests {
         let mm = Mm::new(pml4_frame);
 
         // Create two anonymous backings.
-        let anon_area1 = Arc::new(AnonVmArea::new());
-        let anon_area2 = Arc::new(AnonVmArea::new());
+        let anon_area1 = Arc::new(VmAreaBackings::new());
+        let anon_area2 = Arc::new(VmAreaBackings::new());
 
         // Allocate frames and insert reverse mappings.
         let aa1_frame = Arc::new(alloc_frame().unwrap());
-        anon_area1.insert_mapping(Arc::new(VmaChain::new(0x0, aa1_frame.clone())));
+        anon_area1.insert_mapping(Arc::new(VmaChain::new(0x0, -1, aa1_frame.start_address().as_u64())));
 
         let aa2_frame = Arc::new(alloc_frame().unwrap());
-        anon_area2.insert_mapping(Arc::new(VmaChain::new(0x0, aa2_frame.clone())));
+        anon_area2.insert_mapping(Arc::new(VmaChain::new(0x0, -1, aa2_frame.start_address().as_u64())));
 
         mm.with_vma_tree_mutable(|tree| {
             // Insert left VMA covering [0x0000, 0x1000) with anon_area1.
@@ -1040,8 +1031,8 @@ mod tests {
                     .backing
                     .find_mapping(0)
                     .unwrap()
-                    .frame,
-                aa1_frame.clone()
+                    .file_offset_or_frame,
+                aa1_frame.start_address().as_u64()
             );
 
             assert_eq!(
@@ -1050,8 +1041,8 @@ mod tests {
                     .backing
                     .find_mapping(0)
                     .unwrap()
-                    .frame,
-                aa2_frame.clone()
+                    .file_offset_or_frame,
+                aa2_frame.start_address().as_u64()
             );
         });
     }
@@ -1089,23 +1080,23 @@ mod tests {
         let mm = Mm::new(pml4_frame);
 
         // Create four anonymous backings.
-        let anon_area1 = Arc::new(AnonVmArea::new());
-        let anon_area2 = Arc::new(AnonVmArea::new());
-        let anon_area3 = Arc::new(AnonVmArea::new());
-        let anon_area4 = Arc::new(AnonVmArea::new());
+        let anon_area1 = Arc::new(VmAreaBackings::new());
+        let anon_area2 = Arc::new(VmAreaBackings::new());
+        let anon_area3 = Arc::new(VmAreaBackings::new());
+        let anon_area4 = Arc::new(VmAreaBackings::new());
 
         // Allocate frames for left VMA segments.
         let frame_left_seg1 = Arc::new(alloc_frame().unwrap());
         let frame_left_seg2 = Arc::new(alloc_frame().unwrap());
         // Insert reverse mappings at offset 0 in the left VMA's backings.
-        anon_area1.insert_mapping(Arc::new(VmaChain::new(0x0, frame_left_seg1.clone())));
-        anon_area2.insert_mapping(Arc::new(VmaChain::new(0x0, frame_left_seg2.clone())));
+        anon_area1.insert_mapping(Arc::new(VmaChain::new(0x0, -1, frame_left_seg1.start_address().as_u64())));
+        anon_area2.insert_mapping(Arc::new(VmaChain::new(0x0, -1, frame_left_seg2.start_address().as_u64())));
 
         // Allocate frames for candidate VMA segments.
         let frame_cand_seg1 = Arc::new(alloc_frame().unwrap());
         let frame_cand_seg2 = Arc::new(alloc_frame().unwrap());
-        anon_area3.insert_mapping(Arc::new(VmaChain::new(0x0, frame_cand_seg1.clone())));
-        anon_area4.insert_mapping(Arc::new(VmaChain::new(0x0, frame_cand_seg2.clone())));
+        anon_area3.insert_mapping(Arc::new(VmaChain::new(0x0, -1, frame_cand_seg1.start_address().as_u64())));
+        anon_area4.insert_mapping(Arc::new(VmaChain::new(0x0, -1, frame_cand_seg2.start_address().as_u64())));
 
         // Insert left VMA with two segments: covering [0x0000, 0x2000)
         mm.with_vma_tree_mutable(|tree| {
@@ -1183,10 +1174,10 @@ mod tests {
             let seg4 = merged_locked.find_segment(0x3000);
 
             // Check that each segment's backing returns the expected frame from offset 0.
-            assert_eq!(seg1.backing.find_mapping(0).unwrap().frame, frame_left_seg1);
-            assert_eq!(seg2.backing.find_mapping(0).unwrap().frame, frame_left_seg2);
-            assert_eq!(seg3.backing.find_mapping(0).unwrap().frame, frame_cand_seg1);
-            assert_eq!(seg4.backing.find_mapping(0).unwrap().frame, frame_cand_seg2);
+            assert_eq!(seg1.backing.find_mapping(0).unwrap().file_offset_or_frame, frame_left_seg1.start_address().as_u64());
+            assert_eq!(seg2.backing.find_mapping(0).unwrap().file_offset_or_frame, frame_left_seg2.start_address().as_u64());
+            assert_eq!(seg3.backing.find_mapping(0).unwrap().file_offset_or_frame, frame_cand_seg1.start_address().as_u64());
+            assert_eq!(seg4.backing.find_mapping(0).unwrap().file_offset_or_frame, frame_cand_seg2.start_address().as_u64());
         });
     }
 
@@ -1224,22 +1215,22 @@ mod tests {
         let mm = Mm::new(pml4_frame);
 
         // Create four anonymous backings.
-        let anon_area1 = Arc::new(AnonVmArea::new());
-        let anon_area2 = Arc::new(AnonVmArea::new());
-        let anon_area3 = Arc::new(AnonVmArea::new());
-        let anon_area4 = Arc::new(AnonVmArea::new());
+        let anon_area1 = Arc::new(VmAreaBackings::new());
+        let anon_area2 = Arc::new(VmAreaBackings::new());
+        let anon_area3 = Arc::new(VmAreaBackings::new());
+        let anon_area4 = Arc::new(VmAreaBackings::new());
 
         // Allocate frames for left VMA segments.
         let frame_left_seg1 = Arc::new(alloc_frame().unwrap());
         let frame_left_seg2 = Arc::new(alloc_frame().unwrap());
-        anon_area1.insert_mapping(Arc::new(VmaChain::new(0x0, frame_left_seg1.clone())));
-        anon_area2.insert_mapping(Arc::new(VmaChain::new(0x0, frame_left_seg2.clone())));
+        anon_area1.insert_mapping(Arc::new(VmaChain::new(0x0, -1, frame_left_seg1.start_address().as_u64())));
+        anon_area2.insert_mapping(Arc::new(VmaChain::new(0x0, -1, frame_left_seg2.start_address().as_u64())));
 
         // Allocate frames for right VMA segments.
         let frame_right_seg1 = Arc::new(alloc_frame().unwrap());
         let frame_right_seg2 = Arc::new(alloc_frame().unwrap());
-        anon_area3.insert_mapping(Arc::new(VmaChain::new(0x0, frame_right_seg1.clone())));
-        anon_area4.insert_mapping(Arc::new(VmaChain::new(0x0, frame_right_seg2.clone())));
+        anon_area3.insert_mapping(Arc::new(VmaChain::new(0x0, -1, frame_right_seg1.start_address().as_u64())));
+        anon_area4.insert_mapping(Arc::new(VmaChain::new(0x0, -1, frame_right_seg2.start_address().as_u64())));
 
         // Insert left VMA with two segments: covering [0x0000, 0x2000)
         mm.with_vma_tree_mutable(|tree| {
@@ -1314,15 +1305,15 @@ mod tests {
             let seg3 = merged_locked.find_segment(0x2000);
             let seg4 = merged_locked.find_segment(0x3000);
 
-            assert_eq!(seg1.backing.find_mapping(0).unwrap().frame, frame_left_seg1);
-            assert_eq!(seg2.backing.find_mapping(0).unwrap().frame, frame_left_seg2);
+            assert_eq!(seg1.backing.find_mapping(0).unwrap().file_offset_or_frame, frame_left_seg1.start_address().as_u64());
+            assert_eq!(seg2.backing.find_mapping(0).unwrap().file_offset_or_frame, frame_left_seg2.start_address().as_u64());
             assert_eq!(
-                seg3.backing.find_mapping(0).unwrap().frame,
-                frame_right_seg1
+                seg3.backing.find_mapping(0).unwrap().file_offset_or_frame,
+                frame_right_seg1.start_address().as_u64()
             );
             assert_eq!(
-                seg4.backing.find_mapping(0).unwrap().frame,
-                frame_right_seg2
+                seg4.backing.find_mapping(0).unwrap().file_offset_or_frame,
+                frame_right_seg2.start_address().as_u64()
             );
         });
     }
@@ -1365,12 +1356,12 @@ mod tests {
         let mm = Mm::new(pml4_frame);
 
         // Create six anonymous backings.
-        let anon_area1 = Arc::new(AnonVmArea::new());
-        let anon_area2 = Arc::new(AnonVmArea::new());
-        let anon_area3 = Arc::new(AnonVmArea::new());
-        let anon_area4 = Arc::new(AnonVmArea::new());
-        let anon_area5 = Arc::new(AnonVmArea::new());
-        let anon_area6 = Arc::new(AnonVmArea::new());
+        let anon_area1 = Arc::new(VmAreaBackings::new());
+        let anon_area2 = Arc::new(VmAreaBackings::new());
+        let anon_area3 = Arc::new(VmAreaBackings::new());
+        let anon_area4 = Arc::new(VmAreaBackings::new());
+        let anon_area5 = Arc::new(VmAreaBackings::new());
+        let anon_area6 = Arc::new(VmAreaBackings::new());
 
         // Allocate physical frames.
         let frame_left_seg1 = Arc::new(alloc_frame().unwrap());
@@ -1381,12 +1372,12 @@ mod tests {
         let frame_right_seg2 = Arc::new(alloc_frame().unwrap());
 
         // Insert reverse mappings at offset 0 for each backing.
-        anon_area1.insert_mapping(Arc::new(VmaChain::new(0x0, frame_left_seg1.clone())));
-        anon_area2.insert_mapping(Arc::new(VmaChain::new(0x0, frame_left_seg2.clone())));
-        anon_area3.insert_mapping(Arc::new(VmaChain::new(0x0, frame_mid_seg1.clone())));
-        anon_area4.insert_mapping(Arc::new(VmaChain::new(0x0, frame_mid_seg2.clone())));
-        anon_area5.insert_mapping(Arc::new(VmaChain::new(0x0, frame_right_seg1.clone())));
-        anon_area6.insert_mapping(Arc::new(VmaChain::new(0x0, frame_right_seg2.clone())));
+        anon_area1.insert_mapping(Arc::new(VmaChain::new(0x0,-1,  frame_left_seg1.start_address().as_u64())));
+        anon_area2.insert_mapping(Arc::new(VmaChain::new(0x0,-1,  frame_left_seg2.start_address().as_u64())));
+        anon_area3.insert_mapping(Arc::new(VmaChain::new(0x0,-1,  frame_mid_seg1.start_address().as_u64())));
+        anon_area4.insert_mapping(Arc::new(VmaChain::new(0x0,-1,  frame_mid_seg2.start_address().as_u64())));
+        anon_area5.insert_mapping(Arc::new(VmaChain::new(0x0,-1,  frame_right_seg1.start_address().as_u64())));
+        anon_area6.insert_mapping(Arc::new(VmaChain::new(0x0,-1,  frame_right_seg2.start_address().as_u64())));
 
         // Insert left VM Area: spans [0x0000, 0x2000) with two segments.
         mm.with_vma_tree_mutable(|tree| {
@@ -1489,17 +1480,17 @@ mod tests {
             let seg5 = merged_locked.find_segment(0x4000);
             let seg6 = merged_locked.find_segment(0x5000);
 
-            assert_eq!(seg1.backing.find_mapping(0).unwrap().frame, frame_left_seg1);
-            assert_eq!(seg2.backing.find_mapping(0).unwrap().frame, frame_left_seg2);
-            assert_eq!(seg3.backing.find_mapping(0).unwrap().frame, frame_mid_seg1);
-            assert_eq!(seg4.backing.find_mapping(0).unwrap().frame, frame_mid_seg2);
+            assert_eq!(seg1.backing.find_mapping(0).unwrap().file_offset_or_frame, frame_left_seg1.start_address().as_u64());
+            assert_eq!(seg2.backing.find_mapping(0).unwrap().file_offset_or_frame, frame_left_seg2.start_address().as_u64());
+            assert_eq!(seg3.backing.find_mapping(0).unwrap().file_offset_or_frame, frame_mid_seg1.start_address().as_u64());
+            assert_eq!(seg4.backing.find_mapping(0).unwrap().file_offset_or_frame, frame_mid_seg2.start_address().as_u64());
             assert_eq!(
-                seg5.backing.find_mapping(0).unwrap().frame,
-                frame_right_seg1
+                seg5.backing.find_mapping(0).unwrap().file_offset_or_frame,
+                frame_right_seg1.start_address().as_u64()
             );
             assert_eq!(
-                seg6.backing.find_mapping(0).unwrap().frame,
-                frame_right_seg2
+                seg6.backing.find_mapping(0).unwrap().file_offset_or_frame,
+                frame_right_seg2.start_address().as_u64()
             );
         });
     }
@@ -1517,7 +1508,7 @@ mod tests {
     async fn test_shrink_vma_left() {
         let pml4_frame = PhysFrame::containing_address(PhysAddr::new(0x1000));
         let mm = Mm::new(pml4_frame);
-        let anon_area = Arc::new(AnonVmArea::new());
+        let anon_area = Arc::new(VmAreaBackings::new());
         let old_start = 0x40000000;
         let old_end = old_start + 3 * PAGE_SIZE as u64;
 
@@ -1534,7 +1525,7 @@ mod tests {
                 let locked_vma = vma.lock();
                 let segments = locked_vma.segments.lock();
                 let seg = segments.get(&0).expect("Segment missing");
-                let mut mappings = seg.backing.mappings().lock();
+                let mut mappings = seg.backing.mappings.lock();
                 // For each page in the VMA, create a mapping.
                 for i in 0..3 {
                     let offset = i as u64 * PAGE_SIZE as u64;
@@ -1549,8 +1540,9 @@ mod tests {
                     mappings.insert(
                         offset,
                         Arc::new(VmaChain {
-                            offset,
-                            frame: Arc::new(frame),
+                            offset: offset,
+                            fd: -1,
+                            file_offset_or_frame: frame.start_address().as_u64(),
                         }),
                     );
                 }
@@ -1570,7 +1562,7 @@ mod tests {
         assert_eq!(locked.end, new_end);
         let segments = locked.segments.lock();
         let seg = segments.get(&0).expect("Segment missing");
-        let mappings = seg.backing.mappings().lock();
+        let mappings = seg.backing.mappings.lock();
         assert_eq!(mappings.len(), 2);
         // The surviving offsets should have been shifted so that the leftmost surviving mapping is at offset 0.
         assert!(mappings.contains_key(&0));
@@ -1608,26 +1600,26 @@ mod tests {
         let new_end = 0x4000;
 
         // Create anonymous backings.
-        let anon_area_a = Arc::new(AnonVmArea::new());
-        let anon_area_b = Arc::new(AnonVmArea::new());
-        let anon_area_c = Arc::new(AnonVmArea::new());
+        let anon_area_a = Arc::new(VmAreaBackings::new());
+        let anon_area_b = Arc::new(VmAreaBackings::new());
+        let anon_area_c = Arc::new(VmAreaBackings::new());
 
         // Allocate physical frames and set up reverse mappings (all at offset 0).
         // Segment A: covers [0x0, 0x2000)
         let frame_a_a = Arc::new(alloc_frame().unwrap());
         let frame_a_b = Arc::new(alloc_frame().unwrap());
-        anon_area_a.insert_mapping(Arc::new(VmaChain::new(0, frame_a_a.clone())));
-        anon_area_a.insert_mapping(Arc::new(VmaChain::new(0x1000, frame_a_b.clone())));
+        anon_area_a.insert_mapping(Arc::new(VmaChain::new(0, -1, frame_a_a.start_address().as_u64())));
+        anon_area_a.insert_mapping(Arc::new(VmaChain::new(0x1000, -1, frame_a_b.start_address().as_u64())));
 
         // Segment B: covers [0x2000, 0x3000)
         let frame_b = Arc::new(alloc_frame().unwrap());
-        anon_area_b.insert_mapping(Arc::new(VmaChain::new(0, frame_b.clone())));
+        anon_area_b.insert_mapping(Arc::new(VmaChain::new(0, -1, frame_b.start_address().as_u64())));
 
         // Segment C: covers [0x3000, 0x5000)
         let frame_c_a = Arc::new(alloc_frame().unwrap());
         let frame_c_b = Arc::new(alloc_frame().unwrap());
-        anon_area_c.insert_mapping(Arc::new(VmaChain::new(0, frame_c_a.clone())));
-        anon_area_c.insert_mapping(Arc::new(VmaChain::new(0x1000, frame_c_b.clone())));
+        anon_area_c.insert_mapping(Arc::new(VmaChain::new(0, -1, frame_c_a.start_address().as_u64())));
+        anon_area_c.insert_mapping(Arc::new(VmaChain::new(0x1000, -1, frame_c_b.start_address().as_u64())));
 
         // Build the original segments map.
         let mut segments: BTreeMap<u64, VmAreaSegment> = BTreeMap::new();
@@ -1691,8 +1683,8 @@ mod tests {
                     .backing
                     .find_mapping(0 + seg_a_left.start)
                     .unwrap()
-                    .frame,
-                frame_a_a.clone()
+                    .file_offset_or_frame,
+                frame_a_a.start_address().as_u64()
             );
         }
 
@@ -1713,16 +1705,16 @@ mod tests {
                     .backing
                     .find_mapping(0 + seg_a_right.start)
                     .unwrap()
-                    .frame,
-                frame_a_b.clone()
+                    .file_offset_or_frame,
+                frame_a_b.start_address().as_u64()
             );
 
             // - Segment B: originally at key 0x2000 becomes 0x2000 - 0x1000 = 0x1000, length = 0x1000.
             let seg_b = middle_locked.find_segment(0x1000);
             assert_eq!(seg_b.end - seg_b.start, 0x1000);
             assert_eq!(
-                seg_b.backing.find_mapping(0 + seg_b.start).unwrap().frame,
-                frame_b.clone()
+                seg_b.backing.find_mapping(0 + seg_b.start).unwrap().file_offset_or_frame,
+                frame_b.start_address().as_u64()
             );
 
             // - The left part of Segment C: originally covering [0x3000, 0x5000) yields surviving portion [0x3000, 0x4000).
@@ -1734,8 +1726,8 @@ mod tests {
                     .backing
                     .find_mapping(0 + seg_c_left.start)
                     .unwrap()
-                    .frame,
-                frame_c_a.clone()
+                    .file_offset_or_frame,
+                frame_c_a.start_address().as_u64()
             );
         }
 
@@ -1755,8 +1747,8 @@ mod tests {
                     .backing
                     .find_mapping(0 + seg_c_right.start)
                     .unwrap()
-                    .frame,
-                frame_c_b.clone()
+                    .file_offset_or_frame,
+                frame_c_b.start_address().as_u64()
             );
         }
     }
@@ -1773,7 +1765,7 @@ mod tests {
     async fn test_shrink_vma_both() {
         let pml4_frame = PhysFrame::containing_address(PhysAddr::new(0x1000));
         let mm = Mm::new(pml4_frame);
-        let anon_area = Arc::new(AnonVmArea::new());
+        let anon_area = Arc::new(VmAreaBackings::new());
         let old_start = 0x60000000;
         let old_end = old_start + 4 * PAGE_SIZE as u64;
 
@@ -1789,7 +1781,7 @@ mod tests {
                 let locked_vma = vma.lock();
                 let segments = locked_vma.segments.lock();
                 let seg = segments.get(&0).expect("Segment missing");
-                let mut mappings = seg.backing.mappings().lock();
+                let mut mappings = seg.backing.mappings.lock();
                 for i in 0..4 {
                     let offset = i as u64 * PAGE_SIZE as u64;
                     let va = old_start + offset;
@@ -1803,8 +1795,9 @@ mod tests {
                     mappings.insert(
                         offset,
                         Arc::new(VmaChain {
-                            offset,
-                            frame: Arc::new(frame),
+                            offset: offset,
+                            fd: -1,
+                            file_offset_or_frame: frame.start_address().as_u64(),
                         }),
                     );
                 }
@@ -1840,7 +1833,7 @@ mod tests {
 
         let segments = locked.segments.lock();
         let seg = segments.get(&0).expect("Segment missing");
-        let mappings = seg.backing.mappings().lock();
+        let mappings = seg.backing.mappings.lock();
         // After shrink, expect two mappings.
         assert_eq!(mappings.len(), 2);
         assert!(mappings.contains_key(&0));
@@ -1857,7 +1850,7 @@ mod tests {
     async fn test_shrink_vma_whole() {
         let pml4_frame = PhysFrame::containing_address(PhysAddr::new(0x1000));
         let mm = Mm::new(pml4_frame);
-        let anon_area = Arc::new(AnonVmArea::new());
+        let anon_area = Arc::new(VmAreaBackings::new());
         let old_start = 0x70000000;
         let old_end = old_start + 2 * PAGE_SIZE as u64;
 
@@ -1873,7 +1866,7 @@ mod tests {
                 let locked_vma = vma.lock();
                 let segments = locked_vma.segments.lock();
                 let seg = segments.get(&0).expect("Segment missing");
-                let mut mappings = seg.backing.mappings().lock();
+                let mut mappings = seg.backing.mappings.lock();
                 for i in 0..2 {
                     let offset = i as u64 * PAGE_SIZE as u64;
                     let va = old_start + offset;
@@ -1887,8 +1880,9 @@ mod tests {
                     mappings.insert(
                         offset,
                         Arc::new(VmaChain {
-                            offset,
-                            frame: Arc::new(frame),
+                            offset: offset,
+                            fd: -1,
+                            file_offset_or_frame: frame.start_address().as_u64(),
                         }),
                     );
                 }
