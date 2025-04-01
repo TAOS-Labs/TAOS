@@ -1,15 +1,20 @@
+use core::str;
+
 use crate::{
     constants::memory::PAGE_SIZE,
     debug_println,
     devices::{
         mmio::{self, map_page_as_uncacheable, zero_out_page},
-        xhci::{wait_for_events, XHCIError},
+        xhci::{ecm, wait_for_events, XHCIError},
     },
     memory::{frame_allocator::alloc_frame, MAPPER},
 };
 use smoltcp::{
+    iface::{Interface, SocketSet},
     phy::{self, DeviceCapabilities, Medium},
-    time::Instant,
+    socket::dhcpv4::{self, Config},
+    time::{self, Instant},
+    wire::{EthernetAddress, IpCidr, Ipv4Cidr},
 };
 
 use super::{
@@ -19,8 +24,12 @@ use super::{
     USBDeviceDescriptor, USBDeviceEndpointDescriptor, USBDeviceInfo, USBDeviceInterfaceDescriptor,
     XHCI,
 };
-use alloc::{string::String, vec::Vec};
-use x86_64::structures::paging::Page;
+use alloc::{
+    slice,
+    string::String,
+    vec::{self, Vec},
+};
+use x86_64::{structures::paging::Page, VirtAddr};
 
 #[repr(u8)]
 enum USBDescriptorTypes {
@@ -97,33 +106,74 @@ enum ECMDeviceDescriptors {
 pub struct ECMDevice {
     standard_device: USBDeviceInfo,
     descriptors: Vec<ECMDeviceDescriptors>,
-    rx_buffer: [u8; 1536],
-    tx_buffer: [u8; 1536],
+    in_data_addr: VirtAddr,
+    out_data_addr: VirtAddr,
+    in_data_trb: ProducerRingBuffer,
+    out_data_trb: ProducerRingBuffer,
 }
 
-pub struct ECMDeviceRxToken<'a>(&'a mut [u8]);
+pub struct ECMDeviceRxToken<'a> {
+    in_data_addr: VirtAddr,
+    in_trb: &'a mut ProducerRingBuffer,
+    slot: u8,
+}
 
 impl phy::RxToken for ECMDeviceRxToken<'_> {
     fn consume<R, F>(self, f: F) -> R
     where
         F: FnOnce(&mut [u8]) -> R,
     {
-        let result = f(self.0);
+        // TODO: Recieve the packet
+        // todo!("Recieving is currently broken");
+
+        let in_ptr: *mut u8 = self.in_data_addr.as_mut_ptr();
+        let in_buf = unsafe { slice::from_raw_parts_mut(in_ptr, 1512) };
+        let result = f(in_buf);
+
+        // let result = f(self.0);
         debug_println!("rx called");
         result
     }
 }
 
-pub struct ECMDeviceTxToken<'a>(&'a mut [u8]);
+pub struct ECMDeviceTxToken<'a> {
+    out_data_addr: VirtAddr,
+    out_trb: &'a mut ProducerRingBuffer,
+    slot: u8,
+}
 
 impl phy::TxToken for ECMDeviceTxToken<'_> {
     fn consume<R, F>(self, len: usize, f: F) -> R
     where
         F: FnOnce(&mut [u8]) -> R,
     {
-        let result = f(&mut self.0[..len]);
+        let out_ptr: *mut u8 = self.out_data_addr.as_mut_ptr();
+        let out_buf = unsafe { slice::from_raw_parts_mut(out_ptr, len) };
+        let result = f(out_buf);
         debug_println!("tx called {}", len);
-        // TODO: send packet out
+
+        let mapper = MAPPER.lock();
+
+        let transfer_length: u16 = len.try_into().unwrap();
+        let transfer_size: u8 = 1;
+        let interrupter_target = self.slot;
+        let block = TransferRequestBlock {
+            parameters: self.out_data_addr.as_u64() - mapper.phys_offset().as_u64(),
+            status: (transfer_length as u32)
+                | ((transfer_size as u32) << 17)
+                | ((interrupter_target as u32) << 22),
+            control: (1 << 5) | ((TrbTypes::Normal as u32) << 10),
+        };
+        unsafe {
+            self.out_trb.enqueue(block).unwrap();
+        }
+        drop(mapper);
+        let info = XHCI.lock().clone().unwrap();
+
+        let doorbell_base: *mut u32 = (info.base_address
+            + info.capablities.doorbell_offset as u64
+            + (self.slot as u64) * 4) as *mut u32;
+        unsafe { core::ptr::write_volatile(doorbell_base, 4) };
 
         result
     }
@@ -139,13 +189,70 @@ impl phy::Device for ECMDevice {
     where
         Self: 'a;
     fn receive(&mut self, _timestamp: Instant) -> Option<(Self::RxToken<'_>, Self::TxToken<'_>)> {
-        Some((
-            ECMDeviceRxToken(&mut self.rx_buffer[..]),
-            ECMDeviceTxToken(&mut self.tx_buffer[..]),
-        ))
+        // todo!("Recieving is currently broken");
+        // Check if there is any data
+
+        let mapper = MAPPER.lock();
+
+        let transfer_length: u16 = 4096;
+        let transfer_size: u8 = 1;
+        let interrupter_target: u8 = self.standard_device.slot;
+        let block = TransferRequestBlock {
+            parameters: self.in_data_addr.as_u64() - mapper.phys_offset().as_u64(),
+            status: (transfer_length as u32)
+                | ((transfer_size as u32) << 17)
+                | ((interrupter_target as u32) << 22),
+            control: (1 << 5) | ((TrbTypes::Normal as u32) << 10),
+        };
+        unsafe {
+            self.in_data_trb.enqueue(block).unwrap();
+        }
+        drop(mapper);
+        let info = XHCI.lock().clone().unwrap();
+
+        let doorbell_base: *mut u32 = (info.base_address
+            + info.capablities.doorbell_offset as u64
+            + (self.standard_device.slot as u64) * 4)
+            as *mut u32;
+        unsafe { core::ptr::write_volatile(doorbell_base, 5) };
+
+
+        let mut event_result = unsafe { self.standard_device.event_ring.dequeue() };
+        if event_result.is_err() {
+            return  Option::None;
+        }
+
+        // while event_result.is_err() {
+            // event_result = unsafe { self.standard_device.event_ring.dequeue() };
+            // core::hint::spin_loop();
+        // }
+        let event = event_result.ok()?;
+
+        
+
+        // todo!("Reciecing prob borken");
+        let tx_token = ECMDeviceTxToken {
+            out_data_addr: self.out_data_addr,
+            slot: self.standard_device.slot,
+            out_trb: &mut self.out_data_trb,
+        };
+        let rx_token = ECMDeviceRxToken {
+            in_data_addr: self.in_data_addr,
+            slot: self.standard_device.slot,
+            in_trb: &mut self.in_data_trb,
+        };
+        Some((rx_token, tx_token))
+        // Some((
+        //     ECMDeviceRxToken(&mut self.rx_buffer[..]),
+        //     ECMDeviceTxToken(&mut self.tx_buffer[..]),
+        // ))
     }
     fn transmit(&mut self, _timestamp: Instant) -> Option<Self::TxToken<'_>> {
-        Some(ECMDeviceTxToken(&mut self.tx_buffer[..]))
+        Some(ECMDeviceTxToken {
+            out_data_addr: self.out_data_addr,
+            slot: self.standard_device.slot,
+            out_trb: &mut self.out_data_trb,
+        })
     }
     fn capabilities(&self) -> DeviceCapabilities {
         let mut caps = DeviceCapabilities::default();
@@ -208,8 +315,8 @@ pub fn init_cdc_device(mut device: USBDeviceInfo) -> Result<ECMDevice, XHCIError
         | (bm_request_type as u64);
     device.send_command_no_data(paramaters)?;
 
-    let config = get_class_descriptors_for_configuration(&mut device, 1).unwrap();
-    debug_println!("class_desc = {config:?}");
+    let descriptors = get_class_descriptors_for_configuration(&mut device, 1).unwrap();
+    debug_println!("class_desc = {descriptors:?}");
 
     // Send configure endpoint
     // We use endpoint 2, both in and out
@@ -307,51 +414,100 @@ pub fn init_cdc_device(mut device: USBDeviceInfo) -> Result<ECMDevice, XHCIError
 
     // Now get out ethernet address
     let mut str_addr: u8 = 0;
-    for descriptor in config {
+    for descriptor in &descriptors {
         if let ECMDeviceDescriptors::Ethernet(desc) = descriptor {
             str_addr = desc.imac_address;
         }
     }
 
     drop(mapper);
-    get_eth_addr(&mut device, str_addr)?;
 
+    let hw_addr = get_eth_addr(&mut device, str_addr)?;
     let config = get_class_descriptors_for_configuration(&mut device, 1).unwrap();
     debug_println!("class_desc = {config:?}");
 
     // See if we can send something
-    let data_frame = alloc_frame().ok_or(XHCIError::MemoryAllocationFailure)?;
-    debug_println!("Data phys_addr = {:X}", data_frame.start_address().as_u64());
+    let in_frame = alloc_frame().ok_or(XHCIError::MemoryAllocationFailure)?;
     let mut mapper = MAPPER.lock();
-    mmio::map_page_as_uncacheable(data_frame.start_address(), &mut mapper)
+    let in_buff_vaddr = mmio::map_page_as_uncacheable(in_frame.start_address(), &mut mapper)
         .map_err(|_| XHCIError::MemoryAllocationFailure)?;
+    mmio::zero_out_page(Page::containing_address(in_buff_vaddr));
+    let out_frame = alloc_frame().ok_or(XHCIError::MemoryAllocationFailure)?;
+    let out_buff_vaddr = mmio::map_page_as_uncacheable(out_frame.start_address(), &mut mapper)
+        .map_err(|_| XHCIError::MemoryAllocationFailure)?;
+    mmio::zero_out_page(Page::containing_address(out_buff_vaddr));
     drop(mapper);
 
-    debug_println!("When sending fake frame");
-    let transfer_length: u16 = 1514;
-    let transfer_size: u8 = 1;
-    let interrupter_target = device.slot;
-    let block = TransferRequestBlock {
-        parameters: data_frame.start_address().as_u64(),
-        status: (transfer_length as u32)
-            | ((transfer_size as u32) << 17)
-            | ((interrupter_target as u32) << 22),
-        control: (1 << 5) | ((TrbTypes::Normal as u32) << 10),
+    let mut ecm_device = ECMDevice {
+        standard_device: device,
+        descriptors: descriptors,
+        in_data_addr: in_buff_vaddr,
+        out_data_addr: out_buff_vaddr,
+        in_data_trb: in_trb,
+        out_data_trb: out_trb,
     };
-    unsafe {
-        out_trb.enqueue(block).unwrap();
-    }
-    let info = XHCI.lock().clone().unwrap();
+    let config = smoltcp::iface::Config::new(smoltcp::wire::HardwareAddress::Ethernet(hw_addr));
+    let mut interface = smoltcp::iface::Interface::new(config, &mut ecm_device, Instant::ZERO);
+    let mut dhcp_socket = dhcpv4::Socket::new();
+    let socket_vec = Vec::new();
+    let mut sockets = SocketSet::new(socket_vec);
+    let dhcp_handle = sockets.add(dhcp_socket);
+    interface.poll(Instant::from_micros(1), &mut ecm_device, &mut sockets);
+    let event = sockets.get_mut::<dhcpv4::Socket>(dhcp_handle).poll();
+    match event {
+        None => {}
+        Some(dhcpv4::Event::Configured(config)) => {
+            debug_println!("DHCP config acquired!");
 
-    let doorbell_base: *mut u32 = (info.base_address
-        + info.capablities.doorbell_offset as u64
-        + (device.slot as u64) * 4) as *mut u32;
-    unsafe { core::ptr::write_volatile(doorbell_base, 4) };
-    debug_println!("Before waiting for events");
-    let mapper = MAPPER.lock();
-    debug_println!("Got mapper");
-    wait_for_events(&info, &mut device.event_ring, device.slot.into(), &mapper)?;
-    debug_println!("After sending fake frame");
+            debug_println!("IP address:      {}", config.address);
+            set_ipv4_addr(&mut interface, config.address);
+
+            if let Some(router) = config.router {
+                debug_println!("Default gateway: {}", router);
+                interface
+                    .routes_mut()
+                    .add_default_ipv4_route(router)
+                    .unwrap();
+            } else {
+                debug_println!("Default gateway: None");
+                interface.routes_mut().remove_default_ipv4_route();
+            }
+
+            for (i, s) in config.dns_servers.iter().enumerate() {
+                debug_println!("DNS server {}:    {}", i, s);
+            }
+        }
+        Some(dhcpv4::Event::Deconfigured) => {
+            debug_println!("DHCP lost config!");
+            interface.update_ip_addrs(|addrs| addrs.clear());
+            interface.routes_mut().remove_default_ipv4_route();
+        }
+    };
+    // Now try to recv frame
+
+    // debug_println!("When trying to recv fake frame");
+    // let transfer_length: u16 = 1514;
+    // let transfer_size: u8 = 1;
+    // let interrupter_target = device.slot;
+    // let block = TransferRequestBlock {
+    //     parameters: out_frame.start_address().as_u64(),
+    //     status: (transfer_length as u32)
+    //         | ((transfer_size as u32) << 17)
+    //         | ((interrupter_target as u32) << 22),
+    //     control: (1 << 5) | ((TrbTypes::Normal as u32) << 10),
+    // };
+    // unsafe {
+    //     in_trb.enqueue(block).unwrap();
+    // }
+
+    // let doorbell_base: *mut u32 = (info.base_address
+    //     + info.capablities.doorbell_offset as u64
+    //     + (device.slot as u64) * 4) as *mut u32;
+    // unsafe { core::ptr::write_volatile(doorbell_base, 5) };
+    // debug_println!("Before waiting for events");
+    // wait_for_events(&info, &mut device.event_ring, device.slot.into(), &mapper)?;
+
+    debug_println!("After recv fake frame");
     // let new_device: MaybeUninit<ECMDevice> = MaybeUninit::zeroed();
     // let mut new_device: ECMDevice = unsafe { new_device.assume_init() };
     // new_device.descriptors = config;
@@ -360,7 +516,14 @@ pub fn init_cdc_device(mut device: USBDeviceInfo) -> Result<ECMDevice, XHCIError
     // Result::Ok(new_device)
 }
 
-fn get_eth_addr(device: &mut USBDeviceInfo, idx: u8) -> Result<u64, XHCIError> {
+fn set_ipv4_addr(iface: &mut Interface, cidr: Ipv4Cidr) {
+    iface.update_ip_addrs(|addrs| {
+        addrs.clear();
+        addrs.push(IpCidr::Ipv4(cidr)).unwrap();
+    });
+}
+
+fn get_eth_addr(device: &mut USBDeviceInfo, idx: u8) -> Result<EthernetAddress, XHCIError> {
     let data_frame = alloc_frame().ok_or(XHCIError::MemoryAllocationFailure)?;
     debug_println!("Data phys_addr = {:X}", data_frame.start_address().as_u64());
     debug_println!("idx = {idx}");
@@ -384,20 +547,45 @@ fn get_eth_addr(device: &mut USBDeviceInfo, idx: u8) -> Result<u64, XHCIError> {
     device
         .send_command(paramaters, data_frame.start_address(), 1024)
         .unwrap();
-    let mut eth_vec: Vec<u8> = Vec::new();
+    let mut eth_data_str: [u8; 12] = [0; 12];
+    let mut eth_str_idx = 0;
+    let mut first_byte = true;
     for str_idx in 0..=24 {
         let data_pointer: *const u8 = (data_addr + str_idx).as_ptr();
         let value = unsafe { core::ptr::read_volatile(data_pointer) };
+        // debug_println!("eth_data = {eth_data:?}");
+        // let data_read;
         if value >= 48 {
-            eth_vec.push(value);
+            eth_data_str[eth_str_idx] = value;
+            eth_str_idx += 1;
         }
+        // if value >= 48 && value <= 57 {
+        //     // data_read = value - 48;
+        //     eth_data[eth_idx] = value - 48;
+        //     eth_idx += 1;
+        // } else if value >= 65 && value <= 70 {
+        //     // data_read = value - 65;
+        //     eth_data[eth_idx] = value - 65;
+        //     eth_idx += 1;
+        // } else {
+        //     panic!("Bad data in eth address");
+        // }
     }
-    let eth_string = String::from_utf8(eth_vec).unwrap();
-    let eth_num: u64 = u64::from_str_radix(&eth_string, 16).unwrap();
-    debug_println!("eth nun = {eth_num:X}");
+    let mut eth_data: [u8; 6] = [0; 6];
+    for idx in 0..6 {
+        let new_string = str::from_utf8(&eth_data_str[(2 * idx)..((2 * idx) + 1)]).unwrap();
+        eth_data[idx] = u8::from_str_radix(new_string, 16).unwrap();
+        debug_println!("Eth data[idx] = {:X}", eth_data[idx]);
+    }
+
+    // let eth_data
+
+    // u8::from_str_radix(src, 16);
+    // debug_println!("Eth data = {eth_data}")
+    Result::Ok(EthernetAddress::from_bytes(&eth_data))
     // let eth_addr: &[u8]= unsafe {core::slice::from_raw_parts(data_pointer, 12)};
     // debug_println!("Eth addr = {eth_vec:?}");
-    Result::Ok(eth_num)
+    // Result::Ok(eth_num)
 }
 
 fn get_class_descriptors_for_configuration(
