@@ -168,9 +168,8 @@ extern "x86-interrupt" fn page_fault_handler(
             mut mapper,
             offset,
             pt_flags,
-            file,
         } => {
-            handle_existing_file_mapping(page, &mut mapper, offset, pt_flags, file);
+            handle_existing_file_mapping(page, &mut mapper, offset, pt_flags);
         }
         FaultOutcome::NewMapping {
             page,
@@ -185,9 +184,9 @@ extern "x86-interrupt" fn page_fault_handler(
             mut mapper,
             offset,
             pt_flags,
-            file,
+            fd,
         } => {
-            handle_new_file_mapping(page, &mut mapper, offset, pt_flags, file);
+            handle_new_file_mapping(page, &mut mapper, offset, pt_flags, fd);
         }
         FaultOutcome::CopyOnWrite {
             page,

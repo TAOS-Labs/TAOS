@@ -11,10 +11,7 @@ use alloc::{
     sync::Arc,
     vec,
 };
-use core::{
-    cmp::{max, min},
-    ops::Add,
-};
+use core::cmp::{max, min};
 use spin::lock_api::Mutex;
 
 mod boot_sector;
@@ -576,7 +573,7 @@ impl FileSystem for Fat16<'_> {
         };
         let pcb = pcb.pcb.get();
 
-        let mut file = unsafe {
+        let file = unsafe {
             (*pcb).fd_table[fd]
                 .clone()
                 .expect("No file associated with this fd.")
@@ -612,7 +609,7 @@ impl FileSystem for Fat16<'_> {
         };
         let pcb = pcb.pcb.get();
 
-        let mut file = unsafe {
+        let file = unsafe {
             (*pcb).fd_table[fd]
                 .clone()
                 .expect("No file associated with this fd.")
@@ -691,7 +688,7 @@ impl FileSystem for Fat16<'_> {
         };
         let pcb = pcb.pcb.get();
 
-        let mut file = unsafe {
+        let file = unsafe {
             (*pcb).fd_table[fd]
                 .clone()
                 .expect("No file associated with this fd.")
@@ -747,7 +744,7 @@ impl FileSystem for Fat16<'_> {
         };
         let pcb = pcb.pcb.get();
 
-        let mut file = unsafe {
+        let file = unsafe {
             (*pcb).fd_table[fd]
                 .clone()
                 .expect("No file associated with this fd.")

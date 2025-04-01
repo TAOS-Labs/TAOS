@@ -13,20 +13,16 @@ pub mod page_fault;
 pub mod paging;
 pub mod tlb;
 
-use alloc::sync::Arc;
 use boot_frame_allocator::BootIntoFrameAllocator;
-use frame_allocator::{alloc_frame, GlobalFrameAllocator, FRAME_ALLOCATOR};
+use frame_allocator::{GlobalFrameAllocator, FRAME_ALLOCATOR};
 use lazy_static::lazy_static;
 use limine::request::HhdmRequest;
-use mm::{Mm, VmAreaFlags, VmaChain};
 use spin::Mutex;
 use x86_64::{
     registers::model_specific::{Efer, EferFlags},
-    structures::paging::{OffsetPageTable, PhysFrame},
-    PhysAddr, VirtAddr,
+    structures::paging::OffsetPageTable,
+    VirtAddr,
 };
-
-use crate::serial_println;
 
 #[used]
 #[link_section = ".requests"]
@@ -65,6 +61,6 @@ pub fn init(cpu_id: u32) {
                 flags.insert(EferFlags::NO_EXECUTE_ENABLE);
             });
         }
-        heap::init_heap().expect("Failed to initializen heap");
+        heap::init_heap().expect("Failed to initialize heap");
     }
 }

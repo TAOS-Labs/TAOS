@@ -3,10 +3,7 @@
 //! Handles the initialization of kernel subsystems and CPU cores.
 
 use bytes::Bytes;
-use core::{
-    fmt::write,
-    sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering},
-};
+use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use limine::{
     request::SmpRequest,
     smp::{Cpu, RequestFlags},
@@ -14,15 +11,10 @@ use limine::{
 };
 
 use crate::{
-    constants::processes::{
-        FORK_SIMPLE, MMAP_ANON_SIMPLE, TEST_64_FORK_COW, TEST_FORK_COW, TEST_SIMPLE_PROCESS,
-        TEST_SIMPLE_STACK_ACCESS, TEST_WAIT,
-    },
+    constants::processes::TEST_SIMPLE_STACK_ACCESS,
     debug, devices,
-    events::{
-        current_running_event, futures::await_on::AwaitProcess, get_runner_time,
-        register_event_runner, run_loop, schedule_process, spawn, yield_now,
-    },
+    events::{register_event_runner, run_loop, schedule_process, spawn, yield_now},
+    filesys,
     interrupts::{self, idt},
     ipc::{
         messages::Message,
@@ -68,6 +60,7 @@ pub fn init() -> u32 {
 
     register_event_runner();
     devices::init(0);
+    filesys::init(0);
     // Should be kept after devices in case logging gets complicated
     // Right now log writes to serial, but if it were to switch to VGA, this would be important
     logging::init(0);

@@ -1,18 +1,9 @@
-use crate::{
-    constants::memory::PAGE_SIZE,
-    filesys::{fat16::Fat16File, File},
-    serial_println,
-};
+use crate::{filesys::fat16::Fat16File, serial_println};
 use alloc::{collections::btree_map::BTreeMap, sync::Arc, vec::Vec};
 use bitflags::bitflags;
-use core::{any::Any, fmt::Debug};
+use core::fmt::Debug;
 use spin::lock_api::Mutex;
-use x86_64::{
-    structures::paging::{Mapper, Page, PageTableFlags, PhysFrame, Size4KiB},
-    VirtAddr,
-};
-
-use super::paging::remove_mapping;
+use x86_64::structures::paging::{Mapper, PageTableFlags, PhysFrame, Size4KiB};
 
 type VmaTree = BTreeMap<usize, Arc<Mutex<VmArea>>>;
 
@@ -58,7 +49,7 @@ impl Mm {
         end: u64,
         initial_backing: Arc<VmAreaBackings>,
         flags: VmAreaFlags,
-        file: Option<Arc<Mutex<Fat16File>>>,
+        fd: usize,
         pg_offset: u64,
     ) -> Arc<Mutex<VmArea>> {
         let new_vma = Arc::new(Mutex::new(VmArea::new(
@@ -66,7 +57,7 @@ impl Mm {
             end,
             initial_backing.clone(),
             flags,
-            file,
+            fd,
             pg_offset,
         )));
 
@@ -289,7 +280,7 @@ impl Mm {
                         end: seg.start + left_part_length,
                         backing: seg.backing.clone(),
                         pg_offset: seg.pg_offset.clone(),
-                        file: seg.file.clone(),
+                        fd: seg.fd,
                     };
                     left_segments.insert(old_seg_key, left_seg);
                     // the middle part
@@ -299,7 +290,7 @@ impl Mm {
                         end: seg.start + left_part_length + middle_part_length,
                         backing: seg.backing.clone(),
                         pg_offset: seg.pg_offset.clone(),
-                        file: seg.file.clone(),
+                        fd: seg.fd,
                     };
                     middle_segments.insert(0, middle_seg);
                 // spans the right split
@@ -311,7 +302,7 @@ impl Mm {
                         end: seg.start + middle_part_length,
                         backing: seg.backing.clone(),
                         pg_offset: seg.pg_offset.clone(),
-                        file: seg.file.clone(),
+                        fd: seg.fd,
                     };
                     middle_segments.insert(old_seg_key - split_point_left, middle_seg);
                     let right_part_length = seg_global_end - split_point_right;
@@ -320,7 +311,7 @@ impl Mm {
                         end: seg.start + middle_part_length + right_part_length,
                         backing: seg.backing.clone(),
                         pg_offset: seg.pg_offset.clone(),
-                        file: seg.file.clone(),
+                        fd: seg.fd,
                     };
                     right_segments.insert(0, right_seg);
                 // spans both splits
@@ -332,7 +323,7 @@ impl Mm {
                         end: seg.start + left_part_length,
                         backing: seg.backing.clone(),
                         pg_offset: seg.pg_offset.clone(),
-                        file: seg.file.clone(),
+                        fd: seg.fd,
                     };
                     left_segments.insert(old_seg_key, left_seg);
                     let middle_part_length = split_point_right - split_point_left;
@@ -341,7 +332,7 @@ impl Mm {
                         end: seg.start + left_part_length + middle_part_length,
                         backing: seg.backing.clone(),
                         pg_offset: seg.pg_offset.clone(),
-                        file: seg.file.clone(),
+                        fd: seg.fd,
                     };
                     middle_segments.insert(0, middle_seg);
                     let right_part_length = seg_global_end - split_point_right;
@@ -350,7 +341,7 @@ impl Mm {
                         end: seg.start + left_part_length + middle_part_length + right_part_length,
                         backing: seg.backing.clone(),
                         pg_offset: seg.pg_offset.clone(),
-                        file: seg.file.clone(),
+                        fd: seg.fd,
                     };
                     right_segments.insert(0, right_seg);
                 }
@@ -494,7 +485,7 @@ impl VmArea {
         end: u64,
         initial_backing: Arc<VmAreaBackings>,
         flags: VmAreaFlags,
-        file: Option<Arc<Mutex<Fat16File>>>,
+        fd: usize,
         pg_offset: u64,
     ) -> Self {
         let mut segments = BTreeMap::new();
@@ -505,8 +496,8 @@ impl VmArea {
                 start: 0,
                 end: end - start,
                 backing: initial_backing,
-                file: file,
-                pg_offset: pg_offset,
+                fd,
+                pg_offset,
             },
         );
         VmArea {
@@ -550,61 +541,22 @@ pub struct VmAreaSegment {
     pub end: u64,
     /// The backing for this segment.
     pub backing: Arc<VmAreaBackings>,
-    /// File struct backed by this segment
-    pub file: Option<Arc<Mutex<Fat16File>>>,
+    /// file descriptor backed by this segment
+    pub fd: usize,
     /// page offset
     pub pg_offset: u64,
 }
-
-// /// A trait for all VM Area backing stores.
-// pub trait VmAreaBacking: Send + Sync + Debug + Any {
-//     fn as_any(&self) -> &dyn Any;
-
-//     /// Returns a reference to the reverse mappings.
-//     fn mappings(&self) -> &Mutex<BTreeMap<u64, Arc<VmaChain>>>;
-
-//     /// Returns a reference to the list of VMAs associated with this backing.
-//     fn vmas(&self) -> &Mutex<Vec<Arc<Mutex<VmArea>>>>;
-
-//     /// Insert a new VMA into the list.
-//     fn insert_vma(&self, vma: Arc<Mutex<VmArea>>) {
-//         self.vmas().lock().push(vma);
-//     }
-
-//     /// Remove a VMA from the list by index.
-//     fn remove_vma(&self, index: usize) {
-//         self.vmas().lock().swap_remove(index);
-//     }
-
-//     /// Insert a new reverse mapping entry.
-//     fn insert_mapping(&self, chain: Arc<VmaChain>) {
-//         let mut map = self.mappings().lock();
-//         map.insert(chain.offset, chain);
-//     }
-
-//     /// Remove and return the reverse mapping entry for the given offset.
-//     fn remove_mapping(&self, offset: u64) -> Option<Arc<VmaChain>> {
-//         let mut map = self.mappings().lock();
-//         map.remove(&offset)
-//     }
-
-//     /// Find a reverse mapping entry for the given offset.
-//     fn find_mapping(&self, offset: u64) -> Option<Arc<VmaChain>> {
-//         let map = self.mappings().lock();
-//         map.get(&offset).cloned()
-//     }
-// }
 
 /// Reverse mapping chain entry linking an offset to a physical page.
 #[derive(Debug)]
 pub struct VmaChain {
     pub offset: u64,
-    pub fd: i64,
+    pub fd: usize,
     pub file_offset_or_frame: u64,
 }
 
 impl VmaChain {
-    pub fn new(offset: u64, fd: i64, file_offset_or_frame: u64) -> Self {
+    pub fn new(offset: u64, fd: usize, file_offset_or_frame: u64) -> Self {
         VmaChain {
             offset,
             fd,
@@ -673,15 +625,15 @@ impl VmAreaBackings {
 mod tests {
     use super::*;
     use alloc::sync::Arc;
-    use x86_64::{structures::paging::PhysFrame, PhysAddr};
+    use x86_64::{
+        structures::paging::{Page, PhysFrame},
+        PhysAddr, VirtAddr,
+    };
 
     // (Import additional items from your crate as needed.)
     use crate::{
         constants::memory::PAGE_SIZE,
-        memory::{
-            frame_allocator::alloc_frame, paging::create_mapping, Mm, VmAreaFlags, VmaChain,
-            KERNEL_MAPPER,
-        },
+        memory::{frame_allocator::alloc_frame, paging::create_mapping, KERNEL_MAPPER},
     };
 
     /// Tests insertion and lookup of VM Areas in the memory manager.
@@ -706,7 +658,7 @@ mod tests {
                 500,
                 anon_area.clone(),
                 VmAreaFlags::WRITABLE,
-                None,
+                usize::MAX,
                 0,
             );
             let _vma2 = Mm::insert_vma(
@@ -715,7 +667,7 @@ mod tests {
                 1000,
                 anon_area.clone(),
                 VmAreaFlags::WRITABLE,
-                None,
+                usize::MAX,
                 0,
             );
             // Test finding a VMA that covers a given address.
@@ -751,7 +703,7 @@ mod tests {
                 500,
                 anon_area.clone(),
                 VmAreaFlags::WRITABLE,
-                None,
+                usize::MAX,
                 0,
             );
 
@@ -791,7 +743,7 @@ mod tests {
                 0x1000,
                 anon_area.clone(),
                 VmAreaFlags::WRITABLE,
-                None,
+                usize::MAX,
                 0,
             )
         });
@@ -804,7 +756,7 @@ mod tests {
         // Map the vm_area and offset to the frame.
         let chain1 = Arc::new(VmaChain {
             offset: faulting_address1_round,
-            fd: -1,
+            fd: usize::MAX,
             file_offset_or_frame: frame1.start_address().as_u64(),
         });
         anon_area.insert_mapping(chain1);
@@ -848,7 +800,7 @@ mod tests {
                 0x2000,
                 anon_area.clone(),
                 VmAreaFlags::WRITABLE,
-                None,
+                usize::MAX,
                 0,
             );
 
@@ -861,12 +813,12 @@ mod tests {
 
             let chain1 = Arc::new(VmaChain {
                 offset: faulting_address1_round,
-                fd: -1,
+                fd: usize::MAX,
                 file_offset_or_frame: frame1.start_address().as_u64(),
             });
             let chain2 = Arc::new(VmaChain {
                 offset: faulting_address2_round,
-                fd: -1,
+                fd: usize::MAX,
                 file_offset_or_frame: frame2.start_address().as_u64(),
             });
 
@@ -921,7 +873,7 @@ mod tests {
                 0x1000,
                 anon_area.clone(),
                 VmAreaFlags::WRITABLE,
-                None,
+                usize::MAX,
                 0,
             )
         });
@@ -932,7 +884,7 @@ mod tests {
                 0x2000,
                 anon_area.clone(),
                 VmAreaFlags::WRITABLE,
-                None,
+                usize::MAX,
                 0,
             )
         });
@@ -949,7 +901,7 @@ mod tests {
         let frame = alloc_frame().expect("Could not get frame");
         let chain = Arc::new(VmaChain {
             offset: faulting_address1_round,
-            fd: -1,
+            fd: usize::MAX,
             file_offset_or_frame: frame.start_address().as_u64(),
         });
         anon_area.insert_mapping(chain);
@@ -1008,14 +960,14 @@ mod tests {
         let aa1_frame = Arc::new(alloc_frame().unwrap());
         anon_area1.insert_mapping(Arc::new(VmaChain::new(
             0x0,
-            -1,
+            usize::MAX,
             aa1_frame.start_address().as_u64(),
         )));
 
         let aa2_frame = Arc::new(alloc_frame().unwrap());
         anon_area2.insert_mapping(Arc::new(VmaChain::new(
             0x0,
-            -1,
+            usize::MAX,
             aa2_frame.start_address().as_u64(),
         )));
 
@@ -1026,7 +978,7 @@ mod tests {
                 0x1000,
                 anon_area1.clone(),
                 VmAreaFlags::WRITABLE,
-                None,
+                usize::MAX,
                 0,
             );
             let _vma2 = Mm::insert_vma(
@@ -1035,7 +987,7 @@ mod tests {
                 0x2000,
                 anon_area2.clone(),
                 VmAreaFlags::WRITABLE,
-                None,
+                usize::MAX,
                 0,
             );
         });
@@ -1099,14 +1051,14 @@ mod tests {
         let aa1_frame = Arc::new(alloc_frame().unwrap());
         anon_area1.insert_mapping(Arc::new(VmaChain::new(
             0x0,
-            -1,
+            usize::MAX,
             aa1_frame.start_address().as_u64(),
         )));
 
         let aa2_frame = Arc::new(alloc_frame().unwrap());
         anon_area2.insert_mapping(Arc::new(VmaChain::new(
             0x0,
-            -1,
+            usize::MAX,
             aa2_frame.start_address().as_u64(),
         )));
 
@@ -1118,7 +1070,7 @@ mod tests {
                 0x1000,
                 anon_area1.clone(),
                 VmAreaFlags::WRITABLE,
-                None,
+                usize::MAX,
                 0,
             );
             // Insert right VMA covering [0x1000, 0x2000) with anon_area2.
@@ -1128,7 +1080,7 @@ mod tests {
                 0x2000,
                 anon_area2.clone(),
                 VmAreaFlags::WRITABLE,
-                None,
+                usize::MAX,
                 0,
             );
         });
@@ -1208,12 +1160,12 @@ mod tests {
         // Insert reverse mappings at offset 0 in the left VMA's backings.
         anon_area1.insert_mapping(Arc::new(VmaChain::new(
             0x0,
-            -1,
+            usize::MAX,
             frame_left_seg1.start_address().as_u64(),
         )));
         anon_area2.insert_mapping(Arc::new(VmaChain::new(
             0x0,
-            -1,
+            usize::MAX,
             frame_left_seg2.start_address().as_u64(),
         )));
 
@@ -1222,12 +1174,12 @@ mod tests {
         let frame_cand_seg2 = Arc::new(alloc_frame().unwrap());
         anon_area3.insert_mapping(Arc::new(VmaChain::new(
             0x0,
-            -1,
+            usize::MAX,
             frame_cand_seg1.start_address().as_u64(),
         )));
         anon_area4.insert_mapping(Arc::new(VmaChain::new(
             0x0,
-            -1,
+            usize::MAX,
             frame_cand_seg2.start_address().as_u64(),
         )));
 
@@ -1242,7 +1194,7 @@ mod tests {
                     end: 0x1000,
                     backing: anon_area1.clone(),
                     pg_offset: 0,
-                    file: None,
+                    fd: usize::MAX,
                 },
             );
             // Segment covering [0x1000, 0x2000) using anon_area2.
@@ -1253,7 +1205,7 @@ mod tests {
                     end: 0x1000,
                     backing: anon_area2.clone(),
                     pg_offset: 0,
-                    file: None,
+                    fd: usize::MAX,
                 },
             );
             let _vma_left = Mm::insert_copied_vma(
@@ -1274,7 +1226,7 @@ mod tests {
                     end: 0x1000,
                     backing: anon_area3.clone(),
                     pg_offset: 0,
-                    file: None,
+                    fd: usize::MAX,
                 },
             );
             // Candidate's second segment covering [0x1000, 0x2000) using anon_area4.
@@ -1285,7 +1237,7 @@ mod tests {
                     end: 0x1000,
                     backing: anon_area4.clone(),
                     pg_offset: 0,
-                    file: None,
+                    fd: usize::MAX,
                 },
             );
             let _vma_cand = Mm::insert_copied_vma(
@@ -1378,12 +1330,12 @@ mod tests {
         let frame_left_seg2 = Arc::new(alloc_frame().unwrap());
         anon_area1.insert_mapping(Arc::new(VmaChain::new(
             0x0,
-            -1,
+            usize::MAX,
             frame_left_seg1.start_address().as_u64(),
         )));
         anon_area2.insert_mapping(Arc::new(VmaChain::new(
             0x0,
-            -1,
+            usize::MAX,
             frame_left_seg2.start_address().as_u64(),
         )));
 
@@ -1392,12 +1344,12 @@ mod tests {
         let frame_right_seg2 = Arc::new(alloc_frame().unwrap());
         anon_area3.insert_mapping(Arc::new(VmaChain::new(
             0x0,
-            -1,
+            usize::MAX,
             frame_right_seg1.start_address().as_u64(),
         )));
         anon_area4.insert_mapping(Arc::new(VmaChain::new(
             0x0,
-            -1,
+            usize::MAX,
             frame_right_seg2.start_address().as_u64(),
         )));
 
@@ -1411,7 +1363,7 @@ mod tests {
                     end: 0x1000,
                     backing: anon_area1.clone(),
                     pg_offset: 0,
-                    file: None,
+                    fd: usize::MAX,
                 },
             );
             segments_left.insert(
@@ -1421,7 +1373,7 @@ mod tests {
                     end: 0x1000,
                     backing: anon_area2.clone(),
                     pg_offset: 0,
-                    file: None,
+                    fd: usize::MAX,
                 },
             );
             let _vma_left = Mm::insert_copied_vma(
@@ -1441,7 +1393,7 @@ mod tests {
                     end: 0x1000,
                     backing: anon_area3.clone(),
                     pg_offset: 0,
-                    file: None,
+                    fd: usize::MAX,
                 },
             );
             segments_right.insert(
@@ -1451,7 +1403,7 @@ mod tests {
                     end: 0x1000,
                     backing: anon_area4.clone(),
                     pg_offset: 0,
-                    file: None,
+                    fd: usize::MAX,
                 },
             );
             let _vma_right = Mm::insert_copied_vma(
@@ -1557,32 +1509,32 @@ mod tests {
         // Insert reverse mappings at offset 0 for each backing.
         anon_area1.insert_mapping(Arc::new(VmaChain::new(
             0x0,
-            -1,
+            usize::MAX,
             frame_left_seg1.start_address().as_u64(),
         )));
         anon_area2.insert_mapping(Arc::new(VmaChain::new(
             0x0,
-            -1,
+            usize::MAX,
             frame_left_seg2.start_address().as_u64(),
         )));
         anon_area3.insert_mapping(Arc::new(VmaChain::new(
             0x0,
-            -1,
+            usize::MAX,
             frame_mid_seg1.start_address().as_u64(),
         )));
         anon_area4.insert_mapping(Arc::new(VmaChain::new(
             0x0,
-            -1,
+            usize::MAX,
             frame_mid_seg2.start_address().as_u64(),
         )));
         anon_area5.insert_mapping(Arc::new(VmaChain::new(
             0x0,
-            -1,
+            usize::MAX,
             frame_right_seg1.start_address().as_u64(),
         )));
         anon_area6.insert_mapping(Arc::new(VmaChain::new(
             0x0,
-            -1,
+            usize::MAX,
             frame_right_seg2.start_address().as_u64(),
         )));
 
@@ -1596,7 +1548,7 @@ mod tests {
                     end: 0x1000,
                     backing: anon_area1.clone(),
                     pg_offset: 0,
-                    file: None,
+                    fd: usize::MAX,
                 },
             );
             segments_left.insert(
@@ -1606,7 +1558,7 @@ mod tests {
                     end: 0x1000,
                     backing: anon_area2.clone(),
                     pg_offset: 0,
-                    file: None,
+                    fd: usize::MAX,
                 },
             );
             let _vma_left = Mm::insert_copied_vma(
@@ -1626,7 +1578,7 @@ mod tests {
                     end: 0x1000,
                     backing: anon_area5.clone(),
                     pg_offset: 0,
-                    file: None,
+                    fd: usize::MAX,
                 },
             );
             segments_right.insert(
@@ -1636,7 +1588,7 @@ mod tests {
                     end: 0x1000,
                     backing: anon_area6.clone(),
                     pg_offset: 0,
-                    file: None,
+                    fd: usize::MAX,
                 },
             );
             let _vma_right = Mm::insert_copied_vma(
@@ -1657,7 +1609,7 @@ mod tests {
                     end: 0x1000,
                     backing: anon_area3.clone(),
                     pg_offset: 0,
-                    file: None,
+                    fd: usize::MAX,
                 },
             );
             segments_mid.insert(
@@ -1667,7 +1619,7 @@ mod tests {
                     end: 0x1000,
                     backing: anon_area4.clone(),
                     pg_offset: 0,
-                    file: None,
+                    fd: usize::MAX,
                 },
             );
             let _mid_vma = Mm::insert_copied_vma(
@@ -1751,7 +1703,7 @@ mod tests {
                 old_end,
                 anon_area.clone(),
                 VmAreaFlags::WRITABLE,
-                None,
+                usize::MAX,
                 0,
             );
             {
@@ -1773,8 +1725,8 @@ mod tests {
                     mappings.insert(
                         offset,
                         Arc::new(VmaChain {
-                            offset: offset,
-                            fd: -1,
+                            offset,
+                            fd: usize::MAX,
                             file_offset_or_frame: frame.start_address().as_u64(),
                         }),
                     );
@@ -1843,12 +1795,12 @@ mod tests {
         let frame_a_b = Arc::new(alloc_frame().unwrap());
         anon_area_a.insert_mapping(Arc::new(VmaChain::new(
             0,
-            -1,
+            usize::MAX,
             frame_a_a.start_address().as_u64(),
         )));
         anon_area_a.insert_mapping(Arc::new(VmaChain::new(
             0x1000,
-            -1,
+            usize::MAX,
             frame_a_b.start_address().as_u64(),
         )));
 
@@ -1856,7 +1808,7 @@ mod tests {
         let frame_b = Arc::new(alloc_frame().unwrap());
         anon_area_b.insert_mapping(Arc::new(VmaChain::new(
             0,
-            -1,
+            usize::MAX,
             frame_b.start_address().as_u64(),
         )));
 
@@ -1865,12 +1817,12 @@ mod tests {
         let frame_c_b = Arc::new(alloc_frame().unwrap());
         anon_area_c.insert_mapping(Arc::new(VmaChain::new(
             0,
-            -1,
+            usize::MAX,
             frame_c_a.start_address().as_u64(),
         )));
         anon_area_c.insert_mapping(Arc::new(VmaChain::new(
             0x1000,
-            -1,
+            usize::MAX,
             frame_c_b.start_address().as_u64(),
         )));
 
@@ -1883,7 +1835,7 @@ mod tests {
                 start: 0,
                 end: 0x2000,
                 backing: anon_area_a.clone(),
-                file: None,
+                fd: usize::MAX,
                 pg_offset: 0,
             },
         );
@@ -1894,7 +1846,7 @@ mod tests {
                 start: 0,
                 end: 0x1000,
                 backing: anon_area_b.clone(),
-                file: None,
+                fd: usize::MAX,
                 pg_offset: 0,
             },
         );
@@ -1906,7 +1858,7 @@ mod tests {
                 end: 0x2000,
                 backing: anon_area_c.clone(),
                 pg_offset: 0,
-                file: None,
+                fd: usize::MAX,
             },
         );
 
@@ -2039,7 +1991,7 @@ mod tests {
                 old_end,
                 anon_area.clone(),
                 VmAreaFlags::WRITABLE,
-                None,
+                usize::MAX,
                 0,
             );
             {
@@ -2060,8 +2012,8 @@ mod tests {
                     mappings.insert(
                         offset,
                         Arc::new(VmaChain {
-                            offset: offset,
-                            fd: -1,
+                            offset,
+                            fd: usize::MAX,
                             file_offset_or_frame: frame.start_address().as_u64(),
                         }),
                     );
@@ -2085,10 +2037,8 @@ mod tests {
 
         let new_start = old_start + PAGE_SIZE as u64;
         let new_end = old_end - PAGE_SIZE as u64;
-        let shrunk_left = mm.with_vma_tree_mutable(|tree| {
-            let mut mapper = KERNEL_MAPPER.lock();
-            Mm::shrink_vma(old_start, new_start, new_end, tree).0
-        });
+        let shrunk_left =
+            mm.with_vma_tree_mutable(|tree| Mm::shrink_vma(old_start, new_start, new_end, tree).0);
         assert!(shrunk_left.is_some());
 
         let vma = shrunk_left.unwrap();
@@ -2126,7 +2076,7 @@ mod tests {
                 old_end,
                 anon_area.clone(),
                 VmAreaFlags::WRITABLE,
-                None,
+                usize::MAX,
                 0,
             );
             {
@@ -2147,8 +2097,8 @@ mod tests {
                     mappings.insert(
                         offset,
                         Arc::new(VmaChain {
-                            offset: offset,
-                            fd: -1,
+                            offset,
+                            fd: usize::MAX,
                             file_offset_or_frame: frame.start_address().as_u64(),
                         }),
                     );
@@ -2159,7 +2109,6 @@ mod tests {
         // Shrink whole: new_start == new_end, so no pages remain.
         let new_boundary = old_start + PAGE_SIZE as u64;
         let shrunk = mm.with_vma_tree_mutable(|tree| {
-            let mut mapper = KERNEL_MAPPER.lock();
             Mm::shrink_vma(old_start, new_boundary, new_boundary, tree)
         });
         // When the entire VMA is shrunk away, shrink_vma returns None.

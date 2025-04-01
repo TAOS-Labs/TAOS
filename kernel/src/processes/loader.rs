@@ -71,7 +71,7 @@ pub fn load_elf(
                     page.start_address().as_u64() + PAGE_SIZE as u64,
                     anon_vma_code_and_data.clone(),
                     VmAreaFlags::WRITABLE | VmAreaFlags::EXECUTE,
-                    None,
+                    usize::MAX,
                     0,
                 );
             });
@@ -146,7 +146,7 @@ pub fn load_elf(
             STACK_START + STACK_SIZE as u64,
             anon_vma_stack,
             VmAreaFlags::WRITABLE | VmAreaFlags::GROWS_DOWN,
-            None,
+            usize::MAX,
             0,
         );
     });

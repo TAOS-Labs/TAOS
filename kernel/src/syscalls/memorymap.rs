@@ -204,28 +204,6 @@ pub fn sys_mmap(addr: u64, len: u64, prot: u64, flags: u64, fd: i64, offset: u64
     // Determine if this is an anonymous mapping.
     let anon = mmap_flags.contains(MmapFlags::MAP_ANONYMOUS);
 
-    let mut file = None;
-
-    if (fd > -1) {
-        let pid = get_current_pid();
-        let pcb = {
-            let process_table = PROCESS_TABLE.read();
-            process_table
-                .get(&pid)
-                .expect("can't find pcb in process table")
-                .clone()
-        };
-        let pcb = pcb.pcb.get();
-
-        file = unsafe {
-            Some(
-                (*pcb).fd_table[fd as usize]
-                    .clone()
-                    .expect("No file associated with this fd."),
-            )
-        };
-    }
-
     // Insert the new VMA into the process's VMA tree.
     unsafe {
         (*pcb).mm.with_vma_tree_mutable(|tree| {
@@ -235,7 +213,7 @@ pub fn sys_mmap(addr: u64, len: u64, prot: u64, flags: u64, fd: i64, offset: u64
                 begin_addr + len,
                 Arc::new(vma_backing),
                 vma_flags,
-                file,
+                fd as usize,
                 offset,
             );
         })

@@ -3,8 +3,6 @@
 use alloc::collections::btree_map::BTreeMap;
 use x86_64::structures::paging::PhysFrame;
 
-use crate::memory::frame_allocator::alloc_frame;
-
 use super::{constants::*, fat_entry::FatEntry, *};
 
 /// Represents an open file on a FAT16 filesystem
@@ -195,11 +193,6 @@ impl File for Fat16File {
 
     fn size(&self) -> u64 {
         self.size
-    }
-
-    fn add_page_cache_entry(&mut self, file_offset: u64) {
-        let allocated_frame = alloc_frame().expect("Could not allocate frame");
-        self.page_cache.insert(file_offset, allocated_frame);
     }
 }
 

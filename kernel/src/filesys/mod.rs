@@ -1,11 +1,15 @@
 use alloc::{boxed::Box, string::String, vec::Vec};
-use core::result::Result;
+use core::{cell::OnceCell, result::Result};
+use fat16::Fat16;
+use spin::{lock_api::Mutex, Once};
 
 pub mod block;
 pub mod fat16;
 pub mod vfs;
 
 use async_trait::async_trait;
+
+use crate::devices::sd_card::SD_CARD;
 
 #[derive(Debug)]
 pub enum FsError {
@@ -43,7 +47,6 @@ pub trait File {
     fn seek(&mut self, pos: SeekFrom) -> Result<u64, FsError>;
     fn flush(&mut self) -> Result<(), FsError>;
     fn size(&self) -> u64;
-    fn add_page_cache_entry(&mut self, file_offset: u64);
 }
 
 #[derive(Debug, Clone)]
@@ -89,4 +92,22 @@ pub trait FileSystem {
     async fn read_dir(&self, path: &str) -> Result<Vec<DirEntry>, FsError>;
     async fn metadata(&self, path: &str) -> Result<FileMetadata, FsError>;
     async fn rename(&mut self, from: &str, to: &str) -> Result<(), FsError>;
+}
+
+pub static FILESYSTEM: Once<Mutex<Fat16<'_>>> = Once::new();
+
+pub async fn init(cpu_id: u32) {
+    if cpu_id == 0 {
+        let lock = SD_CARD.lock().clone().unwrap();
+        let device = Box::new(lock);
+
+        let fs = async {
+            Fat16::format(device)
+                .await
+                .expect("Could not format Fat16 filesystem")
+        }
+        .await;
+
+        unsafe {FILESYSTEM.call_once(|| fs.into())};
+    }
 }
