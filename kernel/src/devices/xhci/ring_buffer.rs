@@ -319,14 +319,18 @@ impl ProducerRingBuffer {
     /// * `block` - The TRB data to be copied into the buffer
     ///
     /// # Returns
-    /// Returns `Ok(())` on success, on error will return `Err(ProducerRingError)`
+    /// Returns `Ok(VirtAddr)` on success, on error will return `Err(ProducerRingError)`
     /// - `InvalidType` if `block` has a TRB type that does not belong on this ring
     /// - `BufferFullError` if the ring is full
+    ///
+    /// The virtual address returned is the address of the TRB when it
+    /// was enquued onto the event ring.
     ///
     /// # Safety
     /// - This function preforms a raw pointer update to copy `block`'s data onto the buffer
     /// - Increments `enqueue` to the next block, following any link TRBs
-    pub unsafe fn enqueue(&mut self, mut block: Trb) -> Result<(), ProducerRingError> {
+    ///
+    pub unsafe fn enqueue(&mut self, mut block: Trb) -> Result<VirtAddr, ProducerRingError> {
         // first make sure that we are trying to enqueue a TRB that belongs on this ring
         match self.ring {
             RingType::Command => {
@@ -354,10 +358,9 @@ impl ProducerRingBuffer {
         let enqueue_addr = self.enqueue as u64;
         debug_println!("putting trb at address: {:X}", enqueue_addr);
         core::ptr::write_volatile(self.enqueue, block);
-
         // increment the enqueue pointer
         self.increment_enqueue();
-        Result::Ok(())
+        Result::Ok(VirtAddr::new(enqueue_addr))
     }
 }
 

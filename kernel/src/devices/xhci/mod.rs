@@ -129,14 +129,7 @@ pub struct USBDeviceEndpointDescriptor {
     b_interval: u8,
 }
 
-#[derive(Debug, Clone, Copy)]
-#[repr(C)]
-struct DeviceFunctionalDescriptor {
-    b_length: u8,
-    b_descriptor_type: u8,
-    b_descriptor_subtype: u8,
-}
-
+#[allow(dead_code)]
 enum TransferType {
     NoDataStage = 0,
     Reserved = 1,
@@ -148,7 +141,6 @@ pub struct USBDeviceInfo {
     descriptor: USBDeviceDescriptor,
     command_ring: ProducerRingBuffer,
     event_ring: ConsumerRingBuffer,
-    data_rings: Vec<ProducerRingBuffer>,
     input_context_vaddr: VirtAddr,
     slot: u8,
 }
@@ -410,7 +402,7 @@ pub fn initalize_xhci_hub(device: &Arc<Mutex<DeviceInfo>>) -> Result<(), XHCIErr
         device.descriptor = unsafe { core::ptr::read_volatile(descriptor_ptr) };
     }
     // Now look for devices
-    let ecm_device = find_cdc_device(&mut devices).unwrap();
+    let _ = find_cdc_device(&mut devices).unwrap();
     let _ = init_cdc_device(devices.pop().unwrap());
     Result::Ok(())
 }
@@ -642,7 +634,6 @@ fn prepare_device(
         descriptor: device_descriptor,
         command_ring: producer_ring_buffer,
         event_ring,
-        data_rings: Vec::new(),
         input_context_vaddr,
         slot,
     })
