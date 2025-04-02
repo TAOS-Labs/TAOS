@@ -3,6 +3,7 @@
 use crate::{
     constants::processes::MAX_FILES,
     processes::process::{get_current_pid, PROCESS_TABLE},
+    events::{futures::sync::Condition, current_running_event}
 };
 
 use super::*;
@@ -11,7 +12,10 @@ use alloc::{
     sync::Arc,
     vec,
 };
-use core::cmp::{max, min};
+use core::{
+    sync::atomic::Ordering,
+    cmp::{max, min}
+};
 use spin::lock_api::Mutex;
 
 mod boot_sector;
@@ -143,6 +147,14 @@ impl<'a> Fat16<'a> {
     }
 
     pub async fn new(device: Box<dyn BlockDevice + 'a>) -> Result<Self, FsError> {
+        if !FS_INIT_COMPLETE.load(Ordering::Relaxed) {
+            Condition::new(
+                FS_INIT_COMPLETE.clone(),
+                current_running_event().expect("Fat16 action outside event"),
+            )
+            .await;
+        }
+
         let mut boot_sector_data = vec![0u8; SECTOR_SIZE];
         device.read_block(0, &mut boot_sector_data).await?;
 

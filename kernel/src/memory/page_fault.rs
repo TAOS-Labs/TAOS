@@ -31,6 +31,7 @@ use crate::{
 use super::mm::{VmAreaBackings, VmaChain};
 
 /// Fault outcome enum to route what to do in IDT
+#[derive(Debug)]
 pub enum FaultOutcome {
     ExistingMapping {
         page: Page<Size4KiB>,
@@ -165,6 +166,7 @@ pub fn determine_fault_cause(error_code: PageFaultErrorCode) -> FaultOutcome {
                     let page_cache = &locked_file.page_cache;
                     let file_offset = segment.pg_offset + fault_offset;
                     if page_cache.contains_key(&file_offset) {
+                        serial_println!("FAULT IS EXISTING FILE MAPPING");
                         Some(FaultOutcome::ExistingFileMapping {
                             page,
                             mapper,
@@ -172,6 +174,7 @@ pub fn determine_fault_cause(error_code: PageFaultErrorCode) -> FaultOutcome {
                             pt_flags,
                         })
                     } else {
+                        serial_println!("FAULT IS NEW FILE MAPPING");
                         Some(FaultOutcome::NewFileMapping {
                             page,
                             mapper,
@@ -263,9 +266,13 @@ pub async fn handle_new_file_mapping(
     fd: usize,
 ) {
     serial_println!("Creating a new mapping for a file-backed page.");
+    serial_println!("PT flags are {:#?}", pt_flags);
+
+    let mut flags = pt_flags;
+    flags.set(PageTableFlags::PRESENT, true);
 
     // allocate a frame for that offset of the file
-    let frame = alloc_frame().expect("Failed to allocate frame for file-backed page");
+    let new_frame = create_mapping(page, mapper, Some(flags));
 
     let pid = get_current_pid();
     let pcb = {
@@ -285,10 +292,10 @@ pub async fn handle_new_file_mapping(
 
     // Store the frame in the file’s page cache
     let mut locked_file = file.lock();
-    locked_file.page_cache.insert(offset, frame);
+    locked_file.page_cache.insert(offset, new_frame);
+    serial_println!("HELLOOOOOOOO");
 
     // Create mapping between faulting page and frame
-    create_mapping_to_frame(page, mapper, Some(pt_flags), frame);
     let ptr = page.start_address().as_u64() as *mut u8;
     let buffer: &mut [u8] = unsafe { slice::from_raw_parts_mut(ptr, PAGE_SIZE) };
     {
