@@ -165,7 +165,7 @@ impl phy::TxToken for ECMDeviceTxToken<'_> {
             status: (transfer_length as u32)
                 | ((transfer_size as u32) << 17)
                 | ((interrupter_target as u32) << 22),
-            control:  (TrbTypes::Normal as u32) << 10,
+            control: (TrbTypes::Normal as u32) << 10,
         };
         unsafe {
             self.out_trb.enqueue(block).unwrap();
@@ -216,7 +216,7 @@ impl phy::Device for ECMDevice {
             + (self.standard_device.slot as u64) * 4)
             as *mut u32;
         unsafe { core::ptr::write_volatile(doorbell_base, 5) };
-
+        drop(info);
         let event_result = unsafe { self.standard_device.event_ring.dequeue() };
         if event_result.is_err() {
             return Option::None;
@@ -246,6 +246,29 @@ impl phy::Device for ECMDevice {
             in_data_addr: self.in_data_addr,
             _phantom: PhantomData,
         };
+
+        let mapper = MAPPER.lock();
+
+        let transfer_length: u16 = 4096;
+        let transfer_size: u8 = 1;
+        let interrupter_target: u8 = self.standard_device.slot;
+        let block = TransferRequestBlock {
+            parameters: self.in_data_addr.as_u64() - mapper.phys_offset().as_u64(),
+            status: (transfer_length as u32)
+                | ((transfer_size as u32) << 17)
+                | ((interrupter_target as u32) << 22),
+            control: (1 << 5) | ((TrbTypes::Normal as u32) << 10),
+        };
+        let _ = unsafe { self.in_data_trb.enqueue(block).ok()? };
+        drop(mapper);
+        let info = XHCI.lock().clone().unwrap();
+
+        let doorbell_base: *mut u32 = (info.base_address
+            + info.capablities.doorbell_offset as u64
+            + (self.standard_device.slot as u64) * 4)
+            as *mut u32;
+        unsafe { core::ptr::write_volatile(doorbell_base, 5) };
+        drop(info);
         Some((rx_token, tx_token))
         // Some((
         //     ECMDeviceRxToken(&mut self.rx_buffer[..]),
@@ -535,7 +558,7 @@ fn get_eth_addr(device: &mut USBDeviceInfo, idx: u8) -> Result<EthernetAddress, 
     }
     let mut eth_data: [u8; 6] = [0; 6];
     for idx in 0..6 {
-        let new_string = str::from_utf8(&eth_data_str[(2 * idx)..((2 * idx) + 1)]).unwrap();
+        let new_string = str::from_utf8(&eth_data_str[(2 * idx)..=((2 * idx) + 1)]).unwrap();
         eth_data[idx] = u8::from_str_radix(new_string, 16).unwrap();
         debug_println!("Eth data[idx] = {:X}", eth_data[idx]);
     }

@@ -445,7 +445,10 @@ fn get_host_controller_cap_regs(address: u64) -> XHCICapabilities {
 
     let cap_params_2_addr = (address + 0x18) as *const u32;
     let cap_params_2 = unsafe { core::ptr::read_volatile(cap_params_2_addr) };
-
+    debug_println!(
+        "structural_paramaters_1 = {}",
+        (hcs_params_1 >> 8) & 0b1111111111
+    );
     XHCICapabilities {
         register_length,
         version_number: version_no,
