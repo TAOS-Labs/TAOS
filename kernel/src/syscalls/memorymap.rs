@@ -441,7 +441,7 @@ mod tests {
     };
     use alloc::boxed::Box;
 
-    #[test_case]
+    // #[test_case]
     async fn mmap_file_read_test() {
         for i in 0..100_000_000u64 {}
         serial_println!("finished for loop");

@@ -187,7 +187,9 @@ extern "x86-interrupt" fn page_fault_handler(
             fd,
         } => {
             serial_println!("GOING TO HANDLE NEW FILE MAPPING!");
-            block_on(async {handle_new_file_mapping(page, &mut mapper, offset, pt_flags, fd).await});
+            block_on(async {
+                handle_new_file_mapping(page, &mut mapper, offset, pt_flags, fd).await
+            });
         }
         FaultOutcome::CopyOnWrite {
             page,
@@ -272,9 +274,10 @@ fn syscall_handler(rsp: u64) {
         p5 = *stack_ptr.add(6);
         p6 = *stack_ptr.add(7);
     }
-
+    serial_println!("IN SYSCALL HANDLER");
     match syscall_num as u32 {
         SYSCALL_EXIT => {
+            serial_println!("ATTEMPTING EXIT");
             sys_exit(p1 as i64);
         }
         SYSCALL_PRINT => {

@@ -15,14 +15,13 @@ use crate::{
         memory::PAGE_SIZE,
         processes::{MMAP_ANON_SIMPLE, TEST_SIMPLE_STACK_ACCESS},
     },
-    debug, devices,
-    devices::sd_card::SD_CARD,
+    debug,
+    devices::{self, sd_card::SD_CARD},
     events::{
         futures::sleep, register_event_runner, run_loop, schedule_kernel, schedule_kernel_on,
         schedule_process, spawn, yield_now,
     },
-    filesys,
-    filesys::{fat16::Fat16, FileSystem, FILESYSTEM},
+    filesys::{self, fat16::Fat16, FileSystem, FILESYSTEM},
     interrupts::{self, idt},
     ipc::{
         messages::Message,
@@ -40,7 +39,7 @@ use crate::{
     serial_println,
     syscalls::{
         memorymap::{sys_mmap, MmapFlags, ProtFlags},
-        syscall_handlers::sys_nanosleep_32,
+        syscall_handlers::{block_on, sys_nanosleep_32},
     },
     trace,
 };
@@ -94,9 +93,13 @@ pub fn init() -> u32 {
             let device = Box::new(lock);
 
             // Format the filesystem
-            let mut filesystem = Fat16::format(device)
-                .await
-                .expect("Failed to format filesystem");
+            let mut filesystem = block_on(async {
+                Fat16::format(device)
+                    .await
+                    .expect("Failed to format filesystem")
+            });
+
+            serial_println!("FORMATTED FILESYSTEM");
 
             filesystem.create_file("/testfile.txt").await;
             serial_println!("created file");

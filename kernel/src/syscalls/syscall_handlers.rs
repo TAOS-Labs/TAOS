@@ -181,6 +181,7 @@ pub unsafe extern "C" fn syscall_handler_impl(
 
 pub fn sys_exit(code: i64) -> Option<u64> {
     // TODO handle hierarchy (parent processes), resources, threads, etc.
+    serial_println!("HANDLING EXIT");
 
     // Used for testing
     if code == -1 {

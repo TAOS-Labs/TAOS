@@ -2,8 +2,8 @@
 
 use crate::{
     constants::processes::MAX_FILES,
+    events::{current_running_event, futures::sync::Condition},
     processes::process::{get_current_pid, PROCESS_TABLE},
-    events::{futures::sync::Condition, current_running_event}
 };
 
 use super::*;
@@ -13,8 +13,8 @@ use alloc::{
     vec,
 };
 use core::{
+    cmp::{max, min},
     sync::atomic::Ordering,
-    cmp::{max, min}
 };
 use spin::lock_api::Mutex;
 
@@ -68,6 +68,8 @@ impl<'a> Fat16<'a> {
             / sectors_per_cluster as usize;
         let sectors_per_fat = (total_clusters * 2).div_ceil(block_size);
 
+        serial_println!("CREATING BOOT SECTOR");
+
         // Create boot sector
         let boot_sector = BootSector {
             jump_boot: [0xEB, 0x3C, 0x90], // Standard boot jump
@@ -106,6 +108,7 @@ impl<'a> Fat16<'a> {
                 core::mem::size_of::<BootSector>(),
             )
         };
+        serial_println!("FINISHED BOOT SECTOR");
         let mut block_buf = vec![0u8; block_size];
         block_buf[..boot_sector_bytes.len()].copy_from_slice(boot_sector_bytes);
         block_buf[510] = 0x55; // Boot signature
@@ -125,6 +128,8 @@ impl<'a> Fat16<'a> {
             device.write_block(fat_start, &fat_block).await?;
         }
 
+        serial_println!("CLEARING FAT TABLES");
+
         // Clear the rest of the FAT tables
         let zero_block = vec![0u8; block_size];
         for i in 0..fat_count {
@@ -136,6 +141,8 @@ impl<'a> Fat16<'a> {
             }
         }
 
+        serial_println!("INITIALIZING ROOT DIR");
+
         // Initialize empty root directory
         let root_dir_start = reserved_sectors as u64 + (fat_count as u64 * sectors_per_fat as u64);
         for i in 0..root_dir_sectors {
@@ -143,10 +150,12 @@ impl<'a> Fat16<'a> {
                 .write_block(root_dir_start + i as u64, &zero_block)
                 .await?;
         }
+        serial_println!("ABOUT TO MAKE NEW FAT16");
         Fat16::new(device).await
     }
 
     pub async fn new(device: Box<dyn BlockDevice + 'a>) -> Result<Self, FsError> {
+        serial_println!("INITING FS");
         if !FS_INIT_COMPLETE.load(Ordering::Relaxed) {
             Condition::new(
                 FS_INIT_COMPLETE.clone(),
@@ -154,6 +163,7 @@ impl<'a> Fat16<'a> {
             )
             .await;
         }
+        serial_println!("FS INIT COMPLETE");
 
         let mut boot_sector_data = vec![0u8; SECTOR_SIZE];
         device.read_block(0, &mut boot_sector_data).await?;
@@ -170,6 +180,8 @@ impl<'a> Fat16<'a> {
         let fd_counter = 0;
         let reuse_fds = BinaryHeap::new();
         let fd_table = Vec::new();
+
+        serial_println!("SET UP VARIABLES IN NEW");
 
         Ok(Fat16 {
             device,
@@ -1002,9 +1014,11 @@ impl FileSystem for Fat16<'_> {
 mod tests {
     use crate::devices::sd_card::SD_CARD;
 
-    use crate::filesys::{fat16::Fat16, FileSystem, SeekFrom};
+    use crate::{
+        filesys::{fat16::Fat16, FileSystem, SeekFrom},
+        serial_println,
+    };
     use alloc::boxed::Box;
-    use crate::serial_println;
 
     // #[test_case]
     async fn fat_test() {
