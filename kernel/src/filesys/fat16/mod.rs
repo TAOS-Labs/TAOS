@@ -156,14 +156,6 @@ impl<'a> Fat16<'a> {
 
     pub async fn new(device: Box<dyn BlockDevice + 'a>) -> Result<Self, FsError> {
         serial_println!("INITING FS");
-        if !FS_INIT_COMPLETE.load(Ordering::Relaxed) {
-            Condition::new(
-                FS_INIT_COMPLETE.clone(),
-                current_running_event().expect("Fat16 action outside event"),
-            )
-            .await;
-        }
-        serial_println!("FS INIT COMPLETE");
 
         let mut boot_sector_data = vec![0u8; SECTOR_SIZE];
         device.read_block(0, &mut boot_sector_data).await?;
@@ -197,6 +189,15 @@ impl<'a> Fat16<'a> {
     }
 
     async fn read_fat_entry(&self, cluster: u16) -> Result<FatEntry, FsError> {
+        if !FS_INIT_COMPLETE.load(Ordering::Relaxed) {
+            Condition::new(
+                FS_INIT_COMPLETE.clone(),
+                current_running_event().expect("Fat16 action outside event"),
+            )
+            .await;
+        }
+
+        serial_println!("FS INIT COMPLETE");
         let offset = cluster as u64 * FAT_ENTRY_SIZE as u64;
         let sector = self.fat_start + (offset / SECTOR_SIZE as u64);
         let sector_offset = (offset % SECTOR_SIZE as u64) as usize;
@@ -211,6 +212,14 @@ impl<'a> Fat16<'a> {
     }
 
     async fn write_fat_entry(&mut self, cluster: u16, entry: FatEntry) -> Result<(), FsError> {
+        if !FS_INIT_COMPLETE.load(Ordering::Relaxed) {
+            Condition::new(
+                FS_INIT_COMPLETE.clone(),
+                current_running_event().expect("Fat16 action outside event"),
+            )
+            .await;
+        }
+
         let offset = cluster as u64 * FAT_ENTRY_SIZE as u64;
         let sector = self.fat_start + (offset / SECTOR_SIZE as u64);
         let sector_offset = (offset % SECTOR_SIZE as u64) as usize;
@@ -240,6 +249,14 @@ impl<'a> Fat16<'a> {
         dir_cluster: u16,
         entry: &DirEntry83,
     ) -> Result<(), FsError> {
+        if !FS_INIT_COMPLETE.load(Ordering::Relaxed) {
+            Condition::new(
+                FS_INIT_COMPLETE.clone(),
+                current_running_event().expect("Fat16 action outside event"),
+            )
+            .await;
+        }
+
         let entries_per_sector = SECTOR_SIZE / core::mem::size_of::<DirEntry83>();
         let mut sector_buffer = vec![0u8; SECTOR_SIZE];
 
@@ -284,6 +301,14 @@ impl<'a> Fat16<'a> {
     }
 
     async fn init_directory(&mut self, cluster: u16, parent_cluster: u16) -> Result<(), FsError> {
+        if !FS_INIT_COMPLETE.load(Ordering::Relaxed) {
+            Condition::new(
+                FS_INIT_COMPLETE.clone(),
+                current_running_event().expect("Fat16 action outside event"),
+            )
+            .await;
+        }
+
         let dot_entry = DirEntry83::new_directory(".", cluster);
         let dotdot_entry = DirEntry83::new_directory("..", parent_cluster);
 
@@ -310,6 +335,14 @@ impl<'a> Fat16<'a> {
     }
 
     async fn allocate_cluster(&mut self) -> Result<u16, FsError> {
+        if !FS_INIT_COMPLETE.load(Ordering::Relaxed) {
+            Condition::new(
+                FS_INIT_COMPLETE.clone(),
+                current_running_event().expect("Fat16 action outside event"),
+            )
+            .await;
+        }
+
         let total_clusters = (self.boot_sector.total_sectors_16 as usize
             - self.data_start as usize)
             / self.boot_sector.sectors_per_cluster as usize;
@@ -332,6 +365,14 @@ impl<'a> Fat16<'a> {
     }
 
     async fn find_entry(&self, path: &str) -> Result<(DirEntry83, u64), FsError> {
+        if !FS_INIT_COMPLETE.load(Ordering::Relaxed) {
+            Condition::new(
+                FS_INIT_COMPLETE.clone(),
+                current_running_event().expect("Fat16 action outside event"),
+            )
+            .await;
+        }
+
         let mut current_dir_cluster = 0;
         let components: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
 
@@ -356,6 +397,14 @@ impl<'a> Fat16<'a> {
     }
 
     async fn remove_entry(&mut self, path: &str, is_dir: bool) -> Result<(), FsError> {
+        if !FS_INIT_COMPLETE.load(Ordering::Relaxed) {
+            Condition::new(
+                FS_INIT_COMPLETE.clone(),
+                current_running_event().expect("Fat16 action outside event"),
+            )
+            .await;
+        }
+
         let (entry, entry_pos) = self.find_entry(path).await?;
 
         if entry.is_directory() != is_dir {
@@ -384,6 +433,14 @@ impl<'a> Fat16<'a> {
     }
 
     async fn is_directory_empty(&mut self, dir_cluster: u16) -> Result<bool, FsError> {
+        if !FS_INIT_COMPLETE.load(Ordering::Relaxed) {
+            Condition::new(
+                FS_INIT_COMPLETE.clone(),
+                current_running_event().expect("Fat16 action outside event"),
+            )
+            .await;
+        }
+
         let entries_per_sector = SECTOR_SIZE / core::mem::size_of::<DirEntry83>();
         let mut sector_buffer = vec![0u8; SECTOR_SIZE];
 
@@ -418,6 +475,14 @@ impl<'a> Fat16<'a> {
         dir_cluster: u64,
         name: &str,
     ) -> Result<(DirEntry83, u64), FsError> {
+        if !FS_INIT_COMPLETE.load(Ordering::Relaxed) {
+            Condition::new(
+                FS_INIT_COMPLETE.clone(),
+                current_running_event().expect("Fat16 action outside event"),
+            )
+            .await;
+        }
+
         let entries_per_sector = SECTOR_SIZE / core::mem::size_of::<DirEntry83>();
         let mut sector_buffer = vec![0u8; SECTOR_SIZE];
 
@@ -465,6 +530,14 @@ impl<'a> Fat16<'a> {
 #[async_trait]
 impl FileSystem for Fat16<'_> {
     async fn create_file(&mut self, path: &str) -> Result<(), FsError> {
+        if !FS_INIT_COMPLETE.load(Ordering::Relaxed) {
+            Condition::new(
+                FS_INIT_COMPLETE.clone(),
+                current_running_event().expect("Fat16 action outside event"),
+            )
+            .await;
+        }
+
         let (parent_path, name) = match path.rfind('/') {
             Some(pos) => (&path[..pos], &path[pos + 1..]),
             None => ("", path),
@@ -499,6 +572,14 @@ impl FileSystem for Fat16<'_> {
     }
 
     async fn create_dir(&mut self, path: &str) -> Result<(), FsError> {
+        if !FS_INIT_COMPLETE.load(Ordering::Relaxed) {
+            Condition::new(
+                FS_INIT_COMPLETE.clone(),
+                current_running_event().expect("Fat16 action outside event"),
+            )
+            .await;
+        }
+
         let (parent_path, name) = match path.rfind('/') {
             Some(pos) => (&path[..pos], &path[pos + 1..]),
             None => ("", path),
@@ -530,10 +611,26 @@ impl FileSystem for Fat16<'_> {
     }
 
     async fn remove_file(&mut self, path: &str) -> Result<(), FsError> {
+        if !FS_INIT_COMPLETE.load(Ordering::Relaxed) {
+            Condition::new(
+                FS_INIT_COMPLETE.clone(),
+                current_running_event().expect("Fat16 action outside event"),
+            )
+            .await;
+        }
+
         self.remove_entry(path, false).await
     }
 
     async fn remove_dir(&mut self, path: &str) -> Result<(), FsError> {
+        if !FS_INIT_COMPLETE.load(Ordering::Relaxed) {
+            Condition::new(
+                FS_INIT_COMPLETE.clone(),
+                current_running_event().expect("Fat16 action outside event"),
+            )
+            .await;
+        }
+
         let (entry, _) = self.find_entry(path).await?;
 
         if !entry.is_directory() {
@@ -548,6 +645,14 @@ impl FileSystem for Fat16<'_> {
     }
 
     async fn open_file(&mut self, path: &str) -> Result<usize, FsError> {
+        if !FS_INIT_COMPLETE.load(Ordering::Relaxed) {
+            Condition::new(
+                FS_INIT_COMPLETE.clone(),
+                current_running_event().expect("Fat16 action outside event"),
+            )
+            .await;
+        }
+
         let (entry, entry_pos) = self.find_entry(path).await?;
 
         if entry.is_directory() {
@@ -620,6 +725,14 @@ impl FileSystem for Fat16<'_> {
     }
 
     async fn write_file(&mut self, fd: usize, buf: &[u8]) -> Result<usize, FsError> {
+        if !FS_INIT_COMPLETE.load(Ordering::Relaxed) {
+            Condition::new(
+                FS_INIT_COMPLETE.clone(),
+                current_running_event().expect("Fat16 action outside event"),
+            )
+            .await;
+        }
+
         let mut bytes_written = 0;
         let mut buf_offset = 0;
 
@@ -758,6 +871,14 @@ impl FileSystem for Fat16<'_> {
     }
 
     async fn read_file(&mut self, fd: usize, buf: &mut [u8]) -> Result<usize, FsError> {
+        if !FS_INIT_COMPLETE.load(Ordering::Relaxed) {
+            Condition::new(
+                FS_INIT_COMPLETE.clone(),
+                current_running_event().expect("Fat16 action outside event"),
+            )
+            .await;
+        }
+
         let pid = get_current_pid();
         let pcb = {
             let process_table = PROCESS_TABLE.read();
@@ -826,6 +947,14 @@ impl FileSystem for Fat16<'_> {
     }
 
     async fn read_dir(&self, path: &str) -> Result<Vec<DirEntry>, FsError> {
+        if !FS_INIT_COMPLETE.load(Ordering::Relaxed) {
+            Condition::new(
+                FS_INIT_COMPLETE.clone(),
+                current_running_event().expect("Fat16 action outside event"),
+            )
+            .await;
+        }
+
         let (entry, _) = if path.is_empty() || path == "/" {
             // Root directory - return entry with dummy position
             (
@@ -904,6 +1033,14 @@ impl FileSystem for Fat16<'_> {
     }
 
     async fn metadata(&self, path: &str) -> Result<FileMetadata, FsError> {
+        if !FS_INIT_COMPLETE.load(Ordering::Relaxed) {
+            Condition::new(
+                FS_INIT_COMPLETE.clone(),
+                current_running_event().expect("Fat16 action outside event"),
+            )
+            .await;
+        }
+
         let (entry, _) = self.find_entry(path).await?;
 
         Ok(FileMetadata {
@@ -920,6 +1057,14 @@ impl FileSystem for Fat16<'_> {
     }
 
     async fn rename(&mut self, from: &str, to: &str) -> Result<(), FsError> {
+        if !FS_INIT_COMPLETE.load(Ordering::Relaxed) {
+            Condition::new(
+                FS_INIT_COMPLETE.clone(),
+                current_running_event().expect("Fat16 action outside event"),
+            )
+            .await;
+        }
+
         let (src_entry, src_pos) = self.find_entry(from).await?;
 
         if self.find_entry(to).await.is_ok() {

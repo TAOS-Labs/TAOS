@@ -205,7 +205,6 @@ fn wake_cores() -> u32 {
     while CPU_COUNT.load(Ordering::SeqCst) < cpu_count - 1 {
         core::hint::spin_loop();
     }
-    register_event_runner();
 
     BOOT_COMPLETE.store(true, Ordering::SeqCst);
 

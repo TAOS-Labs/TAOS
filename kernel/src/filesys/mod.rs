@@ -118,12 +118,12 @@ pub fn init(cpu_id: u32) {
                         .await
                         .expect("Could not format Fat16 filesystem")
                 });
+                FS_INIT_COMPLETE.store(true, core::sync::atomic::Ordering::Relaxed);
                 FILESYSTEM.call_once(|| {
-                    FS_INIT_COMPLETE.store(true, core::sync::atomic::Ordering::Relaxed);
                     fs.into()
                 });
             },
-            3,
+            0,
         );
     }
 }
