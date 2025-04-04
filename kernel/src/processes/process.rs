@@ -1,20 +1,25 @@
 extern crate alloc;
 
 use crate::{
-    constants::processes::PROCESS_TIMESLICE,
+    constants::{
+        processes::{MAX_FILES, PROCESS_NANOS, PROCESS_TIMESLICE},
+        syscalls::START_MMAP_ADDRESS,
+    },
     debug,
     events::{
         current_running_event_info, nanosleep_current_process, runner_timestamp, schedule_process,
         EventInfo,
     },
+    filesys::fat16::Fat16File,
     interrupts::{
         gdt,
         x2apic::{self, nanos_to_ticks},
     },
     ipc::namespace::Namespace,
     memory::{
-        frame_allocator::{alloc_frame, with_generic_allocator},
-        HHDM_OFFSET, MAPPER,
+        frame_allocator::{alloc_frame, dealloc_frame, with_buddy_frame_allocator},
+        mm::Mm,
+        HHDM_OFFSET, KERNEL_MAPPER,
     },
     processes::{loader::load_elf, registers::Registers},
     serial_println,
@@ -22,18 +27,19 @@ use crate::{
 use alloc::{collections::BTreeMap, sync::Arc};
 use core::{
     arch::naked_asm,
+    borrow::BorrowMut,
     cell::UnsafeCell,
-    sync::atomic::{AtomicU32, Ordering},
+    sync::atomic::{AtomicU32, AtomicU64, Ordering},
 };
-use spin::rwlock::RwLock;
+use spin::{lock_api::Mutex, rwlock::RwLock};
 use x86_64::{
     instructions::interrupts,
-    structures::paging::{FrameDeallocator, OffsetPageTable, PageTable, PhysFrame, Size4KiB},
+    structures::paging::{OffsetPageTable, PageTable, PhysFrame, Size4KiB},
 };
 
 // process counter must be thread-safe
 // PID 0 will ONLY be used for errors/PID not found
-static NEXT_PID: AtomicU32 = AtomicU32::new(1);
+pub static NEXT_PID: AtomicU32 = AtomicU32::new(1);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ProcessState {
@@ -45,7 +51,8 @@ pub enum ProcessState {
     Kernel,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
+/// TODO:Put locks around all of this for supporting multithreadings
 pub struct PCB {
     pub pid: u32,
     pub state: ProcessState,
@@ -53,15 +60,19 @@ pub struct PCB {
     pub kernel_rip: u64,
     pub next_preemption_time: u64,
     pub registers: Registers,
-    pub pml4_frame: PhysFrame<Size4KiB>, // this process' page table,
+    pub mmap_address: u64,
+    pub fd_table: [Option<Arc<Mutex<Fat16File>>>; MAX_FILES],
+    pub next_fd: Arc<Mutex<u64>>,
+    pub mm: Mm,
     pub namespace: Namespace,
 }
 
 pub struct UnsafePCB {
     pub pcb: UnsafeCell<PCB>,
 }
+
 impl UnsafePCB {
-    fn init(pcb: PCB) -> Self {
+    pub fn new(pcb: PCB) -> Self {
         UnsafePCB {
             pcb: UnsafeCell::new(pcb),
         }
@@ -81,9 +92,19 @@ impl PCB {
     /// # Safety
     /// TODO
     pub unsafe fn create_mapper(&mut self) -> OffsetPageTable<'_> {
-        let virt = *HHDM_OFFSET + self.pml4_frame.start_address().as_u64();
+        let virt = *HHDM_OFFSET + self.mm.pml4_frame.start_address().as_u64();
         let ptr = virt.as_mut_ptr::<PageTable>();
         OffsetPageTable::new(unsafe { &mut *ptr }, *HHDM_OFFSET)
+    }
+}
+
+pub fn get_current_pid() -> u32 {
+    let event: EventInfo = current_running_event_info();
+    let process_table = PROCESS_TABLE.read();
+    if process_table.contains_key(&event.pid) {
+        event.pid
+    } else {
+        0
     }
 }
 
@@ -114,20 +135,69 @@ pub unsafe fn print_process_table(process_table: &PROCESS_TABLE) {
     serial_println!("========================");
 }
 
+pub fn create_placeholder_process() -> u32 {
+    // Build a new process address space
+    let pid = 0;
+    let process_pml4_frame = unsafe { create_process_page_table() };
+    let mm = Mm::new(process_pml4_frame);
+    let process = Arc::new(UnsafePCB::new(PCB {
+        pid,
+        state: ProcessState::New,
+        kernel_rsp: 0,
+        kernel_rip: 0,
+        registers: Registers {
+            rax: 0,
+            rbx: 0,
+            rcx: 0,
+            rdx: 0,
+            rsi: 0,
+            rdi: 0,
+            r8: 0,
+            r9: 0,
+            r10: 0,
+            r11: 0,
+            r12: 0,
+            r13: 0,
+            r14: 0,
+            r15: 0,
+            rbp: 0,
+            rsp: 0,
+            rip: 0,
+            rflags: 0x0,
+        },
+        mmap_address: START_MMAP_ADDRESS,
+        fd_table: [const { None }; MAX_FILES],
+        next_fd: Arc::new(Mutex::new(0)),
+        next_preemption_time: 0,
+        mm,
+        namespace: Namespace::new(),
+    }));
+    PROCESS_TABLE.write().insert(pid, Arc::clone(&process));
+    pid
+}
+
 pub fn create_process(elf_bytes: &[u8]) -> u32 {
     let pid = NEXT_PID.fetch_add(1, Ordering::SeqCst);
-
+    with_buddy_frame_allocator(|alloc| {
+        alloc.print_free_frames();
+    });
     // Build a new process address space
     let process_pml4_frame = unsafe { create_process_page_table() };
-
+    let mut mm = Mm::new(process_pml4_frame);
     let mut mapper = unsafe {
         let virt = *HHDM_OFFSET + process_pml4_frame.start_address().as_u64();
         let ptr = virt.as_mut_ptr::<PageTable>();
         OffsetPageTable::new(&mut *ptr, *HHDM_OFFSET)
     };
-    let (stack_top, entry_point) = load_elf(elf_bytes, &mut mapper, &mut MAPPER.lock());
 
-    let process = Arc::new(UnsafePCB::init(PCB {
+    let (stack_top, entry_point) = load_elf(
+        elf_bytes,
+        &mut mapper,
+        &mut KERNEL_MAPPER.lock(),
+        mm.borrow_mut(),
+    );
+
+    let process = Arc::new(UnsafePCB::new(PCB {
         pid,
         state: ProcessState::New,
         kernel_rsp: 0,
@@ -149,14 +219,16 @@ pub fn create_process(elf_bytes: &[u8]) -> u32 {
             r14: 0,
             r15: 0,
             rbp: 0,
-            rsp: stack_top.as_u64(),
+            rsp: stack_top.as_u64() - 16,
             rip: entry_point,
             rflags: 0x202,
         },
-        pml4_frame: process_pml4_frame,
+        mmap_address: START_MMAP_ADDRESS,
+        fd_table: [const { None }; MAX_FILES],
+        next_fd: Arc::new(Mutex::new(0)),
+        mm,
         namespace: Namespace::new(),
     }));
-    let pid = unsafe { (*process.pcb.get()).pid };
     PROCESS_TABLE.write().insert(pid, Arc::clone(&process));
     debug!("Created process with PID: {}", pid);
     // schedule process (call from main)
@@ -168,16 +240,17 @@ pub fn create_process(elf_bytes: &[u8]) -> u32 {
 /// TODO
 unsafe fn create_process_page_table() -> PhysFrame<Size4KiB> {
     let frame = alloc_frame().expect("Failed to allocate PML4 frame");
+
     let virt = *HHDM_OFFSET + frame.start_address().as_u64();
     let ptr = virt.as_mut_ptr::<PageTable>();
 
     // Initialize and copy kernel mappings
-    let mapper = MAPPER.lock();
+    let mapper = KERNEL_MAPPER.lock();
     unsafe {
         (*ptr).zero();
         let kernel_pml4 = mapper.level_4_table();
         for i in 256..512 {
-            (*ptr)[i] = kernel_pml4[i].clone();
+            (*ptr)[i].set_addr(kernel_pml4[i].addr(), kernel_pml4[i].flags());
         }
     }
 
@@ -188,38 +261,35 @@ unsafe fn create_process_page_table() -> PhysFrame<Size4KiB> {
 ///
 /// * `pcb`: The process PCB to clear memory for
 pub fn clear_process_frames(pcb: &mut PCB) {
-    let pml4_frame = pcb.pml4_frame;
+    let pml4_frame = pcb.mm.pml4_frame;
     let mapper = unsafe { pcb.create_mapper() };
 
-    with_generic_allocator(|deallocator| {
-        // Iterate over first 256 entries (user space)
-        for i in 0..256 {
-            let entry = &mapper.level_4_table()[i];
-            if entry.is_unused() {
-                continue;
-            }
-
-            let pdpt_frame = PhysFrame::containing_address(entry.addr());
-            unsafe {
-                free_page_table(pdpt_frame, 3, deallocator, HHDM_OFFSET.as_u64());
-            }
+    // Iterate over first 256 entries (user space)
+    for i in 0..256 {
+        let entry = &mapper.level_4_table()[i];
+        if entry.is_unused() {
+            continue;
         }
-        unsafe { deallocator.deallocate_frame(pml4_frame) };
-    });
+
+        let pdpt_frame = PhysFrame::containing_address(entry.addr());
+        unsafe {
+            free_page_table(pdpt_frame, 3, HHDM_OFFSET.as_u64());
+        }
+    }
+    serial_println!(
+        "Attempting to deallocate frame {:#x}",
+        pml4_frame.start_address()
+    );
+    dealloc_frame(pml4_frame);
+    serial_println!("Deallocated frame {:#x}", pml4_frame.start_address());
 }
 
 /// Helper function to recursively multi level page tables
 ///
 /// * `frame`: the current page table frame iterating over
 /// * `level`: the current level of the page table we're on
-/// * `deallocator`:
 /// * `hhdm_offset`:
-unsafe fn free_page_table(
-    frame: PhysFrame,
-    level: u8,
-    deallocator: &mut impl FrameDeallocator<Size4KiB>,
-    hhdm_offset: u64,
-) {
+unsafe fn free_page_table(frame: PhysFrame, level: u8, hhdm_offset: u64) {
     let virt = hhdm_offset + frame.start_address().as_u64();
     let table = unsafe { &mut *(virt as *mut PageTable) };
 
@@ -230,15 +300,22 @@ unsafe fn free_page_table(
 
         if level > 1 {
             let child_frame = PhysFrame::containing_address(entry.addr());
-            free_page_table(child_frame, level - 1, deallocator, hhdm_offset);
+            free_page_table(child_frame, level - 1, hhdm_offset);
         } else {
             // Free level one page
             let page_frame = PhysFrame::containing_address(entry.addr());
-            deallocator.deallocate_frame(page_frame);
+            serial_println!(
+                "Attempting to deallocate frame {:#x}",
+                page_frame.start_address()
+            );
+            dealloc_frame(page_frame);
+            serial_println!("Deallocated frame {:#x}", page_frame.start_address());
         }
+        serial_println!("FREEING ENTRY {:#?}", entry);
         entry.set_unused();
     }
-    deallocator.deallocate_frame(frame);
+
+    dealloc_frame(frame);
 }
 
 use core::arch::asm;
@@ -254,6 +331,8 @@ use super::registers::NonFlagRegisters;
 pub async unsafe fn run_process_ring3(pid: u32) {
     interrupts::disable();
 
+    serial_println!("Process {} is being scheduled", pid);
+
     let process = {
         let process_table = PROCESS_TABLE.read();
         let process = process_table
@@ -267,10 +346,12 @@ pub async unsafe fn run_process_ring3(pid: u32) {
     // But not TCB
     let process = process.pcb.get();
 
-    Cr3::write((*process).pml4_frame, Cr3Flags::empty());
+    (*process).next_preemption_time = runner_timestamp() + nanos_to_ticks(PROCESS_NANOS);
 
-    let user_cs = gdt::GDT.1.user_code_selector.0 as u64;
-    let user_ds = gdt::GDT.1.user_data_selector.0 as u64;
+    Cr3::write((*process).mm.pml4_frame, Cr3Flags::empty());
+
+    let user_cs = gdt::GDT.1.user_code_selector.0;
+    let user_ds = gdt::GDT.1.user_data_selector.0;
 
     let registers = &(*process).registers.clone();
 
@@ -301,8 +382,8 @@ pub async unsafe fn run_process_ring3(pid: u32) {
 #[no_mangle]
 unsafe fn call_process(
     registers: *const Registers,
-    user_ds: u64,
-    user_cs: u64,
+    user_ds: u16,
+    user_cs: u16,
     kernel_rsp: *const u64,
     process_state: *const u8,
 ) {

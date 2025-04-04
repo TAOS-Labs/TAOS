@@ -3,7 +3,10 @@
 
 use crate::{
     constants::memory::{HEAP_SIZE, HEAP_START},
-    memory::{frame_allocator::FRAME_ALLOCATOR, paging::create_mapping, MAPPER},
+    memory::{
+        buddy_frame_allocator::BuddyFrameAllocator, frame_allocator::FRAME_ALLOCATOR,
+        paging::create_mapping, KERNEL_MAPPER,
+    },
     serial_println,
 };
 use talc::{ClaimOnOom, Span, Talc, Talck};
@@ -12,7 +15,7 @@ use x86_64::{
     VirtAddr,
 };
 
-use super::{bitmap_frame_allocator::BitmapFrameAllocator, frame_allocator::GlobalFrameAllocator};
+use super::frame_allocator::GlobalFrameAllocator;
 
 #[global_allocator]
 static ALLOCATOR: Talck<spin::Mutex<()>, ClaimOnOom> = Talc::new(unsafe {
@@ -34,12 +37,12 @@ pub fn init_heap() -> Result<(), MapToError<Size4KiB>> {
     };
 
     for page in page_range {
-        create_mapping(page, &mut *MAPPER.lock(), None);
+        create_mapping(page, &mut *KERNEL_MAPPER.lock(), None);
     }
 
     switch_allocator();
 
-    serial_println!("Allocator switched to bitmap allocator");
+    serial_println!("Allocator switched to buddy allocator");
 
     Ok(())
 }
@@ -50,11 +53,9 @@ fn switch_allocator() {
     match *alloc {
         Some(GlobalFrameAllocator::Boot(ref boot_alloc)) => {
             unsafe {
-                let bitmap_frame_allocator = BitmapFrameAllocator::init(
-                    boot_alloc.memory_map,
-                    boot_alloc.allocated_frames(),
-                );
-                *alloc = Some(GlobalFrameAllocator::Bitmap(bitmap_frame_allocator));
+                let buddy_frame_allocator =
+                    BuddyFrameAllocator::init(boot_alloc.memory_map, boot_alloc.allocated_frames());
+                *alloc = Some(GlobalFrameAllocator::Buddy(buddy_frame_allocator));
 
                 serial_println!("new frame allocator set");
             };

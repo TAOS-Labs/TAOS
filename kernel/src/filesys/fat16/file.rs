@@ -1,8 +1,12 @@
 //! FAT16 file implementation with cluster-chain based I/O
 
+use alloc::collections::btree_map::BTreeMap;
+use x86_64::structures::paging::PhysFrame;
+
 use super::{constants::*, fat_entry::FatEntry, *};
 
 /// Represents an open file on a FAT16 filesystem
+#[derive(Clone, Debug)]
 pub struct Fat16File {
     /// Whether file is valid/open
     pub valid: bool,
@@ -27,6 +31,9 @@ pub struct Fat16File {
 
     /// Location of directory entry
     pub entry_position: u64,
+
+    /// Page cache
+    pub page_cache: BTreeMap<u64, PhysFrame>,
 }
 
 #[async_trait]

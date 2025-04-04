@@ -60,7 +60,6 @@ lazy_static! {
                 let priv_stack_end = VirtAddr::new((priv_stack_start + RING0_STACK_SIZE as u64).as_u64() & !15);
 
                 tss.interrupt_stack_table[DOUBLE_FAULT_IST_INDEX as usize] = stack_end;
-                serial_println!("Stack end for cpu_id {} is {:#x}", i, priv_stack_end);
                 tss.privilege_stack_table[0] = priv_stack_end;
             }
         }
@@ -84,7 +83,8 @@ lazy_static! {
         let mut tss_selectors = [SegmentSelector::new(0, PrivilegeLevel::Ring0); MAX_CORES];
 
         for i in 0..MAX_CORES {
-            tss_selectors[i] = gdt.append(Descriptor::tss_segment(&TSSS[i]));
+            let value = gdt.append(Descriptor::tss_segment(&TSSS[i]));
+            tss_selectors[i] = value;
         }
 
         (gdt, Selectors {

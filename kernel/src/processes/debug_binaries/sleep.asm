@@ -11,7 +11,7 @@ _start:
     mov r8, 60
     syscall ; print
 
-    mov rdi, 5000000000
+    mov rdi, 500000000
     mov rax, rdx
     syscall ; nanosleep
 
