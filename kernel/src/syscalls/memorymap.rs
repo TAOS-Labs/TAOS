@@ -9,15 +9,19 @@ use x86_64::{
 
 use crate::{
     constants::memory::PAGE_SIZE,
-    events::{current_running_event_info, EventInfo},
+    constants::processes::TEST_MMAP_ANON_SHARED,
+    events::{current_running_event_info, EventInfo, schedule_process},
     memory::{
         mm::{vma_to_page_flags, Mm, VmArea, VmAreaBackings, VmAreaFlags},
         paging::{remove_mapping, update_permissions},
         HHDM_OFFSET,
     },
-    processes::process::{get_current_pid, PROCESS_TABLE},
+    processes::process::{get_current_pid, PROCESS_TABLE, },
     serial_println,
 };
+
+use crate::events::{get_runner_time,current_running_event};
+use crate::events::futures::await_on::AwaitProcess;
 
 // See https://www.man7.org/linux/man-pages/man2/mmap.2.html
 bitflags! {
@@ -431,15 +435,18 @@ pub fn sys_munmap(addr: u64, len: u64) -> u64 {
 mod tests {
     use super::{MmapFlags, ProtFlags};
     use crate::{
-        constants::{memory::PAGE_SIZE, processes::MMAP_ANON_SIMPLE},
+        constants::{memory::PAGE_SIZE, processes::MMAP_ANON_SIMPLE, processes::TEST_MMAP_ANON_SHARED},
         devices::sd_card::SD_CARD,
-        events::{futures::sleep, schedule_kernel, schedule_kernel_on},
+        events::{futures::sleep, schedule_kernel, schedule_kernel_on, schedule_process},
         filesys::{fat16::Fat16, FileSystem, FILESYSTEM},
         processes::process::{create_process, get_current_pid, PCB, PROCESS_TABLE},
         serial_println,
-        syscalls::{memorymap::sys_mmap, syscall_handlers::sys_nanosleep_32},
+        syscalls::{memorymap::sys_mmap, syscall_handlers::{sys_nanosleep_32, REGISTER_VALUES}},
     };
     use alloc::boxed::Box;
+
+    use crate::events::{get_runner_time,current_running_event};
+    use crate::events::futures::await_on::AwaitProcess;
 
     // #[test_case]
     async fn mmap_file_read_test() {
@@ -447,5 +454,25 @@ mod tests {
         serial_println!("finished for loop");
 
         for i in 0..100_000_00u64 {}
+    }
+
+    #[test_case]
+    async fn mmap_anonymous_shared() {
+        let pid = create_process(TEST_MMAP_ANON_SHARED);
+        schedule_process(pid);
+
+        let waiter = AwaitProcess::new(
+            pid,
+            get_runner_time(3_000_000_000),
+            current_running_event().unwrap(),
+        )
+        .await;
+
+        assert!(waiter.is_ok());
+        let reg_values = REGISTER_VALUES.lock();
+        let reg_vals_on_exit = reg_values.get(&pid).expect("No process found.");
+        assert_eq!(reg_vals_on_exit.r8, 'A' as u64);
+        assert_eq!(reg_vals_on_exit.r9, 'B' as u64);
+        assert_eq!(reg_vals_on_exit.r10, 'C' as u64);
     }
 }

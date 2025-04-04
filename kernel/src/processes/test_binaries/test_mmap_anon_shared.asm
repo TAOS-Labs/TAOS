@@ -44,6 +44,7 @@ _start:
 _parent:
   ; Wait for child
   mov rdi, r12
+  movzx r8, byte [r15]
   mov rax, SYS_WAIT
   syscall
 

@@ -153,8 +153,6 @@ pub fn determine_fault_cause(error_code: PageFaultErrorCode) -> FaultOutcome {
             let mapping_offset = fault_offset - seg_key + segment.start;
             let anon_vma_chain = backing.find_mapping(mapping_offset);
 
-            serial_println!("Backing is {:#?}, offset is {:#?}, anon_vma_chain is {:#?}", backing, mapping_offset, anon_vma_chain);
-
             let pt_flags = vma_to_page_flags(vma.flags);
 
             outcome = if !is_mapped {
@@ -448,10 +446,7 @@ pub fn handle_shared_page_fault(
 ) {
     let mut flags = pt_flags;
     flags.set(PageTableFlags::PRESENT, true);
-    let translation = mapper.translate_page(page);
-    serial_println!("TRANSLATION BEFORE UPDATE: {:#?}", translation);
+    let translation: Result<PhysFrame, x86_64::structures::paging::mapper::TranslateError> = mapper.translate_page(page);
     update_permissions(page, mapper, flags);
     let translation = mapper.translate_page(page);
-    serial_println!("TRANSLATION AFTER UPDATE: {:#?}", translation);
-    serial_println!("PTE FLAGS ARE {:#?}", get_page_flags(page, mapper));
 }

@@ -13,7 +13,7 @@ use limine::{
 use crate::{
     constants::{
         memory::PAGE_SIZE,
-        processes::{MMAP_ANON_SIMPLE, TEST_MMAP_ANON_SHARED, TEST_SIMPLE_PROCESS, TEST_SIMPLE_STACK_ACCESS},
+        processes::{MMAP_ANON_SIMPLE, TEST_EXIT_CODE, TEST_MMAP_ANON_SHARED, TEST_SIMPLE_PROCESS, TEST_SIMPLE_STACK_ACCESS},
     },
     debug,
     devices::{self, sd_card::SD_CARD},
@@ -38,7 +38,7 @@ use crate::{
     serial_println,
     syscalls::{
         memorymap::{sys_mmap, MmapFlags, ProtFlags},
-        syscall_handlers::{block_on, sys_nanosleep_32},
+        syscall_handlers::{block_on, sys_nanosleep_32, REGISTER_VALUES},
     },
     trace,
 };
@@ -143,9 +143,9 @@ pub fn init() -> u32 {
         3,
     );
 
-    let pid = create_process(TEST_SIMPLE_STACK_ACCESS);
+    let pid = create_process(TEST_MMAP_ANON_SHARED);
     schedule_process(pid);
-
+    
     bsp_id
 }
 

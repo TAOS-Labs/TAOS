@@ -1,6 +1,6 @@
 use core::ffi::CStr;
 
-use alloc::collections::btree_map::BTreeMap;
+use alloc::{borrow::ToOwned, collections::btree_map::BTreeMap};
 use lazy_static::lazy_static;
 use spin::lock_api::Mutex;
 
@@ -35,7 +35,7 @@ use super::memorymap::sys_munmap;
 
 lazy_static! {
     pub static ref EXIT_CODES: Mutex<BTreeMap<u32, i64>> = Mutex::new(BTreeMap::new());
-    pub  static ref REGISTER_VALUES: Mutex<BTreeMap<u32, Registers>> = Mutex::new(BTreeMap::new());
+    pub  static ref REGISTER_VALUES: Mutex<BTreeMap<u32, NonFlagRegisters>> = Mutex::new(BTreeMap::new());
 }
 
 #[repr(C)]
@@ -158,7 +158,7 @@ pub unsafe extern "C" fn syscall_handler_impl(
 
     match syscall.number as u32 {
         SYSCALL_EXIT => {
-            sys_exit(syscall.arg1 as i64);
+            sys_exit(syscall.arg1 as i64, reg_vals);
             unreachable!("sys_exit does not return");
         }
         SYSCALL_PRINT => sys_print(syscall.arg1 as *const u8),
@@ -180,7 +180,7 @@ pub unsafe extern "C" fn syscall_handler_impl(
     }
 }
 
-pub fn sys_exit(code: i64) -> Option<u64> {
+pub fn sys_exit(code: i64, reg_vals: &NonFlagRegisters) -> Option<u64> {
     // TODO handle hierarchy (parent processes), resources, threads, etc.
     serial_println!("HANDLING EXIT");
 
@@ -218,7 +218,8 @@ pub fn sys_exit(code: i64) -> Option<u64> {
         });
 
         EXIT_CODES.lock().insert(event.pid, code);
-        REGISTER_VALUES.lock().insert(event.pid,(*pcb).registers);
+        serial_println!("Event pid is {}", event.pid);
+        REGISTER_VALUES.lock().insert(event.pid, reg_vals.clone());
 
         process_table.remove(&event.pid);
         ((*pcb).kernel_rsp, (*pcb).kernel_rip)

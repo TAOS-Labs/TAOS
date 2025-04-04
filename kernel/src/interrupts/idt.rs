@@ -25,7 +25,7 @@ use crate::{
         determine_fault_cause, handle_cow_fault, handle_existing_file_mapping, handle_existing_mapping, handle_new_file_mapping, handle_new_mapping, handle_shared_page_fault, FaultOutcome
     },
     prelude::*,
-    processes::process::preempt_process,
+    processes::{process::preempt_process, registers::NonFlagRegisters},
     syscalls::{
         memorymap::sys_mmap,
         syscall_handlers::{block_on, sys_exit, sys_nanosleep_32, sys_print},
@@ -213,6 +213,7 @@ extern "x86-interrupt" fn page_fault_handler(
     serial_println!("At end of page fault handler");
 }
 
+// TODO: Refactor this to follow the way 64 bit works
 #[no_mangle]
 #[naked]
 pub extern "x86-interrupt" fn naked_syscall_handler(_: InterruptStackFrame) {
@@ -286,7 +287,7 @@ fn syscall_handler(rsp: u64) {
     match syscall_num as u32 {
         SYSCALL_EXIT => {
             serial_println!("ATTEMPTING EXIT");
-            sys_exit(p1 as i64);
+            sys_exit(p1 as i64, &NonFlagRegisters::default());
         }
         SYSCALL_PRINT => {
             let success = sys_print(p1 as *const u8);
@@ -302,7 +303,7 @@ fn syscall_handler(rsp: u64) {
     x2apic::send_eoi();
 
     if syscall_num == SYSCALL_EXIT {
-        sys_exit(p1 as i64);
+        sys_exit(p1 as i64, &NonFlagRegisters::default());
     } else if syscall_num == SYSCALL_MMAP {
         let val = sys_mmap(p1, p2, p3, p4, p5 as i64, p6);
         unsafe {
