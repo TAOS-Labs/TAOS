@@ -7,11 +7,14 @@
 
 use crate::{memory::MAPPER, serial_println};
 use limine::request::FramebufferRequest;
-use pci::walk_pci_bus;
+use pci::{print_pci_info, walk_pci_bus};
 use sd_card::{find_sd_card, initalize_sd_card};
+use xhci::{find_xhci_inferface, initalize_xhci_hub};
+pub mod mmio;
 pub mod pci;
 pub mod sd_card;
 pub mod serial;
+pub mod xhci;
 
 /// Framebuffer request to the bootloader.
 /// Used to get access to video output capabilities.
@@ -47,10 +50,20 @@ pub fn init(cpu_id: u32) {
             }
         }
         let devices = walk_pci_bus();
+        for device in &devices {
+            print_pci_info(&device.lock());
+        }
         let sd_card_device =
             find_sd_card(&devices).expect("Build system currently sets up an sd-card");
+        let xhci_device =
+            find_xhci_inferface(&devices).expect("Build system currently sets up xhci device");
+
         let mut mapper = MAPPER.lock();
         initalize_sd_card(&sd_card_device, &mut mapper).unwrap();
         serial_println!("Sd card initalized");
+        drop(mapper);
+        initalize_xhci_hub(&xhci_device).unwrap();
+
+        serial_println!("Devices initalized")
     }
 }
