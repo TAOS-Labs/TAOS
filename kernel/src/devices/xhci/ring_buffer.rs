@@ -288,7 +288,7 @@ impl ProducerRingBuffer {
             // otherwise, just set next_enq to enqueue offsetted by one
             self.enqueue.offset(1)
         };
-        self.dequeue == next_enq
+        core::ptr::eq(self.enqueue, next_enq)
     }
 
     /// Checks if the ring is empty. Empty is defined as if `enqueue` == `dequeue`.
@@ -296,7 +296,7 @@ impl ProducerRingBuffer {
     /// # Returns
     /// True if the ring is empty, false otherwise
     pub fn is_ring_empty(&self) -> bool {
-        self.enqueue == self.dequeue
+        core::ptr::eq(self.enqueue, self.dequeue)
     }
 
     /// Moves the enqueue to point to the next TRB to enqueue at, following Link TRBs and toggling the cycle state if necessary
