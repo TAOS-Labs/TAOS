@@ -255,6 +255,7 @@ pub enum XHCIError {
     CommandRingError,
     TransferRingError,
     Timeout,
+    NoInterface,
 }
 
 bitflags! {
@@ -402,9 +403,24 @@ pub fn initalize_xhci_hub(device: &Arc<Mutex<DeviceInfo>>) -> Result<(), XHCIErr
         device.descriptor = unsafe { core::ptr::read_volatile(descriptor_ptr) };
     }
     // Now look for devices
-    let _ = find_cdc_device(&mut devices).unwrap();
-    let _ = init_cdc_device(devices.pop().unwrap());
+    let slot_config = find_cdc_device(&mut devices).unwrap();
+    let slot = slot_config.0;
+    let configuration = slot_config.1;
+    let _ = init_cdc_device(
+        find_device_in_slot(&mut devices, slot).expect("Found device should be in list of devices"),
+        configuration,
+    );
     Result::Ok(())
+}
+
+fn find_device_in_slot(devices: &mut Vec<USBDeviceInfo>, slot: u8) -> Option<USBDeviceInfo> {
+    for device_idx in 0..devices.len() {
+        let device = &devices[device_idx];
+        if device.slot == slot {
+            return Option::Some(devices.remove(device_idx));
+        }
+    }
+    Option::None
 }
 
 /// Tells the host controller to start running by setting the RunHostControler

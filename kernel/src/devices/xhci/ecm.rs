@@ -270,11 +270,8 @@ impl phy::Device for ECMDevice {
         unsafe { core::ptr::write_volatile(doorbell_base, 5) };
         drop(info);
         Some((rx_token, tx_token))
-        // Some((
-        //     ECMDeviceRxToken(&mut self.rx_buffer[..]),
-        //     ECMDeviceTxToken(&mut self.tx_buffer[..]),
-        // ))
     }
+
     fn transmit(&mut self, _timestamp: Instant) -> Option<Self::TxToken<'_>> {
         Some(ECMDeviceTxToken {
             out_data_addr: self.out_data_addr,
@@ -294,6 +291,12 @@ impl phy::Device for ECMDevice {
 const CLASS_CODE_CDC: u8 = 2;
 const SUBCLASS_CODE_ECM: u8 = 6;
 
+/// Finds the first CDC device.
+///
+/// Returns:
+///     None: If no cdc device with a subclass code of ECM was found
+///     Slot, config: The slot and config of the cdc device if the device
+///     was found.
 pub fn find_cdc_device(devices: &mut Vec<USBDeviceInfo>) -> Option<(u8, u8)> {
     for device in devices {
         debug_println!("Device DESC = {:?}", device.descriptor);
@@ -318,10 +321,31 @@ pub fn find_cdc_device(devices: &mut Vec<USBDeviceInfo>) -> Option<(u8, u8)> {
     Option::None
 }
 
-pub fn init_cdc_device(mut device: USBDeviceInfo) -> Result<ECMDevice, XHCIError> {
+/// Finds the interface with multiple endpoints
+///
+/// Returns:
+///     None: If there was no interface with 2 endpoint
+///         This excludes the command endpoint
+///     Interface_number, alternate_setting: The interface number and setting
+///     of the endpoint
+fn find_correct_interface(descriptors: &Vec<ECMDeviceDescriptors>) -> Option<(u8, u8)> {
+    for descroptor in descriptors {
+        if let ECMDeviceDescriptors::Interface(config) = descroptor {
+            if config.b_num_endpoints == 2 {
+                return Option::Some((config.b_interface_number, config.b_alternate_setting));
+            }
+        }
+    }
+    Option::None
+}
+
+pub fn init_cdc_device(
+    mut device: USBDeviceInfo,
+    configuration: u8,
+) -> Result<ECMDevice, XHCIError> {
     let bm_request_type: u8 = 0b00000000;
     let b_request: u8 = 9; // Set configuration
-    let w_value: u16 = 1;
+    let w_value: u16 = configuration as u16;
     let w_idx: u16 = 0;
     let w_length: u16 = 0;
     let paramaters: u64 = ((w_length as u64) << 48)
@@ -331,10 +355,13 @@ pub fn init_cdc_device(mut device: USBDeviceInfo) -> Result<ECMDevice, XHCIError
         | (bm_request_type as u64);
     device.send_command_no_data(paramaters)?;
 
+    let descriptors = get_class_descriptors_for_configuration(&mut device, configuration).unwrap();
+    let interface = find_correct_interface(&descriptors).ok_or(XHCIError::NoInterface)?;
+    // Now look for the interface with the correct enpoint count
     let bm_request_type: u8 = 0b00000001;
     let b_request: u8 = 11; // Set interface
-    let w_value: u16 = 1; // Alternate setting
-    let w_idx: u16 = 1; // Interface number
+    let w_value: u16 = interface.1 as u16; // Alternate setting
+    let w_idx: u16 = interface.0 as u16; // Interface number
     let w_length: u16 = 0;
     let paramaters: u64 = ((w_length as u64) << 48)
         | ((w_idx as u64) << 32)
@@ -343,7 +370,6 @@ pub fn init_cdc_device(mut device: USBDeviceInfo) -> Result<ECMDevice, XHCIError
         | (bm_request_type as u64);
     device.send_command_no_data(paramaters)?;
 
-    let descriptors = get_class_descriptors_for_configuration(&mut device, 1).unwrap();
     debug_println!("class_desc = {descriptors:?}");
 
     // Send configure endpoint
