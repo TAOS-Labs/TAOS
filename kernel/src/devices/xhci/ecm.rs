@@ -7,7 +7,10 @@ use crate::{
         mmio::{self, map_page_as_uncacheable, zero_out_page},
         xhci::XHCIError,
     },
-    memory::{frame_allocator::alloc_frame, MAPPER},
+    memory::{
+        frame_allocator::{alloc_frame, dealloc_frame},
+        MAPPER,
+    },
 };
 use smoltcp::{
     iface::{Interface, SocketSet},
@@ -153,7 +156,6 @@ impl phy::TxToken for ECMDeviceTxToken<'_> {
         let out_ptr: *mut u8 = self.out_data_addr.as_mut_ptr();
         let out_buf = unsafe { slice::from_raw_parts_mut(out_ptr, len) };
         let result = f(out_buf);
-        debug_println!("tx called {}", len);
 
         let mapper = MAPPER.lock();
 
@@ -192,7 +194,6 @@ impl phy::Device for ECMDevice {
     where
         Self: 'a;
     fn receive(&mut self, _timestamp: Instant) -> Option<(Self::RxToken<'_>, Self::TxToken<'_>)> {
-        // todo!("Recieving is currently broken");
         // Check if there is any data
 
         let mapper = MAPPER.lock();
@@ -222,21 +223,19 @@ impl phy::Device for ECMDevice {
             return Option::None;
         }
 
+        // TODO: call function that etermines which event rings deque to update
         let mapper = MAPPER.lock();
         let event = event_result.ok()?;
         if event.parameters != trb_addr.as_u64() - mapper.phys_offset().as_u64() - 0x10 {
-            // Whoops
             debug_println!(
                 "Params = {:X}, addr = {:X}",
                 event.parameters,
                 trb_addr.as_u64()
             );
-            // todo!("Handle this issue");
         }
         drop(mapper);
         // TODO: determine type of event
 
-        // todo!("Reciecing prob borken");
         let tx_token = ECMDeviceTxToken {
             out_data_addr: self.out_data_addr,
             slot: self.standard_device.slot,
@@ -289,6 +288,7 @@ impl phy::Device for ECMDevice {
 }
 
 const CLASS_CODE_CDC: u8 = 2;
+const CLASS_CODE_CDC_DATA: u8 = 0xA;
 const SUBCLASS_CODE_ECM: u8 = 6;
 
 /// Finds the first CDC device.
@@ -304,14 +304,23 @@ pub fn find_cdc_device(devices: &mut Vec<USBDeviceInfo>) -> Option<(u8, u8)> {
             for configuration in 0..device.descriptor.b_num_configurations {
                 let class_desc =
                     get_class_descriptors_for_configuration(device, configuration).unwrap();
-                debug_println!("class_desc = {class_desc:?}");
+                debug_println!("class_desc_1 = {class_desc:#?}");
+                let mut configuration_to_get = 0;
+
                 for descriptor in class_desc {
-                    if let ECMDeviceDescriptors::Interface(config) = descriptor {
-                        if config.b_interface_class == CLASS_CODE_CDC
-                            && config.b_interface_sub_class == SUBCLASS_CODE_ECM
-                        {
-                            return Option::Some((device.slot, configuration));
+                    match descriptor {
+                        ECMDeviceDescriptors::Interface(config) => {
+                            if config.b_interface_class == CLASS_CODE_CDC
+                                && config.b_interface_sub_class == SUBCLASS_CODE_ECM
+                            {
+                                debug_println!("Configuration = {configuration_to_get}");
+                                return Option::Some((device.slot, configuration_to_get));
+                            }
                         }
+                        ECMDeviceDescriptors::Configuration(config) => {
+                            configuration_to_get = config.b_configuration_value;
+                        }
+                        _ => {}
                     }
                 }
             }
@@ -321,19 +330,58 @@ pub fn find_cdc_device(devices: &mut Vec<USBDeviceInfo>) -> Option<(u8, u8)> {
     Option::None
 }
 
-/// Finds the interface with multiple endpoints
+/// Finds the interface with multiple endpoints.
 ///
 /// Returns:
 ///     None: If there was no interface with 2 endpoint
 ///         This excludes the command endpoint
 ///     Interface_number, alternate_setting: The interface number and setting
 ///     of the endpoint
-fn find_correct_interface(descriptors: &Vec<ECMDeviceDescriptors>) -> Option<(u8, u8)> {
-    for descroptor in descriptors {
-        if let ECMDeviceDescriptors::Interface(config) = descroptor {
+fn find_active_interface(descriptors: &Vec<ECMDeviceDescriptors>) -> Option<(u8, u8)> {
+    for descriptor in descriptors {
+        if let ECMDeviceDescriptors::Interface(config) = descriptor {
             if config.b_num_endpoints == 2 {
                 return Option::Some((config.b_interface_number, config.b_alternate_setting));
             }
+        }
+    }
+    Option::None
+}
+
+/// Finds the device context number associated with the input endpoint
+fn find_device_context_input(descriptors: &Vec<ECMDeviceDescriptors>) -> Option<u8> {
+    let mut valid_interface = false;
+    for descriptor in descriptors {
+        match descriptor {
+            ECMDeviceDescriptors::Interface(config) => {
+                valid_interface =
+                    config.b_interface_class == CLASS_CODE_CDC_DATA && config.b_num_endpoints == 2;
+            }
+            ECMDeviceDescriptors::Endpoint(config) => {
+                if valid_interface && (config.b_endpoint_address & (1 << 7)) == (1 << 7) {
+                    return Option::Some(((config.b_endpoint_address & 0xF) * 2) + 1);
+                }
+            }
+            _ => {}
+        }
+    }
+    Option::None
+}
+/// Finds the device context number assocciated with the output endpoint
+fn find_device_context_output(descriptors: &Vec<ECMDeviceDescriptors>) -> Option<u8> {
+    let mut valid_interface = false;
+    for descriptor in descriptors {
+        match descriptor {
+            ECMDeviceDescriptors::Interface(config) => {
+                valid_interface =
+                    config.b_interface_class == CLASS_CODE_CDC_DATA && config.b_num_endpoints == 2;
+            }
+            ECMDeviceDescriptors::Endpoint(config) => {
+                if valid_interface && (config.b_endpoint_address & (1 << 7)) == (1 << 7) {
+                    return Option::Some((config.b_endpoint_address & 0xF) * 2);
+                }
+            }
+            _ => {}
         }
     }
     Option::None
@@ -343,6 +391,7 @@ pub fn init_cdc_device(
     mut device: USBDeviceInfo,
     configuration: u8,
 ) -> Result<ECMDevice, XHCIError> {
+    // Send Set configuration request to the device
     let bm_request_type: u8 = 0b00000000;
     let b_request: u8 = 9; // Set configuration
     let w_value: u16 = configuration as u16;
@@ -356,8 +405,8 @@ pub fn init_cdc_device(
     device.send_command_no_data(paramaters)?;
 
     let descriptors = get_class_descriptors_for_configuration(&mut device, configuration).unwrap();
-    let interface = find_correct_interface(&descriptors).ok_or(XHCIError::NoInterface)?;
-    // Now look for the interface with the correct enpoint count
+    let interface = find_active_interface(&descriptors).ok_or(XHCIError::NoInterface)?;
+    // Set our interface into the correct alternate interface
     let bm_request_type: u8 = 0b00000001;
     let b_request: u8 = 11; // Set interface
     let w_value: u16 = interface.1 as u16; // Alternate setting
@@ -370,20 +419,20 @@ pub fn init_cdc_device(
         | (bm_request_type as u64);
     device.send_command_no_data(paramaters)?;
 
-    debug_println!("class_desc = {descriptors:?}");
-
-    // Send configure endpoint
-    // We use endpoint 2, both in and out
-    debug_println!("device_slot = {}", device.slot);
+    // Send configure endpoint to XHCI so stuff works
     let context_ptr: *mut InputControlContext = device.input_context_vaddr.as_mut_ptr();
     let mut context = unsafe { core::ptr::read_volatile(context_ptr) };
 
     context.set_add_flag(0, 1);
     context.set_add_flag(1, 0);
-    // context.set_drop_flag(0, 0);
-    // context.set_drop_flag(1, 0);
-    context.set_add_flag(4, 1);
-    context.set_add_flag(5, 1);
+    context.set_add_flag(
+        find_device_context_input(&descriptors).expect("ECM should have input endpoint") as u32,
+        1,
+    );
+    context.set_add_flag(
+        find_device_context_output(&descriptors).expect("ECM should have output endpoint") as u32,
+        1,
+    );
 
     let ep_2_context_out_addr = device.input_context_vaddr + 0xA0;
     let ep2_ctxt_out_ptr: *mut EndpointContext = ep_2_context_out_addr.as_mut_ptr();
@@ -430,8 +479,6 @@ pub fn init_cdc_device(
     )
     .expect("Everything should be alligned");
     ep2_ctxt_out.set_trdequeue_ptr(output_trb_buffer.start_address().as_u64());
-    debug_println!("EP2 ctxt out ptr = {:X}", ep_2_context_out_addr);
-    debug_println!("Deque = {:X}", output_trb_buffer.start_address().as_u64());
     unsafe {
         core::ptr::write_volatile(context_ptr, context);
     }
@@ -466,7 +513,7 @@ pub fn init_cdc_device(
     unsafe { core::ptr::write_volatile(doorbell_base, 0) };
     wait_for_events_including_command_completion(&mut info, &mapper)?;
 
-    // Now get out ethernet address
+    // Now get our ethernet address
     let mut str_addr: u8 = 0;
     for descriptor in &descriptors {
         if let ECMDeviceDescriptors::Ethernet(desc) = descriptor {
@@ -477,10 +524,8 @@ pub fn init_cdc_device(
     drop(mapper);
 
     let hw_addr = get_eth_addr(&mut device, str_addr)?;
-    let config = get_class_descriptors_for_configuration(&mut device, 1).unwrap();
-    debug_println!("class_desc = {config:?}");
 
-    // See if we can send something
+    // Setup data buffers for input and output
     let in_frame = alloc_frame().ok_or(XHCIError::MemoryAllocationFailure)?;
     let mut mapper = MAPPER.lock();
     let in_buff_vaddr = mmio::map_page_as_uncacheable(in_frame.start_address(), &mut mapper)
@@ -500,6 +545,8 @@ pub fn init_cdc_device(
         in_data_trb: in_trb,
         out_data_trb: out_trb,
     };
+
+    // Test it out by trying to get an ip addr, should use send and recv
     let config = smoltcp::iface::Config::new(smoltcp::wire::HardwareAddress::Ethernet(hw_addr));
     let mut interface = smoltcp::iface::Interface::new(config, &mut ecm_device, Instant::ZERO);
     let dhcp_socket = dhcpv4::Socket::new();
@@ -548,17 +595,16 @@ fn set_ipv4_addr(iface: &mut Interface, cidr: Ipv4Cidr) {
     });
 }
 
+/// Determines the ethernet address for the given device 
 fn get_eth_addr(device: &mut USBDeviceInfo, idx: u8) -> Result<EthernetAddress, XHCIError> {
     let data_frame = alloc_frame().ok_or(XHCIError::MemoryAllocationFailure)?;
-    debug_println!("Data phys_addr = {:X}", data_frame.start_address().as_u64());
-    debug_println!("idx = {idx}");
     let mut mapper = MAPPER.lock();
     let data_addr = mmio::map_page_as_uncacheable(data_frame.start_address(), &mut mapper)
         .map_err(|_| XHCIError::MemoryAllocationFailure)?;
     drop(mapper);
     let bm_request_type: u8 = 0b10000000;
     let b_request: u8 = 6; // Get descriptor
-    let descriptor_type: u8 = 3; //
+    let descriptor_type: u8 = 3; // string decriptor
     let descriptor_idx: u8 = idx;
     let w_value: u16 = ((descriptor_type as u16) << 8) | (descriptor_idx as u16);
     let w_idx: u16 = 0x09; // English language id
@@ -586,12 +632,16 @@ fn get_eth_addr(device: &mut USBDeviceInfo, idx: u8) -> Result<EthernetAddress, 
     for idx in 0..6 {
         let new_string = str::from_utf8(&eth_data_str[(2 * idx)..=((2 * idx) + 1)]).unwrap();
         eth_data[idx] = u8::from_str_radix(new_string, 16).unwrap();
-        debug_println!("Eth data[idx] = {:X}", eth_data[idx]);
     }
 
+    // TODO: When we update the mapper to not have 2mib pages we would want to
+    // remove the uncachable flags from the pte, (BUT not unmap the page to
+    //keep our ability to fix data)
+    dealloc_frame(data_frame);
     Result::Ok(EthernetAddress::from_bytes(&eth_data))
 }
 
+/// Returns the class descriptors for a particular configuration
 fn get_class_descriptors_for_configuration(
     device: &mut USBDeviceInfo,
     configuration: u8,
@@ -605,7 +655,7 @@ fn get_class_descriptors_for_configuration(
     let bm_request_type: u8 = 0b10000000;
     let b_request: u8 = 6; // Get descriptor
     let descriptor_type: u8 = 2; // Configuration
-    let descriptor_idx: u8 = configuration; // Get the second one (FIXME: Hardcoded qemu)
+    let descriptor_idx: u8 = configuration;
     let w_value: u16 = ((descriptor_type as u16) << 8) | (descriptor_idx as u16);
     let w_idx: u16 = 0;
     let w_length: u16 = 1024;
@@ -635,13 +685,11 @@ fn get_class_descriptors_for_configuration(
         const CS_INTERFACE: u8 = USBDescriptorTypes::CsInterface as u8;
         match base_device.b_descriptor_type {
             INTERFACE => {
-                // Interface
                 let interface_ptr: *const USBDeviceInterfaceDescriptor = desc_vaddr.as_ptr();
                 let interface_descriptor = unsafe { core::ptr::read_unaligned(interface_ptr) };
                 descriptors.push(ECMDeviceDescriptors::Interface(interface_descriptor));
             }
             ENDPOINT => {
-                // Endpoint
                 let endpoint_ptr: *const USBDeviceEndpointDescriptor = desc_vaddr.as_ptr();
                 let endpoint_descriptor = unsafe { core::ptr::read_unaligned(endpoint_ptr) };
                 descriptors.push(ECMDeviceDescriptors::Endpoint(endpoint_descriptor));
@@ -660,5 +708,9 @@ fn get_class_descriptors_for_configuration(
         }
         bytes_read += base_device.b_length as usize;
     }
+    // TODO: When we update the mapper to not have 2mib pages we would want to
+    // remove the uncachable flags from the pte, (BUT not unmap the page to
+    //keep our ability to fix data)
+    dealloc_frame(data_frame);
     Result::Ok(descriptors)
 }
