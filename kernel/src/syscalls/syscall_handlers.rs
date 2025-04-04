@@ -23,7 +23,7 @@ use crate::{
             clear_process_frames, sleep_process_int, sleep_process_syscall, ProcessState,
             PROCESS_TABLE,
         },
-        registers::NonFlagRegisters,
+        registers::{NonFlagRegisters, Registers},
     },
     serial_println,
     syscalls::{fork::sys_fork, memorymap::sys_mmap},
@@ -35,6 +35,7 @@ use super::memorymap::sys_munmap;
 
 lazy_static! {
     pub static ref EXIT_CODES: Mutex<BTreeMap<u32, i64>> = Mutex::new(BTreeMap::new());
+    pub  static ref REGISTER_VALUES: Mutex<BTreeMap<u32, Registers>> = Mutex::new(BTreeMap::new());
 }
 
 #[repr(C)]
@@ -217,6 +218,7 @@ pub fn sys_exit(code: i64) -> Option<u64> {
         });
 
         EXIT_CODES.lock().insert(event.pid, code);
+        REGISTER_VALUES.lock().insert(event.pid,(*pcb).registers);
 
         process_table.remove(&event.pid);
         ((*pcb).kernel_rsp, (*pcb).kernel_rip)
@@ -282,9 +284,9 @@ pub async fn sys_wait(pid: u32) -> u64 {
 
 /// Helper function for sys_wait, not sure if necessary
 /// TODO Ask Kiran if necessary
-fn noop_raw_waker() -> RawWaker {
+fn anoop_raw_waker() -> RawWaker {
     fn clone(_: *const ()) -> RawWaker {
-        noop_raw_waker()
+        anoop_raw_waker()
     }
     fn wake(_: *const ()) {}
     fn wake_by_ref(_: *const ()) {}
@@ -294,7 +296,7 @@ fn noop_raw_waker() -> RawWaker {
 }
 /// Helper function for sys_wait, not sure if necessary
 pub fn block_on<F: Future>(mut future: F) -> F::Output {
-    let waker = unsafe { Waker::from_raw(noop_raw_waker()) };
+    let waker = unsafe { Waker::from_raw(anoop_raw_waker()) };
     let mut cx = Context::from_waker(&waker);
     // Safety: we’re not moving the future while polling.
     let mut future = unsafe { Pin::new_unchecked(&mut future) };

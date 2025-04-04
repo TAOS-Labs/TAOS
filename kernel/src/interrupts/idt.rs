@@ -22,8 +22,7 @@ use crate::{
     events::inc_runner_clock,
     interrupts::x2apic::{self, current_core_id, TLB_SHOOTDOWN_ADDR},
     memory::page_fault::{
-        determine_fault_cause, handle_cow_fault, handle_existing_file_mapping,
-        handle_existing_mapping, handle_new_file_mapping, handle_new_mapping, FaultOutcome,
+        determine_fault_cause, handle_cow_fault, handle_existing_file_mapping, handle_existing_mapping, handle_new_file_mapping, handle_new_mapping, handle_shared_page_fault, FaultOutcome
     },
     prelude::*,
     processes::process::preempt_process,
@@ -198,8 +197,17 @@ extern "x86-interrupt" fn page_fault_handler(
         } => {
             handle_cow_fault(page, &mut mapper, pt_flags);
         }
+        FaultOutcome::SharedPage { 
+            page, 
+            mut mapper, 
+            pt_flags, 
+            frame
+        } => {
+            handle_shared_page_fault(page, &mut mapper, pt_flags, frame);
+        }
         FaultOutcome::Mapped => {
             serial_println!("Page is mapped; no COW fault detected");
+            panic!();
         }
     }
     serial_println!("At end of page fault handler");

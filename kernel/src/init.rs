@@ -13,13 +13,12 @@ use limine::{
 use crate::{
     constants::{
         memory::PAGE_SIZE,
-        processes::{MMAP_ANON_SIMPLE, TEST_SIMPLE_STACK_ACCESS},
+        processes::{MMAP_ANON_SIMPLE, TEST_MMAP_ANON_SHARED, TEST_SIMPLE_PROCESS, TEST_SIMPLE_STACK_ACCESS},
     },
     debug,
     devices::{self, sd_card::SD_CARD},
     events::{
-        futures::sleep, register_event_runner, run_loop, schedule_kernel, schedule_kernel_on,
-        schedule_process, spawn, yield_now,
+        current_running_event, futures::{await_on::AwaitProcess, sleep}, get_runner_time, register_event_runner, run_loop, schedule_kernel, schedule_kernel_on, schedule_process, spawn, yield_now
     },
     filesys::{self, fat16::Fat16, FileSystem, FILESYSTEM},
     interrupts::{self, idt},
@@ -99,47 +98,47 @@ pub fn init() -> u32 {
                     .expect("Failed to format filesystem")
             });
 
-            serial_println!("FORMATTED FILESYSTEM");
+            // serial_println!("FORMATTED FILESYSTEM");
 
-            filesystem.create_file("/testfile.txt").await;
-            serial_println!("created file");
-            let fd = filesystem
-                .open_file("/testfile.txt")
-                .await
-                .expect("could not open file");
-            let pid = get_current_pid();
-            let pcb = {
-                let process_table = PROCESS_TABLE.read();
-                process_table
-                    .get(&pid)
-                    .expect("can't find pcb in process table")
-                    .clone()
-            };
-            let pcb = pcb.pcb.get();
+            // filesystem.create_file("/testfile.txt").await;
+            // serial_println!("created file");
+            // let fd = filesystem
+            //     .open_file("/testfile.txt")
+            //     .await
+            //     .expect("could not open file");
+            // let pid = get_current_pid();
+            // let pcb = {
+            //     let process_table = PROCESS_TABLE.read();
+            //     process_table
+            //         .get(&pid)
+            //         .expect("can't find pcb in process table")
+            //         .clone()
+            // };
+            // let pcb = pcb.pcb.get();
 
-            let file = unsafe {
-                (*pcb).fd_table[fd]
-                    .clone()
-                    .expect("No file associated with this fd.")
-            };
-            let mut buf: [u8; PAGE_SIZE * 2 as usize] = [b'A'; PAGE_SIZE * 2 as usize];
+            // let file = unsafe {
+            //     (*pcb).fd_table[fd]
+            //         .clone()
+            //         .expect("No file associated with this fd.")
+            // };
+            // let mut buf: [u8; PAGE_SIZE * 2 as usize] = [b'A'; PAGE_SIZE * 2 as usize];
 
-            filesystem.write_file(fd, &buf).await;
-            let addr = sys_mmap(
-                0x0,
-                PAGE_SIZE.try_into().unwrap(),
-                ProtFlags::PROT_READ.bits() as u64,
-                MmapFlags::MAP_PRIVATE.bits() as u64,
-                fd as i64,
-                PAGE_SIZE.try_into().unwrap(),
-            ) as *mut u8;
-            for i in 0..4096 {
-                unsafe {
-                    serial_println!("At iteration {}", i);
-                    let c = *addr.add(i);
-                    serial_println!("Byte at offset {} is {:#?}", i, c);
-                }
-            }
+            // filesystem.write_file(fd, &buf).await;
+            // let addr = sys_mmap(
+            //     0x0,
+            //     PAGE_SIZE.try_into().unwrap(),
+            //     ProtFlags::PROT_READ.bits() as u64,
+            //     MmapFlags::MAP_PRIVATE.bits() as u64,
+            //     fd as i64,
+            //     PAGE_SIZE.try_into().unwrap(),
+            // ) as *mut u8;
+            // for i in 0..4096 {
+            //     unsafe {
+            //         serial_println!("At iteration {}", i);
+            //         let c = *addr.add(i);
+            //         serial_println!("Byte at offset {} is {:#?}", i, c);
+            //     }
+            // }
         },
         3,
     );

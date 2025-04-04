@@ -79,6 +79,7 @@ pub fn sys_fork(reg_vals: &NonFlagRegisters) -> u64 {
                     .with_vma_tree_mutable(|child_tree| {
                         serial_println!("Inserting range {:X} - {:X}", start, end);
                         Mm::insert_copied_vma(child_tree, start, end, segments.clone(), flags);
+                        serial_println!("Segments put in are {:#?}", segments.clone());
                     });
             }
         })

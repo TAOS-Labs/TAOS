@@ -1,9 +1,11 @@
 use core::ptr;
 use core::slice;
+use core::usize;
 
 use alloc::sync::Arc;
 use log::debug;
 use spin::lock_api::Mutex;
+use x86_64::structures::paging::Mapper;
 use x86_64::{
     structures::{
         idt::PageFaultErrorCode,
@@ -15,6 +17,8 @@ use x86_64::{
     PhysAddr, VirtAddr,
 };
 
+use crate::memory::paging::update_permissions;
+use crate::serial;
 use crate::{
     constants::{memory::PAGE_SIZE, processes::MAX_FILES},
     filesys::{FileSystem, FILESYSTEM},
@@ -63,6 +67,12 @@ pub enum FaultOutcome {
         mapper: OffsetPageTable<'static>,
         pt_flags: PageTableFlags,
     },
+    SharedPage {
+        page: Page<Size4KiB>,
+        mapper: OffsetPageTable<'static>,
+        pt_flags: PageTableFlags,
+        frame: PhysFrame,
+    },
     Mapped,
 }
 
@@ -106,6 +116,7 @@ pub fn determine_fault_cause(error_code: PageFaultErrorCode) -> FaultOutcome {
 
     // Check if the page is mapped.
     let translate_result = mapper.translate(page.start_address());
+    serial_println!("TRANSLATE RESULT AT BEGINNING: {:#?}", translate_result);
     let is_mapped = match translate_result {
         TranslateResult::Mapped { .. } => true,
         TranslateResult::NotMapped => false,
@@ -139,8 +150,10 @@ pub fn determine_fault_cause(error_code: PageFaultErrorCode) -> FaultOutcome {
             let backing = Arc::clone(&segment.backing);
             // Compute the mapping offset within the backing.
             // (Assuming each segment's reverse mappings are keyed relative to its own start.)
-            let mapping_offset = fault_offset - seg_key;
+            let mapping_offset = fault_offset - seg_key + segment.start;
             let anon_vma_chain = backing.find_mapping(mapping_offset);
+
+            serial_println!("Backing is {:#?}, offset is {:#?}, anon_vma_chain is {:#?}", backing, mapping_offset, anon_vma_chain);
 
             let pt_flags = vma_to_page_flags(vma.flags);
 
@@ -211,7 +224,19 @@ pub fn determine_fault_cause(error_code: PageFaultErrorCode) -> FaultOutcome {
                         mapper,
                         pt_flags,
                     })
+                }
+                else if !cow && caused_by_write && flags.contains(PageTableFlags::PRESENT) {
+                    let frame = PhysFrame::containing_address(PhysAddr::new(anon_vma_chain.unwrap().file_offset_or_frame));
+                    serial_println!("FRAME TO MAP TO IS {:#?}", frame);
+                    serial_println!("BEFORE LEAVING DETERMINE TRANSLATE RESULT IS {:#?}", mapper.translate_page(page));
+                    Some(FaultOutcome::SharedPage {
+                        page,
+                        mapper,
+                        pt_flags,
+                        frame,
+                    })
                 } else {
+                    let result = mapper.translate_page(page);
                     Some(FaultOutcome::Mapped)
                 }
             };
@@ -330,16 +355,55 @@ pub fn handle_new_mapping(
         "Diagnositcs:\n\tPage: {:#?}\n\tBacking: {:#?}\n\tPT Flags: {:#?}",
         page, backing, pt_flags
     );
-
     let mut flags = pt_flags;
     flags.set(PageTableFlags::PRESENT, true);
+    let pid = get_current_pid();
+    let process = {
+        let process_table = PROCESS_TABLE.read();
+        process_table
+            .get(&pid)
+            .expect("can't find pcb in process table")
+            .clone()
+    };
+    let frame = create_mapping(page, mapper, Some(flags));
+    serial_println!("ORIGINAL MAPPING PTE FLAGS ARE {:#?}", get_page_flags(page, mapper));
+    unsafe {
+        (*process.pcb.get()).mm.with_vma_tree(|tree| {
+            // Find the VMA covering the faulting address.
+            let vma_arc = Mm::find_vma(page.start_address().as_u64(), tree).expect("Vma not found?");
+            let vma = vma_arc.lock();
 
-    let new_frame = create_mapping(page, mapper, Some(flags));
-    backing.insert_mapping(Arc::new(VmaChain {
-        offset: page.start_address().as_u64(),
-        fd: usize::MAX,
-        file_offset_or_frame: new_frame.start_address().as_u64(),
-    }));
+            // Compute the fault's offset within the VMA.
+            let fault_offset = page.start_address().as_u64() - vma.start;
+
+            // Look up the segment covering this fault.
+            // We use a range query to find the segment with the greatest key <= fault_offset.
+            let segments = vma.segments.lock();
+            let seg_entry = segments
+                .range(..=fault_offset)
+                .next_back()
+                .expect("No segment found covering fault offset");
+            let seg_key = *seg_entry.0;
+            let segment = seg_entry.1;
+            if fault_offset >= segment.end {
+                panic!("Fault offset {} not covered by segment", fault_offset);
+            }
+            // Use the segment's backing.
+            let backing = Arc::clone(&segment.backing);
+            // Compute the mapping offset within the backing.
+            // (Assuming each segment's reverse mappings are keyed relative to its own start.)
+            let mapping_offset = fault_offset - seg_key + segment.start;
+
+            backing.insert_mapping(Arc::new(VmaChain::new(mapping_offset, usize::MAX, frame.start_address().as_u64())));
+        });
+    }
+    // let new_frame = create_mapping(page, mapper, Some(flags));
+    // backing.insert_mapping(Arc::new(VmaChain {
+    //     offset: page.start_address().as_u64(),
+    //     fd: usize::MAX,
+    //     file_offset_or_frame: new_frame.start_address().as_u64(),
+    // }));
+
 }
 
 /// Handles a copy-on-write fault. Saves current data in a buffer
@@ -373,4 +437,21 @@ pub fn handle_cow_fault(
         ptr::copy_nonoverlapping(buffer.as_mut_ptr(), src_ptr, PAGE_SIZE);
     }
     serial_println!("Completed copy-on-write fault handling.");
+}
+
+
+pub fn handle_shared_page_fault(
+    page: Page<Size4KiB>,
+    mapper: &mut OffsetPageTable,
+    pt_flags: PageTableFlags,
+    frame: PhysFrame,
+) {
+    let mut flags = pt_flags;
+    flags.set(PageTableFlags::PRESENT, true);
+    let translation = mapper.translate_page(page);
+    serial_println!("TRANSLATION BEFORE UPDATE: {:#?}", translation);
+    update_permissions(page, mapper, flags);
+    let translation = mapper.translate_page(page);
+    serial_println!("TRANSLATION AFTER UPDATE: {:#?}", translation);
+    serial_println!("PTE FLAGS ARE {:#?}", get_page_flags(page, mapper));
 }

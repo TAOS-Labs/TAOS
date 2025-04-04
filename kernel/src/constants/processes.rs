@@ -32,9 +32,11 @@ pub const TEST_EXIT_CODE: &[u8] = include_bytes!("../processes/test_binaries/tes
 pub const TEST_PRINT_EXIT: &[u8] = include_bytes!("../processes/test_binaries/test_print_exit");
 pub const TEST_WAIT: &[u8] = include_bytes!("../processes/test_binaries/test_wait");
 pub const TEST_FORK_COW: &[u8] = include_bytes!("../processes/test_binaries/test_fork_cow");
+pub const TEST_MMAP_ANON_SHARED: &[u8] = include_bytes!("../processes/test_binaries/test_mmap_anon_shared");
 
 pub const STACK_START: u64 = 0x7000_0000_0000;
-pub const MAX_FILES: usize = 1024;
+// if this number is big clone fails
+pub const MAX_FILES: usize = 128;
 pub const PROCESS_NANOS: u64 = 50_000_000;
 pub const STACK_SIZE: usize = 2 * 4096; // 2 pages for the stack
 
