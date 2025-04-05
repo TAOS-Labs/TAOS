@@ -10,6 +10,7 @@ use pci::walk_pci_bus;
 use sd_card::{find_sd_card, initalize_sd_card};
 pub mod graphics;
 use graphics::framebuffer::{self, colors};
+pub mod keyboard;
 pub mod pci;
 pub mod sd_card;
 pub mod serial;
@@ -63,5 +64,7 @@ pub fn init(cpu_id: u32) {
         let mut mapper = MAPPER.lock();
         initalize_sd_card(&sd_card_device, &mut mapper).unwrap();
         serial_println!("Sd card initialized");
+
+        keyboard::init().expect("Failed to initialize keyboard");
     }
 }

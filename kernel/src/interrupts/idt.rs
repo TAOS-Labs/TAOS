@@ -6,14 +6,11 @@
 //! - Timer interrupt handling
 //! - Functions to enable/disable interrupts
 
-use core::{
-    arch::naked_asm,
-    sync::atomic::{AtomicU64, Ordering},
-};
+use core::arch::naked_asm;
 
 use lazy_static::lazy_static;
 use x86_64::{
-    instructions::{interrupts, port::Port},
+    instructions::interrupts,
     structures::{
         idt::{InterruptDescriptorTable, InterruptStackFrame, PageFaultErrorCode},
         paging::{OffsetPageTable, Page, PageTable},
@@ -26,6 +23,7 @@ use crate::{
         idt::{KEYBOARD_VECTOR, SYSCALL_HANDLER, TIMER_VECTOR, TLB_SHOOTDOWN_VECTOR},
         syscalls::{SYSCALL_EXIT, SYSCALL_NANOSLEEP, SYSCALL_PRINT},
     },
+    devices::keyboard::keyboard_handler,
     events::inc_runner_clock,
     interrupts::x2apic::{self, current_core_id, TLB_SHOOTDOWN_ADDR},
     memory::{paging::create_mapping, HHDM_OFFSET},
@@ -325,19 +323,5 @@ extern "x86-interrupt" fn tlb_shootdown_handler(_: InterruptStackFrame) {
             addresses[core] = 0;
         }
     }
-    x2apic::send_eoi();
-}
-
-static KEYBOARD_INTERRUPT_COUNT: AtomicU64 = AtomicU64::new(0);
-
-pub extern "x86-interrupt" fn keyboard_handler(_frame: InterruptStackFrame) {
-    let count = KEYBOARD_INTERRUPT_COUNT.fetch_add(1, Ordering::SeqCst);
-    serial_println!("Keyboard interrupt received! Count: {}", count);
-
-    let mut port = Port::new(0x60);
-    let scancode: u8 = unsafe { port.read() };
-    serial_println!("Scancode: 0x{:02x}", scancode);
-
-    // Send EOI to acknowledge the interrupt
     x2apic::send_eoi();
 }
