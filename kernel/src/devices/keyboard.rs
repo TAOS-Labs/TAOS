@@ -198,7 +198,6 @@ pub extern "x86-interrupt" fn keyboard_handler(_frame: InterruptStackFrame) {
     x2apic::send_eoi();
 }
 
-// For async support
 impl Stream for KeyboardStream {
     type Item = BufferKeyEvent;
 
