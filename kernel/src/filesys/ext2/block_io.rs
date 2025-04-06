@@ -1,7 +1,7 @@
 // We want to make this replace the block IO we have right now
 // But would it matter if this is not in kernel anyways?
 
-use alloc::{collections::BTreeMap, sync::Arc, vec, vec::Vec, boxed::Box};
+use alloc::{boxed::Box, collections::BTreeMap, sync::Arc, vec, vec::Vec};
 use async_trait::async_trait;
 use core::cmp::min;
 use spin::Mutex;
@@ -25,13 +25,13 @@ pub type BlockResult<T> = Result<T, BlockError>;
 #[async_trait]
 pub trait BlockIO: Send + Sync {
     /// Returns the block size in bytes
-    fn block_size(&self) -> u32;
+    fn block_size(&self) -> u64;
 
     /// Returns the total size in bytes
-    fn size_in_bytes(&self) -> u32;
+    fn size_in_bytes(&self) -> u64;
 
     /// Returns the number of blocks
-    fn size_in_blocks(&self) -> u32 {
+    fn size_in_blocks(&self) -> u64 {
         self.size_in_bytes().div_ceil(self.block_size())
     }
 
@@ -40,7 +40,7 @@ pub trait BlockIO: Send + Sync {
     /// # Arguments
     /// * `block_number` - The block number to read
     /// * `buffer` - Buffer to read into, must be at least block_size() bytes
-    async fn read_block(&self, block_number: u32, buffer: &mut [u8]) -> BlockResult<()>;
+    async fn read_block(&self, block_number: u64, buffer: &mut [u8]) -> BlockResult<()>;
 
     /// Read bytes from a specific offset
     ///
@@ -51,7 +51,7 @@ pub trait BlockIO: Send + Sync {
     /// # Returns
     /// * Number of bytes read if successful
     /// * Error if offset is invalid or device error occurs
-    async fn read(&self, offset: u32, buffer: &mut [u8]) -> BlockResult<u32> {
+    async fn read(&self, offset: u64, buffer: &mut [u8]) -> BlockResult<u64> {
         let sz = self.size_in_bytes();
         if offset >= sz {
             return if offset == sz {
@@ -61,13 +61,14 @@ pub trait BlockIO: Send + Sync {
             };
         }
 
-        let n = min(buffer.len() as u32, sz - offset);
+        let n = min(buffer.len() as u64, sz - offset);
         let block_number = offset / self.block_size();
         let offset_in_block = offset % self.block_size();
         let actual_n = min(self.block_size() - offset_in_block, n);
 
         if actual_n == self.block_size() && offset_in_block == 0 {
-            self.read_block(block_number, &mut buffer[..actual_n as usize]).await?;
+            self.read_block(block_number, &mut buffer[..actual_n as usize])
+                .await?;
         } else {
             let mut temp = vec![0; self.block_size() as usize];
             self.read_block(block_number, &mut temp).await?;
@@ -80,8 +81,8 @@ pub trait BlockIO: Send + Sync {
     }
 
     /// Read exactly n bytes from offset or until EOF
-    async fn read_exact(&self, mut offset: u32, buffer: &mut [u8]) -> BlockResult<u32> {
-        let mut total_count = 0;
+    async fn read_exact(&self, mut offset: u64, buffer: &mut [u8]) -> BlockResult<u64> {
+        let mut total_count: u64 = 0;
         let mut remaining = buffer.len();
         let mut buf_offset = 0;
 
@@ -102,22 +103,23 @@ pub trait BlockIO: Send + Sync {
     }
 
     /// Write a block
-    async fn write_block(&self, block_number: u32, buffer: &[u8]) -> BlockResult<()>;
+    async fn write_block(&self, block_number: u64, buffer: &[u8]) -> BlockResult<()>;
 
     /// Write bytes at a specific offset
-    async fn write(&self, offset: u32, buffer: &[u8]) -> BlockResult<u32> {
+    async fn write(&self, offset: u64, buffer: &[u8]) -> BlockResult<u64> {
         let sz = self.size_in_bytes();
         if offset >= sz {
             return Err(BlockError::OffsetOutOfBounds);
         }
 
-        let n = min(buffer.len() as u32, sz - offset);
+        let n = min(buffer.len() as u64, sz - offset);
         let block_number = offset / self.block_size();
         let offset_in_block = offset % self.block_size();
         let actual_n = min(self.block_size() - offset_in_block, n);
 
         if actual_n == self.block_size() && offset_in_block == 0 {
-            self.write_block(block_number, &buffer[..actual_n as usize]).await?;
+            self.write_block(block_number, &buffer[..actual_n as usize])
+                .await?;
         } else {
             // Initialize vector with zeros rather than using unsafe set_len
             let mut temp = vec![0; self.block_size() as usize];
@@ -137,7 +139,7 @@ pub trait BlockIO: Send + Sync {
 pub struct MockDevice {
     block_size: u32,
     size: u32,
-    blocks: Mutex<BTreeMap<u32, Vec<u8>>>,
+    blocks: Mutex<BTreeMap<u64, Vec<u8>>>,
 }
 
 impl MockDevice {
@@ -152,19 +154,19 @@ impl MockDevice {
 
 #[async_trait]
 impl BlockIO for MockDevice {
-    fn block_size(&self) -> u32 {
-        self.block_size
+    fn block_size(&self) -> u64 {
+        self.block_size as u64
     }
 
-    fn size_in_bytes(&self) -> u32 {
-        self.size
+    fn size_in_bytes(&self) -> u64 {
+        self.size as u64
     }
 
-    fn size_in_blocks(&self) -> u32 {
-        self.size.div_ceil(self.block_size)
+    fn size_in_blocks(&self) -> u64 {
+        self.size.div_ceil(self.block_size) as u64
     }
 
-    async fn read_block(&self, block_number: u32, buffer: &mut [u8]) -> BlockResult<()> {
+    async fn read_block(&self, block_number: u64, buffer: &mut [u8]) -> BlockResult<()> {
         if buffer.len() < self.block_size as usize {
             return Err(BlockError::InvalidBlock);
         }
@@ -180,7 +182,7 @@ impl BlockIO for MockDevice {
         }
     }
 
-    async fn write_block(&self, block_number: u32, buffer: &[u8]) -> BlockResult<()> {
+    async fn write_block(&self, block_number: u64, buffer: &[u8]) -> BlockResult<()> {
         if buffer.len() < self.block_size as usize {
             return Err(BlockError::InvalidBlock);
         }

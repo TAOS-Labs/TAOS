@@ -108,7 +108,8 @@ impl Ext2 {
                         &mut superblock as *mut _ as *mut u8,
                         core::mem::size_of::<Superblock>(),
                     ),
-                ).await
+                )
+                .await
                 .map_err(FilesystemError::DeviceError)?;
         }
 
@@ -133,7 +134,7 @@ impl Ext2 {
             unsafe {
                 self.device
                     .read_block(
-                        bgdt_start + i,
+                        bgdt_start + i as u64,
                         core::slice::from_raw_parts_mut(
                             &mut desc as *mut _ as *mut u8,
                             core::mem::size_of::<BlockGroupDescriptor>(),
@@ -169,13 +170,16 @@ impl Ext2 {
             .await
             .map_err(|_| FilesystemError::CacheError)?;
 
-        let root_node = Arc::new(Node::new(
-            2,
-            root_inode,
-            Arc::clone(&self.block_cache),
-            superblock.block_size(),
-            Arc::clone(&self.allocator), // Pass allocator reference
-        ).await);
+        let root_node = Arc::new(
+            Node::new(
+                2,
+                root_inode,
+                Arc::clone(&self.block_cache),
+                superblock.block_size(),
+                Arc::clone(&self.allocator), // Pass allocator reference
+            )
+            .await,
+        );
 
         // Update self
         unsafe {
@@ -237,7 +241,10 @@ impl Ext2 {
 
         let mut current = root;
         for component in path.split('/').filter(|s| !s.is_empty()) {
-            let entries = current.read_dir().await.map_err(FilesystemError::NodeError)?;
+            let entries = current
+                .read_dir()
+                .await
+                .map_err(FilesystemError::NodeError)?;
 
             let entry = entries
                 .iter()
@@ -250,13 +257,16 @@ impl Ext2 {
                 .await
                 .map_err(|_| FilesystemError::CacheError)?;
 
-            current = Arc::new(Node::new(
-                entry.inode_no,
-                inode,
-                Arc::clone(&self.block_cache),
-                self.superblock.block_size(),
-                Arc::clone(&self.allocator),
-            ).await);
+            current = Arc::new(
+                Node::new(
+                    entry.inode_no,
+                    inode,
+                    Arc::clone(&self.block_cache),
+                    self.superblock.block_size(),
+                    Arc::clone(&self.allocator),
+                )
+                .await,
+            );
         }
 
         Ok(current)
@@ -278,7 +288,8 @@ impl Ext2 {
         let size = node.size() as usize;
         let mut buffer = vec![0; size];
         node.read_at(0, &mut buffer)
-            .await.map_err(FilesystemError::NodeError)?;
+            .await
+            .map_err(FilesystemError::NodeError)?;
 
         Ok(buffer)
     }
@@ -362,19 +373,26 @@ impl Ext2 {
             .map_err(FilesystemError::NodeError)?;
 
         // Create and return node
-        let node = Arc::new(Node::new(
-            inode_no,
-            inode,
-            Arc::clone(&self.block_cache),
-            self.superblock.block_size(),
-            Arc::clone(&self.allocator),
-        ).await);
+        let node = Arc::new(
+            Node::new(
+                inode_no,
+                inode,
+                Arc::clone(&self.block_cache),
+                self.superblock.block_size(),
+                Arc::clone(&self.allocator),
+            )
+            .await,
+        );
 
         Ok(node)
     }
 
     /// Create a new directory
-    pub async fn create_directory(&self, path: &str, mode: FileMode) -> FilesystemResult<Arc<Node>> {
+    pub async fn create_directory(
+        &self,
+        path: &str,
+        mode: FileMode,
+    ) -> FilesystemResult<Arc<Node>> {
         if !self.mounted.load(Ordering::Acquire) {
             return Err(FilesystemError::NotMounted);
         }
@@ -428,13 +446,16 @@ impl Ext2 {
         }
 
         // Create directory node
-        let node = Arc::new(Node::new(
-            inode_no,
-            inode,
-            Arc::clone(&self.block_cache),
-            self.superblock.block_size(),
-            Arc::clone(&self.allocator),
-        ).await);
+        let node = Arc::new(
+            Node::new(
+                inode_no,
+                inode,
+                Arc::clone(&self.block_cache),
+                self.superblock.block_size(),
+                Arc::clone(&self.allocator),
+            )
+            .await,
+        );
 
         // Add . and .. entries
         node.add_dir_entry(".", inode_no, FileType::Directory)
@@ -534,13 +555,16 @@ impl Ext2 {
         }
 
         // Create symlink node
-        let node = Arc::new(Node::new(
-            inode_no,
-            inode,
-            Arc::clone(&self.block_cache),
-            self.superblock.block_size(),
-            Arc::clone(&self.allocator),
-        ).await);
+        let node = Arc::new(
+            Node::new(
+                inode_no,
+                inode,
+                Arc::clone(&self.block_cache),
+                self.superblock.block_size(),
+                Arc::clone(&self.allocator),
+            )
+            .await,
+        );
 
         // Add directory entry
         parent
@@ -603,7 +627,9 @@ impl Ext2 {
             return Err(FilesystemError::NodeError(NodeError::NotFile));
         }
 
-        node.write_at(0, data).await.map_err(FilesystemError::NodeError)
+        node.write_at(0, data)
+            .await
+            .map_err(FilesystemError::NodeError)
     }
 
     /// Read the target of a symbolic link

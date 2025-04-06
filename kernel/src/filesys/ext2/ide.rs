@@ -1,7 +1,7 @@
 // IDK if we need this
 // We'll transcribe just in case.
 
-use alloc::{sync::Arc,boxed::Box};
+use alloc::{boxed::Box, sync::Arc};
 use async_trait::async_trait;
 use core::sync::atomic::{AtomicU32, Ordering};
 use spin::Mutex;
@@ -91,7 +91,7 @@ impl IdeRegisters {
     unsafe fn setup_transfer(
         &mut self,
         channel: u8,
-        sector: u32,
+        sector: u64,
         is_write: bool,
     ) -> BlockResult<()> {
         self.sector_count_port.write(1);
@@ -169,16 +169,16 @@ impl Ide {
 
 #[async_trait]
 impl BlockIO for Ide {
-    fn block_size(&self) -> u32 {
-        SECTOR_SIZE as u32
+    fn block_size(&self) -> u64 {
+        SECTOR_SIZE as u64
     }
 
-    fn size_in_bytes(&self) -> u32 {
+    fn size_in_bytes(&self) -> u64 {
         // TODO: Implement proper drive size detection
-        u32::MAX
+        u32::MAX as u64
     }
 
-    async fn read_block(&self, block_number: u32, buffer: &mut [u8]) -> BlockResult<()> {
+    async fn read_block(&self, block_number: u64, buffer: &mut [u8]) -> BlockResult<()> {
         if buffer.len() < SECTOR_SIZE {
             return Err(BlockError::InvalidBlock);
         }
@@ -207,7 +207,7 @@ impl BlockIO for Ide {
         unsafe { regs.read_data(buffer) }
     }
 
-    async fn write_block(&self, block_number: u32, buffer: &[u8]) -> BlockResult<()> {
+    async fn write_block(&self, block_number: u64, buffer: &[u8]) -> BlockResult<()> {
         if buffer.len() < SECTOR_SIZE {
             return Err(BlockError::InvalidBlock);
         }

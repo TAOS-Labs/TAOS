@@ -15,7 +15,10 @@ use crate::{
     debug_println,
     devices::pci::write_pci_command,
     events::{current_running_event, futures::devices::SDCardReq, get_runner_time},
-    filesys::{BlockDevice, FsError},
+    filesys::{
+        ext2::block_io::{BlockError, BlockIO, BlockResult},
+        BlockDevice, FsError,
+    },
     memory::paging,
 };
 use bitflags::bitflags;
@@ -240,6 +243,52 @@ impl BlockDevice for SDCardInfo {
 
     fn total_blocks(&self) -> u64 {
         self.total_blocks
+    }
+}
+
+#[async_trait]
+impl BlockIO for SDCardInfo {
+    async fn read_block(&self, block_num: u64, buf: &mut [u8]) -> BlockResult<()> {
+        if block_num > self.total_blocks {
+            return BlockResult::Err(BlockError::InvalidBlock);
+        }
+        let data = read_sd_card(
+            self,
+            block_num
+                .try_into()
+                .expect("Maxumum block number should not be greater than 32 bits"),
+        )
+        .await
+        .map_err(|_| BlockError::DeviceError)?;
+        buf.copy_from_slice(&data);
+
+        Result::Ok(())
+    }
+
+    async fn write_block(&self, block_num: u64, buf: &[u8]) -> BlockResult<()> {
+        if block_num > self.total_blocks {
+            return BlockResult::Err(BlockError::InvalidBlock);
+        }
+        let mut data: [u8; 512] = [0; 512];
+        data.copy_from_slice(buf);
+        write_sd_card(
+            self,
+            block_num
+                .try_into()
+                .expect("Maximum block number should not be greater than 32 bits"),
+            data,
+        )
+        .await
+        .map_err(|_| BlockError::DeviceError)?;
+        Result::Ok(())
+    }
+
+    fn block_size(&self) -> u64 {
+        SD_BLOCK_SIZE as u64 //.try_into().expect("To be on 64 bit system")
+    }
+
+    fn size_in_bytes(&self) -> u64 {
+        self.total_blocks * BlockIO::block_size(self)
     }
 }
 

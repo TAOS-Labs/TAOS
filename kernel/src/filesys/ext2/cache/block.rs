@@ -1,4 +1,4 @@
-use alloc::{collections::BTreeMap, sync::Arc, vec, vec::Vec, boxed::Box};
+use alloc::{boxed::Box, collections::BTreeMap, sync::Arc, vec, vec::Vec};
 use async_trait::async_trait;
 use spin::Mutex;
 
@@ -88,7 +88,7 @@ impl BlockCache {
     }
 
     /// Load a block from the device
-    async fn load_block(&self, block: u32) -> CacheResult<CachedBlock> {
+    async fn load_block(&self, block: u64) -> CacheResult<CachedBlock> {
         let mut cached = CachedBlock::new(self.device.block_size() as usize);
         self.device
             .read_block(block, &mut cached.data)
@@ -98,7 +98,7 @@ impl BlockCache {
     }
 
     /// Write a block back to the device
-    async fn write_block(&self, block: u32, cached: &CachedBlock) -> CacheResult<()> {
+    async fn write_block(&self, block: u64, cached: &CachedBlock) -> CacheResult<()> {
         if !cached.is_dirty() {
             return Ok(());
         }
@@ -127,7 +127,7 @@ impl BlockCache {
 
             // Write back if dirty
             if guard.is_dirty() {
-                self.write_block(block, &guard).await?;
+                self.write_block(block as u64, &guard).await?;
                 self.stats.lock().writebacks += 1;
             }
 
@@ -155,7 +155,7 @@ impl Cache<u32, CachedBlock> for BlockCache {
 
         self.evict_if_needed(&mut entries).await?;
 
-        let cached = self.load_block(block).await?;
+        let cached = self.load_block(block as u64).await?;
         let entry = CacheEntry::new(cached);
         let value = Arc::clone(&entry.value);
         entries.insert(block, entry);
@@ -180,7 +180,7 @@ impl Cache<u32, CachedBlock> for BlockCache {
             let guard = entry.value.lock();
             // Write back if dirty
             if guard.is_dirty() {
-                self.write_block(*block, &guard).await?;
+                self.write_block(*block as u64, &guard).await?;
                 self.stats.lock().writebacks += 1;
             }
         }
@@ -195,7 +195,7 @@ impl Cache<u32, CachedBlock> for BlockCache {
         for (block, entry) in entries.iter() {
             let guard = entry.value.lock();
             if guard.is_dirty() {
-                self.write_block(*block, &guard).await?;
+                self.write_block(*block as u64, &guard).await?;
                 self.stats.lock().writebacks += 1;
             }
         }

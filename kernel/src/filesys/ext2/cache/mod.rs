@@ -1,4 +1,4 @@
-use alloc::{sync::Arc, boxed::Box};
+use alloc::{boxed::Box, sync::Arc};
 use async_trait::async_trait;
 use core::{
     hash::Hash,
@@ -67,7 +67,8 @@ impl CacheStats {
 
 /// Trait for cache implementations
 #[async_trait]
-pub trait Cache<K, V>: Send + Sync      // TODO is this safe? (needed for test setup)
+pub trait Cache<K, V>: Send + Sync
+// TODO is this safe? (needed for test setup)
 where
     K: Eq + Hash + Clone,
     V: CacheableItem,

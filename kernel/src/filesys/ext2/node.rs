@@ -111,7 +111,8 @@ impl<'a> WriteContext<'a> {
             if inode.blocks[12] == 0 {
                 inode.blocks[12] = self.allocator.allocate_block().await?;
             }
-            self.write_indirect_pointer(inode.blocks[12], idx as u32, block).await?;
+            self.write_indirect_pointer(inode.blocks[12], idx as u32, block)
+                .await?;
             return Ok(());
         }
         idx -= ptrs_per_block;
@@ -127,16 +128,20 @@ impl<'a> WriteContext<'a> {
             let indirect2_idx = idx % ptrs_per_block;
 
             // Ensure indirect block exists
-            let indirect2 = self.read_indirect_pointer(indirect1, indirect1_idx as u32).await?;
+            let indirect2 = self
+                .read_indirect_pointer(indirect1, indirect1_idx as u32)
+                .await?;
             let indirect2 = if indirect2 == 0 {
                 let new_block = self.allocator.allocate_block().await?;
-                self.write_indirect_pointer(indirect1, indirect1_idx as u32, new_block).await?;
+                self.write_indirect_pointer(indirect1, indirect1_idx as u32, new_block)
+                    .await?;
                 new_block
             } else {
                 indirect2
             };
 
-            self.write_indirect_pointer(indirect2, indirect2_idx as u32, block).await?;
+            self.write_indirect_pointer(indirect2, indirect2_idx as u32, block)
+                .await?;
             return Ok(());
         }
         idx -= ptrs_per_block * ptrs_per_block;
@@ -152,26 +157,33 @@ impl<'a> WriteContext<'a> {
         let indirect3_idx = idx % ptrs_per_block;
 
         // Ensure first level indirect block exists
-        let indirect2 = self.read_indirect_pointer(indirect1, indirect1_idx as u32).await?;
+        let indirect2 = self
+            .read_indirect_pointer(indirect1, indirect1_idx as u32)
+            .await?;
         let indirect2 = if indirect2 == 0 {
             let new_block = self.allocator.allocate_block().await?;
-            self.write_indirect_pointer(indirect1, indirect1_idx as u32, new_block).await?;
+            self.write_indirect_pointer(indirect1, indirect1_idx as u32, new_block)
+                .await?;
             new_block
         } else {
             indirect2
         };
 
         // Ensure second level indirect block exists
-        let indirect3 = self.read_indirect_pointer(indirect2, indirect2_idx as u32).await?;
+        let indirect3 = self
+            .read_indirect_pointer(indirect2, indirect2_idx as u32)
+            .await?;
         let indirect3 = if indirect3 == 0 {
             let new_block = self.allocator.allocate_block().await?;
-            self.write_indirect_pointer(indirect2, indirect2_idx as u32, new_block).await?;
+            self.write_indirect_pointer(indirect2, indirect2_idx as u32, new_block)
+                .await?;
             new_block
         } else {
             indirect3
         };
 
-        self.write_indirect_pointer(indirect3, indirect3_idx as u32, block).await?;
+        self.write_indirect_pointer(indirect3, indirect3_idx as u32, block)
+            .await?;
         Ok(())
     }
 
@@ -299,8 +311,9 @@ impl Node {
 
             // Free blocks
             for i in 0..inode.blocks_count {
-                if let Ok(block) =
-                    self.get_block_number_for_offset(i as u64 * self.block_size as u64).await
+                if let Ok(block) = self
+                    .get_block_number_for_offset(i as u64 * self.block_size as u64)
+                    .await
                 {
                     self.allocator.free_block(block).await?;
                 }
@@ -572,9 +585,14 @@ impl Node {
             };
 
             // Read entry header
-            let bytes_read = self.read_raw_at(offset, unsafe {
-                core::slice::from_raw_parts_mut(&mut entry as *mut _ as *mut u8, entry_header_size)
-            }).await?;
+            let bytes_read = self
+                .read_raw_at(offset, unsafe {
+                    core::slice::from_raw_parts_mut(
+                        &mut entry as *mut _ as *mut u8,
+                        entry_header_size,
+                    )
+                })
+                .await?;
 
             if bytes_read < entry_header_size {
                 serial_println!("Partial read at offset {}, stopping", offset);
@@ -590,8 +608,9 @@ impl Node {
 
             if entry.inode != 0 {
                 let mut name_buffer = vec![0u8; entry.name_len as usize];
-                let name_bytes_read =
-                    self.read_raw_at(offset + entry_header_size as u64, &mut name_buffer).await?;
+                let name_bytes_read = self
+                    .read_raw_at(offset + entry_header_size as u64, &mut name_buffer)
+                    .await?;
 
                 if name_bytes_read == entry.name_len as usize {
                     let name = String::from_utf8_lossy(&name_buffer).into_owned();
@@ -680,7 +699,9 @@ impl Node {
         let end_block = current_size.div_ceil(self.block_size as u64);
 
         for block_idx in start_block..end_block {
-            if let Ok(block) = self.get_block_number_for_offset(block_idx * self.block_size as u64).await
+            if let Ok(block) = self
+                .get_block_number_for_offset(block_idx * self.block_size as u64)
+                .await
             {
                 self.allocator.free_block(block).await?;
             }
@@ -694,7 +715,12 @@ impl Node {
     }
 
     /// Add a directory entry
-    pub async fn add_dir_entry(&self, name: &str, inode_no: u32, file_type: FileType) -> NodeResult<()> {
+    pub async fn add_dir_entry(
+        &self,
+        name: &str,
+        inode_no: u32,
+        file_type: FileType,
+    ) -> NodeResult<()> {
         if !self.is_directory() {
             return Err(NodeError::NotDirectory);
         }
@@ -734,10 +760,12 @@ impl Node {
             // Write entry header
             self.write_raw_at(0, unsafe {
                 core::slice::from_raw_parts(&new_entry as *const _ as *const u8, entry_header_size)
-            }).await?;
+            })
+            .await?;
 
             // Write name
-            self.write_raw_at(entry_header_size as u64, name.as_bytes()).await?;
+            self.write_raw_at(entry_header_size as u64, name.as_bytes())
+                .await?;
 
             // Update directory size
             {
@@ -767,7 +795,8 @@ impl Node {
                     &mut entry as *mut _ as *const u8 as *mut u8,
                     entry_header_size,
                 )
-            }).await?;
+            })
+            .await?;
 
             // Check for invalid entries that might cause issues
             if entry.rec_len == 0 {
@@ -800,7 +829,8 @@ impl Node {
                         &adjusted_entry as *const _ as *const u8,
                         entry_header_size,
                     )
-                }).await?;
+                })
+                .await?;
 
                 found_space = true;
                 break;
@@ -854,10 +884,12 @@ impl Node {
         // Write entry header
         self.write_raw_at(insert_pos, unsafe {
             core::slice::from_raw_parts(&new_entry as *const _ as *const u8, entry_header_size)
-        }).await?;
+        })
+        .await?;
 
         // Write name
-        self.write_raw_at(insert_pos + entry_header_size as u64, name.as_bytes()).await?;
+        self.write_raw_at(insert_pos + entry_header_size as u64, name.as_bytes())
+            .await?;
 
         // Update directory size if needed
         let new_dir_size = insert_pos + padded_size as u64;
@@ -891,11 +923,13 @@ impl Node {
                     &mut entry as *mut _ as *mut u8,
                     size_of::<DirectoryEntry>(),
                 )
-            }).await?;
+            })
+            .await?;
 
             if entry.inode != 0 {
                 let mut entry_name = vec![0u8; entry.name_len as usize];
-                self.read_raw_at(offset + size_of::<DirectoryEntry>() as u64, &mut entry_name).await?;
+                self.read_raw_at(offset + size_of::<DirectoryEntry>() as u64, &mut entry_name)
+                    .await?;
 
                 if name.as_bytes() == entry_name {
                     // Found the entry to remove
@@ -905,7 +939,8 @@ impl Node {
                             &entry as *const _ as *const u8,
                             size_of::<DirectoryEntry>(),
                         )
-                    }).await?;
+                    })
+                    .await?;
                     found = true;
                     break;
                 }
@@ -994,13 +1029,16 @@ mod tests {
 
         async fn create_node(&self, mode: u16) -> Arc<Node> {
             let (inode_no, cached_inode) = self.create_inode(mode);
-            Arc::new(Node::new(
-                inode_no,
-                cached_inode,
-                Arc::clone(&self.block_cache),
-                1024,
-                Arc::clone(&self.allocator),
-            ).await)
+            Arc::new(
+                Node::new(
+                    inode_no,
+                    cached_inode,
+                    Arc::clone(&self.block_cache),
+                    1024,
+                    Arc::clone(&self.allocator),
+                )
+                .await,
+            )
         }
     }
 
@@ -1177,11 +1215,16 @@ mod tests {
 
         // Try to read_dir on a file
         let file_node = setup.create_node(FileMode::REG.bits()).await;
-        assert!(matches!(file_node.read_dir().await, Err(NodeError::NotDirectory)));
+        assert!(matches!(
+            file_node.read_dir().await,
+            Err(NodeError::NotDirectory)
+        ));
 
         // Try to add directory entry to a file
         assert!(matches!(
-            file_node.add_dir_entry("test", 1, FileType::RegularFile).await,
+            file_node
+                .add_dir_entry("test", 1, FileType::RegularFile)
+                .await,
             Err(NodeError::NotDirectory)
         ));
     }
