@@ -8,7 +8,7 @@
 
 // Will remove after getting context switching
 // Right now user code/data is not used
-#![allow(dead_code)]
+// #![allow(dead_code)]
 
 use lazy_static::lazy_static;
 use x86_64::{
@@ -16,6 +16,7 @@ use x86_64::{
         segmentation::{Segment, CS, DS, ES, FS, GS, SS},
         tables::load_tss,
     },
+    registers::model_specific::KernelGsBase,
     structures::{
         gdt::{Descriptor, GlobalDescriptorTable, SegmentSelector},
         tss::TaskStateSegment,
@@ -45,7 +46,7 @@ lazy_static! {
     /// Each TSS contains:
     /// - Interrupt Stack Table (IST) for handling exceptions
     /// - Kernel stack pointer (RSP0) for privilege level changes
-    static ref TSSS: [TaskStateSegment; MAX_CORES] = {
+    pub static ref TSSS: [TaskStateSegment; MAX_CORES] = {
         static mut DF_STACKS: [[u8; IST_STACK_SIZE]; MAX_CORES] = [[0; IST_STACK_SIZE]; MAX_CORES];
         static mut PRIV_STACKS: [[u8; RING0_STACK_SIZE]; MAX_CORES] = [[0; RING0_STACK_SIZE]; MAX_CORES];
 
@@ -54,15 +55,12 @@ lazy_static! {
         for (i, tss) in tsss.iter_mut().enumerate() {
             unsafe {
                 let stack_start = VirtAddr::from_ptr(&DF_STACKS[i]);
-                serial_println!("Stack start: {:#x}", stack_start);
-                let stack_end = stack_start + IST_STACK_SIZE as u64;
-
+                let stack_end = VirtAddr::new((stack_start + IST_STACK_SIZE as u64).as_u64() & !15);
                 let priv_stack_start = VirtAddr::from_ptr(&PRIV_STACKS[i]);
-                serial_println!("Priv stack start: {:#x}", priv_stack_start);
-
-                let priv_stack_end = priv_stack_start + RING0_STACK_SIZE as u64;
+                let priv_stack_end = VirtAddr::new((priv_stack_start + RING0_STACK_SIZE as u64).as_u64() & !15);
 
                 tss.interrupt_stack_table[DOUBLE_FAULT_IST_INDEX as usize] = stack_end;
+                serial_println!("Stack end for cpu_id {} is {:#x}", i, priv_stack_end);
                 tss.privilege_stack_table[0] = priv_stack_end;
             }
         }
@@ -80,8 +78,8 @@ lazy_static! {
         // Add segments
         let code_selector = gdt.append(Descriptor::kernel_code_segment());
         let data_selector = gdt.append(Descriptor::kernel_data_segment());
-        let user_code_selector = gdt.append(Descriptor::user_code_segment());
         let user_data_selector = gdt.append(Descriptor::user_data_segment());
+        let user_code_selector = gdt.append(Descriptor::user_code_segment());
 
         let mut tss_selectors = [SegmentSelector::new(0, PrivilegeLevel::Ring0); MAX_CORES];
 
@@ -92,8 +90,8 @@ lazy_static! {
         (gdt, Selectors {
             code_selector,
             data_selector,
-            user_code_selector,
             user_data_selector,
+            user_code_selector,
             tss_selectors,
         })
     };
@@ -102,10 +100,10 @@ lazy_static! {
 /// Collection of segment selectors for kernel and user segments, plus TSS selectors.
 #[derive(Debug)]
 pub struct Selectors {
-    code_selector: SegmentSelector,
-    data_selector: SegmentSelector,
-    pub user_code_selector: SegmentSelector,
+    pub code_selector: SegmentSelector,
+    pub data_selector: SegmentSelector,
     pub user_data_selector: SegmentSelector,
+    pub user_code_selector: SegmentSelector,
     tss_selectors: [SegmentSelector; MAX_CORES],
 }
 
@@ -124,7 +122,6 @@ pub fn init(cpu_id: u32) {
     unsafe {
         // Set up segment registers with appropriate selectors
         CS::set_reg(GDT.1.code_selector);
-
         ES::set_reg(GDT.1.data_selector);
         DS::set_reg(GDT.1.data_selector);
         SS::set_reg(GDT.1.data_selector);
@@ -133,4 +130,5 @@ pub fn init(cpu_id: u32) {
 
         load_tss(GDT.1.tss_selectors[cpu_id as usize]);
     }
+    KernelGsBase::write(VirtAddr::new(&TSSS[cpu_id as usize] as *const _ as u64));
 }

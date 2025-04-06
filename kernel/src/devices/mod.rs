@@ -6,20 +6,13 @@
 //! - Future device support will be added here
 
 use crate::{memory::MAPPER, serial_println};
-use limine::request::FramebufferRequest;
 use pci::walk_pci_bus;
 use sd_card::{find_sd_card, initalize_sd_card};
+pub mod graphics;
+use graphics::framebuffer::{self, colors};
 pub mod pci;
 pub mod sd_card;
 pub mod serial;
-
-/// Framebuffer request to the bootloader.
-/// Used to get access to video output capabilities.
-///
-/// TODO: Move to proper frame buffer implementation
-#[used]
-#[link_section = ".requests"]
-static FRAMEBUFFER_REQUEST: FramebufferRequest = FramebufferRequest::new();
 
 /// Initialize hardware devices.
 ///
@@ -32,25 +25,43 @@ static FRAMEBUFFER_REQUEST: FramebufferRequest = FramebufferRequest::new();
 ///   performs device initialization.
 pub fn init(cpu_id: u32) {
     if cpu_id == 0 {
-        // Initialize frame buffer if available
-        if let Some(framebuffer_response) = FRAMEBUFFER_REQUEST.get_response() {
-            serial_println!("Found frame buffer");
-            if let Some(framebuffer) = framebuffer_response.framebuffers().next() {
-                // Draw a simple diagonal line test pattern
-                // TODO: Replace with proper graphics initialization
-                for i in 0..100_u64 {
-                    let pixel_offset = i * framebuffer.pitch() + i * 4;
-                    unsafe {
-                        *(framebuffer.addr().add(pixel_offset as usize) as *mut u32) = 0xFFFFFFFF;
-                    }
+        if graphics::init() {
+            serial_println!("Framebuffer initialized successfully");
+
+            framebuffer::clear(colors::BLACK);
+
+            framebuffer::with_framebuffer(|fb| {
+                for i in 0..100 {
+                    fb.set_pixel(i, i, colors::WHITE);
                 }
-            }
+
+                fb.fill_rect(framebuffer::Rect::new(20, 30, 100, 50), colors::CYAN);
+
+                fb.fill_circle(200, 150, 40, colors::BLUE);
+
+                //text_renderer::draw_text(&mut fb, "Hello, world!", 10, 10, 20.0, colors::WHITE);
+
+                fb.swap();
+            });
+        } else {
+            serial_println!("Failed to initialize graphics");
         }
+
+        // Uncomment to see some stuff
+        // It takes a hot second though,
+        // Like 15+ (parsing is apparently complex)
+        // Might be worthwhile to shove off initialization of text renderer to a background kernel task?
+        /*framebuffer::with_framebuffer(|mut fb| {
+            text_renderer::draw_text(&mut fb, "Hello, world!", 10, 10, 20.0, colors::WHITE);
+            fb.swap();
+        });*/
+        serial_println!("Text drawn");
+
         let devices = walk_pci_bus();
         let sd_card_device =
             find_sd_card(&devices).expect("Build system currently sets up an sd-card");
         let mut mapper = MAPPER.lock();
         initalize_sd_card(&sd_card_device, &mut mapper).unwrap();
-        serial_println!("Sd card initalized");
+        serial_println!("Sd card initialized");
     }
 }
