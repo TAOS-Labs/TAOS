@@ -85,7 +85,7 @@ impl Allocator {
     }
 
     /// Allocate a block in a specific group
-    fn allocate_block_in_group(&self, group: usize) -> AllocResult<u32> {
+    async fn allocate_block_in_group(&self, group: usize) -> AllocResult<u32> {
         let bgdt = self.bgdt.get(group).ok_or(AllocError::InvalidNumber)?;
         let _guard = self
             .group_locks
@@ -97,6 +97,7 @@ impl Allocator {
         let bitmap_block = self
             .block_cache
             .get(bgdt.block_bitmap_block)
+            .await
             .map_err(|_| AllocError::CacheError)?;
         let mut bitmap_block = bitmap_block.lock();
         let bitmap = bitmap_block.data_mut();
@@ -122,7 +123,7 @@ impl Allocator {
     }
 
     /// Allocate an inode in a specific group
-    fn allocate_inode_in_group(&self, group: usize) -> AllocResult<u32> {
+    async fn allocate_inode_in_group(&self, group: usize) -> AllocResult<u32> {
         let bgdt = self.bgdt.get(group).ok_or(AllocError::InvalidNumber)?;
         let _guard = self
             .group_locks
@@ -134,6 +135,7 @@ impl Allocator {
         let bitmap_block = self
             .block_cache
             .get(bgdt.inode_bitmap_block)
+            .await
             .map_err(|_| AllocError::CacheError)?;
         let mut bitmap_block = bitmap_block.lock();
         let bitmap = bitmap_block.data_mut();
@@ -159,14 +161,14 @@ impl Allocator {
     }
 
     /// Allocate a new block
-    pub fn allocate_block(&self) -> AllocResult<u32> {
+    pub async fn allocate_block(&self) -> AllocResult<u32> {
         let num_groups = self.superblock.block_group_count() as usize;
 
         // Try to allocate from each group
         for group in 0..num_groups {
             if let Some(desc) = self.bgdt.get(group) {
                 if desc.unallocated_blocks > 0 {
-                    if let Ok(block) = self.allocate_block_in_group(group) {
+                    if let Ok(block) = self.allocate_block_in_group(group).await {
                         // Update free blocks count
                         unsafe {
                             let bgdt = desc as *const _ as *mut BlockGroupDescriptor;
@@ -182,14 +184,14 @@ impl Allocator {
     }
 
     /// Allocate a new inode
-    pub fn allocate_inode(&self) -> AllocResult<u32> {
+    pub async fn allocate_inode(&self) -> AllocResult<u32> {
         let num_groups = self.superblock.block_group_count() as usize;
 
         // Try to allocate from each group
         for group in 0..num_groups {
             if let Some(desc) = self.bgdt.get(group) {
                 if desc.unallocated_inodes > 0 {
-                    if let Ok(inode) = self.allocate_inode_in_group(group) {
+                    if let Ok(inode) = self.allocate_inode_in_group(group).await {
                         // Update free inodes count
                         unsafe {
                             let bgdt = desc as *const _ as *mut BlockGroupDescriptor;
@@ -205,7 +207,7 @@ impl Allocator {
     }
 
     /// Free a block
-    pub fn free_block(&self, block: u32) -> AllocResult<()> {
+    pub async fn free_block(&self, block: u32) -> AllocResult<()> {
         let blocks_per_group = self.superblock.blocks_per_group;
 
         let group = (block / blocks_per_group) as usize;
@@ -222,6 +224,7 @@ impl Allocator {
         let bitmap_block = self
             .block_cache
             .get(bgdt.block_bitmap_block)
+            .await
             .map_err(|_| AllocError::CacheError)?;
         let mut bitmap_block = bitmap_block.lock();
         let bitmap = bitmap_block.data_mut();
@@ -239,7 +242,7 @@ impl Allocator {
     }
 
     /// Free an inode
-    pub fn free_inode(&self, inode: u32) -> AllocResult<()> {
+    pub async fn free_inode(&self, inode: u32) -> AllocResult<()> {
         let inodes_per_group = self.superblock.inodes_per_group;
 
         // Convert to 0-based index
@@ -259,6 +262,7 @@ impl Allocator {
         let bitmap_block = self
             .block_cache
             .get(bgdt.inode_bitmap_block)
+            .await
             .map_err(|_| AllocError::CacheError)?;
         let mut bitmap_block = bitmap_block.lock();
         let bitmap = bitmap_block.data_mut();

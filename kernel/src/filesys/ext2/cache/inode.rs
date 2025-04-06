@@ -1,4 +1,5 @@
-use alloc::{collections::BTreeMap, sync::Arc};
+use alloc::{collections::BTreeMap, sync::Arc, boxed::Box};
+use async_trait::async_trait;
 use core::sync::atomic::{AtomicU32, Ordering};
 use spin::Mutex;
 
@@ -164,11 +165,11 @@ impl InodeCache {
     }
 
     /// Load an inode from the device
-    fn load_inode(&self, inode_no: u32) -> CacheResult<CachedInode> {
+    async fn load_inode(&self, inode_no: u32) -> CacheResult<CachedInode> {
         let location = self.get_inode_location(inode_no);
 
         // Get the block containing this inode
-        let block = self.block_cache.get(location.block)?;
+        let block = self.block_cache.get(location.block).await?;
 
         // Read the inode from the block
         let inode = unsafe {
@@ -182,7 +183,7 @@ impl InodeCache {
     }
 
     /// Write an inode back to the device
-    fn write_inode(&self, inode_no: u32, cached: &CachedInode) -> CacheResult<()> {
+    async fn write_inode(&self, inode_no: u32, cached: &CachedInode) -> CacheResult<()> {
         if !cached.is_dirty() {
             return Ok(());
         }
@@ -190,7 +191,7 @@ impl InodeCache {
         let location = self.get_inode_location(inode_no);
 
         // Get the block containing this inode
-        let block = self.block_cache.get(location.block)?;
+        let block = self.block_cache.get(location.block).await?;
 
         // Write the inode to the block
         unsafe {
@@ -204,7 +205,7 @@ impl InodeCache {
     }
 
     /// Evict entries if cache is full
-    fn evict_if_needed(
+    async fn evict_if_needed(
         &self,
         entries: &mut BTreeMap<u32, CacheEntry<CachedInode>>,
     ) -> CacheResult<()> {
@@ -217,7 +218,7 @@ impl InodeCache {
 
             // Write back if dirty
             if entry.value.lock().is_dirty() {
-                self.write_inode(inode_no, &entry.value.lock())?;
+                self.write_inode(inode_no, &entry.value.lock()).await?;
                 self.stats.lock().writebacks += 1;
             }
 
@@ -229,8 +230,9 @@ impl InodeCache {
     }
 }
 
+#[async_trait]
 impl Cache<u32, CachedInode> for InodeCache {
-    fn get(&self, inode_no: u32) -> CacheResult<Arc<Mutex<CachedInode>>> {
+    async fn get(&self, inode_no: u32) -> CacheResult<Arc<Mutex<CachedInode>>> {
         let mut entries = self.entries.lock();
         let now = self.clock.now();
 
@@ -246,10 +248,10 @@ impl Cache<u32, CachedInode> for InodeCache {
         self.stats.lock().misses += 1;
 
         // Evict if needed
-        self.evict_if_needed(&mut entries)?;
+        self.evict_if_needed(&mut entries).await?;
 
         // Load and cache inode
-        let cached = self.load_inode(inode_no)?;
+        let cached = self.load_inode(inode_no).await?;
         let entry = CacheEntry::new(cached);
         let value = Arc::clone(&entry.value);
         entries.insert(inode_no, entry);
@@ -257,18 +259,18 @@ impl Cache<u32, CachedInode> for InodeCache {
         Ok(value)
     }
 
-    fn insert(&self, inode_no: u32, cached: CachedInode) -> CacheResult<()> {
+    async fn insert(&self, inode_no: u32, cached: CachedInode) -> CacheResult<()> {
         let mut entries = self.entries.lock();
 
         // Evict if needed
-        self.evict_if_needed(&mut entries)?;
+        self.evict_if_needed(&mut entries).await?;
 
         // Add new entry
         entries.insert(inode_no, CacheEntry::new(cached));
         Ok(())
     }
 
-    fn remove(&self, inode_no: &u32) -> CacheResult<()> {
+    async fn remove(&self, inode_no: &u32) -> CacheResult<()> {
         let mut entries = self.entries.lock();
 
         if let Some(entry) = entries.remove(inode_no) {
@@ -281,7 +283,7 @@ impl Cache<u32, CachedInode> for InodeCache {
                 entries.insert(*inode_no, entry);
             } else if cached.is_dirty() {
                 // No references but dirty, write back
-                self.write_inode(*inode_no, &cached)?;
+                self.write_inode(*inode_no, &cached).await?;
                 self.stats.lock().writebacks += 1;
             }
         }
@@ -289,14 +291,14 @@ impl Cache<u32, CachedInode> for InodeCache {
         Ok(())
     }
 
-    fn clear(&self) -> CacheResult<()> {
+    async fn clear(&self) -> CacheResult<()> {
         let mut entries = self.entries.lock();
 
         // Write back all dirty blocks
         for (inode_no, entry) in entries.iter() {
             let cached = entry.value.lock();
             if cached.ref_count() == 0 && cached.is_dirty() {
-                self.write_inode(*inode_no, &cached)?;
+                self.write_inode(*inode_no, &cached).await?;
                 self.stats.lock().writebacks += 1;
             }
         }
@@ -324,7 +326,7 @@ mod tests {
 
     // Test CachedInode functionality
     #[test_case]
-    fn test_cached_inode_basic() {
+    async fn test_cached_inode_basic() {
         let inode = Inode {
             mode: 0,
             uid: 0,
@@ -347,7 +349,7 @@ mod tests {
     }
 
     #[test_case]
-    fn test_cached_inode_ref_counting() {
+    async fn test_cached_inode_ref_counting() {
         let inode = Inode {
             links_count: 1,
             blocks: [0; 15],
@@ -399,56 +401,56 @@ mod tests {
 
     // Test InodeCache functionality
     #[test_case]
-    fn test_inode_cache_basic() {
-        let (_device, _superblock, _bgdt, _block_cache, cache) = setup_test_cache(4);
+    async fn test_inode_cache_basic() {
+        let (_, _, _, _, cache) = setup_test_cache(4);
 
         // Get an inode
-        let inode = cache.get(1).unwrap();
+        let inode = cache.get(1).await.unwrap();
         assert_eq!(inode.lock().ref_count(), 1);
     }
 
     #[test_case]
-    fn test_inode_cache_eviction() {
-        let (_device, _superblock, _bgdt, _block_cache, cache) = setup_test_cache(2);
+    async fn test_inode_cache_eviction() {
+        let (_, _, _, _, cache) = setup_test_cache(2);
 
         // Fill cache
         {
-            let inode1 = cache.get(1).unwrap();
+            let inode1 = cache.get(1).await.unwrap();
             inode1.lock().dec_ref();
         }
         {
-            let inode2 = cache.get(2).unwrap();
+            let inode2 = cache.get(2).await.unwrap();
             inode2.lock().dec_ref();
         }
 
         // This should trigger eviction
-        let _inode3 = cache.get(3).unwrap();
+        let _inode3 = cache.get(3).await.unwrap();
 
         let stats = cache.stats();
         assert!(stats.evictions > 0);
     }
 
     #[test_case]
-    fn test_inode_cache_dirty_writeback() {
-        let (_device, _superblock, _bgdt, _block_cache, cache) = setup_test_cache(4);
+    async fn test_inode_cache_dirty_writeback() {
+        let (_, _, _, _, cache) = setup_test_cache(4);
 
         // Modify an inode
         {
-            let inode = cache.get(1).unwrap();
+            let inode = cache.get(1).await.unwrap();
             let mut guard = inode.lock();
             guard.inode_mut().size_low = 1024;
             guard.dec_ref();
         }
 
         // Clear cache should trigger writeback
-        cache.clear().unwrap();
+        cache.clear().await.unwrap();
 
         let stats = cache.stats();
         assert!(stats.writebacks > 0);
     }
 
     #[test_case]
-    fn test_inode_location_calculation() {
+    async fn test_inode_location_calculation() {
         let device: Arc<dyn BlockIO> = MockDevice::new(1024, 1024 * 1024);
 
         let superblock = Arc::new(Superblock {
@@ -475,14 +477,14 @@ mod tests {
     }
 
     #[test_case]
-    fn test_inode_cache_reference_handling() {
-        let (_device, _superblock, _bgdt, _block_cache, cache) = setup_test_cache(2);
+    async fn test_inode_cache_reference_handling() {
+        let (_, _, _, _, cache) = setup_test_cache(2);
 
         // Get multiple references to same inode
         {
-            let inode1 = cache.get(1).unwrap();
+            let inode1 = cache.get(1).await.unwrap();
             {
-                let inode2 = cache.get(1).unwrap();
+                let inode2 = cache.get(1).await.unwrap();
                 {
                     let guard = inode1.lock();
                     assert_eq!(guard.ref_count(), 2);
@@ -499,18 +501,18 @@ mod tests {
                 }
 
                 // Try to evict - should not work while referenced
-                let inode3 = cache.get(2).unwrap();
+                let inode3 = cache.get(2).await.unwrap();
                 {
                     let guard = inode3.lock();
                     guard.dec_ref();
                 }
-                let inode4 = cache.get(3).unwrap(); // Should not evict inode 1
+                let inode4 = cache.get(3).await.unwrap(); // Should not evict inode 1
                 {
                     let guard = inode4.lock();
                     guard.dec_ref();
                 }
 
-                assert!(cache.get(1).is_ok()); // Should still be in cache
+                assert!(cache.get(1).await.is_ok()); // Should still be in cache
             }
         }
     }

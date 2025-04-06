@@ -1,7 +1,8 @@
 // IDK if we need this
 // We'll transcribe just in case.
 
-use alloc::sync::Arc;
+use alloc::{sync::Arc,boxed::Box};
+use async_trait::async_trait;
 use core::sync::atomic::{AtomicU32, Ordering};
 use spin::Mutex;
 use x86_64::instructions::port::{Port, PortReadOnly, PortWriteOnly};
@@ -130,7 +131,7 @@ impl Ide {
         self.drive & 1
     }
 
-    fn wait_until_ready(&self) -> BlockResult<()> {
+    async fn wait_until_ready(&self) -> BlockResult<()> {
         let mut regs = self.regs.lock();
 
         // SAFETY: Port access is synchronized via mutex
@@ -166,6 +167,7 @@ impl Ide {
     }
 }
 
+#[async_trait]
 impl BlockIO for Ide {
     fn block_size(&self) -> u32 {
         SECTOR_SIZE as u32
@@ -176,7 +178,7 @@ impl BlockIO for Ide {
         u32::MAX
     }
 
-    fn read_block(&self, block_number: u32, buffer: &mut [u8]) -> BlockResult<()> {
+    async fn read_block(&self, block_number: u32, buffer: &mut [u8]) -> BlockResult<()> {
         if buffer.len() < SECTOR_SIZE {
             return Err(BlockError::InvalidBlock);
         }
@@ -184,7 +186,7 @@ impl BlockIO for Ide {
         self.stats.reads.fetch_add(1, Ordering::Relaxed);
 
         // Wait for drive to be ready
-        self.wait_until_ready()?;
+        self.wait_until_ready().await?;
 
         // Set up read command
         {
@@ -196,7 +198,7 @@ impl BlockIO for Ide {
         }
 
         // Wait for command completion and data
-        self.wait_until_ready()?;
+        self.wait_until_ready().await?;
         self.wait_for_data()?;
 
         // Transfer the data
@@ -205,7 +207,7 @@ impl BlockIO for Ide {
         unsafe { regs.read_data(buffer) }
     }
 
-    fn write_block(&self, block_number: u32, buffer: &[u8]) -> BlockResult<()> {
+    async fn write_block(&self, block_number: u32, buffer: &[u8]) -> BlockResult<()> {
         if buffer.len() < SECTOR_SIZE {
             return Err(BlockError::InvalidBlock);
         }
@@ -213,7 +215,7 @@ impl BlockIO for Ide {
         self.stats.writes.fetch_add(1, Ordering::Relaxed);
 
         // Wait for drive to be ready
-        self.wait_until_ready()?;
+        self.wait_until_ready().await?;
 
         // Set up write command
         {
@@ -225,7 +227,7 @@ impl BlockIO for Ide {
         }
 
         // Wait for drive ready to accept data
-        self.wait_until_ready()?;
+        self.wait_until_ready().await?;
         self.wait_for_data()?;
 
         // Transfer the data
@@ -236,7 +238,7 @@ impl BlockIO for Ide {
         }
 
         // Wait for write to complete
-        self.wait_until_ready()?;
+        self.wait_until_ready().await?;
 
         Ok(())
     }
@@ -247,7 +249,7 @@ mod tests {
     use super::*;
 
     #[test_case]
-    fn test_ide_ports() {
+    async fn test_ide_ports() {
         let ide = Ide::new(0);
         assert_eq!(ide.drive, 0); // Primary master
 
@@ -256,7 +258,7 @@ mod tests {
     }
 
     #[test_case]
-    fn test_block_size() {
+    async fn test_block_size() {
         let ide = Ide::new(0);
         assert_eq!(ide.block_size(), SECTOR_SIZE as u32);
     }

@@ -259,22 +259,22 @@ mod tests {
 
     // Size and layout tests
     #[test_case]
-    fn test_superblock_size() {
+    async fn test_superblock_size() {
         assert_eq!(size_of::<Superblock>(), 84);
     }
 
     #[test_case]
-    fn test_block_group_descriptor_size() {
+    async fn test_block_group_descriptor_size() {
         assert_eq!(size_of::<BlockGroupDescriptor>(), 32);
     }
 
     #[test_case]
-    fn test_inode_size() {
+    async fn test_inode_size() {
         assert_eq!(size_of::<Inode>(), 128);
     }
 
     #[test_case]
-    fn test_directory_entry_alignment() {
+    async fn test_directory_entry_alignment() {
         let entry = DirectoryEntry {
             inode: 2,
             rec_len: 12,
@@ -286,7 +286,7 @@ mod tests {
 
     // Superblock functionality tests
     #[test_case]
-    fn test_superblock_validation() {
+    async fn test_superblock_validation() {
         let mut sb = Superblock::default();
         assert!(!sb.is_valid()); // Default should be invalid
 
@@ -300,7 +300,7 @@ mod tests {
     }
 
     #[test_case]
-    fn test_superblock_block_size() {
+    async fn test_superblock_block_size() {
         let mut sb = Superblock::default();
         sb.block_size_shift = 0; // 1024 bytes
         assert_eq!(sb.block_size(), 1024);
@@ -313,7 +313,7 @@ mod tests {
     }
 
     #[test_case]
-    fn test_block_group_count() {
+    async fn test_block_group_count() {
         let mut sb = Superblock::default();
         sb.num_blocks = 1000;
         sb.blocks_per_group = 100;
@@ -324,7 +324,7 @@ mod tests {
 
     // Inode tests
     #[test_case]
-    fn test_inode_file_types() {
+    async fn test_inode_file_types() {
         let mut inode = Inode {
             mode: FileMode::REG.bits(),
             ..Default::default()
@@ -345,7 +345,7 @@ mod tests {
     }
 
     #[test_case]
-    fn test_inode_size() {
+    async fn test_inode_size() {
         let inode = Inode {
             size_low: 1234,
             ..Default::default()
@@ -355,7 +355,7 @@ mod tests {
 
     // FileMode tests
     #[test_case]
-    fn test_file_mode_permissions() {
+    async fn test_file_mode_permissions() {
         let mode = FileMode::REG | FileMode::UREAD | FileMode::UWRITE;
         assert!(mode.contains(FileMode::REG));
         assert!(mode.contains(FileMode::UREAD));
@@ -365,7 +365,7 @@ mod tests {
 
     // DirectoryEntry tests
     #[test_case]
-    fn test_directory_entry_sizes() {
+    async fn test_directory_entry_sizes() {
         let entry = DirectoryEntry {
             inode: 1,
             rec_len: 16,

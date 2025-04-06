@@ -1,4 +1,5 @@
-use alloc::sync::Arc;
+use alloc::{sync::Arc, boxed::Box};
+use async_trait::async_trait;
 use core::{
     hash::Hash,
     sync::atomic::{AtomicU64, Ordering},
@@ -65,22 +66,23 @@ impl CacheStats {
 }
 
 /// Trait for cache implementations
-pub trait Cache<K, V>
+#[async_trait]
+pub trait Cache<K, V>: Send + Sync      // TODO is this safe? (needed for test setup)
 where
     K: Eq + Hash + Clone,
     V: CacheableItem,
 {
     /// Get an item from the cache, loading it if necessary
-    fn get(&self, key: K) -> CacheResult<Arc<Mutex<V>>>;
+    async fn get(&self, key: K) -> CacheResult<Arc<Mutex<V>>>;
 
     /// Insert an item into the cache
-    fn insert(&self, key: K, value: V) -> CacheResult<()>;
+    async fn insert(&self, key: K, value: V) -> CacheResult<()>;
 
     /// Remove an item from the cache, writing back if dirty
-    fn remove(&self, key: &K) -> CacheResult<()>;
+    async fn remove(&self, key: &K) -> CacheResult<()>;
 
     /// Clear all items from the cache, writing back dirty items
-    fn clear(&self) -> CacheResult<()>;
+    async fn clear(&self) -> CacheResult<()>;
 
     /// Get cache statistics
     fn stats(&self) -> CacheStats;
@@ -184,7 +186,7 @@ mod tests {
 
     // Test CacheEntry functionality
     #[test_case]
-    fn test_cache_entry() {
+    async fn test_cache_entry() {
         let item = MockItem::new(vec![1, 2, 3]);
         let mut entry = CacheEntry::new(item);
 
@@ -200,7 +202,7 @@ mod tests {
 
     // Test MonotonicClock
     #[test_case]
-    fn test_monotonic_clock() {
+    async fn test_monotonic_clock() {
         let clock = MonotonicClock::default();
 
         // Test monotonic increasing
@@ -214,7 +216,7 @@ mod tests {
 
     // Test CacheStats
     #[test_case]
-    fn test_cache_stats() {
+    async fn test_cache_stats() {
         let mut stats = CacheStats::default();
 
         // Test initial state

@@ -93,7 +93,7 @@ impl Ext2 {
 
     /// Mount the filesystem, reading superblock and preparing caches
     /// Mount the filesystem, reading superblock and preparing caches
-    pub fn mount(&self) -> FilesystemResult<()> {
+    pub async fn mount(&self) -> FilesystemResult<()> {
         if self.mounted.load(Ordering::Acquire) {
             return Ok(());
         }
@@ -108,7 +108,7 @@ impl Ext2 {
                         &mut superblock as *mut _ as *mut u8,
                         core::mem::size_of::<Superblock>(),
                     ),
-                )
+                ).await
                 .map_err(FilesystemError::DeviceError)?;
         }
 
@@ -139,6 +139,7 @@ impl Ext2 {
                             core::mem::size_of::<BlockGroupDescriptor>(),
                         ),
                     )
+                    .await
                     .map_err(FilesystemError::DeviceError)?;
             }
             bgdt.push(desc);
@@ -165,6 +166,7 @@ impl Ext2 {
         // Load root inode (always inode 2 in ext2)
         let root_inode = inode_cache
             .get(2)
+            .await
             .map_err(|_| FilesystemError::CacheError)?;
 
         let root_node = Arc::new(Node::new(
@@ -173,7 +175,7 @@ impl Ext2 {
             Arc::clone(&self.block_cache),
             superblock.block_size(),
             Arc::clone(&self.allocator), // Pass allocator reference
-        ));
+        ).await);
 
         // Update self
         unsafe {
@@ -190,7 +192,7 @@ impl Ext2 {
     }
 
     /// Unmount the filesystem
-    pub fn unmount(&self) -> FilesystemResult<()> {
+    pub async fn unmount(&self) -> FilesystemResult<()> {
         if !self.mounted.load(Ordering::Acquire) {
             return Ok(());
         }
@@ -198,9 +200,11 @@ impl Ext2 {
         // Clear caches
         self.inode_cache
             .clear()
+            .await
             .map_err(|_| FilesystemError::CacheError)?;
         self.block_cache
             .clear()
+            .await
             .map_err(|_| FilesystemError::CacheError)?;
 
         // Clear root
@@ -211,7 +215,7 @@ impl Ext2 {
     }
 
     /// Get a node by path
-    pub fn get_node(&self, path: &str) -> FilesystemResult<Arc<Node>> {
+    pub async fn get_node(&self, path: &str) -> FilesystemResult<Arc<Node>> {
         if !self.mounted.load(Ordering::Acquire) {
             return Err(FilesystemError::NotMounted);
         }
@@ -233,7 +237,7 @@ impl Ext2 {
 
         let mut current = root;
         for component in path.split('/').filter(|s| !s.is_empty()) {
-            let entries = current.read_dir().map_err(FilesystemError::NodeError)?;
+            let entries = current.read_dir().await.map_err(FilesystemError::NodeError)?;
 
             let entry = entries
                 .iter()
@@ -243,6 +247,7 @@ impl Ext2 {
             let inode = self
                 .inode_cache
                 .get(entry.inode_no)
+                .await
                 .map_err(|_| FilesystemError::CacheError)?;
 
             current = Arc::new(Node::new(
@@ -251,21 +256,21 @@ impl Ext2 {
                 Arc::clone(&self.block_cache),
                 self.superblock.block_size(),
                 Arc::clone(&self.allocator),
-            ));
+            ).await);
         }
 
         Ok(current)
     }
 
     /// Read all entries in a directory
-    pub fn read_dir(&self, path: &str) -> FilesystemResult<Vec<DirEntry>> {
-        let node = self.get_node(path)?;
-        node.read_dir().map_err(FilesystemError::NodeError)
+    pub async fn read_dir(&self, path: &str) -> FilesystemResult<Vec<DirEntry>> {
+        let node = self.get_node(path).await?;
+        node.read_dir().await.map_err(FilesystemError::NodeError)
     }
 
     /// Read file contents
-    pub fn read_file(&self, path: &str) -> FilesystemResult<Vec<u8>> {
-        let node = self.get_node(path)?;
+    pub async fn read_file(&self, path: &str) -> FilesystemResult<Vec<u8>> {
+        let node = self.get_node(path).await?;
         if !node.is_file() {
             return Err(FilesystemError::NodeError(NodeError::NotFile));
         }
@@ -273,7 +278,7 @@ impl Ext2 {
         let size = node.size() as usize;
         let mut buffer = vec![0; size];
         node.read_at(0, &mut buffer)
-            .map_err(FilesystemError::NodeError)?;
+            .await.map_err(FilesystemError::NodeError)?;
 
         Ok(buffer)
     }
@@ -296,7 +301,7 @@ impl Ext2 {
     }
 
     /// Create a new file
-    pub fn create_file(&self, path: &str, mode: FileMode) -> FilesystemResult<Arc<Node>> {
+    pub async fn create_file(&self, path: &str, mode: FileMode) -> FilesystemResult<Arc<Node>> {
         if !self.mounted.load(Ordering::Acquire) {
             return Err(FilesystemError::NotMounted);
         }
@@ -312,13 +317,13 @@ impl Ext2 {
         }
 
         // Get parent directory
-        let parent = self.get_node(parent_path)?;
+        let parent = self.get_node(parent_path).await?;
         if !parent.is_directory() {
             return Err(FilesystemError::NodeError(NodeError::NotDirectory));
         }
 
         // Check if file already exists
-        if self.get_node(path).is_ok() {
+        if self.get_node(path).await.is_ok() {
             return Err(FilesystemError::NodeError(NodeError::AlreadyExists));
         }
 
@@ -326,12 +331,14 @@ impl Ext2 {
         let inode_no = self
             .allocator
             .allocate_inode()
+            .await
             .map_err(|e| FilesystemError::NodeError(e.into()))?;
 
         // Initialize inode
         let inode = self
             .inode_cache
             .get(inode_no)
+            .await
             .map_err(|_| FilesystemError::CacheError)?;
         {
             let mut inode = inode.lock();
@@ -351,6 +358,7 @@ impl Ext2 {
         // Add directory entry in parent
         parent
             .add_dir_entry(name, inode_no, FileType::RegularFile)
+            .await
             .map_err(FilesystemError::NodeError)?;
 
         // Create and return node
@@ -360,13 +368,13 @@ impl Ext2 {
             Arc::clone(&self.block_cache),
             self.superblock.block_size(),
             Arc::clone(&self.allocator),
-        ));
+        ).await);
 
         Ok(node)
     }
 
     /// Create a new directory
-    pub fn create_directory(&self, path: &str, mode: FileMode) -> FilesystemResult<Arc<Node>> {
+    pub async fn create_directory(&self, path: &str, mode: FileMode) -> FilesystemResult<Arc<Node>> {
         if !self.mounted.load(Ordering::Acquire) {
             return Err(FilesystemError::NotMounted);
         }
@@ -382,13 +390,13 @@ impl Ext2 {
         }
 
         // Get parent directory
-        let parent = self.get_node(parent_path)?;
+        let parent = self.get_node(parent_path).await?;
         if !parent.is_directory() {
             return Err(FilesystemError::NodeError(NodeError::NotDirectory));
         }
 
         // Check if directory already exists
-        if self.get_node(path).is_ok() {
+        if self.get_node(path).await.is_ok() {
             return Err(FilesystemError::NodeError(NodeError::AlreadyExists));
         }
 
@@ -396,12 +404,14 @@ impl Ext2 {
         let inode_no = self
             .allocator
             .allocate_inode()
+            .await
             .map_err(|e| FilesystemError::NodeError(e.into()))?;
 
         // Initialize inode
         let inode = self
             .inode_cache
             .get(inode_no)
+            .await
             .map_err(|_| FilesystemError::CacheError)?;
         {
             let mut inode = inode.lock();
@@ -424,24 +434,27 @@ impl Ext2 {
             Arc::clone(&self.block_cache),
             self.superblock.block_size(),
             Arc::clone(&self.allocator),
-        ));
+        ).await);
 
         // Add . and .. entries
         node.add_dir_entry(".", inode_no, FileType::Directory)
+            .await
             .map_err(FilesystemError::NodeError)?;
         node.add_dir_entry("..", parent.number(), FileType::Directory)
+            .await
             .map_err(FilesystemError::NodeError)?;
 
         // Add entry in parent directory
         parent
             .add_dir_entry(name, inode_no, FileType::Directory)
+            .await
             .map_err(FilesystemError::NodeError)?;
 
         Ok(node)
     }
 
     /// Create a symbolic link
-    pub fn create_symlink(&self, path: &str, target: &str) -> FilesystemResult<Arc<Node>> {
+    pub async fn create_symlink(&self, path: &str, target: &str) -> FilesystemResult<Arc<Node>> {
         if !self.mounted.load(Ordering::Acquire) {
             return Err(FilesystemError::NotMounted);
         }
@@ -457,13 +470,13 @@ impl Ext2 {
         }
 
         // Get parent directory
-        let parent = self.get_node(parent_path)?;
+        let parent = self.get_node(parent_path).await?;
         if !parent.is_directory() {
             return Err(FilesystemError::NodeError(NodeError::NotDirectory));
         }
 
         // Check if link already exists
-        if self.get_node(path).is_ok() {
+        if self.get_node(path).await.is_ok() {
             return Err(FilesystemError::NodeError(NodeError::AlreadyExists));
         }
 
@@ -471,12 +484,14 @@ impl Ext2 {
         let inode_no = self
             .allocator
             .allocate_inode()
+            .await
             .map_err(|e| FilesystemError::NodeError(e.into()))?;
 
         // Initialize inode
         let inode = self
             .inode_cache
             .get(inode_no)
+            .await
             .map_err(|_| FilesystemError::CacheError)?;
         {
             let mut inode = inode.lock();
@@ -511,6 +526,7 @@ impl Ext2 {
                 let block = self
                     .allocator
                     .allocate_block()
+                    .await
                     .map_err(|e| FilesystemError::NodeError(e.into()))?;
                 inode.blocks[0] = block;
                 inode.blocks_count = 1;
@@ -524,16 +540,18 @@ impl Ext2 {
             Arc::clone(&self.block_cache),
             self.superblock.block_size(),
             Arc::clone(&self.allocator),
-        ));
+        ).await);
 
         // Add directory entry
         parent
             .add_dir_entry(name, inode_no, FileType::SymbolicLink)
+            .await
             .map_err(FilesystemError::NodeError)?;
 
         if target.len() > 60 {
             // Write target path if not using fast symlink
             node.write_at(0, target.as_bytes())
+                .await
                 .map_err(FilesystemError::NodeError)?;
         }
 
@@ -541,7 +559,7 @@ impl Ext2 {
     }
 
     /// Remove a file, directory, or symbolic link
-    pub fn remove(&self, path: &str) -> FilesystemResult<()> {
+    pub async fn remove(&self, path: &str) -> FilesystemResult<()> {
         if !self.mounted.load(Ordering::Acquire) {
             return Err(FilesystemError::NotMounted);
         }
@@ -553,12 +571,12 @@ impl Ext2 {
         };
 
         // Get parent directory and node to remove
-        let parent = self.get_node(parent_path)?;
-        let node = self.get_node(path)?;
+        let parent = self.get_node(parent_path).await?;
+        let node = self.get_node(path).await?;
 
         if node.is_directory() {
             // Ensure directory is empty (except . and ..)
-            let entries = node.read_dir().map_err(FilesystemError::NodeError)?;
+            let entries = node.read_dir().await.map_err(FilesystemError::NodeError)?;
             if entries.len() > 2 {
                 return Err(FilesystemError::NodeError(NodeError::NotEmpty));
             }
@@ -567,34 +585,37 @@ impl Ext2 {
         // Remove directory entry
         parent
             .remove_dir_entry(name)
+            .await
             .map_err(FilesystemError::NodeError)?;
 
         // Decrement link count
         node.decrease_link_count()
+            .await
             .map_err(FilesystemError::NodeError)?;
 
         Ok(())
     }
 
     /// Write data to a file
-    pub fn write_file(&self, path: &str, data: &[u8]) -> FilesystemResult<usize> {
-        let node = self.get_node(path)?;
+    pub async fn write_file(&self, path: &str, data: &[u8]) -> FilesystemResult<usize> {
+        let node = self.get_node(path).await?;
         if !node.is_file() {
             return Err(FilesystemError::NodeError(NodeError::NotFile));
         }
 
-        node.write_at(0, data).map_err(FilesystemError::NodeError)
+        node.write_at(0, data).await.map_err(FilesystemError::NodeError)
     }
 
     /// Read the target of a symbolic link
-    pub fn read_link(&self, path: &str) -> FilesystemResult<String> {
-        let node = self.get_node(path)?;
+    pub async fn read_link(&self, path: &str) -> FilesystemResult<String> {
+        let node = self.get_node(path).await?;
         if !node.is_symlink() {
             return Err(FilesystemError::NodeError(NodeError::NotSymlink));
         }
 
         let mut buffer = vec![0; node.size() as usize];
         node.read_at(0, &mut buffer)
+            .await
             .map_err(FilesystemError::NodeError)?;
 
         Ok(String::from_utf8_lossy(&buffer).into_owned())
