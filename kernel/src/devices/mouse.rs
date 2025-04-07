@@ -4,6 +4,7 @@
 //! synchronous and asynchronous interfaces for mouse events
 
 use crate::{
+    events::schedule_kernel,
     interrupts::{idt::without_interrupts, x2apic},
     serial_println,
 };
@@ -597,10 +598,15 @@ pub extern "x86-interrupt" fn mouse_handler(_frame: InterruptStackFrame) {
     let mut data_port = Port::new(PS2Port::DATA);
     let data: u8 = unsafe { data_port.read() };
 
-    let mut mouse = MOUSE.lock();
-    if let Err(e) = mouse.process_mouse_byte(data) {
-        serial_println!("Error processing mouse data: {:?}", e);
-    }
+    schedule_kernel(
+        async move {
+            let mut mouse = MOUSE.lock();
+            if let Err(e) = mouse.process_mouse_byte(data) {
+                serial_println!("Error processing mouse data: {:?}", e);
+            }
+        },
+        0,
+    );
 
     x2apic::send_eoi();
 }
