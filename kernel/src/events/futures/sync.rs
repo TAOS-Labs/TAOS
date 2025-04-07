@@ -2,8 +2,8 @@ use alloc::sync::Arc;
 use core::{
     future::Future,
     pin::Pin,
+    sync::atomic::{AtomicBool, Ordering},
     task::{Context, Poll},
-    sync::atomic::{Ordering, AtomicBool}
 };
 
 use futures::task::ArcWake;
@@ -19,14 +19,8 @@ pub struct Condition {
 unsafe impl Send for Condition {}
 
 impl Condition {
-    pub fn new(
-        state: Arc<AtomicBool>,
-        event: Arc<Event>,
-    ) -> Condition {
-        Condition {
-            state,
-            event,
-        }
+    pub fn new(state: Arc<AtomicBool>, event: Arc<Event>) -> Condition {
+        Condition { state, event }
     }
 
     pub fn awake(&self) {
@@ -42,10 +36,10 @@ impl Future for Condition {
     type Output = ();
 
     fn poll(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<Self::Output> {
-      if self.state.load(Ordering::Relaxed) {
-          Poll::Ready(())
-      } else {
-          Poll::Pending
-      }
-  }
+        if self.state.load(Ordering::Relaxed) {
+            Poll::Ready(())
+        } else {
+            Poll::Pending
+        }
+    }
 }

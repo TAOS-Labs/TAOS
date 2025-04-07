@@ -13,12 +13,18 @@ use limine::{
 use crate::{
     constants::{
         memory::PAGE_SIZE,
-        processes::{MMAP_ANON_SIMPLE, TEST_EXIT_CODE, TEST_MMAP_ANON_SHARED, TEST_SIMPLE_PROCESS, TEST_SIMPLE_STACK_ACCESS},
+        processes::{
+            MMAP_ANON_SIMPLE, TEST_EXIT_CODE, TEST_MMAP_ANON_SHARED, TEST_SIMPLE_PROCESS,
+            TEST_SIMPLE_STACK_ACCESS,
+        },
     },
     debug,
     devices::{self, sd_card::SD_CARD},
     events::{
-        current_running_event, futures::{await_on::AwaitProcess, sleep}, get_runner_time, register_event_runner, run_loop, schedule_kernel, schedule_kernel_on, schedule_process, spawn, yield_now
+        current_running_event,
+        futures::{await_on::AwaitProcess, sleep},
+        get_runner_time, register_event_runner, run_loop, schedule_kernel, schedule_kernel_on,
+        schedule_process, spawn, yield_now,
     },
     filesys::{self, fat16::Fat16, FileSystem, FILESYSTEM},
     interrupts::{self, idt},
@@ -68,9 +74,8 @@ static CPU_COUNT: AtomicU64 = AtomicU64::new(0);
 /// * `u32` - The BSP's LAPIC ID
 pub fn init() -> u32 {
     assert!(BASE_REVISION.is_supported());
-    interrupts::init(0);
-
     memory::init(0);
+    interrupts::init(0);
 
     register_event_runner();
     devices::init(0);
@@ -145,7 +150,7 @@ pub fn init() -> u32 {
 
     let pid = create_process(TEST_MMAP_ANON_SHARED);
     schedule_process(pid);
-    
+
     bsp_id
 }
 

@@ -1,35 +1,33 @@
-use core::ptr;
-use core::slice;
-use core::usize;
+use core::{ptr, slice, usize};
 
 use alloc::sync::Arc;
 use log::debug;
 use spin::lock_api::Mutex;
-use x86_64::structures::paging::Mapper;
 use x86_64::{
     structures::{
         idt::PageFaultErrorCode,
         paging::{
-            mapper::TranslateResult, OffsetPageTable, Page, PageTable, PageTableFlags, PhysFrame,
-            Size4KiB, Translate,
+            mapper::TranslateResult, Mapper, OffsetPageTable, Page, PageTable, PageTableFlags,
+            PhysFrame, Size4KiB, Translate,
         },
     },
     PhysAddr, VirtAddr,
 };
 
-use crate::memory::paging::update_permissions;
-use crate::serial;
 use crate::{
     constants::{memory::PAGE_SIZE, processes::MAX_FILES},
     filesys::{FileSystem, FILESYSTEM},
     memory::{
         frame_allocator::alloc_frame,
         mm::{vma_to_page_flags, Mm, VmAreaFlags},
-        paging::{create_mapping, create_mapping_to_frame, get_page_flags, update_mapping},
+        paging::{
+            create_mapping, create_mapping_to_frame, get_page_flags, update_mapping,
+            update_permissions,
+        },
         HHDM_OFFSET,
     },
     processes::process::{get_current_pid, PROCESS_TABLE},
-    serial_println,
+    serial, serial_println,
 };
 
 use super::mm::{VmAreaBackings, VmaChain};
@@ -222,11 +220,15 @@ pub fn determine_fault_cause(error_code: PageFaultErrorCode) -> FaultOutcome {
                         mapper,
                         pt_flags,
                     })
-                }
-                else if !cow && caused_by_write && flags.contains(PageTableFlags::PRESENT) {
-                    let frame = PhysFrame::containing_address(PhysAddr::new(anon_vma_chain.unwrap().file_offset_or_frame));
+                } else if !cow && caused_by_write && flags.contains(PageTableFlags::PRESENT) {
+                    let frame = PhysFrame::containing_address(PhysAddr::new(
+                        anon_vma_chain.unwrap().file_offset_or_frame,
+                    ));
                     serial_println!("FRAME TO MAP TO IS {:#?}", frame);
-                    serial_println!("BEFORE LEAVING DETERMINE TRANSLATE RESULT IS {:#?}", mapper.translate_page(page));
+                    serial_println!(
+                        "BEFORE LEAVING DETERMINE TRANSLATE RESULT IS {:#?}",
+                        mapper.translate_page(page)
+                    );
                     Some(FaultOutcome::SharedPage {
                         page,
                         mapper,
@@ -322,7 +324,6 @@ pub async fn handle_new_file_mapping(
     let ptr = page.start_address().as_u64() as *mut u8;
     let buffer: &mut [u8] = unsafe { slice::from_raw_parts_mut(ptr, PAGE_SIZE) };
     {
-
         // Now that the virtual address is mapped, use it to memcpy the file at an offset to the frame
         FILESYSTEM
             .get()
@@ -331,7 +332,6 @@ pub async fn handle_new_file_mapping(
             .read_file(fd, buffer)
             .await
             .expect("could not read file");
-
     }
 }
 
@@ -364,11 +364,15 @@ pub fn handle_new_mapping(
             .clone()
     };
     let frame = create_mapping(page, mapper, Some(flags));
-    serial_println!("ORIGINAL MAPPING PTE FLAGS ARE {:#?}", get_page_flags(page, mapper));
+    serial_println!(
+        "ORIGINAL MAPPING PTE FLAGS ARE {:#?}",
+        get_page_flags(page, mapper)
+    );
     unsafe {
         (*process.pcb.get()).mm.with_vma_tree(|tree| {
             // Find the VMA covering the faulting address.
-            let vma_arc = Mm::find_vma(page.start_address().as_u64(), tree).expect("Vma not found?");
+            let vma_arc =
+                Mm::find_vma(page.start_address().as_u64(), tree).expect("Vma not found?");
             let vma = vma_arc.lock();
 
             // Compute the fault's offset within the VMA.
@@ -392,7 +396,11 @@ pub fn handle_new_mapping(
             // (Assuming each segment's reverse mappings are keyed relative to its own start.)
             let mapping_offset = fault_offset - seg_key + segment.start;
 
-            backing.insert_mapping(Arc::new(VmaChain::new(mapping_offset, usize::MAX, frame.start_address().as_u64())));
+            backing.insert_mapping(Arc::new(VmaChain::new(
+                mapping_offset,
+                usize::MAX,
+                frame.start_address().as_u64(),
+            )));
         });
     }
     // let new_frame = create_mapping(page, mapper, Some(flags));
@@ -401,7 +409,6 @@ pub fn handle_new_mapping(
     //     fd: usize::MAX,
     //     file_offset_or_frame: new_frame.start_address().as_u64(),
     // }));
-
 }
 
 /// Handles a copy-on-write fault. Saves current data in a buffer
@@ -437,7 +444,6 @@ pub fn handle_cow_fault(
     serial_println!("Completed copy-on-write fault handling.");
 }
 
-
 pub fn handle_shared_page_fault(
     page: Page<Size4KiB>,
     mapper: &mut OffsetPageTable,
@@ -446,7 +452,8 @@ pub fn handle_shared_page_fault(
 ) {
     let mut flags = pt_flags;
     flags.set(PageTableFlags::PRESENT, true);
-    let translation: Result<PhysFrame, x86_64::structures::paging::mapper::TranslateError> = mapper.translate_page(page);
+    let translation: Result<PhysFrame, x86_64::structures::paging::mapper::TranslateError> =
+        mapper.translate_page(page);
     update_permissions(page, mapper, flags);
     let translation = mapper.translate_page(page);
 }

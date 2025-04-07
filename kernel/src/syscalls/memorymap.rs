@@ -8,20 +8,18 @@ use x86_64::{
 };
 
 use crate::{
-    constants::memory::PAGE_SIZE,
-    constants::processes::TEST_MMAP_ANON_SHARED,
-    events::{current_running_event_info, EventInfo, schedule_process},
+    constants::{memory::PAGE_SIZE, processes::TEST_MMAP_ANON_SHARED},
+    events::{current_running_event_info, schedule_process, EventInfo},
     memory::{
         mm::{vma_to_page_flags, Mm, VmArea, VmAreaBackings, VmAreaFlags},
         paging::{remove_mapping, update_permissions},
         HHDM_OFFSET,
     },
-    processes::process::{get_current_pid, PROCESS_TABLE, },
+    processes::process::{get_current_pid, PROCESS_TABLE},
     serial_println,
 };
 
-use crate::events::{get_runner_time,current_running_event};
-use crate::events::futures::await_on::AwaitProcess;
+use crate::events::{current_running_event, futures::await_on::AwaitProcess, get_runner_time};
 
 // See https://www.man7.org/linux/man-pages/man2/mmap.2.html
 bitflags! {
@@ -435,18 +433,23 @@ pub fn sys_munmap(addr: u64, len: u64) -> u64 {
 mod tests {
     use super::{MmapFlags, ProtFlags};
     use crate::{
-        constants::{memory::PAGE_SIZE, processes::MMAP_ANON_SIMPLE, processes::TEST_MMAP_ANON_SHARED},
+        constants::{
+            memory::PAGE_SIZE,
+            processes::{MMAP_ANON_SIMPLE, TEST_MMAP_ANON_SHARED},
+        },
         devices::sd_card::SD_CARD,
         events::{futures::sleep, schedule_kernel, schedule_kernel_on, schedule_process},
         filesys::{fat16::Fat16, FileSystem, FILESYSTEM},
         processes::process::{create_process, get_current_pid, PCB, PROCESS_TABLE},
         serial_println,
-        syscalls::{memorymap::sys_mmap, syscall_handlers::{sys_nanosleep_32, REGISTER_VALUES}},
+        syscalls::{
+            memorymap::sys_mmap,
+            syscall_handlers::{sys_nanosleep_32, REGISTER_VALUES},
+        },
     };
     use alloc::boxed::Box;
 
-    use crate::events::{get_runner_time,current_running_event};
-    use crate::events::futures::await_on::AwaitProcess;
+    use crate::events::{current_running_event, futures::await_on::AwaitProcess, get_runner_time};
 
     // #[test_case]
     async fn mmap_file_read_test() {

@@ -35,7 +35,8 @@ use super::memorymap::sys_munmap;
 
 lazy_static! {
     pub static ref EXIT_CODES: Mutex<BTreeMap<u32, i64>> = Mutex::new(BTreeMap::new());
-    pub  static ref REGISTER_VALUES: Mutex<BTreeMap<u32, NonFlagRegisters>> = Mutex::new(BTreeMap::new());
+    pub static ref REGISTER_VALUES: Mutex<BTreeMap<u32, NonFlagRegisters>> =
+        Mutex::new(BTreeMap::new());
 }
 
 #[repr(C)]
