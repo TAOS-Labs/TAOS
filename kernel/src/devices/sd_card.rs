@@ -297,7 +297,7 @@ impl BlockIO for SDCardInfo {
     }
 
     fn size_in_bytes(&self) -> u64 {
-        self.total_sectors * SD_SECTOR_SIZE as u64 
+        self.total_sectors * SD_SECTOR_SIZE as u64
     }
 }
 
