@@ -15,6 +15,8 @@ pub mod mouse;
 pub mod pci;
 pub mod sd_card;
 pub mod serial;
+pub mod audio;
+
 
 /// Initialize hardware devices.
 ///
@@ -68,5 +70,12 @@ pub fn init(cpu_id: u32) {
 
         keyboard::init().expect("Failed to initialize keyboard");
         mouse::init().expect("Failed to initialize mouse");
+
+        serial_println!("bbeforre init audio");
+        if let Some(hda) = audio::hda::IntelHDA::init() {
+            serial_println!("HDA initialized at base address 0x{:X}", hda.base);
+        } else {
+            serial_println!("HDA controller not found.");
+        }
     }
 }

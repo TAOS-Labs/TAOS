@@ -1,4 +1,4 @@
-use crate::pci::{read_config, walk_pci_bus, DeviceInfo};
+use crate::{devices::pci::{read_config, walk_pci_bus, DeviceInfo}, serial_println};
 use alloc::vec::Vec;
 
 pub struct IntelHDA {
@@ -33,7 +33,9 @@ fn find_hda_device() -> Option<DeviceInfo> {
     for dev in devices {
         let dev = dev.lock();
         if dev.class_code == 0x04 && dev.subclass == 0x03 {
-            return Some(*dev);
+            return Some((*dev).clone());
+
+
         }
     }
     None

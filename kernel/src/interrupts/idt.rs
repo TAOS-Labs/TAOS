@@ -23,7 +23,7 @@ use x86_64::{
 
 use crate::{
     constants::{
-        idt::{SYSCALL_HANDLER, TIMER_VECTOR, TLB_SHOOTDOWN_VECTOR},
+        idt::{KEYBOARD_VECTOR, MOUSE_VECTOR, SYSCALL_HANDLER, TIMER_VECTOR, TLB_SHOOTDOWN_VECTOR},
         syscalls::{SYSCALL_EXIT, SYSCALL_NANOSLEEP, SYSCALL_PRINT},
     },
     devices::{keyboard::keyboard_handler, mouse::mouse_handler},
@@ -54,6 +54,8 @@ lazy_static! {
             .set_handler_fn(naked_syscall_handler)
             .set_privilege_level(x86_64::PrivilegeLevel::Ring3);
         idt[TLB_SHOOTDOWN_VECTOR].set_handler_fn(tlb_shootdown_handler);
+        idt[KEYBOARD_VECTOR].set_handler_fn(keyboard_handler);
+        idt[MOUSE_VECTOR].set_handler_fn(mouse_handler);
         idt
     };
 }
@@ -325,19 +327,5 @@ extern "x86-interrupt" fn tlb_shootdown_handler(_: InterruptStackFrame) {
             addresses[core] = 0;
         }
     }
-    x2apic::send_eoi();
-}
-
-static KEYBOARD_INTERRUPT_COUNT: AtomicU64 = AtomicU64::new(0);
-
-pub extern "x86-interrupt" fn keyboard_handler(_frame: InterruptStackFrame) {
-    let count = KEYBOARD_INTERRUPT_COUNT.fetch_add(1, Ordering::SeqCst);
-    serial_println!("Keyboard interrupt received! Count: {}", count);
-
-    let mut port = Port::new(0x60);
-    let scancode: u8 = unsafe { port.read() };
-    serial_println!("Scancode: 0x{:02x}", scancode);
-
-    // Send EOI to acknowledge the interrupt
     x2apic::send_eoi();
 }
