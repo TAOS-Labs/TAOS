@@ -1119,7 +1119,6 @@ mod tests {
 
         // Read entries
         let entries = node.read_dir().await.unwrap();
-        serial_println!("Got here");
         assert_eq!(entries.len(), 2);
 
         let file_entry = entries.iter().find(|e| e.name == "file1").unwrap();

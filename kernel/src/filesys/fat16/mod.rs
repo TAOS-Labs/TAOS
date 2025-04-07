@@ -903,13 +903,14 @@ impl FileSystem for Fat16<'_> {
 mod tests {
     use crate::devices::sd_card::SD_CARD;
 
-    use crate::filesys::{fat16::Fat16, FileSystem, SeekFrom};
+    use crate::filesys::{block::memory::MemoryBlockDevice, fat16::Fat16, FileSystem, SeekFrom};
     use alloc::boxed::Box;
 
     #[test_case]
     async fn fat_test() {
-        let lock = SD_CARD.lock().clone().unwrap();
-        let device = Box::new(lock);
+        // let lock = SD_CARD.lock().clone().unwrap();
+        let block_device = MemoryBlockDevice::new(400, 512);
+        let device = Box::new(block_device);
 
         // Format the filesystem
         let mut fs = Fat16::format(device)

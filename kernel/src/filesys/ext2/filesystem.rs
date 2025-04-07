@@ -1,6 +1,7 @@
 use alloc::{string::String, sync::Arc, vec, vec::Vec};
 use core::sync::atomic::{AtomicBool, Ordering};
 use spin::Mutex;
+use zerocopy::FromBytes;
 
 use super::{
     allocator::Allocator,
@@ -58,8 +59,8 @@ impl Ext2 {
     ///
     /// # Arguments
     /// * `device` - The block device containing the filesystem
-    pub fn new(device: Arc<dyn BlockIO>) -> Arc<Self> {
-        let superblock = Arc::new(Superblock::default());
+    pub async fn new(device: Arc<dyn BlockIO>) -> FilesystemResult<Arc<Self>> {
+        let superblock = Arc::new(Superblock::from_block(Arc::clone(&device)).await?);
         let bgdt: Arc<[BlockGroupDescriptor]> = Arc::new([]);
 
         let block_cache: Arc<dyn Cache<u32, CachedBlock>> =
@@ -79,7 +80,7 @@ impl Ext2 {
             1024,
         ));
 
-        Arc::new(Self {
+        Result::Ok(Arc::new(Self {
             device,
             superblock,
             bgdt,
@@ -88,31 +89,16 @@ impl Ext2 {
             root: Arc::new(Mutex::new(None)),
             mounted: AtomicBool::new(false),
             allocator,
-        })
+        }))
     }
 
-    /// Mount the filesystem, reading superblock and preparing caches
     /// Mount the filesystem, reading superblock and preparing caches
     pub async fn mount(&self) -> FilesystemResult<()> {
         if self.mounted.load(Ordering::Acquire) {
             return Ok(());
         }
 
-        // Read superblock
-        let mut superblock = Superblock::default();
-        unsafe {
-            self.device
-                .read_block(
-                    2,
-                    core::slice::from_raw_parts_mut(
-                        &mut superblock as *mut _ as *mut u8,
-                        core::mem::size_of::<Superblock>(),
-                    ),
-                )
-                .await
-                .map_err(FilesystemError::DeviceError)?;
-        }
-
+        let superblock = &self.superblock;
         // Verify superblock
         if superblock.signature != EXT2_SIGNATURE {
             return Err(FilesystemError::InvalidSuperblock);
@@ -120,7 +106,6 @@ impl Ext2 {
 
         // Calculate number of block groups
         let block_groups = superblock.block_group_count();
-
         // Read block group descriptors
         let mut bgdt = Vec::with_capacity(block_groups as usize);
         let bgdt_start = if superblock.block_size() == 1024 {
@@ -128,26 +113,29 @@ impl Ext2 {
         } else {
             1
         };
-
-        for i in 0..block_groups {
-            let mut desc = BlockGroupDescriptor::default();
-            unsafe {
-                self.device
-                    .read_block(
-                        bgdt_start + i as u64,
-                        core::slice::from_raw_parts_mut(
-                            &mut desc as *mut _ as *mut u8,
-                            core::mem::size_of::<BlockGroupDescriptor>(),
-                        ),
-                    )
-                    .await
-                    .map_err(FilesystemError::DeviceError)?;
+        let block_group_desc_size = core::mem::size_of::<BlockGroupDescriptor>();
+        let block_group_desc_size_u32: u32 = block_group_desc_size.try_into().unwrap();
+        for block in 0..((block_groups * block_group_desc_size_u32) / superblock.block_size()) {
+            let mut buff: [u8; 1024] = [0; 1024];
+            self.device
+                .read_block((bgdt_start + block) as u64, &mut buff)
+                .await
+                .map_err(FilesystemError::DeviceError)?;
+            let block_size: usize = superblock.block_size().try_into().unwrap();
+            for i in 0..(block_size / core::mem::size_of::<BlockGroupDescriptor>()) {
+                let block_usize: usize = block.try_into().unwrap();
+                let full_idx = i + ((block_usize * block_size) / block_group_desc_size);
+                if full_idx < block_groups.try_into().unwrap() {
+                    bgdt.push(
+                        *BlockGroupDescriptor::ref_from_prefix(&buff[i * block_group_desc_size..])
+                            .unwrap()
+                            .0,
+                    );
+                }
             }
-            bgdt.push(desc);
         }
 
         // Update filesystem structures
-        let superblock = Arc::new(superblock);
         let bgdt: Arc<[BlockGroupDescriptor]> = Arc::from(bgdt.into_boxed_slice());
 
         // Create caches with proper sizes
@@ -158,7 +146,7 @@ impl Ext2 {
 
         let inode_cache = Arc::new(InodeCache::new(
             Arc::clone(&self.device),
-            Arc::clone(&superblock),
+            Arc::clone(superblock),
             Arc::clone(&bgdt),
             Arc::clone(&block_cache),
             1024, // Configurable cache size
@@ -169,7 +157,7 @@ impl Ext2 {
             .get(2)
             .await
             .map_err(|_| FilesystemError::CacheError)?;
-
+        assert!(root_inode.lock().inode().is_directory());
         let root_node = Arc::new(
             Node::new(
                 2,
@@ -184,7 +172,6 @@ impl Ext2 {
         // Update self
         unsafe {
             let this = self as *const _ as *mut Self;
-            (*this).superblock = superblock;
             (*this).bgdt = bgdt;
             (*this).block_cache = block_cache;
             (*this).inode_cache = inode_cache;

@@ -260,6 +260,6 @@ mod tests {
     #[test_case]
     async fn test_block_size() {
         let ide = Ide::new(0);
-        assert_eq!(ide.block_size(), SECTOR_SIZE as u32);
+        assert_eq!(ide.block_size(), SECTOR_SIZE as u64);
     }
 }

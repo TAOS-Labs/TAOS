@@ -1,5 +1,12 @@
+use alloc::sync::Arc;
 use bitflags::bitflags;
 use core::mem::size_of;
+use zerocopy::{FromBytes, Immutable, KnownLayout};
+
+use super::{
+    block_io::BlockIO,
+    filesystem::{FilesystemError, FilesystemResult},
+};
 
 /// Magic signature for ext2 filesystems
 pub const EXT2_SIGNATURE: u16 = 0xEF53;
@@ -34,7 +41,7 @@ pub enum OsId {
 
 /// Superblock structure - must match disk layout exactly
 #[repr(C, packed)]
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, FromBytes, KnownLayout, Immutable)]
 pub struct Superblock {
     pub num_inodes: u32,
     pub num_blocks: u32,
@@ -84,11 +91,21 @@ impl Superblock {
         assert_eq!(n, n2, "Inconsistent block group counts");
         n
     }
+
+    pub async fn from_block(device: Arc<dyn BlockIO>) -> FilesystemResult<Self> {
+        let mut superblock_buff: [u8; 1024] = [0; 1024];
+        device
+            .read_block(1, &mut superblock_buff)
+            .await
+            .map_err(FilesystemError::DeviceError)?;
+        let superblock_ref = Superblock::ref_from_prefix(&superblock_buff).unwrap().0;
+        Result::Ok(superblock_ref.clone())
+    }
 }
 
 /// Block Group Descriptor - must match disk layout
 #[repr(C, packed)]
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Copy, Debug, Default, FromBytes, KnownLayout, Immutable)]
 pub struct BlockGroupDescriptor {
     pub block_bitmap_block: u32,
     pub inode_bitmap_block: u32,

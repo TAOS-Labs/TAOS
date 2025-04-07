@@ -38,13 +38,14 @@ fmt:
 
 .PHONY: objdump
 objdump:
-	@cd kernel && cargo objdump --lib --release -- -d -M intel
+	@cd kernel && cargo objdump --lib --release -- -d -M intel -S
 
 .PHONY: blank_drive
 blank_drive:
 	@cd kernel && dd if=/dev/zero of=$(STORAGE_NAME).img bs=1M count=4k
+	@cd kernel && mkfs.ext2 -b 1024 -d ../resources -I 128 $(STORAGE_NAME).img 4g
 
 .PHONY: clean
 clean:
-	@cd kernel && rm $(STORAGE_NAME).img
+	@cd kernel && rm -f $(STORAGE_NAME).img
 	@cd kernel && cargo clean
