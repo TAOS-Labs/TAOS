@@ -1,16 +1,22 @@
 use crate::{devices::pci::{read_config, walk_pci_bus, DeviceInfo}, serial_println};
 use alloc::vec::Vec;
+use crate::devices::audio::hda_regs::HdaRegisters;
+
 
 pub struct IntelHDA {
     pub base: u32,
     pub vendor_id: u16,
     pub device_id: u16,
+    pub regs: &'static mut HdaRegisters,
 }
 
 impl IntelHDA {
     pub fn init() -> Option<Self> {
         let device = find_hda_device()?;
         let bar = get_bar(&device)?; ///bar means base address register where the device sits
+
+        let regs = unsafe { &mut *(bar as *mut HdaRegisters) };
+
 
         // For now, just print basic info
         serial_println!(
@@ -20,6 +26,7 @@ impl IntelHDA {
 
         Some(IntelHDA {
             base: bar,
+            regs,
             vendor_id: device.vendor_id,
             device_id: device.device_id,
         })
