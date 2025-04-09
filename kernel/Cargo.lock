@@ -464,6 +464,7 @@ dependencies = [
  "arrayvec",
  "async-trait",
  "bitflags 2.8.0",
+ "byteorder",
  "bytes",
  "crossbeam-queue",
  "futures",

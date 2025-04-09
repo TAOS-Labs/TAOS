@@ -969,7 +969,7 @@ fn wait_for_events_including_command_completion(
     update_deque_ptr(erdp_addr as *mut u64, &event_ring, mapper);
     Result::Ok(event)
 }
-fn update_deque_ptr(
+pub fn update_deque_ptr(
     deque_pointer_register: *mut u64,
     event_ring: &ConsumerRingBuffer,
     mapper: &OffsetPageTable,
