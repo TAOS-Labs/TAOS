@@ -33,6 +33,8 @@ pub const TEST_PRINT_EXIT: &[u8] = include_bytes!("../processes/test_binaries/te
 pub const TEST_WAIT: &[u8] = include_bytes!("../processes/test_binaries/test_wait");
 pub const TEST_FORK_COW: &[u8] = include_bytes!("../processes/test_binaries/test_fork_cow");
 pub const TEST_MMAP_ANON_SHARED: &[u8] = include_bytes!("../processes/test_binaries/test_mmap_anon_shared");
+pub const TEST_MMAP_CHILD_WRITES: &[u8] = include_bytes!("../processes/test_binaries/test_mmap_child_writes");
+pub const TEST_MPROTECT_CHILD_WRITES: &[u8] = include_bytes!("../processes/test_binaries/test_mprotect_child_writes");
 
 pub const STACK_START: u64 = 0x7000_0000_0000;
 // if this number is big clone fails

@@ -265,14 +265,14 @@ impl Mm {
                 if seg_global_end <= split_point_left {
                     left_segments.insert(old_seg_key, seg.clone());
                 // guaranteed to be a right only segment
-                } else if seg_global_start >= split_point_right {
+                } else if seg_global_start > split_point_right {
                     right_segments.insert(old_seg_key - split_point_right, seg.clone());
                 // guaranteed to be a middle only segment
-                } else if seg_global_start >= split_point_left && seg_global_end < split_point_right
+                } else if seg_global_start >= split_point_left && seg_global_end <= split_point_right
                 {
                     middle_segments.insert(old_seg_key - split_point_left, seg.clone());
                 // spans the left split
-                } else if seg_global_start < split_point_left && seg_global_end <= split_point_right
+                } else if seg_global_start < split_point_left && seg_global_end < split_point_right
                 {
                     let left_part_length = split_point_left - seg_global_start;
                     let left_seg = VmAreaSegment {

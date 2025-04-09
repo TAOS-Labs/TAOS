@@ -57,9 +57,6 @@ pub fn sys_fork(reg_vals: &NonFlagRegisters) -> u64 {
         (*child_pcb.pcb.get()).state = ProcessState::Ready;
     }
 
-    serial_println!("Child RIP: {:#x}", reg_vals.rcx);
-    serial_println!("Child Rflags: {}", reg_vals.r11);
-
     let child_pml4_frame =
         duplicate_page_table_recursive(unsafe { (*parent_pcb).mm.pml4_frame }, 4);
 
@@ -77,9 +74,7 @@ pub fn sys_fork(reg_vals: &NonFlagRegisters) -> u64 {
                 (*child_pcb.pcb.get())
                     .mm
                     .with_vma_tree_mutable(|child_tree| {
-                        serial_println!("Inserting range {:X} - {:X}", start, end);
                         Mm::insert_copied_vma(child_tree, start, end, segments.clone(), flags);
-                        serial_println!("Segments put in are {:#?}", segments.clone());
                     });
             }
         })

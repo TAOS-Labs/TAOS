@@ -3,7 +3,7 @@ use core::cmp::{max, min};
 use alloc::sync::Arc;
 use bitflags::bitflags;
 use x86_64::{
-    structures::paging::{OffsetPageTable, Page, PageTable},
+    structures::paging::{Mapper, OffsetPageTable, Page, PageTable},
     VirtAddr,
 };
 
@@ -269,7 +269,9 @@ pub fn sys_mprotect(addr: u64, len: u64, prot: u64) -> u64 {
                                 Page::containing_address(VirtAddr::new(l_start)),
                                 Page::containing_address(VirtAddr::new(l_end)),
                             ) {
-                                update_permissions(page, &mut mapper, vma_to_page_flags(new_flags));
+                                if !mapper.translate_page(page).is_err() {
+                                    update_permissions(page, &mut mapper, vma_to_page_flags(new_flags));
+                                }
                             }
                             Mm::update_vma_permissions(&left_vma, new_flags);
                             Mm::coalesce_vma(left_vma, tree);
@@ -287,7 +289,9 @@ pub fn sys_mprotect(addr: u64, len: u64, prot: u64) -> u64 {
                                 Page::containing_address(VirtAddr::new(r_start)),
                                 Page::containing_address(VirtAddr::new(r_end)),
                             ) {
-                                update_permissions(page, &mut mapper, vma_to_page_flags(new_flags));
+                                if !mapper.translate_page(page).is_err() {
+                                    update_permissions(page, &mut mapper, vma_to_page_flags(new_flags));
+                                }
                             }
                             Mm::update_vma_permissions(&right_vma, new_flags);
                             Mm::coalesce_vma(right_vma, tree);
@@ -306,7 +310,10 @@ pub fn sys_mprotect(addr: u64, len: u64, prot: u64) -> u64 {
                                 Page::containing_address(VirtAddr::new(m_start)),
                                 Page::containing_address(VirtAddr::new(m_end)),
                             ) {
-                                update_permissions(page, &mut mapper, vma_to_page_flags(new_flags));
+                                if !mapper.translate_page(page).is_err() {
+                                    update_permissions(page, &mut mapper, vma_to_page_flags(new_flags));
+
+                                }
                             }
                             Mm::update_vma_permissions(&middle_vma, new_flags);
                             Mm::coalesce_vma(middle_vma, tree);
@@ -435,7 +442,7 @@ pub fn sys_munmap(addr: u64, len: u64) -> u64 {
 mod tests {
     use super::{MmapFlags, ProtFlags};
     use crate::{
-        constants::{memory::PAGE_SIZE, processes::MMAP_ANON_SIMPLE, processes::TEST_MMAP_ANON_SHARED},
+        constants::{memory::PAGE_SIZE, processes::{MMAP_ANON_SIMPLE, TEST_MMAP_ANON_SHARED, TEST_MMAP_CHILD_WRITES, TEST_MPROTECT_CHILD_WRITES}},
         devices::sd_card::SD_CARD,
         events::{futures::sleep, schedule_kernel, schedule_kernel_on, schedule_process},
         filesys::{fat16::Fat16, FileSystem, FILESYSTEM},
@@ -474,5 +481,49 @@ mod tests {
         assert_eq!(reg_vals_on_exit.r8, 'A' as u64);
         assert_eq!(reg_vals_on_exit.r9, 'B' as u64);
         assert_eq!(reg_vals_on_exit.r10, 'C' as u64);
+    }
+
+    #[test_case]
+    async fn mmap_anonymous_child_writes_first() {
+        let pid = create_process(TEST_MMAP_CHILD_WRITES);
+        schedule_process(pid);
+
+        let waiter = AwaitProcess::new(
+            pid,
+            get_runner_time(3_000_000_000),
+            current_running_event().unwrap(),
+        )
+        .await;
+
+        assert!(waiter.is_ok());
+        let reg_values = REGISTER_VALUES.lock();
+        let reg_vals_on_exit = reg_values.get(&pid).expect("No process found.");
+        assert_eq!(reg_vals_on_exit.r8, 'X' as u64);
+        assert_eq!(reg_vals_on_exit.r9, 'Y' as u64);
+        assert_eq!(reg_vals_on_exit.r10, 'Z' as u64);
+
+
+    }
+
+    #[test_case]
+    async fn mprotect_child_writes() {
+        let pid = create_process(TEST_MPROTECT_CHILD_WRITES);
+        schedule_process(pid);
+
+        let waiter = AwaitProcess::new(
+            pid,
+            get_runner_time(3_000_000_000),
+            current_running_event().unwrap(),
+        )
+        .await;
+
+        assert!(waiter.is_ok());
+        let reg_values = REGISTER_VALUES.lock();
+        let reg_vals_on_exit = reg_values.get(&pid).expect("No process found.");
+        assert_eq!(reg_vals_on_exit.r8, 'X' as u64);
+        assert_eq!(reg_vals_on_exit.r9, 'Y' as u64);
+        assert_eq!(reg_vals_on_exit.r10, 'Z' as u64);
+
+
     }
 }

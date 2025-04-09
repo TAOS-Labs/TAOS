@@ -116,7 +116,6 @@ pub fn determine_fault_cause(error_code: PageFaultErrorCode) -> FaultOutcome {
 
     // Check if the page is mapped.
     let translate_result = mapper.translate(page.start_address());
-    serial_println!("TRANSLATE RESULT AT BEGINNING: {:#?}", translate_result);
     let is_mapped = match translate_result {
         TranslateResult::Mapped { .. } => true,
         TranslateResult::NotMapped => false,
@@ -225,8 +224,6 @@ pub fn determine_fault_cause(error_code: PageFaultErrorCode) -> FaultOutcome {
                 }
                 else if !cow && caused_by_write && flags.contains(PageTableFlags::PRESENT) {
                     let frame = PhysFrame::containing_address(PhysAddr::new(anon_vma_chain.unwrap().file_offset_or_frame));
-                    serial_println!("FRAME TO MAP TO IS {:#?}", frame);
-                    serial_println!("BEFORE LEAVING DETERMINE TRANSLATE RESULT IS {:#?}", mapper.translate_page(page));
                     Some(FaultOutcome::SharedPage {
                         page,
                         mapper,
@@ -257,11 +254,12 @@ pub fn handle_existing_mapping(
     chain: Arc<VmaChain>,
     pt_flags: PageTableFlags,
 ) {
-    serial_println!("Page not mapped; using existing anon chain mapping.");
+    let mut flags = pt_flags;
+    flags.set(PageTableFlags::PRESENT, true);
     create_mapping_to_frame(
         page,
         mapper,
-        Some(pt_flags),
+        Some(flags),
         PhysFrame::containing_address(PhysAddr::new(chain.file_offset_or_frame)),
     );
 }
@@ -364,7 +362,6 @@ pub fn handle_new_mapping(
             .clone()
     };
     let frame = create_mapping(page, mapper, Some(flags));
-    serial_println!("ORIGINAL MAPPING PTE FLAGS ARE {:#?}", get_page_flags(page, mapper));
     unsafe {
         (*process.pcb.get()).mm.with_vma_tree(|tree| {
             // Find the VMA covering the faulting address.

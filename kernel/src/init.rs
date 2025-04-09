@@ -13,7 +13,7 @@ use limine::{
 use crate::{
     constants::{
         memory::PAGE_SIZE,
-        processes::{MMAP_ANON_SIMPLE, TEST_EXIT_CODE, TEST_MMAP_ANON_SHARED, TEST_SIMPLE_PROCESS, TEST_SIMPLE_STACK_ACCESS},
+        processes::{MMAP_ANON_SIMPLE, TEST_EXIT_CODE, TEST_MMAP_ANON_SHARED, TEST_MMAP_CHILD_WRITES, TEST_SIMPLE_PROCESS, TEST_SIMPLE_STACK_ACCESS},
     },
     debug,
     devices::{self, sd_card::SD_CARD},
@@ -142,9 +142,6 @@ pub fn init() -> u32 {
         },
         3,
     );
-
-    let pid = create_process(TEST_MMAP_ANON_SHARED);
-    schedule_process(pid);
     
     bsp_id
 }
