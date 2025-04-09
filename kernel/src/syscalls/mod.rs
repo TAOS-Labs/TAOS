@@ -1,6 +1,8 @@
 pub mod fork;
 pub mod memorymap;
 pub mod syscall_handlers;
+pub mod syscall_arguments;
+pub mod file_syscalls;
 
 #[cfg(test)]
 mod tests {

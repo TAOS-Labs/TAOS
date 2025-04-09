@@ -11,3 +11,6 @@ pub const SYSCALL_WAIT: u32 = 6;
 
 // Mmap
 pub const START_MMAP_ADDRESS: u64 = 0x0900_0000_0000;
+
+// Real syscall numbers
+pub const SYS_OPEN: u32 = 2;

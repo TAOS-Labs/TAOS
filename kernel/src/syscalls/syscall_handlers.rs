@@ -3,6 +3,7 @@ use core::ffi::CStr;
 use alloc::{borrow::ToOwned, collections::btree_map::BTreeMap};
 use lazy_static::lazy_static;
 use spin::lock_api::Mutex;
+use super::syscall_arguments::*;
 
 use core::{
     future::Future,
@@ -26,7 +27,7 @@ use crate::{
         registers::{NonFlagRegisters, Registers},
     },
     serial_println,
-    syscalls::{fork::sys_fork, memorymap::sys_mmap},
+    syscalls::{fork::sys_fork, memorymap::sys_mmap, file_syscalls::*},
 };
 
 use core::arch::naked_asm;
@@ -37,18 +38,6 @@ lazy_static! {
     pub static ref EXIT_CODES: Mutex<BTreeMap<u32, i64>> = Mutex::new(BTreeMap::new());
     pub static ref REGISTER_VALUES: Mutex<BTreeMap<u32, NonFlagRegisters>> =
         Mutex::new(BTreeMap::new());
-}
-
-#[repr(C)]
-#[derive(Debug)]
-pub struct SyscallRegisters {
-    pub number: u64, // syscall number (originally in rax)
-    pub arg1: u64,   // originally in rdi
-    pub arg2: u64,   // originally in rsi
-    pub arg3: u64,   // originally in rdx
-    pub arg4: u64,   // originally in r10
-    pub arg5: u64,   // originally in r8
-    pub arg6: u64,   // originally in r9
 }
 
 /// Naked syscall handler that switches to a valid kernel stack (saving
@@ -142,6 +131,25 @@ pub unsafe extern "C" fn syscall_handler_64_naked() -> ! {
     );
 }
 
+pub type SysResult<T> = Result<T, SysError>;
+
+#[derive(Debug)]
+pub enum SysError {
+    InvalidArgument,
+    UnknownSyscall,
+}
+
+/// Function to convert a SysResult value into a returnable 64 bit value
+fn encode_result(result: SysResult<u64>) -> u64 {
+    match result {
+        Ok(value) => value,
+        Err(_err) => {
+            let errno: i64 = -1;
+            errno as u64
+        }
+    }
+}
+
 /// Function that routes to different syscalls
 ///
 /// # Arguments
@@ -175,6 +183,10 @@ pub unsafe extern "C" fn syscall_handler_impl(
         ),
         SYSCALL_WAIT => block_on(sys_wait(syscall.arg1 as u32)),
         SYSCALL_MUNMAP => sys_munmap(syscall.arg1, syscall.arg2),
+        SYS_OPEN => {
+            let args = SysOpenArgs::try_from(syscall).unwrap();
+            block_on(sys_open(args))
+        }
         _ => {
             panic!("Unknown syscall, {}", syscall.number);
         }
