@@ -33,7 +33,7 @@ pub struct Fat16File {
     pub entry_position: u64,
 
     /// Page cache
-    pub page_cache: BTreeMap<u64, PhysFrame>,
+    pub page_cache: BTreeMap<u64, Page<Size4KiB>>,
 }
 
 #[async_trait]
@@ -262,6 +262,7 @@ impl Fat16File {
     /// Finds and allocates a free cluster
     pub async fn allocate_cluster(&self, device: &mut dyn BlockDevice) -> Result<u16, FsError> {
         let total_clusters = (self.data_start as usize) / self.cluster_size;
+        serial_println!("Total clusters are {}, data start is {}, cluster size is {}", total_clusters, self.data_start, self.cluster_size);
 
         for cluster in 2..total_clusters as u16 {
             let entry = self.read_fat_entry(device, cluster).await?;

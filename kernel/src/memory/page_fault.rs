@@ -17,6 +17,7 @@ use x86_64::{
     PhysAddr, VirtAddr,
 };
 
+use crate::filesys::SeekFrom;
 use crate::memory::paging::update_permissions;
 use crate::serial;
 use crate::{
@@ -287,49 +288,29 @@ pub async fn handle_new_file_mapping(
     fd: usize,
 ) {
     serial_println!("Creating a new mapping for a file-backed page.");
-    serial_println!("PT flags are {:#?}", pt_flags);
 
     let mut flags = pt_flags;
     flags.set(PageTableFlags::PRESENT, true);
+    flags.set(PageTableFlags::WRITABLE, true);
+    
+    create_mapping(page, mapper, Some(flags));
 
-    // allocate a frame for that offset of the file
-    let new_frame = create_mapping(page, mapper, Some(flags));
 
-    let pid = get_current_pid();
-    let pcb = {
-        let process_table = PROCESS_TABLE.read();
-        process_table
-            .get(&pid)
-            .expect("can't find pcb in process table")
-            .clone()
-    };
-    let pcb = pcb.pcb.get();
-
-    let file = unsafe {
-        (*pcb).fd_table[fd]
-            .clone()
-            .expect("No file associated with this fd.")
-    };
-
-    // Store the frame in the file’s page cache
-    let mut locked_file = file.lock();
-    locked_file.page_cache.insert(offset, new_frame);
-    serial_println!("HELLOOOOOOOO");
-
-    // Create mapping between faulting page and frame
+    
     let ptr = page.start_address().as_u64() as *mut u8;
-    let buffer: &mut [u8] = unsafe { slice::from_raw_parts_mut(ptr, PAGE_SIZE) };
+    let buffer: &mut [u8] = unsafe { slice::from_raw_parts_mut(ptr, 1024) };
     {
 
         // Now that the virtual address is mapped, use it to memcpy the file at an offset to the frame
-        FILESYSTEM
-            .get()
-            .expect("Could not get filesystem")
-            .lock()
-            .read_file(fd, buffer)
-            .await
-            .expect("could not read file");
+        let mut fs = FILESYSTEM.get().expect("Could not get filesystem").lock();
+        fs.seek_file(fd, SeekFrom::Start(offset)).expect("Seeking file failed.");
+        fs.read_file(fd, buffer).await.expect("could not read file");
 
+    }
+
+    if !pt_flags.contains(PageTableFlags::WRITABLE) {
+        flags.set(PageTableFlags::WRITABLE, false);
+        update_permissions(page, mapper, flags);
     }
 }
 

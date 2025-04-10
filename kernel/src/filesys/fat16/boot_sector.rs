@@ -2,6 +2,7 @@
 
 /// Represents the boot sector of a FAT16 filesystem
 #[repr(C, packed)]
+#[derive(Debug)]
 pub struct BootSector {
     /// Jump instruction to boot code
     pub jump_boot: [u8; 3],

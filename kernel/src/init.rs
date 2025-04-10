@@ -98,47 +98,31 @@ pub fn init() -> u32 {
                     .expect("Failed to format filesystem")
             });
 
-            // serial_println!("FORMATTED FILESYSTEM");
 
-            // filesystem.create_file("/testfile.txt").await;
-            // serial_println!("created file");
-            // let fd = filesystem
-            //     .open_file("/testfile.txt")
-            //     .await
-            //     .expect("could not open file");
-            // let pid = get_current_pid();
-            // let pcb = {
-            //     let process_table = PROCESS_TABLE.read();
-            //     process_table
-            //         .get(&pid)
-            //         .expect("can't find pcb in process table")
-            //         .clone()
-            // };
-            // let pcb = pcb.pcb.get();
+            let _ = filesystem.create_file("/testfile.txt").await;
+            serial_println!("created file");
+            let fd = filesystem
+                .open_file("/testfile.txt")
+                .await
+                .expect("could not open file");
 
-            // let file = unsafe {
-            //     (*pcb).fd_table[fd]
-            //         .clone()
-            //         .expect("No file associated with this fd.")
-            // };
-            // let mut buf: [u8; PAGE_SIZE * 2 as usize] = [b'A'; PAGE_SIZE * 2 as usize];
+            let buf: [u8; 1024] = [b'A'; 1024];
+            filesystem.write_file(fd, &buf).await.expect("Write failed");
 
-            // filesystem.write_file(fd, &buf).await;
-            // let addr = sys_mmap(
-            //     0x0,
-            //     PAGE_SIZE.try_into().unwrap(),
-            //     ProtFlags::PROT_READ.bits() as u64,
-            //     MmapFlags::MAP_PRIVATE.bits() as u64,
-            //     fd as i64,
-            //     PAGE_SIZE.try_into().unwrap(),
-            // ) as *mut u8;
-            // for i in 0..4096 {
-            //     unsafe {
-            //         serial_println!("At iteration {}", i);
-            //         let c = *addr.add(i);
-            //         serial_println!("Byte at offset {} is {:#?}", i, c);
-            //     }
-            // }
+            let addr = sys_mmap(
+                0x0,
+                PAGE_SIZE.try_into().unwrap(),
+                ProtFlags::PROT_READ.bits() as u64,
+                MmapFlags::MAP_PRIVATE.bits() as u64,
+                fd as i64,
+                0,
+            ) as *mut u8;
+            for i in 0..10 {
+                unsafe {
+                    let c = *addr.add(i);
+                    serial_println!("Byte at offset {} is {:#?}", i, c as char);
+                }
+            }
         },
         3,
     );
