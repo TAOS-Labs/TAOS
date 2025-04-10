@@ -200,8 +200,7 @@ impl BlockIO for MockDevice {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alloc::{collections::BTreeMap, sync::Arc, vec, vec::Vec};
-    use spin::Mutex;
+    use alloc::vec;
 
     // Test basic block operations
     #[test_case]

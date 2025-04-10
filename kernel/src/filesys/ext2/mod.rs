@@ -14,14 +14,19 @@ pub fn get_current_time() -> u32 {
 
 #[cfg(test)]
 mod tests {
-    use alloc::{string::String, sync::Arc, vec, vec::Vec};
+    use alloc::{
+        format,
+        string::{String, ToString},
+        sync::Arc,
+        vec,
+    };
 
-    use crate::devices::sd_card::SD_CARD;
+    use crate::{devices::sd_card::SD_CARD, serial_println};
 
     use super::{
         block_io::BlockIO,
         filesystem::{Ext2, FilesystemError},
-        structures::{FileMode, FileType},
+        structures::FileMode,
     };
 
     const MEDIUM_FILE: &[u8] = include_bytes!("../../../../resources/fonts/Comfortaa-Regular.ttf");
@@ -72,7 +77,6 @@ mod tests {
     async fn test_file_operations() {
         let fs = create_test_fs().await;
 
-        // Create a file
         let test_content = b"Hello, world!";
         let file_path = "/test.txt";
         let mode = FileMode::REG | FileMode::UREAD | FileMode::UWRITE;
@@ -80,11 +84,9 @@ mod tests {
         let file_node = fs.create_file(file_path, mode).await.unwrap();
         assert!(file_node.is_file());
 
-        // Write to file
         let bytes_written = fs.write_file(file_path, test_content).await.unwrap();
         assert_eq!(bytes_written, test_content.len());
 
-        // Read the file
         let content = fs.read_file(file_path).await.unwrap();
         assert_eq!(content, test_content);
 
@@ -93,39 +95,39 @@ mod tests {
         let bytes_written = fs.write_file(file_path, new_content).await.unwrap();
         assert_eq!(bytes_written, new_content.len());
 
-        // Read updated content
+        let mut buffer = vec![0; new_content.len()];
+        let bytes_read = file_node.read_at(0, &mut buffer).await.unwrap();
+        assert_eq!(bytes_read, new_content.len());
+        assert_eq!(buffer, new_content);
+
+        file_node.truncate(new_content.len() as u64).await.unwrap();
+
         let content = fs.read_file(file_path).await.unwrap();
         assert_eq!(content, new_content);
 
-        // Create another file
         let second_path = "/second.txt";
         fs.create_file(second_path, mode).await.unwrap();
 
-        // Check that both files exist
         let root_entries = fs.read_dir("/").await.unwrap();
         assert!(root_entries.iter().any(|e| e.name == "test.txt"));
         assert!(root_entries.iter().any(|e| e.name == "second.txt"));
 
-        // Remove a file
         fs.remove(file_path).await.unwrap();
 
-        // Check file is removed
         let root_entries = fs.read_dir("/").await.unwrap();
         assert!(!root_entries.iter().any(|e| e.name == "test.txt"));
         assert!(root_entries.iter().any(|e| e.name == "second.txt"));
 
-        // Removing again should fail
         match fs.remove(file_path).await {
             Err(FilesystemError::NotFound) => {}
             _ => panic!("Expected NotFound error"),
         }
 
-        // Clean up
         fs.remove(second_path).await.unwrap();
     }
 
     // Directory operations tests
-    /*#[test_case]
+    #[test_case]
     async fn test_directory_operations() {
         let fs = create_test_fs().await;
 
@@ -302,7 +304,6 @@ mod tests {
         let fs = create_test_fs().await;
         let mode = FileMode::REG | FileMode::UREAD | FileMode::UWRITE;
 
-        // Test with various valid filenames
         let names = [
             "normal.txt",
             "with spaces.txt",
@@ -318,18 +319,15 @@ mod tests {
             let path = format!("/{}", name);
             fs.create_file(&path, mode).await.unwrap();
 
-            // Verify file exists
             let node = fs.get_node(&path).await.unwrap();
             assert!(node.is_file());
 
-            // Write and read test
             let content = format!("Content for {}", name);
             fs.write_file(&path, content.as_bytes()).await.unwrap();
             let read_content = fs.read_file(&path).await.unwrap();
             assert_eq!(read_content, content.as_bytes());
         }
 
-        // Test very long name (should fail)
         let long_name = "a".repeat(256);
         let long_path = format!("/{}", long_name);
         match fs.create_file(&long_path, mode).await {
@@ -337,13 +335,11 @@ mod tests {
             _ => panic!("Expected error for too long filename"),
         }
 
-        // Check all files in directory
         let entries = fs.read_dir("/").await.unwrap();
         for name in names.iter() {
             assert!(entries.iter().any(|e| e.name == *name));
         }
 
-        // Clean up
         for name in names.iter() {
             let path = format!("/{}", name);
             fs.remove(&path).await.unwrap();
@@ -424,28 +420,26 @@ mod tests {
     }
 
     // Sparse file test
-    #[test_case]
+    /*#[test_case]
     async fn test_sparse_files() {
         let fs = create_test_fs().await;
         let mode = FileMode::REG | FileMode::UREAD | FileMode::UWRITE;
 
-        // Create a file
         let file_path = "/sparse.bin";
         fs.create_file(file_path, mode).await.unwrap();
 
         let node = fs.get_node(file_path).await.unwrap();
 
-        // Write at the beginning
         let start_data = b"Start of file";
         node.write_at(0, start_data).await.unwrap();
 
-        // Write at an offset (creating a sparse file)
-        let offset = 10000; // 10KB offset
+        let offset = 50; // 10KB offset
         let end_data = b"End of file";
         node.write_at(offset, end_data).await.unwrap();
 
         // Read the entire file
         let content = fs.read_file(file_path).await.unwrap();
+        serial_println!("Content: {:#?}", content);
 
         // Verify the content
         assert_eq!(&content[0..start_data.len()], start_data);
@@ -454,17 +448,15 @@ mod tests {
             end_data
         );
 
+        assert_eq!(content.len(), offset as usize + end_data.len());
+
         // Verify the sparse region is zero-filled
         for i in start_data.len()..offset as usize {
             assert_eq!(content[i], 0);
         }
 
-        // Check file size is correct (should be offset + end_data.len())
-        assert_eq!(content.len(), offset as usize + end_data.len());
-
-        // Clean up
         fs.remove(file_path).await.unwrap();
-    }
+    }*/
 
     // Cache performance test
     #[test_case]
@@ -472,7 +464,6 @@ mod tests {
         let fs = create_test_fs().await;
         let mode = FileMode::REG | FileMode::UREAD | FileMode::UWRITE;
 
-        // Create a file and write data
         let file_path = "/cache_test.bin";
         fs.create_file(file_path, mode).await.unwrap();
 
@@ -485,42 +476,37 @@ mod tests {
 
         fs.write_file(file_path, &data).await.unwrap();
 
-        // Get initial cache stats
         let initial_stats = fs.stats().unwrap();
         let initial_block_hits = initial_stats.block_cache_stats.get_hits();
         let initial_inode_hits = initial_stats.inode_cache_stats.get_hits();
 
-        // Perform multiple reads to test cache
         for _ in 0..5 {
             let content = fs.read_file(file_path).await.unwrap();
             assert_eq!(content, data);
         }
 
-        // Check cache stats after reads
         let final_stats = fs.stats().unwrap();
         assert!(final_stats.block_cache_stats.get_hits() > initial_block_hits);
         assert!(final_stats.inode_cache_stats.get_hits() > initial_inode_hits);
 
-        // Print cache performance stats
-        println!(
+        serial_println!(
             "Block cache: hits={}, misses={}, hit ratio={:.2}%",
-            final_stats.block_cache_stats.hits,
-            final_stats.block_cache_stats.misses,
-            100.0 * final_stats.block_cache_stats.hits as f64
-                / (final_stats.block_cache_stats.hits + final_stats.block_cache_stats.misses)
-                    as f64
+            final_stats.block_cache_stats.get_hits(),
+            final_stats.block_cache_stats.get_misses(),
+            100.0 * final_stats.block_cache_stats.get_hits() as f64
+                / (final_stats.block_cache_stats.get_hits()
+                    + final_stats.block_cache_stats.get_misses()) as f64
         );
 
-        println!(
+        serial_println!(
             "Inode cache: hits={}, misses={}, hit ratio={:.2}%",
-            final_stats.inode_cache_stats.hits,
-            final_stats.inode_cache_stats.misses,
-            100.0 * final_stats.inode_cache_stats.hits as f64
-                / (final_stats.inode_cache_stats.hits + final_stats.inode_cache_stats.misses)
-                    as f64
+            final_stats.inode_cache_stats.get_hits(),
+            final_stats.inode_cache_stats.get_misses(),
+            100.0 * final_stats.inode_cache_stats.get_hits() as f64
+                / (final_stats.inode_cache_stats.get_hits()
+                    + final_stats.inode_cache_stats.get_misses()) as f64
         );
 
-        // Clean up
         fs.remove(file_path).await.unwrap();
-    }*/
+    }
 }

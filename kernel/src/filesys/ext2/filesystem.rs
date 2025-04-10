@@ -3,8 +3,6 @@ use core::sync::atomic::{AtomicBool, Ordering};
 use spin::Mutex;
 use zerocopy::FromBytes;
 
-use crate::serial_println;
-
 use super::{
     allocator::Allocator,
     block_io::{BlockError, BlockIO},
@@ -108,6 +106,7 @@ impl Ext2 {
 
         // Calculate number of block groups
         let block_groups = superblock.block_group_count();
+
         // Read block group descriptors
         let mut bgdt = Vec::with_capacity(block_groups as usize);
         let bgdt_start = if superblock.block_size() == 1024 {
@@ -115,19 +114,23 @@ impl Ext2 {
         } else {
             1
         };
+
+        let block_size: usize = superblock.block_size().try_into().unwrap();
         let block_group_desc_size = core::mem::size_of::<BlockGroupDescriptor>();
-        let block_group_desc_size_u32: u32 = block_group_desc_size.try_into().unwrap();
-        for block in 0..((block_groups * block_group_desc_size_u32) / superblock.block_size()) {
-            let mut buff: [u8; 1024] = [0; 1024];
+        let descriptors_per_block = block_size / block_group_desc_size;
+
+        let blocks_to_read = (block_groups as usize).div_ceil(descriptors_per_block);
+
+        for block in 0..blocks_to_read {
+            let mut buff = vec![0u8; block_size];
             self.device
-                .read_block((bgdt_start + block) as u64, &mut buff)
+                .read_block((bgdt_start + block as u32) as u64, &mut buff)
                 .await
                 .map_err(FilesystemError::DeviceError)?;
-            let block_size: usize = superblock.block_size().try_into().unwrap();
-            for i in 0..(block_size / core::mem::size_of::<BlockGroupDescriptor>()) {
-                let block_usize: usize = block.try_into().unwrap();
-                let full_idx = i + ((block_usize * block_size) / block_group_desc_size);
-                if full_idx < block_groups.try_into().unwrap() {
+
+            for i in 0..descriptors_per_block {
+                let full_idx = block * descriptors_per_block + i;
+                if full_idx < block_groups as usize {
                     bgdt.push(
                         *BlockGroupDescriptor::ref_from_prefix(&buff[i * block_group_desc_size..])
                             .unwrap()
@@ -140,7 +143,6 @@ impl Ext2 {
         // Update filesystem structures
         let bgdt: Arc<[BlockGroupDescriptor]> = Arc::from(bgdt.into_boxed_slice());
 
-        // Create caches with proper sizes
         let block_cache: Arc<dyn Cache<u32, CachedBlock>> = Arc::new(BlockCache::new(
             Arc::clone(&self.device),
             1024, // Configurable cache size
@@ -154,29 +156,45 @@ impl Ext2 {
             1024, // Configurable cache size
         ));
 
+        // Create a new allocator with the updated BGDT
+        let allocator = Arc::new(Allocator::new(
+            Arc::clone(superblock),
+            Arc::clone(&bgdt),
+            Arc::clone(&block_cache),
+        ));
+
+        // Update self - we need to set block_cache before loading the root inode
+        // to avoid using the old (empty) cache
+        unsafe {
+            let this = self as *const _ as *mut Self;
+            (*this).bgdt = bgdt;
+            (*this).block_cache = block_cache.clone();
+            (*this).inode_cache = inode_cache.clone();
+            (*this).allocator = allocator; // Update the allocator with the new one
+        }
+
         // Load root inode (always inode 2 in ext2)
         let root_inode = inode_cache
             .get(2)
             .await
             .map_err(|_| FilesystemError::CacheError)?;
+
         assert!(root_inode.lock().inode().is_directory());
+
         let root_node = Arc::new(
             Node::new(
                 2,
                 root_inode,
-                Arc::clone(&self.block_cache),
+                Arc::clone(&block_cache), // Using the new block_cache
                 superblock.block_size(),
-                Arc::clone(&self.allocator), // Pass allocator reference
+                Arc::clone(&self.allocator), // Now using the updated allocator
             )
             .await,
         );
 
-        // Update self
+        // Update root reference
         unsafe {
             let this = self as *const _ as *mut Self;
-            (*this).bgdt = bgdt;
-            (*this).block_cache = block_cache;
-            (*this).inode_cache = inode_cache;
             (*this).root = Arc::new(Mutex::new(Some(root_node)));
         }
 
@@ -323,14 +341,12 @@ impl Ext2 {
         if self.get_node(path).await.is_ok() {
             return Err(FilesystemError::NodeError(NodeError::AlreadyExists));
         }
-        serial_println!("File does not exist");
 
         let inode_no = self
             .allocator
             .allocate_inode()
             .await
             .map_err(|e| FilesystemError::NodeError(e.into()))?;
-        serial_println!("Node allocated");
 
         let inode = self
             .inode_cache
@@ -383,9 +399,8 @@ impl Ext2 {
             return Err(FilesystemError::NotMounted);
         }
 
-        // Split path into parent directory and name
         let (parent_path, name) = match path.rfind('/') {
-            Some(idx) => (&path[..idx], &path[idx + 1..]),
+            Some(idx) => (&path[..idx + 1], &path[idx + 1..]),
             None => ("/", path),
         };
 
@@ -393,25 +408,21 @@ impl Ext2 {
             return Err(FilesystemError::InvalidPath);
         }
 
-        // Get parent directory
         let parent = self.get_node(parent_path).await?;
         if !parent.is_directory() {
             return Err(FilesystemError::NodeError(NodeError::NotDirectory));
         }
 
-        // Check if directory already exists
         if self.get_node(path).await.is_ok() {
             return Err(FilesystemError::NodeError(NodeError::AlreadyExists));
         }
 
-        // Allocate new inode
         let inode_no = self
             .allocator
             .allocate_inode()
             .await
             .map_err(|e| FilesystemError::NodeError(e.into()))?;
 
-        // Initialize inode
         let inode = self
             .inode_cache
             .get(inode_no)
@@ -431,7 +442,6 @@ impl Ext2 {
             inode.access_time = now;
         }
 
-        // Create directory node
         let node = Arc::new(
             Node::new(
                 inode_no,
@@ -443,7 +453,6 @@ impl Ext2 {
             .await,
         );
 
-        // Add . and .. entries
         node.add_dir_entry(".", inode_no, FileType::Directory)
             .await
             .map_err(FilesystemError::NodeError)?;
@@ -451,7 +460,6 @@ impl Ext2 {
             .await
             .map_err(FilesystemError::NodeError)?;
 
-        // Add entry in parent directory
         parent
             .add_dir_entry(name, inode_no, FileType::Directory)
             .await
@@ -576,11 +584,10 @@ impl Ext2 {
 
         // Split path into parent directory and name
         let (parent_path, name) = match path.rfind('/') {
-            Some(idx) => (&path[..idx], &path[idx + 1..]),
+            Some(idx) => (&path[..idx + 1], &path[idx + 1..]),
             None => ("/", path),
         };
 
-        // Get parent directory and node to remove
         let parent = self.get_node(parent_path).await?;
         let node = self.get_node(path).await?;
 
@@ -598,7 +605,6 @@ impl Ext2 {
             .await
             .map_err(FilesystemError::NodeError)?;
 
-        // Decrement link count
         node.decrease_link_count()
             .await
             .map_err(FilesystemError::NodeError)?;

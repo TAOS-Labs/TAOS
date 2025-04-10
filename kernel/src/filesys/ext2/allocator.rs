@@ -1,8 +1,6 @@
 use alloc::{sync::Arc, vec::Vec};
 use spin::Mutex;
 
-use crate::serial_println;
-
 use super::{
     cache::{block::CachedBlock, Cache},
     structures::{BlockGroupDescriptor, Superblock},
@@ -188,13 +186,10 @@ impl Allocator {
     /// Allocate a new inode
     pub async fn allocate_inode(&self) -> AllocResult<u32> {
         let num_groups = self.superblock.block_group_count() as usize;
-        serial_println!("Num of groups: {}", num_groups);
 
         // Try to allocate from each group
         for group in 0..num_groups {
             if let Some(desc) = self.bgdt.get(group) {
-                let f = desc.unallocated_inodes;
-                serial_println!("Here! {}", f);
                 if desc.unallocated_inodes > 0 {
                     if let Ok(inode) = self.allocate_inode_in_group(group).await {
                         // Update free inodes count

@@ -901,7 +901,6 @@ impl FileSystem for Fat16<'_> {
 
 #[cfg(test)]
 mod tests {
-    use crate::devices::sd_card::SD_CARD;
 
     use crate::filesys::{block::memory::MemoryBlockDevice, fat16::Fat16, FileSystem, SeekFrom};
     use alloc::boxed::Box;

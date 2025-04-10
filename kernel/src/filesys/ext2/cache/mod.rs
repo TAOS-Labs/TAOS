@@ -67,6 +67,10 @@ impl CacheStats {
     pub fn get_hits(&self) -> u64 {
         self.hits
     }
+
+    pub fn get_misses(&self) -> u64 {
+        self.misses
+    }
 }
 
 /// Trait for cache implementations

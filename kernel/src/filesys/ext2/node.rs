@@ -1,8 +1,7 @@
+use crate::serial_println;
 use alloc::{string::String, sync::Arc, vec, vec::Vec};
 use core::cmp::min;
 use spin::Mutex;
-
-use crate::serial_println;
 
 use super::{
     allocator::{AllocError, Allocator},
@@ -301,25 +300,36 @@ impl Node {
     }
 
     pub async fn decrease_link_count(&self) -> NodeResult<bool> {
-        let mut inode = self.inode.lock();
-        let inode = inode.inode_mut();
-        inode.links_count -= 1;
+        let (links_count, _, file_size) = {
+            let mut inode_guard = self.inode.lock();
+            let inode = inode_guard.inode_mut();
+            inode.links_count -= 1;
 
-        // If no more links, mark for deletion
-        if inode.links_count == 0 {
-            inode.deletion_time = get_current_time();
+            let links = inode.links_count;
+            let blocks = inode.blocks_count;
+            let size = inode.size();
 
-            // Free blocks
-            for i in 0..inode.blocks_count {
-                if let Ok(block) = self
-                    .get_block_number_for_offset(i as u64 * self.block_size as u64)
-                    .await
-                {
-                    self.allocator.free_block(block).await?;
+            // If this is the last link, mark for deletion
+            if links == 0 {
+                inode.deletion_time = get_current_time();
+            }
+
+            (links, blocks, size)
+        };
+
+        if links_count == 0 {
+            let block_size = self.block_size as u64;
+            let total_blocks = file_size.div_ceil(block_size);
+
+            for i in 0..total_blocks {
+                if let Ok(block) = self.get_block_number_for_offset(i * block_size).await {
+                    // Free the block
+                    if let Err(e) = self.allocator.free_block(block).await {
+                        serial_println!("Error freeing block {}: {:?}", block, e);
+                    }
                 }
             }
 
-            // Free inode
             self.allocator.free_inode(self.number).await?;
 
             Ok(true) // indicates inode was deleted
@@ -595,13 +605,11 @@ impl Node {
                 .await?;
 
             if bytes_read < entry_header_size {
-                serial_println!("Partial read at offset {}, stopping", offset);
                 break;
             }
 
             // Sanity checks
             if entry.rec_len == 0 {
-                serial_println!("Zero rec_len at offset {}, skipping to next block", offset);
                 offset = ((offset / block_size) + 1) * block_size;
                 continue;
             }
@@ -625,8 +633,6 @@ impl Node {
                             _ => FileType::Unknown,
                         },
                     });
-                } else {
-                    serial_println!("Name read error at offset {}", offset);
                 }
             }
 
@@ -909,38 +915,58 @@ impl Node {
 
         let mut offset = 0;
         let mut found = false;
+        let dir_size = self.size();
 
-        while offset < self.size() {
+        let block_size = self.block_size as u64;
+        let max_entries = dir_size.div_ceil(block_size) * (block_size / 8); // Rough estimate
+        let mut entry_count = 0;
+
+        while offset < dir_size && entry_count < max_entries {
+            entry_count += 1;
+
+            // Read the directory entry header
             let mut entry = DirectoryEntry {
                 inode: 0,
                 rec_len: 0,
                 name_len: 0,
                 file_type: 0,
             };
+            let entry_header_size = size_of::<DirectoryEntry>();
 
-            self.read_raw_at(offset, unsafe {
-                core::slice::from_raw_parts_mut(
-                    &mut entry as *mut _ as *mut u8,
-                    size_of::<DirectoryEntry>(),
-                )
-            })
-            .await?;
+            let bytes_read = self
+                .read_raw_at(offset, unsafe {
+                    core::slice::from_raw_parts_mut(
+                        &mut entry as *mut _ as *mut u8,
+                        entry_header_size,
+                    )
+                })
+                .await?;
+
+            // Handle end of directory or corrupted entry
+            if bytes_read < entry_header_size || entry.rec_len == 0 {
+                offset = ((offset / block_size) + 1) * block_size;
+                continue;
+            }
 
             if entry.inode != 0 {
                 let mut entry_name = vec![0u8; entry.name_len as usize];
-                self.read_raw_at(offset + size_of::<DirectoryEntry>() as u64, &mut entry_name)
+                let name_bytes_read = self
+                    .read_raw_at(offset + entry_header_size as u64, &mut entry_name)
                     .await?;
 
-                if name.as_bytes() == entry_name {
-                    // Found the entry to remove
-                    entry.inode = 0;
+                if name_bytes_read == entry.name_len as usize
+                    && String::from_utf8_lossy(&entry_name) == name
+                {
+                    entry.inode = 0; // Mark as deleted
+
                     self.write_raw_at(offset, unsafe {
                         core::slice::from_raw_parts(
                             &entry as *const _ as *const u8,
-                            size_of::<DirectoryEntry>(),
+                            entry_header_size,
                         )
                     })
                     .await?;
+
                     found = true;
                     break;
                 }
