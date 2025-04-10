@@ -185,10 +185,8 @@ impl BlockIO for Ide {
 
         self.stats.reads.fetch_add(1, Ordering::Relaxed);
 
-        // Wait for drive to be ready
         self.wait_until_ready().await?;
 
-        // Set up read command
         {
             let mut regs = self.regs.lock();
             // SAFETY: Port access is synchronized via mutex
@@ -197,11 +195,9 @@ impl BlockIO for Ide {
             }
         }
 
-        // Wait for command completion and data
         self.wait_until_ready().await?;
         self.wait_for_data()?;
 
-        // Transfer the data
         let mut regs = self.regs.lock();
         // SAFETY: Port access is synchronized and buffer size is verified
         unsafe { regs.read_data(buffer) }
@@ -214,10 +210,8 @@ impl BlockIO for Ide {
 
         self.stats.writes.fetch_add(1, Ordering::Relaxed);
 
-        // Wait for drive to be ready
         self.wait_until_ready().await?;
 
-        // Set up write command
         {
             let mut regs = self.regs.lock();
             // SAFETY: Port access is synchronized via mutex
@@ -226,18 +220,15 @@ impl BlockIO for Ide {
             }
         }
 
-        // Wait for drive ready to accept data
         self.wait_until_ready().await?;
         self.wait_for_data()?;
 
-        // Transfer the data
         let mut regs = self.regs.lock();
         // SAFETY: Port access is synchronized and buffer size is verified
         unsafe {
             regs.write_data(buffer)?;
         }
 
-        // Wait for write to complete
         self.wait_until_ready().await?;
 
         Ok(())

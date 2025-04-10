@@ -76,7 +76,6 @@ impl CacheStats {
 /// Trait for cache implementations
 #[async_trait]
 pub trait Cache<K, V>: Send + Sync
-// TODO is this safe? (needed for test setup)
 where
     K: Eq + Hash + Clone,
     V: CacheableItem,
@@ -193,28 +192,23 @@ mod tests {
         }
     }
 
-    // Test CacheEntry functionality
     #[test_case]
     async fn test_cache_entry() {
         let item = MockItem::new(vec![1, 2, 3]);
         let mut entry = CacheEntry::new(item);
 
-        // Test initial state
         assert_eq!(entry.access_count, 0);
         assert_eq!(entry.last_access, 0);
 
-        // Test access counting
         entry.touch(42);
         assert_eq!(entry.access_count, 1);
         assert_eq!(entry.last_access, 42);
     }
 
-    // Test MonotonicClock
     #[test_case]
     async fn test_monotonic_clock() {
         let clock = MonotonicClock::default();
 
-        // Test monotonic increasing
         let t1 = clock.now();
         let t2 = clock.now();
         let t3 = clock.now();
@@ -223,21 +217,17 @@ mod tests {
         assert!(t3 > t2);
     }
 
-    // Test CacheStats
     #[test_case]
     async fn test_cache_stats() {
         let mut stats = CacheStats::default();
 
-        // Test initial state
         assert_eq!(stats.get(), (0, 0, 0, 0));
         assert_eq!(stats.hit_rate(), 0.0);
 
-        // Test hit rate calculation
         stats.hits = 3;
         stats.misses = 1;
         assert_eq!(stats.hit_rate(), 75.0);
 
-        // Test stats tuple
         assert_eq!(stats.get(), (3, 1, 0, 0));
     }
 }

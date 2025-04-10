@@ -121,10 +121,8 @@ pub trait BlockIO: Send + Sync {
             self.write_block(block_number, &buffer[..actual_n as usize])
                 .await?;
         } else {
-            // Initialize vector with zeros rather than using unsafe set_len
             let mut temp = vec![0; self.block_size() as usize];
 
-            // Read-modify-write
             self.read_block(block_number, &mut temp).await?;
             temp[offset_in_block as usize..(offset_in_block + actual_n) as usize]
                 .copy_from_slice(&buffer[..actual_n as usize]);
@@ -176,7 +174,6 @@ impl BlockIO for MockDevice {
             buffer[..data.len()].copy_from_slice(data);
             Ok(())
         } else {
-            // Unwritten blocks return zeros
             buffer[..self.block_size as usize].fill(0);
             Ok(())
         }
@@ -202,46 +199,37 @@ mod tests {
     use super::*;
     use alloc::vec;
 
-    // Test basic block operations
     #[test_case]
     async fn test_basic_block_operations() {
-        let device = MockDevice::new(1024, 1024 * 1024); // 1MB device with 1KB blocks
+        let device = MockDevice::new(1024, 1024 * 1024);
 
-        // Write a block
         let data = vec![0x55; 1024];
         device.write_block(0, &data).await.unwrap();
 
-        // Read it back
         let mut buffer = vec![0; 1024];
         device.read_block(0, &mut buffer).await.unwrap();
         assert_eq!(buffer, data);
 
-        // Read an unwritten block (should be zeros)
         let mut buffer = vec![0; 1024];
         device.read_block(1, &mut buffer).await.unwrap();
         assert!(buffer.iter().all(|&x| x == 0));
     }
 
-    // Test partial reads
     #[test_case]
     async fn test_partial_reads() {
         let device = MockDevice::new(1024, 1024 * 1024); // 1MB device with 1KB blocks
 
-        // Write some data
         let data = vec![0x55; 1024];
         device.write_block(0, &data).await.unwrap();
 
-        // Test reading first half of block
         let mut buffer = vec![0; 512];
         assert_eq!(device.read(0, &mut buffer).await.unwrap(), 512);
         assert_eq!(&buffer[..], &data[..512]);
 
-        // Test reading second half of block
         let mut buffer = vec![0; 512];
         assert_eq!(device.read(512, &mut buffer).await.unwrap(), 512);
         assert_eq!(&buffer[..], &data[512..]);
 
-        // Test reading with offset that would cross block boundary
         // Should only read to end of current block
         let mut buffer = vec![0xff; 1536]; // Fill with 0xff to verify untouched regions
         assert_eq!(device.read(512, &mut buffer).await.unwrap(), 512);
@@ -249,26 +237,22 @@ mod tests {
         assert!(buffer[512..].iter().all(|&x| x == 0xff)); // Verify rest was untouched
     }
 
-    // Test invalid operations
     #[test_case]
     async fn test_invalid_operations() {
         let device = MockDevice::new(1024, 1024 * 1024);
 
-        // Try to write with too small buffer
         let data = vec![0; 512];
         assert!(matches!(
             device.write_block(0, &data).await,
             Err(BlockError::InvalidBlock)
         ));
 
-        // Try to read with too small buffer
         let mut buffer = vec![0; 512];
         assert!(matches!(
             device.read_block(0, &mut buffer).await,
             Err(BlockError::InvalidBlock)
         ));
 
-        // Try to access beyond device size
         let data = vec![0; 1024];
         assert!(matches!(
             device.write_block(2048, &data).await,
@@ -276,41 +260,33 @@ mod tests {
         ));
     }
 
-    // Test block boundaries
     #[test_case]
     async fn test_block_boundaries() {
         let device = MockDevice::new(1024, 2048); // 2 blocks exactly
 
-        // Write last block
         let data = vec![0x55; 1024];
         device.write_block(1, &data).await.unwrap();
 
-        // Verify size calculations
         assert_eq!(device.size_in_blocks(), 2);
         assert_eq!(device.size_in_bytes(), 2048);
 
-        // Try to write beyond last block
         assert!(matches!(
             device.write_block(2, &data).await,
             Err(BlockError::InvalidBlock)
         ));
     }
 
-    // Test read_exact
     #[test_case]
     async fn test_read_exact() {
         let device = MockDevice::new(1024, 4096); // 4 blocks
 
-        // Write some data
         let data = vec![0x55; 1024];
         device.write_block(0, &data).await.unwrap();
         device.write_block(1, &data).await.unwrap();
 
-        // Read exact amount
         let mut buffer = vec![0; 2048];
         assert_eq!(device.read_exact(0, &mut buffer).await.unwrap(), 2048);
 
-        // Try to read beyond device size
         let mut buffer = vec![0; 8192];
         assert_eq!(device.read_exact(0, &mut buffer).await.unwrap(), 4096); // Should read until end
     }

@@ -21,10 +21,9 @@ mod tests {
         vec,
     };
 
-    use crate::{devices::sd_card::SD_CARD, serial_println};
+    use crate::devices::sd_card::SD_CARD;
 
     use super::{
-        block_io::BlockIO,
         filesystem::{Ext2, FilesystemError},
         structures::FileMode,
     };
@@ -41,38 +40,31 @@ mod tests {
         fs
     }
 
-    // Test reading a medium-sized file
     #[test_case]
-    async fn test_read_medium_file() {
+    async fn test_read_font_file() {
         let fs = create_test_fs().await;
         let file = fs.read_file("/fonts/Comfortaa-Regular.ttf").await.unwrap();
         assert!(file == MEDIUM_FILE);
     }
 
-    // Basic mounting and unmounting tests
     #[test_case]
     async fn test_mount_unmount() {
         let fs = create_test_fs().await;
 
-        // Get block size from mounted filesystem
         let block_size = fs.stats().unwrap().block_size;
 
-        // Test unmounting
         fs.unmount().await.unwrap();
 
-        // Operations should fail when unmounted
         match fs.read_file("/test.txt").await {
             Err(FilesystemError::NotMounted) => {}
             _ => panic!("Expected NotMounted error"),
         }
 
-        // Remounting should work
         fs.mount().await.unwrap();
         let stats = fs.stats().unwrap();
         assert_eq!(stats.block_size, block_size);
     }
 
-    // File operations tests
     #[test_case]
     async fn test_file_operations() {
         let fs = create_test_fs().await;
@@ -90,7 +82,6 @@ mod tests {
         let content = fs.read_file(file_path).await.unwrap();
         assert_eq!(content, test_content);
 
-        // Overwrite the file with new content
         let new_content = b"New content";
         let bytes_written = fs.write_file(file_path, new_content).await.unwrap();
         assert_eq!(bytes_written, new_content.len());
@@ -126,12 +117,10 @@ mod tests {
         fs.remove(second_path).await.unwrap();
     }
 
-    // Directory operations tests
     #[test_case]
     async fn test_directory_operations() {
         let fs = create_test_fs().await;
 
-        // Create directories
         let dir_path = "/testdir";
         let subdir_path = "/testdir/subdir";
         let mode = FileMode::UREAD | FileMode::UWRITE | FileMode::UEXEC;
@@ -139,76 +128,59 @@ mod tests {
         let dir_node = fs.create_directory(dir_path, mode).await.unwrap();
         assert!(dir_node.is_directory());
 
-        // Create a subdirectory
         let subdir_node = fs.create_directory(subdir_path, mode).await.unwrap();
         assert!(subdir_node.is_directory());
 
-        // List the root directory
         let root_entries = fs.read_dir("/").await.unwrap();
         assert!(root_entries.iter().any(|e| e.name == "testdir"));
 
-        // List the test directory
         let dir_entries = fs.read_dir(dir_path).await.unwrap();
         assert!(dir_entries.iter().any(|e| e.name == "subdir"));
-        assert!(dir_entries.iter().any(|e| e.name == ".")); // Should have . entry
-        assert!(dir_entries.iter().any(|e| e.name == "..")); // Should have .. entry
+        assert!(dir_entries.iter().any(|e| e.name == "."));
+        assert!(dir_entries.iter().any(|e| e.name == ".."));
 
-        // Create a file in the subdirectory
         let file_path = "/testdir/subdir/file.txt";
         let file_mode = FileMode::REG | FileMode::UREAD | FileMode::UWRITE;
         fs.create_file(file_path, file_mode).await.unwrap();
 
-        // Check file exists in subdir
         let subdir_entries = fs.read_dir(subdir_path).await.unwrap();
         assert!(subdir_entries.iter().any(|e| e.name == "file.txt"));
 
-        // Write to the file
         let content = b"Test file in subdirectory";
         fs.write_file(file_path, content).await.unwrap();
 
-        // Read from the file
         let read_content = fs.read_file(file_path).await.unwrap();
         assert_eq!(read_content, content);
 
-        // Try to remove non-empty directory (should fail)
         match fs.remove(subdir_path).await {
-            Err(FilesystemError::NodeError(_)) => {} // Should be NodeError::NotEmpty
+            Err(FilesystemError::NodeError(_)) => {}
             _ => panic!("Expected NotEmpty error"),
         }
 
-        // Remove the file first
         fs.remove(file_path).await.unwrap();
 
-        // Now remove the empty subdirectory
         fs.remove(subdir_path).await.unwrap();
 
-        // Check subdir is gone
         let dir_entries = fs.read_dir(dir_path).await.unwrap();
         assert!(!dir_entries.iter().any(|e| e.name == "subdir"));
 
-        // Remove the main directory
         fs.remove(dir_path).await.unwrap();
 
-        // Check dir is gone from root
         let root_entries = fs.read_dir("/").await.unwrap();
         assert!(!root_entries.iter().any(|e| e.name == "testdir"));
     }
 
-    // Large file and stress tests
     #[test_case]
     async fn test_large_file_operations() {
         let fs = create_test_fs().await;
 
-        // Create a large file (multiple blocks)
         let file_path = "/large.bin";
         let mode = FileMode::REG | FileMode::UREAD | FileMode::UWRITE;
         fs.create_file(file_path, mode).await.unwrap();
 
-        // Get block size from filesystem
         let block_size = fs.stats().unwrap().block_size;
 
-        // Create data larger than block size
-        let data_size = block_size as usize * 3 + 512; // 3.5 blocks
+        let data_size = block_size as usize * 32 + 512; // 32.5 blocks
         let mut data = vec![0u8; data_size];
 
         // Fill with pattern
@@ -216,25 +188,20 @@ mod tests {
             data[i] = (i % 256) as u8;
         }
 
-        // Write large data
         let bytes_written = fs.write_file(file_path, &data).await.unwrap();
         assert_eq!(bytes_written, data_size);
 
-        // Read it back
         let read_data = fs.read_file(file_path).await.unwrap();
         assert_eq!(read_data.len(), data_size);
         assert_eq!(read_data, data);
 
-        // Test reading portions of the file
         let node = fs.get_node(file_path).await.unwrap();
 
-        // Read first block
         let mut buffer = vec![0u8; block_size as usize];
         let bytes_read = node.read_at(0, &mut buffer).await.unwrap();
         assert_eq!(bytes_read, block_size as usize);
         assert_eq!(buffer, &data[0..block_size as usize]);
 
-        // Read from middle (crossing block boundary)
         let offset = block_size as u64 * 2 - 100;
         let size = 200;
         let mut buffer = vec![0u8; size];
@@ -242,63 +209,52 @@ mod tests {
         assert_eq!(bytes_read, size);
         assert_eq!(buffer, &data[offset as usize..(offset as usize + size)]);
 
-        // Read beyond file size
         let mut buffer = vec![0u8; 100];
         let bytes_read = node
             .read_at(data_size as u64 + 100, &mut buffer)
             .await
             .unwrap();
-        assert_eq!(bytes_read, 0); // Should return 0 bytes read
+        assert_eq!(bytes_read, 0);
 
-        // Clean up
         fs.remove(file_path).await.unwrap();
     }
 
-    // Error cases and edge conditions
     #[test_case]
     async fn test_error_cases() {
         let fs = create_test_fs().await;
 
-        // Invalid paths
         match fs.get_node("").await {
             Err(FilesystemError::InvalidPath) => {}
             _ => panic!("Expected InvalidPath error"),
         }
 
-        // Non-existent paths
         match fs.get_node("/nonexistent").await {
             Err(FilesystemError::NotFound) => {}
             _ => panic!("Expected NotFound error"),
         }
 
-        // Create a file
         let file_path = "/test.txt";
         let mode = FileMode::REG | FileMode::UREAD | FileMode::UWRITE;
         fs.create_file(file_path, mode).await.unwrap();
 
-        // Try to create file that already exists
         match fs.create_file(file_path, mode).await {
-            Err(FilesystemError::NodeError(_)) => {} // Should be NodeError::AlreadyExists
+            Err(FilesystemError::NodeError(_)) => {}
             _ => panic!("Expected AlreadyExists error"),
         }
 
-        // Try to create directory with same name as file
         match fs.create_directory(file_path, mode).await {
-            Err(FilesystemError::NodeError(_)) => {} // Should be NodeError::AlreadyExists
+            Err(FilesystemError::NodeError(_)) => {}
             _ => panic!("Expected AlreadyExists error"),
         }
 
-        // Trying to read a file as directory
         match fs.read_dir(file_path).await {
-            Err(FilesystemError::NodeError(_)) => {} // Should be NodeError::NotDirectory
+            Err(FilesystemError::NodeError(_)) => {}
             _ => panic!("Expected NotDirectory error"),
         }
 
-        // Clean up
         fs.remove(file_path).await.unwrap();
     }
 
-    // File and directory naming tests
     #[test_case]
     async fn test_file_naming() {
         let fs = create_test_fs().await;
@@ -346,38 +302,31 @@ mod tests {
         }
     }
 
-    // Deep directory hierarchy test
     #[test_case]
     async fn test_deep_directory_hierarchy() {
         let fs = create_test_fs().await;
         let dir_mode = FileMode::UREAD | FileMode::UWRITE | FileMode::UEXEC;
         let file_mode = FileMode::REG | FileMode::UREAD | FileMode::UWRITE;
 
-        // Create a deep directory structure
         let mut current_path = String::from("");
-        let depth = 5; // Reduced depth to work better with SD card
+        let depth = 5;
 
         for i in 1..=depth {
             current_path = format!("{}/dir{}", current_path, i);
             fs.create_directory(&current_path, dir_mode).await.unwrap();
 
-            // Create a file at each level
             let file_path = format!("{}/file{}.txt", current_path, i);
             fs.create_file(&file_path, file_mode).await.unwrap();
 
-            // Write some content
             let content = format!("Content for level {}", i);
             fs.write_file(&file_path, content.as_bytes()).await.unwrap();
         }
 
-        // Verify deepest file
         let deepest_file = format!("{}/file{}.txt", current_path, depth);
         let content = fs.read_file(&deepest_file).await.unwrap();
         assert_eq!(content, format!("Content for level {}", depth).as_bytes());
 
-        // Navigate back up and check each level
         for i in (1..=3).rev() {
-            // Just check first 3 levels
             let dir_path = if i == 1 {
                 "/dir1".to_string()
             } else if i == 2 {
@@ -393,7 +342,6 @@ mod tests {
             assert!(entries.iter().any(|e| e.name == format!("file{}.txt", i)));
         }
 
-        // Clean up - remove from deepest first
         for i in (1..=depth).rev() {
             let dir_path = if i == 1 {
                 "/dir1".to_string()
@@ -405,21 +353,17 @@ mod tests {
                 path
             };
 
-            // Remove file at this level
             let file_path = format!("{}/file{}.txt", dir_path, i);
             fs.remove(&file_path).await.unwrap();
 
-            // Remove directory if not root level
             if i > 1 {
                 fs.remove(&dir_path).await.unwrap();
             }
         }
 
-        // Remove root directory
         fs.remove("/dir1").await.unwrap();
     }
 
-    // Sparse file test
     #[test_case]
     async fn test_sparse_files() {
         let fs = create_test_fs().await;
@@ -437,10 +381,8 @@ mod tests {
         let end_data = b"End of file";
         node.write_at(offset, end_data).await.unwrap();
 
-        // Read the entire file
         let content = fs.read_file(file_path).await.unwrap();
 
-        // Verify the content
         assert_eq!(&content[0..start_data.len()], start_data);
         assert_eq!(
             &content[offset as usize..(offset as usize + end_data.len())],
@@ -449,7 +391,6 @@ mod tests {
 
         assert_eq!(content.len(), offset as usize + end_data.len());
 
-        // Verify the sparse region is zero-filled
         for i in start_data.len()..offset as usize {
             assert_eq!(content[i], 0);
         }
@@ -457,7 +398,6 @@ mod tests {
         fs.remove(file_path).await.unwrap();
     }
 
-    // Cache performance test
     #[test_case]
     async fn test_cache_performance() {
         let fs = create_test_fs().await;
@@ -467,7 +407,7 @@ mod tests {
         fs.create_file(file_path, mode).await.unwrap();
 
         let block_size = fs.stats().unwrap().block_size;
-        let data_size = block_size as usize * 4; // 4 blocks
+        let data_size = block_size as usize * 4;
         let mut data = vec![0u8; data_size];
         for i in 0..data_size {
             data[i] = (i % 256) as u8;
@@ -487,24 +427,6 @@ mod tests {
         let final_stats = fs.stats().unwrap();
         assert!(final_stats.block_cache_stats.get_hits() > initial_block_hits);
         assert!(final_stats.inode_cache_stats.get_hits() > initial_inode_hits);
-
-        serial_println!(
-            "Block cache: hits={}, misses={}, hit ratio={:.2}%",
-            final_stats.block_cache_stats.get_hits(),
-            final_stats.block_cache_stats.get_misses(),
-            100.0 * final_stats.block_cache_stats.get_hits() as f64
-                / (final_stats.block_cache_stats.get_hits()
-                    + final_stats.block_cache_stats.get_misses()) as f64
-        );
-
-        serial_println!(
-            "Inode cache: hits={}, misses={}, hit ratio={:.2}%",
-            final_stats.inode_cache_stats.get_hits(),
-            final_stats.inode_cache_stats.get_misses(),
-            100.0 * final_stats.inode_cache_stats.get_hits() as f64
-                / (final_stats.inode_cache_stats.get_hits()
-                    + final_stats.inode_cache_stats.get_misses()) as f64
-        );
 
         fs.remove(file_path).await.unwrap();
     }

@@ -1,8 +1,8 @@
-use alloc::{sync::Arc, vec::Vec};
-use spin::Mutex;
+use alloc::{boxed::Box, sync::Arc, vec::Vec};
+use spin::{Mutex, RwLock};
 
 use super::{
-    cache::{block::CachedBlock, Cache},
+    cache::{block::CachedBlock, Cache, CacheableItem},
     structures::{BlockGroupDescriptor, Superblock},
 };
 
@@ -23,24 +23,24 @@ pub type AllocResult<T> = Result<T, AllocError>;
 
 /// Manages block and inode allocation
 pub struct Allocator {
-    superblock: Arc<Superblock>,
-    bgdt: Arc<[BlockGroupDescriptor]>,
-    block_cache: Arc<dyn Cache<u32, CachedBlock>>,
+    superblock: Arc<RwLock<Superblock>>,
+    bgdt: Arc<RwLock<Vec<BlockGroupDescriptor>>>,
+    block_cache: Arc<Mutex<Box<dyn Cache<u32, CachedBlock>>>>,
     /// Locks for each block group to prevent concurrent allocation
     group_locks: Vec<Mutex<()>>,
 }
 
-unsafe impl Send for Allocator {}
-unsafe impl Sync for Allocator {}
-
 impl Allocator {
     /// Create a new allocator
     pub fn new(
-        superblock: Arc<Superblock>,
-        bgdt: Arc<[BlockGroupDescriptor]>,
-        block_cache: Arc<dyn Cache<u32, CachedBlock>>,
+        superblock: Arc<RwLock<Superblock>>,
+        bgdt: Arc<RwLock<Vec<BlockGroupDescriptor>>>,
+        block_cache: Arc<Mutex<Box<dyn Cache<u32, CachedBlock>>>>,
     ) -> Self {
-        let num_groups = superblock.block_group_count() as usize;
+        let num_groups = {
+            let superblock = superblock.read();
+            superblock.block_group_count() as usize
+        };
         let group_locks = (0..num_groups).map(|_| Mutex::new(())).collect();
 
         Self {
@@ -86,37 +86,48 @@ impl Allocator {
 
     /// Allocate a block in a specific group
     async fn allocate_block_in_group(&self, group: usize) -> AllocResult<u32> {
-        let bgdt = self.bgdt.get(group).ok_or(AllocError::InvalidNumber)?;
+        let superblock = self.superblock.read();
+        let bgdt_read = self.bgdt.read();
+
+        let bgdt = bgdt_read.get(group).ok_or(AllocError::InvalidNumber)?;
         let _guard = self
             .group_locks
             .get(group)
             .ok_or(AllocError::InvalidNumber)?
             .lock();
 
-        // Read the bitmap
-        let bitmap_block = self
-            .block_cache
+        let block_cache = self.block_cache.lock();
+        let bitmap_block = block_cache
             .get(bgdt.block_bitmap_block)
             .await
             .map_err(|_| AllocError::CacheError)?;
+
         let mut bitmap_block = bitmap_block.lock();
         let bitmap = bitmap_block.data_mut();
 
-        // Find a free block
         let bit = Self::find_first_zero(bitmap).ok_or(AllocError::NoSpace)?;
 
-        // Check if bit is within bounds
-        if bit >= self.superblock.blocks_per_group as usize {
+        if bit >= superblock.blocks_per_group as usize {
             return Err(AllocError::NoSpace);
         }
 
-        // Mark block as used
         Self::set_bit(bitmap, bit);
+        bitmap_block.mark_dirty();
 
-        // Calculate global block number
-        let block = group as u32 * self.superblock.blocks_per_group + bit as u32;
-        if block >= self.superblock.num_blocks {
+        let block = group as u32 * superblock.blocks_per_group + bit as u32;
+        if block >= superblock.num_blocks {
             return Err(AllocError::NoSpace);
+        }
+
+        drop(bitmap_block);
+        drop(block_cache);
+        drop(bgdt_read);
+
+        {
+            let mut bgdt_write = self.bgdt.write();
+            if let Some(desc) = bgdt_write.get_mut(group) {
+                desc.unallocated_blocks -= 1;
+            }
         }
 
         Ok(block)
@@ -124,37 +135,48 @@ impl Allocator {
 
     /// Allocate an inode in a specific group
     async fn allocate_inode_in_group(&self, group: usize) -> AllocResult<u32> {
-        let bgdt = self.bgdt.get(group).ok_or(AllocError::InvalidNumber)?;
+        let superblock = self.superblock.read();
+        let bgdt_read = self.bgdt.read();
+
+        let bgdt = bgdt_read.get(group).ok_or(AllocError::InvalidNumber)?;
         let _guard = self
             .group_locks
             .get(group)
             .ok_or(AllocError::InvalidNumber)?
             .lock();
 
-        // Read the bitmap
-        let bitmap_block = self
-            .block_cache
+        let block_cache = self.block_cache.lock();
+        let bitmap_block = block_cache
             .get(bgdt.inode_bitmap_block)
             .await
             .map_err(|_| AllocError::CacheError)?;
+
         let mut bitmap_block = bitmap_block.lock();
         let bitmap = bitmap_block.data_mut();
 
-        // Find a free inode
         let bit = Self::find_first_zero(bitmap).ok_or(AllocError::NoSpace)?;
 
-        // Check if bit is within bounds
-        if bit >= self.superblock.inodes_per_group as usize {
+        if bit >= superblock.inodes_per_group as usize {
             return Err(AllocError::NoSpace);
         }
 
-        // Mark inode as used
         Self::set_bit(bitmap, bit);
+        bitmap_block.mark_dirty();
 
-        // Calculate global inode number (1-based)
-        let inode = group as u32 * self.superblock.inodes_per_group + bit as u32 + 1;
-        if inode > self.superblock.num_inodes {
+        let inode = group as u32 * superblock.inodes_per_group + bit as u32 + 1;
+        if inode > superblock.num_inodes {
             return Err(AllocError::NoSpace);
+        }
+
+        drop(bitmap_block);
+        drop(block_cache);
+        drop(bgdt_read);
+
+        {
+            let mut bgdt_write = self.bgdt.write();
+            if let Some(desc) = bgdt_write.get_mut(group) {
+                desc.unallocated_inodes -= 1;
+            }
         }
 
         Ok(inode)
@@ -162,22 +184,27 @@ impl Allocator {
 
     /// Allocate a new block
     pub async fn allocate_block(&self) -> AllocResult<u32> {
-        let num_groups = self.superblock.block_group_count() as usize;
+        let num_groups = {
+            let superblock = self.superblock.read();
+            superblock.block_group_count() as usize
+        };
 
-        // Try to allocate from each group
+        let bgdt_read = self.bgdt.read();
+
+        let mut candidate_group = None;
         for group in 0..num_groups {
-            if let Some(desc) = self.bgdt.get(group) {
+            if let Some(desc) = bgdt_read.get(group) {
                 if desc.unallocated_blocks > 0 {
-                    if let Ok(block) = self.allocate_block_in_group(group).await {
-                        // Update free blocks count
-                        unsafe {
-                            let bgdt = desc as *const _ as *mut BlockGroupDescriptor;
-                            (*bgdt).unallocated_blocks -= 1;
-                        }
-                        return Ok(block);
-                    }
+                    candidate_group = Some(group);
+                    break;
                 }
             }
+        }
+
+        drop(bgdt_read);
+
+        if let Some(group) = candidate_group {
+            return self.allocate_block_in_group(group).await;
         }
 
         Err(AllocError::NoSpace)
@@ -185,22 +212,27 @@ impl Allocator {
 
     /// Allocate a new inode
     pub async fn allocate_inode(&self) -> AllocResult<u32> {
-        let num_groups = self.superblock.block_group_count() as usize;
+        let num_groups = {
+            let superblock = self.superblock.read();
+            superblock.block_group_count() as usize
+        };
 
-        // Try to allocate from each group
+        let bgdt_read = self.bgdt.read();
+
+        let mut candidate_group = None;
         for group in 0..num_groups {
-            if let Some(desc) = self.bgdt.get(group) {
+            if let Some(desc) = bgdt_read.get(group) {
                 if desc.unallocated_inodes > 0 {
-                    if let Ok(inode) = self.allocate_inode_in_group(group).await {
-                        // Update free inodes count
-                        unsafe {
-                            let bgdt = desc as *const _ as *mut BlockGroupDescriptor;
-                            (*bgdt).unallocated_inodes -= 1;
-                        }
-                        return Ok(inode);
-                    }
+                    candidate_group = Some(group);
+                    break;
                 }
             }
+        }
+
+        drop(bgdt_read);
+
+        if let Some(group) = candidate_group {
+            return self.allocate_inode_in_group(group).await;
         }
 
         Err(AllocError::NoSpace)
@@ -208,34 +240,43 @@ impl Allocator {
 
     /// Free a block
     pub async fn free_block(&self, block: u32) -> AllocResult<()> {
-        let blocks_per_group = self.superblock.blocks_per_group;
+        let (_, group, index) = {
+            let superblock = self.superblock.read();
+            let blocks_per_group = superblock.blocks_per_group;
+            let group = (block / blocks_per_group) as usize;
+            let index = (block % blocks_per_group) as usize;
+            (blocks_per_group, group, index)
+        };
 
-        let group = (block / blocks_per_group) as usize;
-        let index = (block % blocks_per_group) as usize;
-
-        let bgdt = self.bgdt.get(group).ok_or(AllocError::InvalidNumber)?;
+        let bgdt_read = self.bgdt.read();
+        let bgdt = bgdt_read.get(group).ok_or(AllocError::InvalidNumber)?;
         let _guard = self
             .group_locks
             .get(group)
             .ok_or(AllocError::InvalidNumber)?
             .lock();
 
-        // Read the bitmap
-        let bitmap_block = self
-            .block_cache
+        let block_cache = self.block_cache.lock();
+        let bitmap_block = block_cache
             .get(bgdt.block_bitmap_block)
             .await
             .map_err(|_| AllocError::CacheError)?;
+
         let mut bitmap_block = bitmap_block.lock();
         let bitmap = bitmap_block.data_mut();
 
-        // Clear the bit
         Self::clear_bit(bitmap, index);
+        bitmap_block.mark_dirty();
 
-        // Update free blocks count
-        unsafe {
-            let bgdt = bgdt as *const _ as *mut BlockGroupDescriptor;
-            (*bgdt).unallocated_blocks += 1;
+        drop(bitmap_block);
+        drop(block_cache);
+        drop(bgdt_read);
+
+        {
+            let mut bgdt_write = self.bgdt.write();
+            if let Some(desc) = bgdt_write.get_mut(group) {
+                desc.unallocated_blocks += 1;
+            }
         }
 
         Ok(())
@@ -243,37 +284,46 @@ impl Allocator {
 
     /// Free an inode
     pub async fn free_inode(&self, inode: u32) -> AllocResult<()> {
-        let inodes_per_group = self.superblock.inodes_per_group;
+        let (_, group, index) = {
+            let superblock = self.superblock.read();
+            let inodes_per_group = superblock.inodes_per_group;
 
-        // Convert to 0-based index
-        let inode = inode - 1;
+            let inode = inode - 1;
 
-        let group = (inode / inodes_per_group) as usize;
-        let index = (inode % inodes_per_group) as usize;
+            let group = (inode / inodes_per_group) as usize;
+            let index = (inode % inodes_per_group) as usize;
+            (inodes_per_group, group, index)
+        };
 
-        let bgdt = self.bgdt.get(group).ok_or(AllocError::InvalidNumber)?;
+        let bgdt_read = self.bgdt.read();
+        let bgdt = bgdt_read.get(group).ok_or(AllocError::InvalidNumber)?;
         let _guard = self
             .group_locks
             .get(group)
             .ok_or(AllocError::InvalidNumber)?
             .lock();
 
-        // Read the bitmap
-        let bitmap_block = self
-            .block_cache
+        let block_cache = self.block_cache.lock();
+        let bitmap_block = block_cache
             .get(bgdt.inode_bitmap_block)
             .await
             .map_err(|_| AllocError::CacheError)?;
+
         let mut bitmap_block = bitmap_block.lock();
         let bitmap = bitmap_block.data_mut();
 
-        // Clear the bit
         Self::clear_bit(bitmap, index);
+        bitmap_block.mark_dirty();
 
-        // Update free inodes count
-        unsafe {
-            let bgdt = bgdt as *const _ as *mut BlockGroupDescriptor;
-            (*bgdt).unallocated_inodes += 1;
+        drop(bitmap_block);
+        drop(block_cache);
+        drop(bgdt_read);
+
+        {
+            let mut bgdt_write = self.bgdt.write();
+            if let Some(desc) = bgdt_write.get_mut(group) {
+                desc.unallocated_inodes += 1;
+            }
         }
 
         Ok(())

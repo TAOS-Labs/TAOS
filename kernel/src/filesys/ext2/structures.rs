@@ -274,7 +274,6 @@ mod tests {
     use super::*;
     use core::mem::size_of;
 
-    // Size and layout tests
     #[test_case]
     async fn test_superblock_size() {
         assert_eq!(size_of::<Superblock>(), 84);
@@ -301,7 +300,6 @@ mod tests {
         assert_eq!(entry.total_size() % 4, 0);
     }
 
-    // Superblock functionality tests
     #[test_case]
     async fn test_superblock_validation() {
         let mut sb = Superblock::default();
@@ -339,7 +337,6 @@ mod tests {
         assert_eq!(sb.block_group_count(), 10);
     }
 
-    // Inode tests
     #[test_case]
     async fn test_inode_file_types() {
         let mut inode = Inode {
@@ -370,7 +367,6 @@ mod tests {
         assert_eq!(inode.size(), 1234);
     }
 
-    // FileMode tests
     #[test_case]
     async fn test_file_mode_permissions() {
         let mode = FileMode::REG | FileMode::UREAD | FileMode::UWRITE;
@@ -380,7 +376,6 @@ mod tests {
         assert!(!mode.contains(FileMode::UEXEC));
     }
 
-    // DirectoryEntry tests
     #[test_case]
     async fn test_directory_entry_sizes() {
         let entry = DirectoryEntry {

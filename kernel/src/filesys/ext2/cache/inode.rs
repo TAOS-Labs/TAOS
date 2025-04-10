@@ -1,13 +1,14 @@
-use alloc::{boxed::Box, collections::BTreeMap, sync::Arc};
+use alloc::{boxed::Box, collections::BTreeMap, sync::Arc, vec::Vec};
 use async_trait::async_trait;
 use core::sync::atomic::{AtomicU32, Ordering};
-use spin::Mutex;
+use spin::{Mutex, RwLock};
 
 use super::{
     super::{
         block_io::BlockIO,
         structures::{BlockGroupDescriptor, Inode, Superblock},
     },
+    block::CachedBlock,
     Cache, CacheEntry, CacheError, CacheResult, CacheStats, CacheableItem, Clock, MonotonicClock,
 };
 
@@ -94,11 +95,11 @@ pub struct InodeCache {
     #[allow(dead_code)]
     device: Arc<dyn BlockIO>,
     /// Superblock reference
-    superblock: Arc<Superblock>,
+    superblock: Arc<RwLock<Superblock>>,
     /// Block group descriptors
-    bgdt: Arc<[BlockGroupDescriptor]>,
+    bgdt: Arc<RwLock<Vec<BlockGroupDescriptor>>>,
     /// Block cache reference
-    block_cache: Arc<dyn Cache<u32, super::block::CachedBlock>>,
+    block_cache: Arc<Mutex<Box<dyn Cache<u32, CachedBlock>>>>,
     /// Cache entries mapped by inode number
     entries: Mutex<BTreeMap<u32, CacheEntry<CachedInode>>>,
     /// Maximum number of cached inodes
@@ -109,16 +110,13 @@ pub struct InodeCache {
     clock: MonotonicClock,
 }
 
-unsafe impl Send for InodeCache {}
-unsafe impl Sync for InodeCache {}
-
 impl InodeCache {
     /// Create a new inode cache
     pub fn new(
         device: Arc<dyn BlockIO>,
-        superblock: Arc<Superblock>,
-        bgdt: Arc<[BlockGroupDescriptor]>,
-        block_cache: Arc<dyn Cache<u32, super::block::CachedBlock>>,
+        superblock: Arc<RwLock<Superblock>>,
+        bgdt: Arc<RwLock<Vec<BlockGroupDescriptor>>>,
+        block_cache: Arc<Mutex<Box<dyn Cache<u32, CachedBlock>>>>,
         capacity: usize,
     ) -> Self {
         Self {
@@ -135,16 +133,18 @@ impl InodeCache {
 
     /// Calculate the location of an inode
     fn get_inode_location(&self, inode_no: u32) -> InodeLocation {
-        let inodes_per_group = self.superblock.inodes_per_group;
-        let block_size = self.superblock.block_size();
-        let inode_size = 128; // Standard ext2 inode size
+        let superblock = self.superblock.read();
+        let inodes_per_group = superblock.inodes_per_group;
+        let block_size = superblock.block_size();
+        let inode_size = 128;
 
         let block_group = (inode_no - 1) / inodes_per_group;
         let index = (inode_no - 1) % inodes_per_group;
         let block_offset = (index * inode_size) / block_size;
         let offset = (index * inode_size) % block_size;
 
-        let inode_table = self.bgdt[block_group as usize].inode_table_block;
+        let bgdt = self.bgdt.read();
+        let inode_table = bgdt[block_group as usize].inode_table_block;
         let block = inode_table + block_offset;
 
         InodeLocation {
@@ -168,15 +168,20 @@ impl InodeCache {
     async fn load_inode(&self, inode_no: u32) -> CacheResult<CachedInode> {
         let location = self.get_inode_location(inode_no);
 
-        // Get the block containing this inode
-        let block = self.block_cache.get(location.block).await?;
+        let block_cache = self.block_cache.lock();
+        let block = block_cache.get(location.block).await?;
 
-        // Read the inode from the block
-        let inode = unsafe {
+        let inode = {
             let guard = block.lock();
             let data = guard.data();
-            let ptr = data.as_ptr().add(location.offset as usize) as *const Inode;
-            (*ptr).clone() // Clone the data while the guard is still alive
+
+            let offset = location.offset as usize;
+            let inode_size = core::mem::size_of::<Inode>();
+
+            let inode_ref =
+                unsafe { &*(data[offset..offset + inode_size].as_ptr() as *const Inode) };
+
+            inode_ref.clone()
         };
 
         Ok(CachedInode::new(inode, inode_no))
@@ -190,15 +195,21 @@ impl InodeCache {
 
         let location = self.get_inode_location(inode_no);
 
-        // Get the block containing this inode
-        let block = self.block_cache.get(location.block).await?;
+        let block_cache = self.block_cache.lock();
+        let block = block_cache.get(location.block).await?;
 
-        // Write the inode to the block
-        unsafe {
+        {
             let mut guard = block.lock();
             let data = guard.data_mut();
-            let ptr = data.as_mut_ptr().add(location.offset as usize) as *mut Inode;
-            *ptr = cached.inode.clone();
+            let offset = location.offset as usize;
+            let inode_size = core::mem::size_of::<Inode>();
+
+            let inode_bytes = unsafe {
+                core::slice::from_raw_parts(&cached.inode as *const Inode as *const u8, inode_size)
+            };
+
+            data[offset..offset + inode_size].copy_from_slice(inode_bytes);
+            guard.mark_dirty();
         }
 
         Ok(())
@@ -216,7 +227,6 @@ impl InodeCache {
         if let Some(inode_no) = self.find_lru_entry(entries) {
             let entry = entries.remove(&inode_no).unwrap();
 
-            // Write back if dirty
             if entry.value.lock().is_dirty() {
                 self.write_inode(inode_no, &entry.value.lock()).await?;
                 self.stats.lock().writebacks += 1;
@@ -236,7 +246,6 @@ impl Cache<u32, CachedInode> for InodeCache {
         let mut entries = self.entries.lock();
         let now = self.clock.now();
 
-        // Check if inode is cached
         if let Some(entry) = entries.get_mut(&inode_no) {
             entry.touch(now);
             self.stats.lock().hits += 1;
@@ -244,13 +253,10 @@ impl Cache<u32, CachedInode> for InodeCache {
             return Ok(Arc::clone(&entry.value));
         }
 
-        // Need to load inode
         self.stats.lock().misses += 1;
 
-        // Evict if needed
         self.evict_if_needed(&mut entries).await?;
 
-        // Load and cache inode
         let cached = self.load_inode(inode_no).await?;
         let entry = CacheEntry::new(cached);
         let value = Arc::clone(&entry.value);
@@ -262,10 +268,8 @@ impl Cache<u32, CachedInode> for InodeCache {
     async fn insert(&self, inode_no: u32, cached: CachedInode) -> CacheResult<()> {
         let mut entries = self.entries.lock();
 
-        // Evict if needed
         self.evict_if_needed(&mut entries).await?;
 
-        // Add new entry
         entries.insert(inode_no, CacheEntry::new(cached));
         Ok(())
     }
@@ -274,15 +278,12 @@ impl Cache<u32, CachedInode> for InodeCache {
         let mut entries = self.entries.lock();
 
         if let Some(entry) = entries.remove(inode_no) {
-            // We can clone the Arc to check ref count without holding the full entry
             let value = Arc::clone(&entry.value);
             let cached = value.lock();
 
             if cached.ref_count() > 0 {
-                // Still referenced, put it back
                 entries.insert(*inode_no, entry);
             } else if cached.is_dirty() {
-                // No references but dirty, write back
                 self.write_inode(*inode_no, &cached).await?;
                 self.stats.lock().writebacks += 1;
             }
@@ -294,7 +295,6 @@ impl Cache<u32, CachedInode> for InodeCache {
     async fn clear(&self) -> CacheResult<()> {
         let mut entries = self.entries.lock();
 
-        // Write back all dirty blocks
         for (inode_no, entry) in entries.iter() {
             let cached = entry.value.lock();
             if cached.ref_count() == 0 && cached.is_dirty() {
@@ -303,7 +303,6 @@ impl Cache<u32, CachedInode> for InodeCache {
             }
         }
 
-        // Only remove unreferenced entries
         entries.retain(|_, entry| entry.value.lock().ref_count() > 0);
         Ok(())
     }
@@ -324,7 +323,6 @@ mod tests {
     };
     use alloc::{sync::Arc, vec};
 
-    // Test CachedInode functionality
     #[test_case]
     async fn test_cached_inode_basic() {
         let inode = Inode {
@@ -340,7 +338,6 @@ mod tests {
         assert_eq!(cached.ref_count(), 1);
         assert!(!cached.is_dirty());
 
-        // Modify inode
         {
             let inode = cached.inode_mut();
             inode.size_low = 2048;
@@ -364,47 +361,48 @@ mod tests {
         assert_eq!(cached.ref_count(), 1);
     }
 
-    // Helper function to set up test environment
     fn setup_test_cache(
         capacity: usize,
     ) -> (
-        Arc<dyn BlockIO>,
-        Arc<Superblock>,
-        Arc<[BlockGroupDescriptor]>,
-        Arc<dyn Cache<u32, CachedBlock>>,
+        Arc<MockDevice>,
+        Arc<RwLock<Superblock>>,
+        Arc<RwLock<Vec<BlockGroupDescriptor>>>,
+        Arc<Mutex<Box<dyn Cache<u32, CachedBlock>>>>,
         InodeCache,
     ) {
-        let device: Arc<dyn BlockIO> = MockDevice::new(1024, 1024 * 1024);
+        let device = MockDevice::new(1024, 1024 * 1024);
 
-        let superblock = Arc::new(Superblock {
+        let superblock = Arc::new(RwLock::new(Superblock {
             block_size_shift: 10, // 1024 bytes
             inodes_per_group: 8,
             ..Default::default()
-        });
+        }));
 
-        let bgdt: Arc<[BlockGroupDescriptor]> =
-            Arc::from(vec![BlockGroupDescriptor::new(0, 0, 1, 0, 0, 0)]);
+        let bgdt: Arc<RwLock<Vec<BlockGroupDescriptor>>> =
+            Arc::new(RwLock::new(vec![BlockGroupDescriptor::new(
+                0, 0, 1, 0, 0, 0,
+            )]));
 
-        let block_cache =
-            Arc::new(BlockCache::new(device.clone(), 8)) as Arc<dyn Cache<u32, CachedBlock>>;
+        let block_cache = Arc::new(Mutex::new(Box::new(BlockCache::new(
+            Arc::clone(&device) as Arc<dyn BlockIO>, // Cast directly here
+            8,
+        )) as Box<dyn Cache<u32, CachedBlock>>));
 
         let cache = InodeCache::new(
-            device.clone(),
-            superblock.clone(),
-            bgdt.clone(),
-            block_cache.clone(),
+            Arc::clone(&device) as Arc<dyn BlockIO>, // Cast directly here
+            Arc::clone(&superblock),
+            Arc::clone(&bgdt),
+            Arc::clone(&block_cache),
             capacity,
         );
 
         (device, superblock, bgdt, block_cache, cache)
     }
 
-    // Test InodeCache functionality
     #[test_case]
     async fn test_inode_cache_basic() {
         let (_, _, _, _, cache) = setup_test_cache(4);
 
-        // Get an inode
         let inode = cache.get(1).await.unwrap();
         assert_eq!(inode.lock().ref_count(), 1);
     }
@@ -413,17 +411,16 @@ mod tests {
     async fn test_inode_cache_eviction() {
         let (_, _, _, _, cache) = setup_test_cache(2);
 
-        // Fill cache
         {
             let inode1 = cache.get(1).await.unwrap();
             inode1.lock().dec_ref();
         }
+
         {
             let inode2 = cache.get(2).await.unwrap();
             inode2.lock().dec_ref();
         }
 
-        // This should trigger eviction
         let _inode3 = cache.get(3).await.unwrap();
 
         let stats = cache.stats();
@@ -434,7 +431,6 @@ mod tests {
     async fn test_inode_cache_dirty_writeback() {
         let (_, _, _, _, cache) = setup_test_cache(4);
 
-        // Modify an inode
         {
             let inode = cache.get(1).await.unwrap();
             let mut guard = inode.lock();
@@ -442,7 +438,6 @@ mod tests {
             guard.dec_ref();
         }
 
-        // Clear cache should trigger writeback
         cache.clear().await.unwrap();
 
         let stats = cache.stats();
@@ -451,25 +446,31 @@ mod tests {
 
     #[test_case]
     async fn test_inode_location_calculation() {
-        let device: Arc<dyn BlockIO> = MockDevice::new(1024, 1024 * 1024);
+        let device = MockDevice::new(1024, 1024 * 1024);
 
-        let superblock = Arc::new(Superblock {
+        let superblock = Arc::new(RwLock::new(Superblock {
             block_size_shift: 10,
             inodes_per_group: 8,
             ..Default::default()
-        });
+        }));
 
-        let bgdt: Arc<[BlockGroupDescriptor]> = Arc::from(vec![
+        let bgdt: Arc<RwLock<Vec<BlockGroupDescriptor>>> = Arc::new(RwLock::new(vec![
             BlockGroupDescriptor::new(0, 0, 10, 0, 0, 0),
             BlockGroupDescriptor::new(0, 0, 20, 0, 0, 0),
-        ]);
+        ]));
 
-        let block_cache =
-            Arc::new(BlockCache::new(device.clone(), 8)) as Arc<dyn Cache<u32, CachedBlock>>;
+        let block_cache = Arc::new(Mutex::new(
+            Box::new(BlockCache::new(device.clone(), 8)) as Box<dyn Cache<u32, CachedBlock>>
+        ));
 
-        let cache = InodeCache::new(device, superblock, bgdt, block_cache, 4);
+        let cache = InodeCache::new(
+            device,
+            Arc::clone(&superblock),
+            Arc::clone(&bgdt),
+            Arc::clone(&block_cache),
+            4,
+        );
 
-        // Test inode location calculation
         let location = cache.get_inode_location(9); // Second group, first inode
         assert_eq!(location.block_group, 1); // Should be in second group
         assert_eq!(location.index, 0); // First inode in group
@@ -480,7 +481,6 @@ mod tests {
     async fn test_inode_cache_reference_handling() {
         let (_, _, _, _, cache) = setup_test_cache(2);
 
-        // Get multiple references to same inode
         {
             let inode1 = cache.get(1).await.unwrap();
             {
@@ -491,7 +491,6 @@ mod tests {
                     guard.dec_ref();
                 }
 
-                // Drop one reference
                 drop(inode1);
 
                 {
@@ -500,12 +499,12 @@ mod tests {
                     guard.dec_ref();
                 }
 
-                // Try to evict - should not work while referenced
                 let inode3 = cache.get(2).await.unwrap();
                 {
                     let guard = inode3.lock();
                     guard.dec_ref();
                 }
+
                 let inode4 = cache.get(3).await.unwrap(); // Should not evict inode 1
                 {
                     let guard = inode4.lock();
