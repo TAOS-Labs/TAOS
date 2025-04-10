@@ -84,6 +84,18 @@ impl<'a> WriteContext<'a> {
         // Need to allocate a new block
         let new_block = self.allocator.allocate_block().await?;
         self.set_block_pointer(block_idx, new_block).await?;
+
+        {
+            let block_cache = self
+                .node
+                .block_cache
+                .get(new_block)
+                .await
+                .map_err(|_| NodeError::CacheError)?;
+
+            let mut block_data = block_cache.lock();
+            block_data.data_mut().fill(0);
+        }
         let mut inode = self.node.inode.lock();
         let new_count = block_idx as u32 + 1;
         inode.inode_mut().blocks_count = new_count;

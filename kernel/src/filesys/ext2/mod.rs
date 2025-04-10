@@ -420,7 +420,7 @@ mod tests {
     }
 
     // Sparse file test
-    /*#[test_case]
+    #[test_case]
     async fn test_sparse_files() {
         let fs = create_test_fs().await;
         let mode = FileMode::REG | FileMode::UREAD | FileMode::UWRITE;
@@ -433,13 +433,12 @@ mod tests {
         let start_data = b"Start of file";
         node.write_at(0, start_data).await.unwrap();
 
-        let offset = 50; // 10KB offset
+        let offset = 10000; // 10KB offset
         let end_data = b"End of file";
         node.write_at(offset, end_data).await.unwrap();
 
         // Read the entire file
         let content = fs.read_file(file_path).await.unwrap();
-        serial_println!("Content: {:#?}", content);
 
         // Verify the content
         assert_eq!(&content[0..start_data.len()], start_data);
@@ -456,7 +455,7 @@ mod tests {
         }
 
         fs.remove(file_path).await.unwrap();
-    }*/
+    }
 
     // Cache performance test
     #[test_case]
