@@ -3,6 +3,8 @@ use core::sync::atomic::{AtomicBool, Ordering};
 use spin::Mutex;
 use zerocopy::FromBytes;
 
+use crate::serial_println;
+
 use super::{
     allocator::Allocator,
     block_io::{BlockError, BlockIO},
@@ -304,9 +306,8 @@ impl Ext2 {
             return Err(FilesystemError::NotMounted);
         }
 
-        // Split path into parent directory and filename
         let (parent_path, name) = match path.rfind('/') {
-            Some(idx) => (&path[..idx], &path[idx + 1..]),
+            Some(idx) => (&path[..idx + 1], &path[idx + 1..]),
             None => ("/", path),
         };
 
@@ -314,25 +315,23 @@ impl Ext2 {
             return Err(FilesystemError::InvalidPath);
         }
 
-        // Get parent directory
         let parent = self.get_node(parent_path).await?;
         if !parent.is_directory() {
             return Err(FilesystemError::NodeError(NodeError::NotDirectory));
         }
 
-        // Check if file already exists
         if self.get_node(path).await.is_ok() {
             return Err(FilesystemError::NodeError(NodeError::AlreadyExists));
         }
+        serial_println!("File does not exist");
 
-        // Allocate new inode
         let inode_no = self
             .allocator
             .allocate_inode()
             .await
             .map_err(|e| FilesystemError::NodeError(e.into()))?;
+        serial_println!("Node allocated");
 
-        // Initialize inode
         let inode = self
             .inode_cache
             .get(inode_no)
