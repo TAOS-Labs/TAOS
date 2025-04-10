@@ -97,10 +97,11 @@ pub trait FileSystem {
     async fn read_file(&mut self, fd: usize, buf: &mut [u8]) -> Result<usize, FsError>;
     async fn read_dir(&self, path: &str) -> Result<Vec<DirEntry>, FsError>;
     async fn metadata(&self, path: &str) -> Result<FileMetadata, FsError>;
+    async fn add_entry_to_page_cache(&mut self, fd: usize, offset: usize) -> Result<usize, FsError>;
     async fn rename(&mut self, from: &str, to: &str) -> Result<(), FsError>;
 }
 
-pub static FILESYSTEM: Once<Mutex<Fat16<'_>>> = Once::new();
+pub static mut FILESYSTEM: Once<Mutex<Fat16<'_>>> = Once::new();
 
 pub fn init(cpu_id: u32) {
     serial_println!("INITING FS");
@@ -119,9 +120,9 @@ pub fn init(cpu_id: u32) {
                         .expect("Could not format Fat16 filesystem")
                 });
                 FS_INIT_COMPLETE.store(true, core::sync::atomic::Ordering::Relaxed);
-                FILESYSTEM.call_once(|| {
+                unsafe { FILESYSTEM.call_once(|| {
                     fs.into()
-                });
+                }) };
             },
             0,
         );

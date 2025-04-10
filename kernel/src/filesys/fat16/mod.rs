@@ -1,7 +1,14 @@
 //! FAT16 filesystem implementation
 
 use crate::{
-    constants::{memory::PAGE_SIZE, processes::MAX_FILES}, events::{current_running_event, futures::sync::Condition}, memory::{frame_allocator::alloc_frame, paging::{create_mapping, get_page_flags, map_kernel_frame}, HHDM_OFFSET, KERNEL_MAPPER}, processes::process::{get_current_pid, PROCESS_TABLE}
+    constants::{memory::PAGE_SIZE, processes::MAX_FILES},
+    events::{current_running_event, futures::sync::Condition},
+    memory::{
+        frame_allocator::alloc_frame,
+        paging::{create_mapping, get_page_flags, map_kernel_frame},
+        HHDM_OFFSET, KERNEL_MAPPER,
+    },
+    processes::process::{get_current_pid, PROCESS_TABLE},
 };
 
 use super::*;
@@ -10,11 +17,18 @@ use alloc::{
     sync::Arc,
     vec,
 };
-use x86_64::{structures::paging::{Mapper, OffsetPageTable, Page, PageTable, PageTableFlags, PhysFrame, Size4KiB, Translate}, VirtAddr};
 use core::{
-    cmp::{max, min}, slice, sync::atomic::Ordering
+    cmp::{max, min},
+    slice,
+    sync::atomic::Ordering,
 };
 use spin::lock_api::Mutex;
+use x86_64::{
+    structures::paging::{
+        Mapper, OffsetPageTable, Page, PageTable, PageTableFlags, PhysFrame, Size4KiB, Translate,
+    },
+    VirtAddr,
+};
 
 mod boot_sector;
 mod constants;
@@ -868,6 +882,100 @@ impl FileSystem for Fat16<'_> {
         locked_file.position = new_pos;
         Ok(new_pos)
     }
+    
+    async fn add_entry_to_page_cache(&mut self, fd: usize, offset: usize) -> Result<usize, FsError> {
+        if !FS_INIT_COMPLETE.load(Ordering::Relaxed) {
+            Condition::new(
+                FS_INIT_COMPLETE.clone(),
+                current_running_event().expect("Fat16 action outside event"),
+            )
+            .await;
+        }
+
+        serial_println!("FS LOADED IN ADD ENTRY TO PAGE CACHE");
+
+        let pid = get_current_pid();
+        let pcb = {
+            let process_table = PROCESS_TABLE.read();
+            process_table
+                .get(&pid)
+                .expect("can't find pcb in process table")
+                .clone()
+        };
+        let pcb = pcb.pcb.get();
+
+        let file = unsafe {
+            (*pcb).fd_table[fd]
+                .clone()
+                .expect("No file associated with this fd.")
+        };
+        let mut locked_file = file.lock();
+        let default_flags = PageTableFlags::PRESENT | PageTableFlags::WRITABLE;
+        let frame = alloc_frame().expect("Could not allocate frame.");
+        let kernel_page = map_kernel_frame(&mut *KERNEL_MAPPER.lock(), frame, default_flags);
+        locked_file.page_cache.insert(
+            offset as u64,
+            Page::containing_address(kernel_page),
+        );
+        let kernel_page_buf = kernel_page.as_u64();
+        let ptr = kernel_page_buf as *mut u8;
+        let kernel_page_buf: &'static mut [u8] =
+            unsafe { slice::from_raw_parts_mut(ptr, PAGE_SIZE) };
+        let kernel_buf_offset = 0;
+
+        let bytes_to_write_to_entry = min(
+            PAGE_SIZE,
+            (locked_file.size - locked_file.position) as usize,
+        );
+        let mut bytes_written_to_entry = 0;
+
+        serial_println!("writing bytes");
+
+        while bytes_written_to_entry < bytes_to_write_to_entry {
+            let mut current_cluster_pc = locked_file.current_cluster;
+            let cluster_offset_pc = (offset % locked_file.cluster_size) as usize;
+            let bytes_left_in_cluster_pc = locked_file.cluster_size - cluster_offset_pc;
+            let chunk_size_pc = min(
+                bytes_left_in_cluster_pc,
+                bytes_to_write_to_entry - bytes_written_to_entry,
+            );
+
+            let sector_pc = locked_file.cluster_to_sector(current_cluster_pc);
+            let mut cluster_data_pc = vec![0u8; locked_file.cluster_size];
+
+            let sectors_per_cluster = locked_file.cluster_size / SECTOR_SIZE;
+            for i in 0..sectors_per_cluster {
+                let mut sector_data = vec![0u8; SECTOR_SIZE];
+                self.device
+                    .read_block(sector_pc + i as u64, &mut sector_data)
+                    .await?;
+                let start = i * SECTOR_SIZE;
+                cluster_data_pc[start..start + SECTOR_SIZE].copy_from_slice(&sector_data);
+            }
+
+            kernel_page_buf[kernel_buf_offset..kernel_buf_offset + chunk_size_pc].copy_from_slice(
+                &cluster_data_pc[cluster_offset_pc..cluster_offset_pc + chunk_size_pc],
+            );
+
+            if cluster_offset_pc + chunk_size_pc == locked_file.cluster_size {
+                let next_cluster = locked_file
+                    .read_fat_entry(&mut *self.device, current_cluster_pc)
+                    .await?;
+                if next_cluster.is_end_of_chain() {
+                    break;
+                }
+                current_cluster_pc = next_cluster.cluster;
+            }
+
+            bytes_written_to_entry += chunk_size_pc;
+        }
+        serial_println!("finished writing btyes in page cache");
+        Ok(bytes_written_to_entry)
+    } 
+      // now that the memcpy part is there since we're writing bytes and the file is being inserted into the page cache with the read_file code the only thing we gotta do wait actually arent we just done theres nothing else to rly do? all adding an entry into a pagen cache is, is reading a file into a buffer (page of memory) and making an entry for that at offset, page written to
+      // yup all we need to do is just memcpy to that kernel page. Then the page cache entry is done
+
+      // well now that the file is memcpy to kernel_page on line 918 we're chilling
 
     async fn read_file(&mut self, fd: usize, buf: &mut [u8]) -> Result<usize, FsError> {
         use x86_64::registers::control::Cr3;
@@ -878,7 +986,6 @@ impl FileSystem for Fat16<'_> {
             )
             .await;
         }
-
 
         let pid = get_current_pid();
         let pcb = {
@@ -897,14 +1004,11 @@ impl FileSystem for Fat16<'_> {
         };
         let mut locked_file = file.lock();
 
-
         if locked_file.position >= locked_file.size {
             return Ok(0);
         }
 
         let starting_offset = locked_file.position % PAGE_SIZE as u64;
-
-        
 
         let mut bytes_read = 0;
         let mut buf_offset = 0;
@@ -914,7 +1018,6 @@ impl FileSystem for Fat16<'_> {
         );
 
         while bytes_read < bytes_to_read {
-
             let cluster_offset = (locked_file.position % locked_file.cluster_size as u64) as usize;
             let bytes_left_in_cluster = locked_file.cluster_size - cluster_offset;
             let chunk_size = min(bytes_left_in_cluster, bytes_to_read - bytes_read);
@@ -923,29 +1026,33 @@ impl FileSystem for Fat16<'_> {
             // If you are at some offset in the file, that is also your offset into the buffer.
             let offset = locked_file.position as usize & (PAGE_SIZE - 1);
 
-            // You can only read this entire frame - in case chunk_size doesn't fit in that, cap your size. 
+            // You can only read this entire frame - in case chunk_size doesn't fit in that, cap your size.
             let chunk_size = min(chunk_size, PAGE_SIZE - offset);
 
             let mut mapped = false;
 
-
             // round the position to the nearest page and see if that's in file's page cache
-            if  locked_file.page_cache.contains_key(&(locked_file.position & (!(PAGE_SIZE - 1) as u64))) {
+            if locked_file
+                .page_cache
+                .contains_key(&(locked_file.position & (!(PAGE_SIZE - 1) as u64)))
+            {
                 mapped = true;
                 // Kernel VA is always a buffer you can use for memcpy-ing the frame to buf parameter
-                let kernel_page: &Page<Size4KiB> = locked_file.page_cache.get(&(locked_file.position & (!(PAGE_SIZE - 1) as u64))).expect("Key in page cache not found.");
+                let kernel_page: &Page<Size4KiB> = locked_file
+                    .page_cache
+                    .get(&(locked_file.position & (!(PAGE_SIZE - 1) as u64)))
+                    .expect("Key in page cache not found.");
                 let kernel_page_buf = kernel_page.start_address().as_u64();
                 let ptr = kernel_page_buf as *mut u8;
-                let kernel_page_buf: &'static mut [u8] = unsafe {
-                    slice::from_raw_parts_mut(ptr, PAGE_SIZE)
-                };
+                let kernel_page_buf: &'static mut [u8] =
+                    unsafe { slice::from_raw_parts_mut(ptr, PAGE_SIZE) };
 
-                buf[buf_offset..buf_offset + chunk_size].copy_from_slice(&kernel_page_buf[offset..offset + chunk_size]);
-            }
-            else {
+                buf[buf_offset..buf_offset + chunk_size]
+                    .copy_from_slice(&kernel_page_buf[offset..offset + chunk_size]);
+            } else {
                 let sector = locked_file.cluster_to_sector(locked_file.current_cluster);
                 let mut cluster_data = vec![0u8; locked_file.cluster_size];
-    
+
                 let sectors_per_cluster = locked_file.cluster_size / SECTOR_SIZE;
                 for i in 0..sectors_per_cluster {
                     let mut sector_data = vec![0u8; SECTOR_SIZE];
@@ -955,7 +1062,7 @@ impl FileSystem for Fat16<'_> {
                     let start = i * SECTOR_SIZE;
                     cluster_data[start..start + SECTOR_SIZE].copy_from_slice(&sector_data);
                 }
-    
+
                 buf[buf_offset..buf_offset + chunk_size]
                     .copy_from_slice(&cluster_data[cluster_offset..cluster_offset + chunk_size]);
             }
@@ -964,31 +1071,39 @@ impl FileSystem for Fat16<'_> {
             if !mapped {
                 let default_flags = PageTableFlags::PRESENT | PageTableFlags::WRITABLE;
                 let frame = alloc_frame().expect("Could not allocate frame.");
-                let kernel_page = map_kernel_frame(&mut *KERNEL_MAPPER.lock(), frame, default_flags);
+                let kernel_page =
+                    map_kernel_frame(&mut *KERNEL_MAPPER.lock(), frame, default_flags);
                 let position = locked_file.position;
-                locked_file.page_cache.insert(position & (!(PAGE_SIZE - 1) as u64), Page::containing_address(kernel_page));
+                locked_file.page_cache.insert(
+                    position & (!(PAGE_SIZE - 1) as u64),
+                    Page::containing_address(kernel_page),
+                );
                 let kernel_page_buf = kernel_page.as_u64();
                 let ptr = kernel_page_buf as *mut u8;
-                let kernel_page_buf: &'static mut [u8] = unsafe {
-                    slice::from_raw_parts_mut(ptr, PAGE_SIZE)
-                };
+                let kernel_page_buf: &'static mut [u8] =
+                    unsafe { slice::from_raw_parts_mut(ptr, PAGE_SIZE) };
                 let kernel_buf_offset = 0;
 
-                let bytes_to_write_to_entry = min(PAGE_SIZE, (locked_file.size - locked_file.position) as usize);
+                let bytes_to_write_to_entry = min(
+                    PAGE_SIZE,
+                    (locked_file.size - locked_file.position) as usize,
+                );
                 let mut bytes_written_to_entry = 0;
 
-                while bytes_written_to_entry < bytes_to_write_to_entry  {
-
+                while bytes_written_to_entry < bytes_to_write_to_entry {
                     let position_pc = locked_file.position;
                     let mut current_cluster_pc = locked_file.current_cluster;
-                    let cluster_offset_pc = (position_pc % locked_file.cluster_size as u64) as usize;
+                    let cluster_offset_pc =
+                        (position_pc % locked_file.cluster_size as u64) as usize;
                     let bytes_left_in_cluster_pc = locked_file.cluster_size - cluster_offset;
-                    let chunk_size_pc = min(bytes_left_in_cluster_pc, bytes_to_write_to_entry - bytes_written_to_entry);
-
+                    let chunk_size_pc = min(
+                        bytes_left_in_cluster_pc,
+                        bytes_to_write_to_entry - bytes_written_to_entry,
+                    );
 
                     let sector_pc = locked_file.cluster_to_sector(current_cluster_pc);
                     let mut cluster_data_pc = vec![0u8; locked_file.cluster_size];
-        
+
                     let sectors_per_cluster = locked_file.cluster_size / SECTOR_SIZE;
                     for i in 0..sectors_per_cluster {
                         let mut sector_data = vec![0u8; SECTOR_SIZE];
@@ -998,9 +1113,11 @@ impl FileSystem for Fat16<'_> {
                         let start = i * SECTOR_SIZE;
                         cluster_data_pc[start..start + SECTOR_SIZE].copy_from_slice(&sector_data);
                     }
-        
+
                     kernel_page_buf[kernel_buf_offset..kernel_buf_offset + chunk_size_pc]
-                        .copy_from_slice(&cluster_data_pc[cluster_offset_pc..cluster_offset_pc + chunk_size_pc]);
+                        .copy_from_slice(
+                            &cluster_data_pc[cluster_offset_pc..cluster_offset_pc + chunk_size_pc],
+                        );
 
                     if cluster_offset_pc + chunk_size == locked_file.cluster_size {
                         let next_cluster = locked_file
@@ -1013,16 +1130,12 @@ impl FileSystem for Fat16<'_> {
                     }
 
                     bytes_written_to_entry += chunk_size_pc;
-
                 }
-                
-
             }
 
             bytes_read += chunk_size;
             buf_offset += chunk_size;
             locked_file.position += chunk_size as u64;
-
 
             if cluster_offset + chunk_size == locked_file.cluster_size {
                 let next_cluster = locked_file
@@ -1034,6 +1147,8 @@ impl FileSystem for Fat16<'_> {
                 locked_file.current_cluster = next_cluster.cluster;
             }
         }
+
+        serial_println!("Snapshot of the page cache: {:#?}", locked_file.page_cache);
 
         Ok(bytes_read)
     }

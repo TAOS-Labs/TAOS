@@ -294,6 +294,8 @@ pub async fn handle_new_file_mapping(
     flags.set(PageTableFlags::WRITABLE, true);
     
     create_mapping(page, mapper, Some(flags));
+    let mut fs = unsafe { FILESYSTEM.get_mut().expect("Could not get filesystem").lock() };
+    fs.add_entry_to_page_cache(fd, offset as usize).await.expect("failed to add entry to page cache");
 
 
     
@@ -302,7 +304,7 @@ pub async fn handle_new_file_mapping(
     {
 
         // Now that the virtual address is mapped, use it to memcpy the file at an offset to the frame
-        let mut fs = FILESYSTEM.get().expect("Could not get filesystem").lock();
+        let mut fs = unsafe { FILESYSTEM.get().expect("Could not get filesystem").lock() };
         fs.seek_file(fd, SeekFrom::Start(offset)).expect("Seeking file failed.");
         fs.read_file(fd, buffer).await.expect("could not read file");
 
