@@ -21,9 +21,12 @@ use x86_64::{
     VirtAddr,
 };
 
+use crate::devices::audio::hda::hda_interrupt_handler;
+
+
 use crate::{
     constants::{
-        idt::{KEYBOARD_VECTOR, MOUSE_VECTOR, SYSCALL_HANDLER, TIMER_VECTOR, TLB_SHOOTDOWN_VECTOR},
+        idt::{HDA_VECTOR, KEYBOARD_VECTOR, MOUSE_VECTOR, SYSCALL_HANDLER, TIMER_VECTOR, TLB_SHOOTDOWN_VECTOR},
         syscalls::{SYSCALL_EXIT, SYSCALL_NANOSLEEP, SYSCALL_PRINT},
     },
     devices::{keyboard::keyboard_handler, mouse::mouse_handler},
@@ -56,6 +59,7 @@ lazy_static! {
         idt[TLB_SHOOTDOWN_VECTOR].set_handler_fn(tlb_shootdown_handler);
         idt[KEYBOARD_VECTOR].set_handler_fn(keyboard_handler);
         idt[MOUSE_VECTOR].set_handler_fn(mouse_handler);
+        idt[HDA_VECTOR].set_handler_fn(hda_interrupt_handler);
         idt
     };
 }
