@@ -8,6 +8,10 @@ use crate::{
 use crate::devices::audio::hda_regs::HdaRegisters;
 use x86_64::structures::idt::InterruptStackFrame;
 use core::ptr::{read_volatile, write_volatile};
+use crate::devices::audio::buffer::{BdlEntry, setup_bdl};
+use crate::devices::audio::dma::DmaBuffer;
+
+
 
 /// Physical BAR address (used during development before PCI scan)
 /// TODO - need to find a betterr way so this variable doesnt exist
@@ -60,37 +64,100 @@ impl IntelHDA {
     pub fn init() -> Option<Self> {
         let device = find_hda_device()?;
         let bar = get_bar(&device)?;
-
+    
         let virt = *HHDM_OFFSET + bar as u64;
         let regs = unsafe { &mut *(virt.as_u64() as *mut HdaRegisters) };
-
+    
         serial_println!(
             "Intel HDA found: vendor=0x{:X}, device=0x{:X}, BAR=0x{:X} (virt: 0x{:X})",
             device.vendor_id, device.device_id, bar, virt
         );
-
+    
         let mut hda = IntelHDA {
             base: bar,
             regs,
             vendor_id: device.vendor_id,
             device_id: device.device_id,
         };
-
+    
         hda.reset();
+        // Set power state to D0 (0x00)
+        serial_println!("Setting power state to D0 on node 0 and 3...");
+        hda.send_command(0, 0, 0x705, 0x00); // Set Power State for node 0
+        hda.get_response();
+        hda.send_command(0, 3, 0x705, 0x00); // Set Power State for node 3
+        hda.get_response();
+    
+        // Enable unsolicited responses early (some codecs require this before widget probing)
+        unsafe {
+            hda.regs.gctl |= 1 << 8;
+        }
+    
         hda.send_command(0, 0, 0xF00, 0);
         let func_group_type = hda.get_response();
         serial_println!("Codec node 0 function group type: 0x{:X}", func_group_type);
 
+        serial_println!("Probing all possible widget nodes manually...");
+        for node in 1..=15 {
+            hda.send_command(0, node, 0xF00, 0);
+            let widget_type = hda.get_response();
+            serial_println!("Node {} widget type: 0x{:X}", node, widget_type);
+        }
+    
         hda.enable_pin(3);
 
-        /// Sends verb 0x706 to node 2 with stream/channel value
-        /// 0x10 = 0001_0000
-        ///   Bits 7–4 = 0x1 - Stream tag = 1 (stream #1)
-        ///   Bits 3–0 = 0x0 - Channel ID = 0
-        /// This binds node 2 to stream #1 on channel 0
-        /// hopefully this is a good explanattion
-        hda.set_stream_channel(2, 0x10);
+        // === NEW: Set pin 3's connection to DAC node 2 ===
+        hda.send_command(0, 3, 0x701, 0x0); // Select connection index 0 (which points to DAC node 2)
+        serial_println!("Pin widget connection select set to DAC node 2");
 
+        // === NEW: Unmute and enable output on pin 3 ===
+        hda.send_command(0, 3, 0xF07, 0); // Get pin control
+        let mut pin_ctrl = hda.get_response();
+        serial_println!("Raw pin control (before): 0x{:X}", pin_ctrl);
+
+        pin_ctrl |= 0xC0; // Bits 6+7: Output enable + headphone
+        pin_ctrl |= 0x20; // Bit 5: Unmute
+        hda.send_command(0, 3, 0x707, (pin_ctrl & 0xFF) as u8); // Set updated pin control
+        serial_println!("Pin control (after enable+unmute): 0x{:X}", pin_ctrl);
+
+        IntelHDA::wait_cycles(500_000); // Short wait after change
+    
+        // Get Node ID range
+        hda.send_command(0, 0, 0xF02, 0); // 0xF02 = Subnode count & starting ID
+        let val = hda.get_response();
+        let start_id = (val >> 0) & 0xFF;
+        let total_nodes = (val >> 16) & 0xFF;
+        serial_println!("Codec node 0 has {} subnodes starting at {}", total_nodes, start_id);
+    
+        for node in start_id..(start_id + total_nodes) {
+            hda.send_command(0, node as u8, 0xF00, 0); // Widget Type
+            let response = hda.get_response();
+            serial_println!("Node {} widget type: 0x{:X}", node, response);
+        }
+    
+        hda.send_command(0, 3, 0xF02, 0); // Get connection list length
+        let conn_len = hda.get_response();
+        serial_println!("Node 3 connection list length: 0x{:X}", conn_len);
+        for i in 0..(conn_len & 0x7F) {
+            hda.send_command(0, 3, 0xF02 | ((i as u16) << 8), 0); // Get connection entry i
+            let conn = hda.get_response();
+            serial_println!("Node 3 connection[{}]: 0x{:X}", i, conn);
+        }
+
+        serial_println!("Setting power state to D0 on DAC node 2...");
+        hda.send_command(0, 2, 0x705, 0x00); // Power state D0
+        let resp = hda.get_response();
+        serial_println!("Power state response (node 2): 0x{:X}", resp);
+
+    
+        // Sends verb 0x706 to node 2 with stream/channel value
+        // 0x10 = 0001_0000
+        //  Bits 7–4 = 0x1 - Stream tag = 1 (stream #1)
+        //  Bits 3–0 = 0x0 - Channel ID = 0
+        // This binds node 2 to stream #1 on channel 0
+        //  hopefully this is a good explanattion
+        hda.set_stream_channel(2, 0x10);
+    
         /*
         Sends extended verb 0x03 to node 2 with gain/mute configuration
         0xB035 = 1011_0000_0011_0101
@@ -103,20 +170,37 @@ impl IntelHDA {
         Effectively: Set gain, mute left, unmute right with 36 dB gain
         */
         hda.set_amplifier_gain(2, 0xB035);
-
-        /// Sends extended verb 0x02 to node 2 with stream format
-        /// TODO: explain 4011 fully like othher functions
+    
+        // Sends extended verb 0x02 to node 2 with stream format
+        // TODO: explain 4011 fully like othher functions
         hda.set_converter_format(2, 0x4011);
-
+    
         unsafe {
             hda.regs.intctl = 1;                       // Enable global interrupts
             hda.regs.stream_regs[0].ctl |= 1 << 30;   // Enable stream interrrupt??
             hda.regs.gctl |= 1 << 8;                   // Enabble responses
         }
-
+    
         serial_println!("HDA setup complete");
+
+        hda.send_command(0, 3, 0xF07, 0);
+        let mut pin_ctrl = hda.get_response();
+        pin_ctrl |= 0x40; // EAPD
+        hda.send_command(0, 3, 0x707, (pin_ctrl & 0xFF) as u8);
+        IntelHDA::wait_cycles(500_000);
+        serial_println!("--- EAPD re-enable ---");
+        serial_println!("Initial pin control read (node 3): 0x{:02X}", pin_ctrl);
+
+        // Send another read command to double-check EAPD is actually set
+        hda.send_command(0, 3, 0xF07, 0);
+        let confirm_ctrl = hda.get_response();
+        serial_println!("After setting EAPD, pin control (node 3): 0x{:02X}", confirm_ctrl);
+
+
+        hda.test_dma_transfer(); 
         Some(hda)
     }
+    
 
     /// Resets the controller using GCTL register:
     /// - Clears and sets CRST bit (bit 0)
@@ -145,11 +229,11 @@ impl IntelHDA {
     }
 
     /// timer??
-    fn wait_cycles(cycles: u64) {
-        for _ in 0..cycles {
-            core::hint::spin_loop();
-        }
-    }
+    // fn wait_cycles(cycles: u64) {
+    // , spinning as necessary    for _ in 0..cycles {
+    //         core::hint::spin_loop();
+    //     }
+    // }
 
     /// Sends a basic verb command using ICOI (Immediate Command Output Interface) /ICIS (Immediate Command Status)
     /// Bits 31–28: Codec Address (4 bits)
@@ -166,17 +250,17 @@ impl IntelHDA {
         let icis = (base + 0x68) as *mut u32;
         let icoi = (base + 0x60) as *mut u32;
 
-        serial_println!("--- send_command ---");
-        serial_println!("Command: 0x{:08X}", final_command);
-        serial_println!("ICIS before: 0x{:08X}", unsafe { read_volatile(icis) });
+        // serial_println!("--- send_command ---");
+        // serial_println!("Command: 0x{:08X}", final_command);
+        // serial_println!("ICIS before: 0x{:08X}", unsafe { read_volatile(icis) });
 
         unsafe {
             write_volatile(icis, read_volatile(icis) & !0x1); // Clear ICB
             write_volatile(icis, read_volatile(icis) & !0x2); // Clear IRV
             write_volatile(icoi, final_command); // Write command
-            serial_println!("ICOI written");
+            // serial_println!("ICOI written");
             write_volatile(icis, read_volatile(icis) | 0x1);  // Set ICB
-            serial_println!("ICIS after setting ICB: 0x{:08X}", read_volatile(icis));
+            // serial_println!("ICIS after setting ICB: 0x{:08X}", read_volatile(icis));
         }
 
         true
@@ -206,6 +290,14 @@ impl IntelHDA {
         true
     }
 
+    /// timer??
+    fn wait_cycles(cycles: u64) {
+        for _ in 0..cycles {
+            core::hint::spin_loop();
+        }
+    }
+
+
     /// Reads codec response from ICII
     pub fn get_response(&mut self) -> u32 {
         let base = (*HHDM_OFFSET + self.base as u64).as_u64();
@@ -224,7 +316,7 @@ impl IntelHDA {
         }
 
         let val = unsafe { read_volatile(icii) };
-        serial_println!("ICII (response): 0x{:08X}", val);
+        // serial_println!("ICII (response): 0x{:08X}", val);
 
         unsafe {
             write_volatile(icis, read_volatile(icis) & !0x2); // Clear IRV
@@ -277,6 +369,115 @@ impl IntelHDA {
             serial_println!("Stream {} stopped", stream_idx);
         }
     }
+
+        /// Simple test that writes data into the DMA buffer and checks LPIB/STS
+        pub fn test_dma_transfer(&mut self) {
+            // use crate::devices::audio::debug::debug_hda_register_layout;
+            use crate::devices::audio::dma::DmaBuffer;
+            use crate::devices::audio::buffer::{setup_bdl, BdlEntry};
+            use core::ptr::{read_volatile, write_volatile};
+        
+            // serial_println!("Running DMA transfer test...");
+            // debug_hda_register_layout(self.regs);
+        
+            let audio_buf = DmaBuffer::new(64 * 1024).expect("Failed to allocate audio buffer");
+            let bdl_buf = DmaBuffer::new(core::mem::size_of::<BdlEntry>() * 32).expect("Failed BDL");
+        
+            for i in 0..audio_buf.size {
+                unsafe {
+                    *audio_buf.virt_addr.as_mut_ptr::<u8>().add(i) = if i % 2 == 0 { 0x00 } else { 0xFF };
+                }
+            }
+        
+            let bdl_ptr = bdl_buf.as_ptr::<BdlEntry>();
+            let num_entries = setup_bdl(
+                bdl_ptr,
+                audio_buf.phys_addr.as_u64(),
+                audio_buf.size as u32,
+                0x1000,
+            );
+        
+            serial_println!("setup_bdl returned {} entries", num_entries);
+        
+            // Pointers cause struct way isnt working
+            let stream_base = &self.regs.stream_regs[0] as *const _ as *mut u8;
+            let ctl_ptr = unsafe { stream_base.add(0x00) as *mut u32 };
+            let sts_ptr = unsafe { stream_base.add(0x04) as *mut u32 };
+            let lpib_ptr = unsafe { stream_base.add(0x08) as *mut u32 };
+            let cbl_ptr = unsafe { stream_base.add(0x0C) as *mut u32 };
+            let lvi_ptr = unsafe { stream_base.add(0x10) as *mut u16 };
+            let fmt_ptr = unsafe { stream_base.add(0x14) as *mut u16 };
+            let bdlpl_ptr = unsafe { stream_base.add(0x18) as *mut u32 };
+            let bdlpu_ptr = unsafe { stream_base.add(0x1C) as *mut u32 };
+            let bdl_phys = bdl_buf.phys_addr.as_u64();
+        
+            //Reset stream
+            unsafe {
+                write_volatile(ctl_ptr, 1 << 0); // Set SRST
+                while read_volatile(ctl_ptr) & (1 << 0) == 0 {
+                    core::hint::spin_loop();
+                }
+        
+                write_volatile(ctl_ptr, 0); // Clear SRST
+                while read_volatile(ctl_ptr) & (1 << 0) != 0 {
+                    core::hint::spin_loop();
+                }
+            }
+        
+            //Write registers in correct order
+            unsafe {
+                write_volatile(fmt_ptr, 0x4011); 
+                write_volatile(cbl_ptr, audio_buf.size as u32);      
+                write_volatile(lvi_ptr, (num_entries - 1) as u16); 
+                write_volatile(bdlpl_ptr, bdl_phys as u32);
+                write_volatile(bdlpu_ptr, (bdl_phys >> 32) as u32);
+            }
+        
+            // Set CTL with stream tag (1) and IOC
+            unsafe {
+                write_volatile(ctl_ptr, (1 << 20) | (1 << 30)); // Stream tag + IOC
+            }
+        
+            //Clear STS
+            unsafe {
+                write_volatile(sts_ptr, read_volatile(sts_ptr));
+            }
+        
+            //Sttart RUN
+            unsafe {
+                write_volatile(ctl_ptr, read_volatile(ctl_ptr) | (1 << 1));
+            }
+        
+            serial_println!(
+                "After RUN -> CTL: 0x{:08X}, LPIB: 0x{:X}",
+                unsafe { read_volatile(ctl_ptr) },
+                unsafe { read_volatile(lpib_ptr) }
+            );
+
+            let gctl = unsafe { read_volatile(&self.regs.gctl) };
+            let intsts = unsafe { read_volatile(&self.regs.intsts) };
+            serial_println!("After RUN: GCTL=0x{:08X}, INTSTS=0x{:08X}", gctl, intsts);
+
+        
+            //Poll LPIB
+            serial_println!("Polling LPIB...");
+            for _ in 0..20 {
+                let lpib = unsafe { read_volatile(lpib_ptr) };
+                let status = unsafe { read_volatile(sts_ptr) };
+                serial_println!("LPIB: 0x{:X}, STS: 0x{:X}", lpib, status);
+                Self::wait_cycles(10_000_000);
+            }
+        
+            //Stop stream
+            serial_println!("Stopping stream.");
+            self.stop_stream(0);
+        }
+        
+        
+
+        
+        
+    
 }
 
 /// Walk PCI bus to find device with Class 0x04, Subclass 0x03 (FOUND FROM OSDEV )
