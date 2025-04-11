@@ -396,28 +396,29 @@ impl IntelHDA {
         serial_println!("setup_bdl returned {} entries", num_entries);
 
         let stream_base = &self.regs.stream_regs[0] as *const _ as *mut u8;
-        let ctl_ptr = unsafe { MMioPtr(stream_base.add(0x00) as *mut u32) };
-        let sts_ptr = unsafe { MMioPtr(stream_base.add(0x04) as *mut u32) };
-        let lpib_ptr = unsafe { MMioPtr(stream_base.add(0x08) as *mut u32) };
-        let cbl_ptr = unsafe { MMioPtr(stream_base.add(0x0C) as *mut u32) };
-        let lvi_ptr = unsafe { MMioPtr(stream_base.add(0x10) as *mut u16) };
+        let ctl1_ptr = unsafe { MMioPtr(stream_base.add(0x00) as *mut u8) };
+        let ctl2_ptr = unsafe { MMioPtr(stream_base.add(0x02) as *mut u8) };
+        let sts_ptr = unsafe { MMioPtr(stream_base.add(0x03) as *mut u8) };
+        let lpib_ptr = unsafe { MMioPtr(stream_base.add(0x04) as *mut u32) };
+        let cbl_ptr = unsafe { MMioPtr(stream_base.add(0x08) as *mut u32) };
+        let lvi_ptr = unsafe { MMioPtr(stream_base.add(0x0C) as *mut u16) };
 
         // TODO Kavya: I "fixed" this by changing 0x14 -> 0x12, since the one before it only takes up 2 bytes as a u16 (0x10, 0x11)
         let fmt_ptr = unsafe { MMioPtr(stream_base.add(0x12) as *mut u16) };
 
-        let bdlpl_ptr = unsafe { MMioPtr(stream_base.add(0x18) as *mut u32) }; // TODO Kavya: Should this then be 0x14, 0x18? Idk the spec like that, so...
+        let bdlpl_ptr = unsafe { MMioPtr(stream_base.add(0x18) as *mut u32) }; 
         let bdlpu_ptr = unsafe { MMioPtr(stream_base.add(0x1C) as *mut u32) };
         let bdl_phys = bdl_buf.phys_addr.as_u64();
 
         //   Reset stream
         unsafe {
-            ctl_ptr.write(1 << 0);
-            serial_println!("Wrote CTL (SRST set): 0x{:08X}", ctl_ptr.read());
-            HWRegisterWrite::new(ctl_ptr.as_ptr(), 1, 1).await;
+            ctl1_ptr.write(1 << 0);
+            serial_println!("Wrote CTL (SRST set): 0x{:08X}", ctl1_ptr.read());
+            HWRegisterWrite::new(ctl1_ptr.as_ptr(), 1, 1).await;
 
-            ctl_ptr.write(0);
-            serial_println!("Wrote CTL (SRST cleared): 0x{:08X}", ctl_ptr.read());
-            HWRegisterWrite::new(ctl_ptr.as_ptr(), 1, 0).await;
+            ctl1_ptr.write(0);
+            serial_println!("Wrote CTL (SRST cleared): 0x{:08X}", ctl1_ptr.read());
+            HWRegisterWrite::new(ctl1_ptr.as_ptr(), 1, 0).await;
         }
 
         //Setup stream configuration
@@ -442,9 +443,9 @@ impl IntelHDA {
 
         //Tag & IOC enable
         unsafe {
-            let tag_ioc = (1 << 20) | (1 << 30);
-            ctl_ptr.write(tag_ioc);
-            serial_println!("Wrote CTL (tag + IOC): 0x{:08X}", ctl_ptr.read());
+            let tag_ioc = 1 << 4;
+            ctl2_ptr.write(tag_ioc);
+            serial_println!("Wrote CTL (tag + IOC): 0x{:08X}", ctl2_ptr.read());
         }
 
         //Clear STS
@@ -465,12 +466,12 @@ impl IntelHDA {
 
         //RUN bit
         unsafe {
-            let val = ctl_ptr.read();
-            ctl_ptr.write(val | (1 << 1));
-            serial_println!("Wrote CTL (RUN): 0x{:08X}", ctl_ptr.read());
+            let val = ctl1_ptr.read();
+            ctl1_ptr.write(val | (1 << 1));
+            serial_println!("Wrote CTL (RUN): 0x{:08X}", ctl1_ptr.read());
         }
 
-        let ctl = unsafe { ctl_ptr.read() };
+        let ctl = unsafe { (ctl1_ptr.read() as u32) | ((ctl2_ptr.read() as u32) << 16) };
         let lpib = unsafe { lpib_ptr.read() };
         let gctl = unsafe { read_volatile(&self.regs.gctl) };
         let intsts = unsafe { read_volatile(&self.regs.intsts) };
