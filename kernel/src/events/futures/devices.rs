@@ -1,13 +1,13 @@
 use alloc::sync::Arc;
 use core::{
-    future::Future, ops::BitAnd, pin::Pin, ptr::read_volatile, task::{Context, Poll}
+    fmt::LowerHex, future::Future, ops::BitAnd, pin::Pin, ptr::read_volatile, task::{Context, Poll}
 };
 
 use futures::task::ArcWake;
 
 use crate::{
     devices::sd_card::{PresentState, SDCardError},
-    events::{runner_timestamp, Event},
+    events::{current_running_event, runner_timestamp, Event}, serial_println,
 };
 
 /// Future to sleep an event until a target timestamp (in system ticks)
@@ -116,13 +116,12 @@ impl<T: BitAnd<Output = T> + PartialEq + Copy> HWRegisterWrite<T> {
         reg: *mut T,
         mask: T,
         expected: T, 
-        event: Arc<Event>,
     ) -> HWRegisterWrite<T> {
         HWRegisterWrite {
             reg,
             mask,
             expected,
-            event,
+            event: current_running_event().expect("Blocking on MMIO HW Register outside event"),
         }
     }
 
@@ -160,7 +159,7 @@ impl<T: BitAnd<Output = T> + PartialEq + Copy> PartialEq for HWRegisterWrite<T> 
 
 impl<T: BitAnd<Output = T> + PartialEq + Copy> Eq for HWRegisterWrite<T> {}
 
-impl<T: BitAnd<Output = T> + PartialEq + Copy> Future for HWRegisterWrite<T> {
+impl<T: BitAnd<Output = T> + PartialEq + Copy + LowerHex> Future for HWRegisterWrite<T> {
     type Output = ();
 
     fn poll(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<Self::Output> {

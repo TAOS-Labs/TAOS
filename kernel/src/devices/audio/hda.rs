@@ -1,18 +1,22 @@
 use crate::{
-    devices::pci::{read_config, walk_pci_bus, DeviceInfo}, events::{current_running_event, futures::devices::HWRegisterWrite, nanosleep_current_event}, interrupts::x2apic, memory::HHDM_OFFSET, serial_println
+    devices::{mmio::MMioConstPtr, pci::{read_config, walk_pci_bus, DeviceInfo}}, events::{futures::devices::HWRegisterWrite, nanosleep_current_event}, interrupts::x2apic, memory::HHDM_OFFSET, serial_println
 };
 
 use crate::devices::audio::hda_regs::HdaRegisters;
 use x86_64::structures::idt::InterruptStackFrame;
 use core::ptr::{read_volatile, write_volatile};
-use crate::devices::audio::buffer::{BdlEntry, setup_bdl};
-use crate::devices::audio::dma::DmaBuffer;
-
-
+use crate::devices::{
+    audio::{
+        buffer::{BdlEntry, setup_bdl},
+        dma::DmaBuffer
+    },
+    mmio::MMioPtr
+};
 
 /// Physical BAR address (used during development before PCI scan)
 /// TODO - need to find a betterr way so this variable doesnt exist
 const HDA_BAR_PHYS: u32 = 0xC1040000;
+const DELAY_NS :u64 = 100_000;
 
 /// Interrupt handler for Intel HDA.
 /// - Handles interrupts by reading INTSTS: interrupt status registeer (0x20) and RIRBSTS: response ring buffer status (0x5d).
@@ -115,7 +119,7 @@ impl IntelHDA {
         hda.send_command(0, 3, 0x707, (pin_ctrl & 0xFF) as u8); // Set updated pin control
         serial_println!("Pin control (after enable+unmute): 0x{:X}", pin_ctrl);
 
-        IntelHDA::wait_cycles(500_000); // Short wait after change
+        nanosleep_current_event(DELAY_NS).unwrap().await; // Short wait (0.1 ms) after change
     
         // Get Node ID range
         hda.send_command(0, 0, 0xF02, 0); // 0xF02 = Subnode count & starting ID
@@ -180,7 +184,10 @@ impl IntelHDA {
         let mut pin_ctrl = hda.get_response().await;
         pin_ctrl |= 0x40; // EAPD
         hda.send_command(0, 3, 0x707, (pin_ctrl & 0xFF) as u8);
-        IntelHDA::wait_cycles(500_000);
+
+        //0.1 ms delay
+        nanosleep_current_event(DELAY_NS).unwrap().await;
+
         serial_println!("--- EAPD re-enable ---");
         serial_println!("Initial pin control read (node 3): 0x{:02X}", pin_ctrl);
 
@@ -190,7 +197,7 @@ impl IntelHDA {
         serial_println!("After setting EAPD, pin control (node 3): 0x{:02X}", confirm_ctrl);
 
 
-        hda.test_dma_transfer(); 
+        hda.test_dma_transfer().await; 
         Some(hda)
     }
     
@@ -204,30 +211,19 @@ impl IntelHDA {
             serial_println!("GCTL before clearing CRST: 0x{:08X}", read_volatile(gctl));
             write_volatile(gctl, read_volatile(gctl) & !(1 << 0)); // Clear CRST
 
-            HWRegisterWrite::new(
-                gctl,
-                0x1,
-                0,
-                current_running_event().expect("Resetting HDA from outside event"),
-            )
-            .await;
+            HWRegisterWrite::new(gctl,0x1,0,).await;
 
             serial_println!("GCTL after clearing CRST:  0x{:08X}", read_volatile(gctl));
             write_volatile(gctl, read_volatile(gctl) | (1 << 0)); // Set CRST
             serial_println!("GCTL after setting CRST:   0x{:08X}", read_volatile(gctl));
 
-            HWRegisterWrite::new(
-                gctl,
-                0x1,
-                1,
-                current_running_event().expect("Resetting HDA from outside event"),
-            )
+            HWRegisterWrite::new(gctl,0x1,1)
             .await;
 
             serial_println!("CRST acknowledged by controller");
 
             // Delay 0.1 ms (can we safely go smaller?)
-            nanosleep_current_event(100_000).unwrap().await;
+            nanosleep_current_event(DELAY_NS).unwrap().await;
 
             let statests = read_volatile(&self.regs.statests);
             serial_println!("STATESTS (chheckking codec presence): 0x{:X}", statests);
@@ -289,35 +285,21 @@ impl IntelHDA {
         true
     }
 
-    /// timer??
-    fn wait_cycles(cycles: u64) {
-        for _ in 0..cycles {
-            core::hint::spin_loop();
-        }
-    }
-
-
     /// Reads codec response from ICII
     pub async fn get_response(&mut self) -> u32 {
         let base = (*HHDM_OFFSET + self.base as u64).as_u64();
 
+        let icis = MMioPtr((base + 0x68) as *mut u32);
+        let icii = MMioConstPtr((base + 0x64) as *const u32);
+
         // TODO timeout error type similar to SDCardError for HDA
-        HWRegisterWrite::new(
-            (base + 0x68) as *mut u32,
-            0x2,
-            2, // ICIS
-            current_running_event().expect("Reading HDA codec response from outside event"),
-        )
-        .await;
+        HWRegisterWrite::new(icis.as_ptr(),0x2,2).await;
 
-        let icis = (base + 0x68) as *mut u32;
-        let icii = (base + 0x64) as *const u32;
-
-        let val = unsafe { read_volatile(icii) };
+        let val = unsafe { icii.read() };
         // serial_println!("ICII (response): 0x{:08X}", val);
 
         unsafe {
-            write_volatile(icis, read_volatile(icis) & !0x2); // Clear IRV
+            icis.write(icis.read() & !0x2);
         }
 
         val
@@ -369,7 +351,7 @@ impl IntelHDA {
     }
 
         /// Simple test that writes data into the DMA buffer and checks LPIB/STS
-        pub fn test_dma_transfer(&mut self) {
+        pub async fn test_dma_transfer(&mut self) {
             // use crate::devices::audio::debug::debug_hda_register_layout;
             use crate::devices::audio::dma::DmaBuffer;
             use crate::devices::audio::buffer::{setup_bdl, BdlEntry};
@@ -398,62 +380,59 @@ impl IntelHDA {
             serial_println!("setup_bdl returned {} entries", num_entries);
         
             let stream_base = &self.regs.stream_regs[0] as *const _ as *mut u8;
-            let ctl_ptr = unsafe { stream_base.add(0x00) as *mut u32 };
-            let sts_ptr = unsafe { stream_base.add(0x04) as *mut u32 };
-            let lpib_ptr = unsafe { stream_base.add(0x08) as *mut u32 };
-            let cbl_ptr = unsafe { stream_base.add(0x0C) as *mut u32 };
-            let lvi_ptr = unsafe { stream_base.add(0x10) as *mut u16 };
-            let fmt_ptr = unsafe { stream_base.add(0x14) as *mut u16 };
-            let bdlpl_ptr = unsafe { stream_base.add(0x18) as *mut u32 };
-            let bdlpu_ptr = unsafe { stream_base.add(0x1C) as *mut u32 };
+            let ctl_ptr = unsafe { MMioPtr(stream_base.add(0x00) as *mut u32)};
+            let sts_ptr = unsafe { MMioPtr(stream_base.add(0x04) as *mut u32) };
+            let lpib_ptr = unsafe { MMioPtr(stream_base.add(0x08) as *mut u32) };
+            let cbl_ptr = unsafe { MMioPtr(stream_base.add(0x0C) as *mut u32) };
+            let lvi_ptr = unsafe { MMioPtr(stream_base.add(0x10) as *mut u16) };
+            let fmt_ptr = unsafe { MMioPtr(stream_base.add(0x14) as *mut u16) };
+            let bdlpl_ptr = unsafe { MMioPtr(stream_base.add(0x18) as *mut u32) };
+            let bdlpu_ptr = unsafe { MMioPtr(stream_base.add(0x1C) as *mut u32) };
             let bdl_phys = bdl_buf.phys_addr.as_u64();
         
             //   Reset stream  
             unsafe {
-                write_volatile(ctl_ptr, 1 << 0);
-                serial_println!("Wrote CTL (SRST set): 0x{:08X}", read_volatile(ctl_ptr));
-                while read_volatile(ctl_ptr) & (1 << 0) == 0 {
-                    core::hint::spin_loop();
-                }
+                ctl_ptr.write(1 << 0);
+                serial_println!("Wrote CTL (SRST set): 0x{:08X}", ctl_ptr.read());
+                HWRegisterWrite::new(ctl_ptr.as_ptr(), 1, 1).await;
         
-                write_volatile(ctl_ptr, 0);
-                serial_println!("Wrote CTL (SRST cleared): 0x{:08X}", read_volatile(ctl_ptr));
-                while read_volatile(ctl_ptr) & (1 << 0) != 0 {
-                    core::hint::spin_loop();
-                }
+                ctl_ptr.write(0);
+                serial_println!("Wrote CTL (SRST cleared): 0x{:08X}", ctl_ptr.read());
+                HWRegisterWrite::new(ctl_ptr.as_ptr(), 1, 0).await;
             }
         
             //Setup stream configuration  
             unsafe {
-                //SHOULD NOT BE ZERO
-                write_volatile(fmt_ptr, 0x4011);
-                serial_println!("Wrote FMT: 0x{:04X}", read_volatile(fmt_ptr));
+                // //SHOULD NOT BE ZERO
+                fmt_ptr.write(0x4011);
+                HWRegisterWrite::new(fmt_ptr.as_ptr(), 0xFFFFu16, 0x4011).await;
+                serial_println!("Wrote FMT: 0x{:04X}", fmt_ptr.read());
         
-                write_volatile(cbl_ptr, audio_buf.size as u32);
-                serial_println!("Wrote CBL: {}", read_volatile(cbl_ptr));
+                write_volatile(cbl_ptr.as_ptr(), audio_buf.size as u32);
+                serial_println!("Wrote CBL: {}", cbl_ptr.read());
         
-                write_volatile(lvi_ptr, (num_entries - 1) as u16);
-                serial_println!("Wrote LVI: {}", read_volatile(lvi_ptr));
+                write_volatile(lvi_ptr.as_ptr(), (num_entries - 1) as u16);
+                serial_println!("Wrote LVI: {}", lvi_ptr.read());
         
-                write_volatile(bdlpl_ptr, bdl_phys as u32);
-                serial_println!("Wrote BDLPL: 0x{:08X}", read_volatile(bdlpl_ptr));
+                write_volatile(bdlpl_ptr.as_ptr(), bdl_phys as u32);
+                serial_println!("Wrote BDLPL: 0x{:08X}", bdlpl_ptr.read());
         
-                write_volatile(bdlpu_ptr, (bdl_phys >> 32) as u32);
-                serial_println!("Wrote BDLPU: 0x{:08X}", read_volatile(bdlpu_ptr));
+                write_volatile(bdlpu_ptr.as_ptr(), (bdl_phys >> 32) as u32);
+                serial_println!("Wrote BDLPU: 0x{:08X}", bdlpu_ptr.read());
             }
         
             //Tag & IOC enable  
             unsafe {
                 let tag_ioc = (1 << 20) | (1 << 30);
-                write_volatile(ctl_ptr, tag_ioc);
-                serial_println!("Wrote CTL (tag + IOC): 0x{:08X}", read_volatile(ctl_ptr));
+                ctl_ptr.write(tag_ioc);
+                serial_println!("Wrote CTL (tag + IOC): 0x{:08X}", ctl_ptr.read());
             }
         
             //Clear STS  
             unsafe {
-                let sts = read_volatile(sts_ptr);
-                write_volatile(sts_ptr, sts);
-                serial_println!("Cleared STS: 0x{:08X}", read_volatile(sts_ptr));
+                let sts = sts_ptr.read();
+                sts_ptr.write(sts);
+                serial_println!("Cleared STS: 0x{:08X}", sts_ptr.read());
             }
         
             //Enable DMA globally  
@@ -464,13 +443,13 @@ impl IntelHDA {
         
             //RUN bit  
             unsafe {
-                let val = read_volatile(ctl_ptr);
-                write_volatile(ctl_ptr, val | (1 << 1));
-                serial_println!("Wrote CTL (RUN): 0x{:08X}", read_volatile(ctl_ptr));
+                let val = ctl_ptr.read();
+                ctl_ptr.write(val | (1 << 1));
+                serial_println!("Wrote CTL (RUN): 0x{:08X}", ctl_ptr.read());
             }
         
-            let ctl = unsafe { read_volatile(ctl_ptr) };
-            let lpib = unsafe { read_volatile(lpib_ptr) };
+            let ctl = unsafe { ctl_ptr.read() };
+            let lpib = unsafe { lpib_ptr.read() };
             let gctl = unsafe { read_volatile(&self.regs.gctl) };
             let intsts = unsafe { read_volatile(&self.regs.intsts) };
             serial_println!(
@@ -484,10 +463,10 @@ impl IntelHDA {
             //Polling LPIB  
             serial_println!("Polling LPIB...");
             for _ in 0..20 {
-                let lpib = unsafe { read_volatile(lpib_ptr) };
-                let status = unsafe { read_volatile(sts_ptr) };
+                let lpib = unsafe { lpib_ptr.read() };
+                let status = unsafe { sts_ptr.read() };
                 serial_println!("LPIB: 0x{:X}, STS: 0x{:X}", lpib, status);
-                Self::wait_cycles(10_000_000);
+                nanosleep_current_event(DELAY_NS * 20).unwrap().await;
             }
         
             serial_println!("Stopping stream.");
