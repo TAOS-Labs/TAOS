@@ -20,9 +20,10 @@ use x86_64::{
 
 use crate::{
     constants::{
-        idt::{SYSCALL_HANDLER, TIMER_VECTOR, TLB_SHOOTDOWN_VECTOR},
+        idt::{KEYBOARD_VECTOR, MOUSE_VECTOR, SYSCALL_HANDLER, TIMER_VECTOR, TLB_SHOOTDOWN_VECTOR},
         syscalls::{SYSCALL_EXIT, SYSCALL_NANOSLEEP, SYSCALL_PRINT},
     },
+    devices::{keyboard::keyboard_handler, mouse::mouse_handler},
     events::inc_runner_clock,
     interrupts::x2apic::{self, current_core_id, TLB_SHOOTDOWN_ADDR},
     memory::{paging::create_mapping, HHDM_OFFSET},
@@ -50,6 +51,8 @@ lazy_static! {
             .set_handler_fn(naked_syscall_handler)
             .set_privilege_level(x86_64::PrivilegeLevel::Ring3);
         idt[TLB_SHOOTDOWN_VECTOR].set_handler_fn(tlb_shootdown_handler);
+        idt[KEYBOARD_VECTOR].set_handler_fn(keyboard_handler);
+        idt[MOUSE_VECTOR].set_handler_fn(mouse_handler);
         idt
     };
 }
