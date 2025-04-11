@@ -57,7 +57,7 @@ impl Ext2 {
     ///
     /// # Arguments
     /// * `device` - The block device containing the filesystem
-    pub async fn new(device: Arc<dyn BlockIO>) -> FilesystemResult<Arc<Self>> {
+    pub async fn new(device: Arc<dyn BlockIO>) -> FilesystemResult<Self> {
         let superblock = Superblock::from_block(Arc::clone(&device)).await?;
 
         let superblock_lock = Arc::new(RwLock::new(superblock));
@@ -94,7 +94,7 @@ impl Ext2 {
             allocator,
         };
 
-        Ok(Arc::new(fs))
+        Ok(fs)
     }
 
     /// Mount the filesystem, reading superblock and preparing caches

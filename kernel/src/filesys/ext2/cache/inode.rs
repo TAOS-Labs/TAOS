@@ -370,7 +370,7 @@ mod tests {
         Arc<Mutex<Box<dyn Cache<u32, CachedBlock>>>>,
         InodeCache,
     ) {
-        let device = MockDevice::new(1024, 1024 * 1024);
+        let device = Arc::new(MockDevice::new(1024, 1024 * 1024));
 
         let superblock = Arc::new(RwLock::new(Superblock {
             block_size_shift: 10, // 1024 bytes
@@ -446,7 +446,7 @@ mod tests {
 
     #[test_case]
     async fn test_inode_location_calculation() {
-        let device = MockDevice::new(1024, 1024 * 1024);
+        let device = Arc::new(MockDevice::new(1024, 1024 * 1024));
 
         let superblock = Arc::new(RwLock::new(Superblock {
             block_size_shift: 10,

@@ -1,7 +1,7 @@
 // We want to make this replace the block IO we have right now
 // But would it matter if this is not in kernel anyways?
 
-use alloc::{boxed::Box, collections::BTreeMap, sync::Arc, vec, vec::Vec};
+use alloc::{boxed::Box, collections::BTreeMap, vec, vec::Vec};
 use async_trait::async_trait;
 use core::cmp::min;
 use spin::Mutex;
@@ -141,12 +141,12 @@ pub struct MockDevice {
 }
 
 impl MockDevice {
-    pub fn new(block_size: u32, size: u32) -> Arc<Self> {
-        Arc::new(Self {
+    pub fn new(block_size: u32, size: u32) -> Self {
+        Self {
             block_size,
             size,
             blocks: Mutex::new(BTreeMap::new()),
-        })
+        }
     }
 }
 

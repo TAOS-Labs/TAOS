@@ -1,7 +1,7 @@
 // IDK if we need this
 // We'll transcribe just in case.
 
-use alloc::{boxed::Box, sync::Arc};
+use alloc::boxed::Box;
 use async_trait::async_trait;
 use core::sync::atomic::{AtomicU32, Ordering};
 use spin::Mutex;
@@ -114,17 +114,13 @@ pub struct Ide {
 }
 
 impl Ide {
-    pub fn new(drive: u8) -> Arc<Self> {
-        let base_port = IDE_PORTS[((drive >> 1) & 1) as usize];
-
-        let ide = Self {
+    pub fn new(drive: u8) -> Self {
+        Self {
             drive,
             // SAFETY: Port initialization is safe when using correct IDE ports
-            regs: Mutex::new(unsafe { IdeRegisters::new(base_port) }),
+            regs: Mutex::new(unsafe { IdeRegisters::new(IDE_PORTS[((drive >> 1) & 1) as usize]) }),
             stats: IdeStats::default(),
-        };
-
-        Arc::new(ide)
+        }
     }
 
     fn channel(&self) -> u8 {

@@ -31,7 +31,7 @@ mod tests {
     const MEDIUM_FILE: &[u8] = include_bytes!("../../../../resources/fonts/Comfortaa-Regular.ttf");
 
     // Helper function to create a test filesystem using the SD card
-    async fn create_test_fs() -> Arc<Ext2> {
+    async fn create_test_fs() -> Ext2 {
         let sd_card_lock = SD_CARD.lock();
         let sd_card = sd_card_lock.clone().unwrap();
         let sd_arc = Arc::new(sd_card);

@@ -227,7 +227,7 @@ mod tests {
 
     #[test_case]
     async fn test_block_cache_basic_operations() {
-        let device: Arc<dyn BlockIO> = MockDevice::new(1024, 1024 * 1024); // 1MB device
+        let device: Arc<dyn BlockIO> = Arc::new(MockDevice::new(1024, 1024 * 1024));
         let cache = BlockCache::new(Arc::clone(&device), 2);
 
         {
@@ -249,7 +249,7 @@ mod tests {
 
     #[test_case]
     async fn test_block_cache_eviction() {
-        let device: Arc<dyn BlockIO> = MockDevice::new(1024, 1024 * 1024);
+        let device: Arc<dyn BlockIO> = Arc::new(MockDevice::new(1024, 1024 * 1024));
         let cache = BlockCache::new(Arc::clone(&device), 2);
 
         cache.get(0).await.unwrap();
@@ -267,7 +267,7 @@ mod tests {
 
     #[test_case]
     async fn test_block_cache_dirty_writeback() {
-        let device: Arc<dyn BlockIO> = MockDevice::new(1024, 1024 * 1024);
+        let device: Arc<dyn BlockIO> = Arc::new(MockDevice::new(1024, 1024 * 1024));
         let cache = BlockCache::new(Arc::clone(&device), 2);
 
         {
@@ -288,7 +288,7 @@ mod tests {
 
     #[test_case]
     async fn test_block_cache_concurrent_access() {
-        let device: Arc<dyn BlockIO> = MockDevice::new(1024, 1024 * 1024);
+        let device: Arc<dyn BlockIO> = Arc::new(MockDevice::new(1024, 1024 * 1024));
         let cache = Arc::new(BlockCache::new(Arc::clone(&device), 4));
 
         let block1 = cache.get(0).await.unwrap();
@@ -307,7 +307,7 @@ mod tests {
 
     #[test_case]
     async fn test_block_cache_error_conditions() {
-        let device: Arc<dyn BlockIO> = MockDevice::new(1024, 1024 * 1024);
+        let device: Arc<dyn BlockIO> = Arc::new(MockDevice::new(1024, 1024 * 1024));
         let cache = BlockCache::new(Arc::clone(&device), 1);
 
         let block = cache.get(0).await.unwrap();
@@ -320,7 +320,7 @@ mod tests {
 
     #[test_case]
     async fn test_block_cache_clear() {
-        let device: Arc<dyn BlockIO> = MockDevice::new(1024, 1024 * 1024);
+        let device: Arc<dyn BlockIO> = Arc::new(MockDevice::new(1024, 1024 * 1024));
         let cache = BlockCache::new(Arc::clone(&device), 2);
 
         {

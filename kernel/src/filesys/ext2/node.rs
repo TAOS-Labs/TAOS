@@ -998,7 +998,7 @@ mod tests {
 
     impl TestSetup {
         async fn new() -> Self {
-            let device = MockDevice::new(1024, 1024 * 1024);
+            let device = Arc::new(MockDevice::new(1024, 1024 * 1024));
             let device_as_block_io: Arc<dyn BlockIO> = device.clone();
             let block_cache = Arc::new(Mutex::new(
                 Box::new(BlockCache::new(device_as_block_io, 16))
