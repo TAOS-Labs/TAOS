@@ -1,8 +1,6 @@
 use alloc::sync::Arc;
 use core::{
-    future::Future,
-    pin::Pin,
-    task::{Context, Poll},
+    future::Future, ops::BitAnd, pin::Pin, ptr::read_volatile, task::{Context, Poll}
 };
 
 use futures::task::ArcWake;
@@ -98,6 +96,80 @@ impl Future for SDCardReq {
             Poll::Ready(Ok(()))
         } else {
             Poll::Pending
+        }
+    }
+}
+
+
+#[derive(Clone)]
+pub struct HWRegisterWrite<T: BitAnd<Output = T> + PartialEq + Copy> {
+    reg: *mut T,
+    mask: T,
+    expected: T, 
+    event: Arc<Event>,
+}
+
+unsafe impl<T: BitAnd<Output = T> + PartialEq + Copy> Send for HWRegisterWrite<T> {}
+
+impl<T: BitAnd<Output = T> + PartialEq + Copy> HWRegisterWrite<T> {
+    pub fn new(
+        reg: *mut T,
+        mask: T,
+        expected: T, 
+        event: Arc<Event>,
+    ) -> HWRegisterWrite<T> {
+        HWRegisterWrite {
+            reg,
+            mask,
+            expected,
+            event,
+        }
+    }
+
+    pub fn awake(&self) {
+        self.event.clone().wake();
+    }
+
+    pub fn get_id(&self) -> u64 {
+        self.event.eid.0
+    }
+}
+
+/// Order SDCardReq futures with earlier timestamps given "higher" values.
+///
+/// PID then EID to tie break.
+/// Thus, events created earlier awaken first in the very rare event of a tie.
+/// This helps preventing compounding error from old events frequently blocking.
+impl<T: BitAnd<Output = T> + PartialEq + Copy> Ord for HWRegisterWrite<T> {
+    fn cmp(&self, other: &Self) -> core::cmp::Ordering {
+        self.event.eid.cmp(&other.event.eid)
+    }
+}
+
+impl<T: BitAnd<Output = T> + PartialEq + Copy> PartialOrd for HWRegisterWrite<T> {
+    fn partial_cmp(&self, other: &Self) -> Option<core::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl<T: BitAnd<Output = T> + PartialEq + Copy> PartialEq for HWRegisterWrite<T> {
+    fn eq(&self, other: &Self) -> bool {
+        self.event.eid == other.event.eid
+    }
+}
+
+impl<T: BitAnd<Output = T> + PartialEq + Copy> Eq for HWRegisterWrite<T> {}
+
+impl<T: BitAnd<Output = T> + PartialEq + Copy> Future for HWRegisterWrite<T> {
+    type Output = ();
+
+    fn poll(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<Self::Output> {
+        unsafe {
+            if (read_volatile(self.reg) & self.mask) == self.expected {
+                Poll::Ready(())
+            } else {
+                Poll::Pending
+            }
         }
     }
 }

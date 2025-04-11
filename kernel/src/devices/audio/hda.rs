@@ -1,8 +1,5 @@
 use crate::{
-    devices::pci::{read_config, walk_pci_bus, DeviceInfo},
-    interrupts::x2apic,
-    memory::HHDM_OFFSET,
-    serial_println,
+    devices::pci::{read_config, walk_pci_bus, DeviceInfo}, events::{current_running_event, futures::devices::HWRegisterWrite, nanosleep_current_event}, interrupts::x2apic, memory::HHDM_OFFSET, serial_println
 };
 
 use crate::devices::audio::hda_regs::HdaRegisters;
@@ -61,7 +58,7 @@ impl IntelHDA {
     /// Initializes HDA controller:
     /// - Finds the PCI device
     /// - Maps BAR to virtual address (hhdm ofset + address)
-    pub fn init() -> Option<Self> {
+    pub async fn init() -> Option<Self> {
         let device = find_hda_device()?;
         let bar = get_bar(&device)?;
     
@@ -80,31 +77,29 @@ impl IntelHDA {
             device_id: device.device_id,
         };
     
-        hda.reset();
+        hda.reset().await;
         // Set power state to D0 (0x00)
         serial_println!("Setting power state to D0 on node 0 and 3...");
         hda.send_command(0, 0, 0x705, 0x00); // Set Power State for node 0
-        hda.get_response();
+        hda.get_response().await;
         hda.send_command(0, 3, 0x705, 0x00); // Set Power State for node 3
-        hda.get_response();
+        hda.get_response().await;
     
         // Enable unsolicited responses early (some codecs require this before widget probing)
-        unsafe {
-            hda.regs.gctl |= 1 << 8;
-        }
+        hda.regs.gctl |= 1 << 8;
     
         hda.send_command(0, 0, 0xF00, 0);
-        let func_group_type = hda.get_response();
+        let func_group_type = hda.get_response().await;
         serial_println!("Codec node 0 function group type: 0x{:X}", func_group_type);
 
         serial_println!("Probing all possible widget nodes manually...");
         for node in 1..=15 {
             hda.send_command(0, node, 0xF00, 0);
-            let widget_type = hda.get_response();
+            let widget_type = hda.get_response().await;
             serial_println!("Node {} widget type: 0x{:X}", node, widget_type);
         }
     
-        hda.enable_pin(3);
+        hda.enable_pin(3).await;
 
         //   NEW: Set pin 3's connection to DAC node 2  
         hda.send_command(0, 3, 0x701, 0x0); // Select connection index 0 (which points to DAC node 2)
@@ -112,7 +107,7 @@ impl IntelHDA {
 
         //   NEW: Unmute and enable output on pin 3  
         hda.send_command(0, 3, 0xF07, 0); // Get pin control
-        let mut pin_ctrl = hda.get_response();
+        let mut pin_ctrl = hda.get_response().await;
         serial_println!("Raw pin control (before): 0x{:X}", pin_ctrl);
 
         pin_ctrl |= 0xC0; // Bits 6+7: Output enable + headphone
@@ -124,29 +119,29 @@ impl IntelHDA {
     
         // Get Node ID range
         hda.send_command(0, 0, 0xF02, 0); // 0xF02 = Subnode count & starting ID
-        let val = hda.get_response();
+        let val = hda.get_response().await;
         let start_id = (val >> 0) & 0xFF;
         let total_nodes = (val >> 16) & 0xFF;
         serial_println!("Codec node 0 has {} subnodes starting at {}", total_nodes, start_id);
     
         for node in start_id..(start_id + total_nodes) {
             hda.send_command(0, node as u8, 0xF00, 0); // Widget Type
-            let response = hda.get_response();
+            let response = hda.get_response().await;
             serial_println!("Node {} widget type: 0x{:X}", node, response);
         }
     
         hda.send_command(0, 3, 0xF02, 0); // Get connection list length
-        let conn_len = hda.get_response();
+        let conn_len = hda.get_response().await;
         serial_println!("Node 3 connection list length: 0x{:X}", conn_len);
         for i in 0..(conn_len & 0x7F) {
             hda.send_command(0, 3, 0xF02 | ((i as u16) << 8), 0); // Get connection entry i
-            let conn = hda.get_response();
+            let conn = hda.get_response().await;
             serial_println!("Node 3 connection[{}]: 0x{:X}", i, conn);
         }
 
         serial_println!("Setting power state to D0 on DAC node 2...");
         hda.send_command(0, 2, 0x705, 0x00); // Power state D0
-        let resp = hda.get_response();
+        let resp = hda.get_response().await;
         serial_println!("Power state response (node 2): 0x{:X}", resp);
 
     
@@ -174,17 +169,15 @@ impl IntelHDA {
         // Sends extended verb 0x02 to node 2 with stream format
         // TODO: explain 4011 fully like othher functions
         hda.set_converter_format(2, 0x4011);
-    
-        unsafe {
-            hda.regs.intctl = 1;                       // Enable global interrupts
-            hda.regs.stream_regs[0].ctl |= 1 << 30;   // Enable stream interrrupt??
-            hda.regs.gctl |= 1 << 8;                   // Enabble responses
-        }
-    
+
+        hda.regs.intctl = 1;                       // Enable global interrupts
+        hda.regs.stream_regs[0].ctl |= 1 << 30;   // Enable stream interrrupt??
+        hda.regs.gctl |= 1 << 8;                   // Enabble responses
+
         serial_println!("HDA setup complete");
 
         hda.send_command(0, 3, 0xF07, 0);
-        let mut pin_ctrl = hda.get_response();
+        let mut pin_ctrl = hda.get_response().await;
         pin_ctrl |= 0x40; // EAPD
         hda.send_command(0, 3, 0x707, (pin_ctrl & 0xFF) as u8);
         IntelHDA::wait_cycles(500_000);
@@ -193,7 +186,7 @@ impl IntelHDA {
 
         // Send another read command to double-check EAPD is actually set
         hda.send_command(0, 3, 0xF07, 0);
-        let confirm_ctrl = hda.get_response();
+        let confirm_ctrl = hda.get_response().await;
         serial_println!("After setting EAPD, pin control (node 3): 0x{:02X}", confirm_ctrl);
 
 
@@ -204,36 +197,42 @@ impl IntelHDA {
 
     /// Resets the controller using GCTL register:
     /// - Clears and sets CRST bit (bit 0)
-    pub fn reset(&mut self) {
+    pub async fn reset(&mut self) {
         unsafe {
             let gctl = &mut self.regs.gctl;
 
             serial_println!("GCTL before clearing CRST: 0x{:08X}", read_volatile(gctl));
             write_volatile(gctl, read_volatile(gctl) & !(1 << 0)); // Clear CRST
-            Self::wait_cycles(500_000);
+
+            HWRegisterWrite::new(
+                gctl,
+                0x1,
+                0,
+                current_running_event().expect("Resetting HDA from outside event"),
+            )
+            .await;
 
             serial_println!("GCTL after clearing CRST:  0x{:08X}", read_volatile(gctl));
-            write_volatile(gctl, read_volatile(gctl) | (1 << 0));  // Set CRST
+            write_volatile(gctl, read_volatile(gctl) | (1 << 0)); // Set CRST
             serial_println!("GCTL after setting CRST:   0x{:08X}", read_volatile(gctl));
 
-            while read_volatile(gctl) & 0x1 == 0 {
-                core::hint::spin_loop();
-            }
+            HWRegisterWrite::new(
+                gctl,
+                0x1,
+                1,
+                current_running_event().expect("Resetting HDA from outside event"),
+            )
+            .await;
 
             serial_println!("CRST acknowledged by controller");
-            Self::wait_cycles(500_000);
+
+            // Delay 0.1 ms (can we safely go smaller?)
+            nanosleep_current_event(100_000).unwrap().await;
 
             let statests = read_volatile(&self.regs.statests);
             serial_println!("STATESTS (chheckking codec presence): 0x{:X}", statests);
         }
     }
-
-    /// timer??
-    // fn wait_cycles(cycles: u64) {
-    // , spinning as necessary    for _ in 0..cycles {
-    //         core::hint::spin_loop();
-    //     }
-    // }
 
     /// Sends a basic verb command using ICOI (Immediate Command Output Interface) /ICIS (Immediate Command Status)
     /// Bits 31–28: Codec Address (4 bits)
@@ -299,21 +298,20 @@ impl IntelHDA {
 
 
     /// Reads codec response from ICII
-    pub fn get_response(&mut self) -> u32 {
+    pub async fn get_response(&mut self) -> u32 {
         let base = (*HHDM_OFFSET + self.base as u64).as_u64();
+
+        // TODO timeout error type similar to SDCardError for HDA
+        HWRegisterWrite::new(
+            (base + 0x68) as *mut u32,
+            0x2,
+            2, // ICIS
+            current_running_event().expect("Reading HDA codec response from outside event"),
+        )
+        .await;
+
         let icis = (base + 0x68) as *mut u32;
         let icii = (base + 0x64) as *const u32;
-
-        let mut tries = 100_000;
-
-        while unsafe { read_volatile(icis) } & 0x2 == 0 {
-            core::hint::spin_loop();
-            tries -= 1;
-            if tries == 0 {
-                serial_println!("Timeout waiting for response");
-                return 0xDEADBEEF;
-            }
-        }
 
         let val = unsafe { read_volatile(icii) };
         // serial_println!("ICII (response): 0x{:08X}", val);
@@ -326,9 +324,9 @@ impl IntelHDA {
     }
 
     /// Enables pin widget output (sets EAPD bit in pin control)
-    pub fn enable_pin(&mut self, node: u8) {
+    pub async fn enable_pin(&mut self, node: u8) {
         self.send_command(0, node, 0xF07, 0);
-        let mut pin_cntl = self.get_response();
+        let mut pin_cntl = self.get_response().await;
         pin_cntl |= 0x40; // Set EAPD bit
         self.send_command(0, node, 0x707, (pin_cntl & 0xFF) as u8);
         serial_println!("Pin widget control set for node {}", node);

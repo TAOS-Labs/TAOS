@@ -5,7 +5,7 @@
 //! - Frame buffer for screen output
 //! - Future device support will be added here
 
-use crate::{memory::MAPPER, serial_println};
+use crate::{events::schedule_kernel, memory::MAPPER, serial_println};
 use pci::walk_pci_bus;
 use sd_card::{find_sd_card, initalize_sd_card};
 pub mod graphics;
@@ -72,10 +72,12 @@ pub fn init(cpu_id: u32) {
         mouse::init().expect("Failed to initialize mouse");
 
         serial_println!("bbeforre init audio");
-        if let Some(hda) = audio::hda::IntelHDA::init() {
-            serial_println!("HDA initialized at base address 0x{:X}", hda.base);
-        } else {
-            serial_println!("HDA controller not found.");
-        }
+        schedule_kernel(async {
+            if let Some(hda) = audio::hda::IntelHDA::init().await {
+                serial_println!("HDA initialized at base address 0x{:X}", hda.base);
+            } else {
+                serial_println!("HDA controller not found.");
+            }
+        }, 0);
     }
 }
