@@ -636,7 +636,8 @@ impl IntelHDA {
         let lvi_ptr = unsafe { MMioPtr(stream_base.add(0x0C) as *mut u16) };
         let fifo_ptr = unsafe { MMioPtr(stream_base.add(0x10) as *mut u16) };
         let fmt_ptr = unsafe { MMioPtr(stream_base.add(0x12) as *mut u16) };
-        let bdlpl_ptr = unsafe { MMioPtr(stream_base.add(0x18) as *mut u32) };
+
+        let bdlpl_ptr = unsafe { MMioPtr(stream_base.add(0x18) as *mut u32) }; 
         let bdlpu_ptr = unsafe { MMioPtr(stream_base.add(0x1C) as *mut u32) };
         let bdl_phys = bdl_buf.phys_addr.as_u64();
 
@@ -774,7 +775,7 @@ impl IntelHDA {
             let lpib = unsafe { lpib_ptr.read() };
             let status = unsafe { sts_ptr.read() };
             serial_println!("LPIB: 0x{:X}, STS: 0x{:X}", lpib, status);
-            nanosleep_current_event(DELAY_NS * 20).unwrap().await;
+            nanosleep_current_event(DELAY_NS * 30).unwrap().await;
         }
     
         serial_println!("Stopping stream.");
