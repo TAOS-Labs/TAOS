@@ -1,10 +1,7 @@
 use alloc::{boxed::Box, string::String, vec::Vec};
 use core::result::Result;
 
-pub mod block;
 pub mod ext2;
-pub mod fat16;
-pub mod vfs;
 
 use async_trait::async_trait;
 
