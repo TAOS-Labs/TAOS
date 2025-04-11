@@ -1,8 +1,12 @@
-use core::{marker::PhantomData, str};
+use core::{
+    i64,
+    marker::PhantomData,
+    str::{self, FromStr},
+};
 
 use crate::{
     constants::memory::PAGE_SIZE,
-    debug_println,
+    debug, debug_println,
     devices::{
         mmio::{self, map_page_as_uncacheable, zero_out_page},
         xhci::XHCIError,
@@ -12,21 +16,27 @@ use crate::{
         MAPPER,
     },
 };
-use byteorder::{ByteOrder, NetworkEndian};
+use bitflags::bitflags;
 use smoltcp::{
     iface::{Interface, SocketSet},
     phy::{self, DeviceCapabilities, Medium},
     socket::{dhcpv4, icmp},
     time::Instant,
-    wire::{EthernetAddress, IpAddress, IpCidr, Ipv4Cidr},
+    wire::{EthernetAddress, Icmpv4Packet, Icmpv4Repr, IpAddress, IpCidr, Ipv4Cidr},
 };
 
 use super::{
-    context::{EndpointContext, InputControlContext}, ring_buffer::{ProducerRingBuffer, RingType, TransferRequestBlock, TrbTypes}, update_deque_ptr, wait_for_events_including_command_completion, USBDeviceConfigurationDescriptor, USBDeviceDescriptor, USBDeviceEndpointDescriptor, USBDeviceInfo, USBDeviceInterfaceDescriptor, XHCI
+    context::{EndpointContext, InputControlContext},
+    ring_buffer::{ProducerRingBuffer, RingType, TransferRequestBlock, TrbTypes},
+    update_deque_ptr, wait_for_events_including_command_completion,
+    USBDeviceConfigurationDescriptor, USBDeviceDescriptor, USBDeviceEndpointDescriptor,
+    USBDeviceInfo, USBDeviceInterfaceDescriptor, XHCI,
 };
-use alloc::{slice, vec::Vec};
-use alloc::vec;
-use x86_64::{structures::paging::Page, VirtAddr};
+use alloc::{slice, vec, vec::Vec};
+use x86_64::{
+    structures::paging::{OffsetPageTable, Page},
+    VirtAddr,
+};
 
 macro_rules! send_icmp_ping {
     ( $repr_type:ident, $packet_type:ident, $ident:expr, $seq_no:expr,
@@ -64,6 +74,18 @@ macro_rules! get_icmp_pong {
     }};
 }
 
+bitflags! {
+    pub struct TRBFlags: u32 {
+        const EvaluateNextTrb = 1 << 1;
+        const InterruptOnShortPacket = 1 << 2;
+        const NoSnoop = 1 << 3;
+        const ChainBit = 1 << 4;
+        const InterruptOnCompletion = 1 << 5;
+        const ImmedateData = 1 << 6;
+        const BlockEventInterrupt = 1 << 9;
+        const _ = !0;
+    }
+}
 
 #[repr(u8)]
 #[allow(dead_code)]
@@ -199,12 +221,13 @@ impl phy::TxToken for ECMDeviceTxToken<'_> {
         let transfer_length: u16 = len.try_into().unwrap();
         let transfer_size: u8 = 1;
         let interrupter_target = self.slot;
+        let flags = TRBFlags::InterruptOnCompletion | TRBFlags::BlockEventInterrupt;
         let block = TransferRequestBlock {
             parameters: self.out_data_addr.as_u64() - mapper.phys_offset().as_u64(),
             status: (transfer_length as u32)
                 | ((transfer_size as u32) << 17)
                 | ((interrupter_target as u32) << 22),
-            control: (TrbTypes::Normal as u32) << 10,
+            control: flags.bits() | (TrbTypes::Normal as u32) << 10,
         };
         unsafe {
             self.out_trb.enqueue(block).unwrap();
@@ -238,12 +261,13 @@ impl phy::Device for ECMDevice {
         let transfer_length: u16 = 4096;
         let transfer_size: u8 = 1;
         let interrupter_target: u8 = self.standard_device.slot;
+        let flags = TRBFlags::InterruptOnCompletion;
         let block = TransferRequestBlock {
             parameters: self.in_data_addr.as_u64() - mapper.phys_offset().as_u64(),
             status: (transfer_length as u32)
                 | ((transfer_size as u32) << 17)
                 | ((interrupter_target as u32) << 22),
-            control: (1 << 5) | ((TrbTypes::Normal as u32) << 10),
+            control: flags.bits() | ((TrbTypes::Normal as u32) << 10),
         };
         let trb_addr = unsafe { self.in_data_trb.enqueue(block).ok()? };
         let info = XHCI.lock().clone().unwrap();
@@ -254,19 +278,20 @@ impl phy::Device for ECMDevice {
             as *mut u32;
         unsafe { core::ptr::write_volatile(doorbell_base, 5) };
         drop(info);
-        let event_result = self.dequeue_event(&mapper);
-        if event_result.is_none() {
-            return Option::None;
-        }
-
+        let mut event = self.dequeue_event(&mapper)?;
+        let event_endpoint = (event.control >> 16) & 0xF;
         // TODO: call function that etermines which event rings deque to update
-        let event = event_result.unwrap();
-        if event.parameters != trb_addr.as_u64() - mapper.phys_offset().as_u64() - 0x10 {
+        while event_endpoint & 1 != 1 {
+            // Odd endpoint numbers are for the input
+            debug_println!("Event = {event:#?}, trb = {trb_addr:?}");
             debug_println!(
-                "Params = {:X}, addr = {:X}",
+                "Event addr = {:X}, event ep_id = {}, event trb_type = {}",
                 event.parameters,
-                trb_addr.as_u64()
+                (event.control >> 16) & 0xF,
+                ((event.control >> 10) & 0b1_1111)
             );
+            event = self.dequeue_event(&mapper)?;
+            // unreachable!();
         }
         drop(mapper);
         // TODO: determine type of event
@@ -286,12 +311,13 @@ impl phy::Device for ECMDevice {
         let transfer_length: u16 = 4096;
         let transfer_size: u8 = 1;
         let interrupter_target: u8 = self.standard_device.slot;
+        let flags = TRBFlags::InterruptOnCompletion;
         let block = TransferRequestBlock {
             parameters: self.in_data_addr.as_u64() - mapper.phys_offset().as_u64(),
             status: (transfer_length as u32)
                 | ((transfer_size as u32) << 17)
                 | ((interrupter_target as u32) << 22),
-            control: (1 << 5) | ((TrbTypes::Normal as u32) << 10),
+            control: flags.bits() | ((TrbTypes::Normal as u32) << 10),
         };
         let _ = unsafe { self.in_data_trb.enqueue(block).ok()? };
         drop(mapper);
@@ -323,30 +349,41 @@ impl phy::Device for ECMDevice {
 }
 
 impl ECMDevice {
-    pub fn dequeue_event(&mut self, mapper:&x86_64::structures::paging::OffsetPageTable<'_>) -> Option<TransferRequestBlock> {
+    pub fn dequeue_event(&mut self, mapper: &OffsetPageTable<'_>) -> Option<TransferRequestBlock> {
         // first get the result from the ring and return none if there was an err
         let event_result = unsafe { self.standard_device.event_ring.dequeue() };
         if event_result.is_err() {
             return Option::None;
         }
-        
+
         // get the event and correctly update the dequeue pointers of corresponding transfer rings.
         let event = event_result.ok()?;
         let endpoint_id = (event.control >> 16) & 0x1F;
         let new_dequeue = event.parameters + mapper.phys_offset().as_u64() + 0x10;
         if endpoint_id == self.in_data_edpoint_id {
-            self.in_data_trb.set_dequeue(new_dequeue).expect("Should not see this because addr is aligned");
+            self.in_data_trb
+                .set_dequeue(new_dequeue)
+                .expect("Should not see this because addr is aligned");
         } else if endpoint_id == self.out_data_edpoint_id {
-            self.out_data_trb.set_dequeue(new_dequeue).expect("Should not see this because addr is aligned");
+            self.out_data_trb
+                .set_dequeue(new_dequeue)
+                .expect("Should not see this because addr is aligned");
         }
 
         // update hardware event dequeue pointer register
         let binding = XHCI.lock();
         let info = binding.as_ref().unwrap();
-        let erdp_addr = info.base_address + info.capablities.runtime_register_space_offset as u64 + 0x38 + (32 * self.standard_device.slot as u64);
-        update_deque_ptr(erdp_addr as *mut u64, &self.standard_device.event_ring, mapper);
+        let erdp_addr = info.base_address
+            + info.capablities.runtime_register_space_offset as u64
+            + 0x38
+            + (32 * self.standard_device.slot as u64);
+        update_deque_ptr(
+            erdp_addr as *mut u64,
+            &self.standard_device.event_ring,
+            mapper,
+        );
 
-        return Some(event)
+        return Some(event);
     }
 }
 
@@ -485,19 +522,15 @@ pub fn init_cdc_device(
     // Send configure endpoint to XHCI so stuff works
     let context_ptr: *mut InputControlContext = device.input_context_vaddr.as_mut_ptr();
     let mut context = unsafe { core::ptr::read_volatile(context_ptr) };
-    let input_id = find_device_context_input(&descriptors).expect("ECM should have input endpoint") as u32;
-    let output_id = find_device_context_output(&descriptors).expect("ECM should have output endpoint") as u32;
+    let input_id =
+        find_device_context_input(&descriptors).expect("ECM should have input endpoint") as u32;
+    let output_id =
+        find_device_context_output(&descriptors).expect("ECM should have output endpoint") as u32;
 
     context.set_add_flag(0, 1);
     context.set_add_flag(1, 0);
-    context.set_add_flag(
-        input_id,
-        1,
-    );
-    context.set_add_flag(
-        output_id,
-        1,
-    );
+    context.set_add_flag(input_id, 1);
+    context.set_add_flag(output_id, 1);
 
     let ep_2_context_out_addr = device.input_context_vaddr + 0xA0;
     let ep2_ctxt_out_ptr: *mut EndpointContext = ep_2_context_out_addr.as_mut_ptr();
@@ -615,6 +648,7 @@ pub fn init_cdc_device(
 
     // Test it out by trying to get an ip addr, should use send and recv
     debug_println!("ethernet addr: {:?}", hw_addr);
+    let device_caps = phy::Device::capabilities(&ecm_device);
     let config = smoltcp::iface::Config::new(smoltcp::wire::HardwareAddress::Ethernet(hw_addr));
     let mut interface = smoltcp::iface::Interface::new(config, &mut ecm_device, Instant::ZERO);
     let dhcp_socket = dhcpv4::Socket::new();
@@ -652,7 +686,7 @@ pub fn init_cdc_device(
             interface.routes_mut().remove_default_ipv4_route();
         }
     };
-    
+
     let icmp_rx_buffer = icmp::PacketBuffer::new(vec![icmp::PacketMetadata::EMPTY], vec![0;256]);
     let icmp_tx_buffer = icmp::PacketBuffer::new(vec![icmp::PacketMetadata::EMPTY], vec![0;256]);
     let icmp_socket = icmp::Socket::new(icmp_rx_buffer, icmp_tx_buffer);
@@ -665,6 +699,7 @@ pub fn init_cdc_device(
     let mut echo_payload = [0xffu8; 40];
     let mut time_count = 1;
     let ident = 0x22b;
+    let remote_addr = IpAddress::from_str("8.8.8.8").unwrap();
     while seq_no < 1024 {
         let mut timestamp = Instant::from_millis(time_count);
         time_count += 1;
@@ -678,22 +713,33 @@ pub fn init_cdc_device(
             socket.bind(icmp::Endpoint::Ident(ident)).unwrap();
             send_at = timestamp;
         }
-
         if socket.can_send() && seq_no < 1024 && send_at <= timestamp {
-            NetworkEndian::write_i64(&mut echo_payload, timestamp.total_millis());
+            // ::write_i64(&mut echo_payload, timestamp.total_millis());
+            let bytes = timestamp.total_millis().to_le_bytes();
+            echo_payload[0] = bytes[0];
+            echo_payload[1] = bytes[1];
+            echo_payload[2] = bytes[2];
+            echo_payload[3] = bytes[3];
+            echo_payload[4] = bytes[4];
+            echo_payload[5] = bytes[5];
+            echo_payload[6] = bytes[6];
+            echo_payload[7] = bytes[7];
+            match remote_addr {
+                IpAddress::Ipv4(_) => {
+                    let (icmp_repr, mut icmp_packet) = send_icmp_ping!(
+                        Icmpv4Repr,
+                        Icmpv4Packet,
+                        ident,
+                        seq_no,
+                        echo_payload,
+                        socket,
+                        remote_addr
+                    );
+                    icmp_repr.emit(&mut icmp_packet,  &device_caps.checksum);
+                }
 
-            // match remote_addr {
-            //     IpAddress::Ipv4(_) =>
-            //         let (icmp_repr, mut icmp_packet) = send_icmp_ping!(
-            //             Icmpv4Repr,
-            //             Icmpv4Packet,
-            //             ident,
-            //             seq_no,
-            //             echo_payload,
-            //             socket,
-            //             remote_addr
-            //         );
-            // }
+            }
+            seq_no += 1;
         }
     }
     debug_println!("After recv fake frame");
@@ -707,7 +753,7 @@ fn set_ipv4_addr(iface: &mut Interface, cidr: Ipv4Cidr) {
     });
 }
 
-/// Determines the ethernet address for the given device 
+/// Determines the ethernet address for the given device
 fn get_eth_addr(device: &mut USBDeviceInfo, idx: u8) -> Result<EthernetAddress, XHCIError> {
     let data_frame = alloc_frame().ok_or(XHCIError::MemoryAllocationFailure)?;
     let mut mapper = MAPPER.lock();
