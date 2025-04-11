@@ -10,14 +10,13 @@ use pci::walk_pci_bus;
 use sd_card::{find_sd_card, initalize_sd_card};
 pub mod graphics;
 use graphics::framebuffer::{self, colors};
+pub mod audio;
 pub mod keyboard;
+pub mod mmio;
 pub mod mouse;
 pub mod pci;
 pub mod sd_card;
 pub mod serial;
-pub mod audio;
-pub mod mmio;
-
 
 /// Initialize hardware devices.
 ///
@@ -73,12 +72,15 @@ pub fn init(cpu_id: u32) {
         mouse::init().expect("Failed to initialize mouse");
 
         serial_println!("bbeforre init audio");
-        schedule_kernel(async {
-            if let Some(hda) = audio::hda::IntelHDA::init().await {
-                serial_println!("HDA initialized at base address 0x{:X}", hda.base);
-            } else {
-                serial_println!("HDA controller not found.");
-            }
-        }, 0);
+        schedule_kernel(
+            async {
+                if let Some(hda) = audio::hda::IntelHDA::init().await {
+                    serial_println!("HDA initialized at base address 0x{:X}", hda.base);
+                } else {
+                    serial_println!("HDA controller not found.");
+                }
+            },
+            0,
+        );
     }
 }

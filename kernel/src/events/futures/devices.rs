@@ -1,13 +1,19 @@
 use alloc::sync::Arc;
 use core::{
-    fmt::LowerHex, future::Future, ops::BitAnd, pin::Pin, ptr::read_volatile, task::{Context, Poll}
+    fmt::LowerHex,
+    future::Future,
+    ops::BitAnd,
+    pin::Pin,
+    ptr::read_volatile,
+    task::{Context, Poll},
 };
 
 use futures::task::ArcWake;
 
 use crate::{
     devices::sd_card::{PresentState, SDCardError},
-    events::{current_running_event, runner_timestamp, Event}, serial_println,
+    events::{current_running_event, runner_timestamp, Event},
+    serial_println,
 };
 
 /// Future to sleep an event until a target timestamp (in system ticks)
@@ -100,23 +106,18 @@ impl Future for SDCardReq {
     }
 }
 
-
 #[derive(Clone)]
 pub struct HWRegisterWrite<T: BitAnd<Output = T> + PartialEq + Copy> {
     reg: *mut T,
     mask: T,
-    expected: T, 
+    expected: T,
     event: Arc<Event>,
 }
 
 unsafe impl<T: BitAnd<Output = T> + PartialEq + Copy> Send for HWRegisterWrite<T> {}
 
 impl<T: BitAnd<Output = T> + PartialEq + Copy> HWRegisterWrite<T> {
-    pub fn new(
-        reg: *mut T,
-        mask: T,
-        expected: T, 
-    ) -> HWRegisterWrite<T> {
+    pub fn new(reg: *mut T, mask: T, expected: T) -> HWRegisterWrite<T> {
         HWRegisterWrite {
             reg,
             mask,

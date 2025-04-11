@@ -47,7 +47,6 @@ bitflags! {
     }
 }
 
-
 #[derive(Debug)]
 /// A generic representation of a single funcion pci
 /// device. To note

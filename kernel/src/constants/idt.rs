@@ -7,5 +7,4 @@ pub const KEYBOARD_VECTOR: u8 = 33;
 pub const MOUSE_VECTOR: u8 = 44;
 pub const HDA_VECTOR: u8 = 45;
 
-
 pub const TLB_SHOOTDOWN_VECTOR: u8 = 33;

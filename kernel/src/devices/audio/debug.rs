@@ -1,6 +1,8 @@
+use crate::{
+    devices::audio::hda_regs::{HdaRegisters, StreamDescriptor},
+    serial_println,
+};
 use core::mem::size_of;
-use crate::devices::audio::hda_regs::{HdaRegisters, StreamDescriptor};
-use crate::serial_println;
 
 /// Helper to print field offset relative to struct base
 fn print_field_offset<T, F>(base: &T, field: &F, name: &str) {
@@ -78,6 +80,9 @@ pub fn debug_hda_register_layout(regs: &HdaRegisters) {
     print_field_offset(&dummy, &dummy.bdlpl, "bdlpl");
     print_field_offset(&dummy, &dummy.bdlpu, "bdlpu");
 
-    serial_println!("Size of StreamDescriptor: 0x{:X}", size_of::<StreamDescriptor>());
+    serial_println!(
+        "Size of StreamDescriptor: 0x{:X}",
+        size_of::<StreamDescriptor>()
+    );
     serial_println!("======================================================");
 }

@@ -1,5 +1,5 @@
-use core::ptr::{write_volatile};
 use crate::serial_println;
+use core::ptr::write_volatile;
 
 /// Intel HDA Buffer Descriptor (BDL) Entry
 #[repr(C, packed)]
@@ -19,7 +19,11 @@ impl BdlEntry {
             address: addr as u32,
             address_high: (addr >> 32) as u32,
             length: len,
-            flags: if interrupt_on_completion { Self::IOC_FLAG } else { 0 },
+            flags: if interrupt_on_completion {
+                Self::IOC_FLAG
+            } else {
+                0
+            },
         }
     }
 }
