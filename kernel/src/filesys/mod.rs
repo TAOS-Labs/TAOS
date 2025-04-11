@@ -5,9 +5,7 @@ use fat16::Fat16;
 use lazy_static::lazy_static;
 use spin::{lock_api::Mutex, Once};
 
-pub mod block;
-pub mod fat16;
-pub mod vfs;
+pub mod ext2;
 
 use async_trait::async_trait;
 
