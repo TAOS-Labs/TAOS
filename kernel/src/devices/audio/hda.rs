@@ -106,11 +106,11 @@ impl IntelHDA {
     
         hda.enable_pin(3);
 
-        // === NEW: Set pin 3's connection to DAC node 2 ===
+        //   NEW: Set pin 3's connection to DAC node 2  
         hda.send_command(0, 3, 0x701, 0x0); // Select connection index 0 (which points to DAC node 2)
         serial_println!("Pin widget connection select set to DAC node 2");
 
-        // === NEW: Unmute and enable output on pin 3 ===
+        //   NEW: Unmute and enable output on pin 3  
         hda.send_command(0, 3, 0xF07, 0); // Get pin control
         let mut pin_ctrl = hda.get_response();
         serial_println!("Raw pin control (before): 0x{:X}", pin_ctrl);
@@ -377,7 +377,7 @@ impl IntelHDA {
             use crate::devices::audio::buffer::{setup_bdl, BdlEntry};
             use core::ptr::{read_volatile, write_volatile};
         
-            // serial_println!("Running DMA transfer test...");
+            serial_println!("Running DMA transfer test...");
             // debug_hda_register_layout(self.regs);
         
             let audio_buf = DmaBuffer::new(64 * 1024).expect("Failed to allocate audio buffer");
@@ -399,7 +399,6 @@ impl IntelHDA {
         
             serial_println!("setup_bdl returned {} entries", num_entries);
         
-            // Pointers cause struct way isnt working
             let stream_base = &self.regs.stream_regs[0] as *const _ as *mut u8;
             let ctl_ptr = unsafe { stream_base.add(0x00) as *mut u32 };
             let sts_ptr = unsafe { stream_base.add(0x04) as *mut u32 };
@@ -411,55 +410,80 @@ impl IntelHDA {
             let bdlpu_ptr = unsafe { stream_base.add(0x1C) as *mut u32 };
             let bdl_phys = bdl_buf.phys_addr.as_u64();
         
-            //Reset stream
+            //   Reset stream  
             unsafe {
-                write_volatile(ctl_ptr, 1 << 0); // Set SRST
+                write_volatile(ctl_ptr, 1 << 0);
+                serial_println!("Wrote CTL (SRST set): 0x{:08X}", read_volatile(ctl_ptr));
                 while read_volatile(ctl_ptr) & (1 << 0) == 0 {
                     core::hint::spin_loop();
                 }
         
-                write_volatile(ctl_ptr, 0); // Clear SRST
+                write_volatile(ctl_ptr, 0);
+                serial_println!("Wrote CTL (SRST cleared): 0x{:08X}", read_volatile(ctl_ptr));
                 while read_volatile(ctl_ptr) & (1 << 0) != 0 {
                     core::hint::spin_loop();
                 }
             }
         
-            //Write registers in correct order
+            //Setup stream configuration  
             unsafe {
-                write_volatile(fmt_ptr, 0x4011); 
-                write_volatile(cbl_ptr, audio_buf.size as u32);      
-                write_volatile(lvi_ptr, (num_entries - 1) as u16); 
+                //SHOULD NOT BE ZERO
+                write_volatile(fmt_ptr, 0x4011);
+                serial_println!("Wrote FMT: 0x{:04X}", read_volatile(fmt_ptr));
+        
+                write_volatile(cbl_ptr, audio_buf.size as u32);
+                serial_println!("Wrote CBL: {}", read_volatile(cbl_ptr));
+        
+                write_volatile(lvi_ptr, (num_entries - 1) as u16);
+                serial_println!("Wrote LVI: {}", read_volatile(lvi_ptr));
+        
                 write_volatile(bdlpl_ptr, bdl_phys as u32);
+                serial_println!("Wrote BDLPL: 0x{:08X}", read_volatile(bdlpl_ptr));
+        
                 write_volatile(bdlpu_ptr, (bdl_phys >> 32) as u32);
+                serial_println!("Wrote BDLPU: 0x{:08X}", read_volatile(bdlpu_ptr));
             }
         
-            // Set CTL with stream tag (1) and IOC
+            //Tag & IOC enable  
             unsafe {
-                write_volatile(ctl_ptr, (1 << 20) | (1 << 30)); // Stream tag + IOC
+                let tag_ioc = (1 << 20) | (1 << 30);
+                write_volatile(ctl_ptr, tag_ioc);
+                serial_println!("Wrote CTL (tag + IOC): 0x{:08X}", read_volatile(ctl_ptr));
             }
         
-            //Clear STS
+            //Clear STS  
             unsafe {
-                write_volatile(sts_ptr, read_volatile(sts_ptr));
+                let sts = read_volatile(sts_ptr);
+                write_volatile(sts_ptr, sts);
+                serial_println!("Cleared STS: 0x{:08X}", read_volatile(sts_ptr));
             }
         
-            //Sttart RUN
+            //Enable DMA globally  
             unsafe {
-                write_volatile(ctl_ptr, read_volatile(ctl_ptr) | (1 << 1));
+                self.regs.gctl |= 1 << 1;
+                serial_println!("GCTL after DMA enable: 0x{:08X}", read_volatile(&self.regs.gctl));
             }
         
-            serial_println!(
-                "After RUN -> CTL: 0x{:08X}, LPIB: 0x{:X}",
-                unsafe { read_volatile(ctl_ptr) },
-                unsafe { read_volatile(lpib_ptr) }
-            );
-
+            //RUN bit  
+            unsafe {
+                let val = read_volatile(ctl_ptr);
+                write_volatile(ctl_ptr, val | (1 << 1));
+                serial_println!("Wrote CTL (RUN): 0x{:08X}", read_volatile(ctl_ptr));
+            }
+        
+            let ctl = unsafe { read_volatile(ctl_ptr) };
+            let lpib = unsafe { read_volatile(lpib_ptr) };
             let gctl = unsafe { read_volatile(&self.regs.gctl) };
             let intsts = unsafe { read_volatile(&self.regs.intsts) };
-            serial_println!("After RUN: GCTL=0x{:08X}, INTSTS=0x{:08X}", gctl, intsts);
-
+            serial_println!(
+                "After RUN -> CTL=0x{:08X}, LPIB=0x{:X}, GCTL=0x{:08X}, INTSTS=0x{:08X}",
+                ctl,
+                lpib,
+                gctl,
+                intsts
+            );
         
-            //Poll LPIB
+            //Polling LPIB  
             serial_println!("Polling LPIB...");
             for _ in 0..20 {
                 let lpib = unsafe { read_volatile(lpib_ptr) };
@@ -468,10 +492,10 @@ impl IntelHDA {
                 Self::wait_cycles(10_000_000);
             }
         
-            //Stop stream
             serial_println!("Stopping stream.");
             self.stop_stream(0);
         }
+        
         
         
 
