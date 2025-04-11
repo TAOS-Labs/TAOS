@@ -1,4 +1,3 @@
-use crate::serial_println;
 use core::ptr::write_volatile;
 
 /// Intel HDA Buffer Descriptor (BDL) Entry

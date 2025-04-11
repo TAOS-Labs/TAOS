@@ -1,10 +1,9 @@
 use crate::{
-    memory::{frame_allocator::alloc_frame, paging::map_kernel_frame, HHDM_OFFSET, MAPPER},
+    memory::{frame_allocator::alloc_frame, HHDM_OFFSET},
     serial_println,
 };
 
 use x86_64::{
-    structures::paging::{PageTableFlags, PhysFrame, Size4KiB},
     PhysAddr, VirtAddr,
 };
 

@@ -42,14 +42,15 @@ pub struct HdaRegisters {
 
 #[repr(C)]
 pub struct StreamDescriptor {
-    pub ctl: u32,
-    pub sts: u32,
+    pub ctl0: u8,
+    pub ctl1: u8,
+    pub ctl2: u8,
+    pub sts: u8,
     pub lpib: u32,
     pub cbl: u32,
     pub lvi: u16,
-    pub reserved: u16,
     pub fmt: u16,
-    pub reserved2: u16,
+    pub _pad: u32,
     pub bdlpl: u32,
     pub bdlpu: u32,
 }

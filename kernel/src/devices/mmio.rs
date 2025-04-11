@@ -27,6 +27,7 @@ impl<T> MMioConstPtr<T> {
         core::ptr::read_volatile(self.0)
     }
 
+    #[allow(dead_code)]
     pub fn as_ptr(&self) -> *const T {
         self.0
     }
