@@ -9,8 +9,8 @@ pub const FRAME_SIZE: usize = 4096;
 /// Starting virtual address of the kernel heap.
 pub const HEAP_START: *mut u8 = 0x_FFFF_8100_0000_0000 as *mut u8;
 
-/// Initial size of the kernel heap (5 MB).
-pub const HEAP_SIZE: usize = 1024 * 1024 * 5;
+/// Initial size of the kernel heap (10 MB).
+pub const HEAP_SIZE: usize = 1024 * 1024 * 10;
 
 /// Maximum number of frames that can be allocated.
 /// Set to 512 to accommodate heap plus additional allocations.

@@ -16,13 +16,16 @@ use x86_64::{
 
 use crate::{
     constants::{
-        idt::{SYSCALL_HANDLER, TIMER_VECTOR, TLB_SHOOTDOWN_VECTOR},
+        idt::{KEYBOARD_VECTOR, MOUSE_VECTOR, SYSCALL_HANDLER, TIMER_VECTOR, TLB_SHOOTDOWN_VECTOR},
         syscalls::{SYSCALL_EXIT, SYSCALL_MMAP, SYSCALL_NANOSLEEP, SYSCALL_PRINT},
     },
+    devices::{keyboard::keyboard_handler, mouse::mouse_handler},
     events::inc_runner_clock,
     interrupts::x2apic::{self, current_core_id, TLB_SHOOTDOWN_ADDR},
     memory::page_fault::{
-        determine_fault_cause, handle_cow_fault, handle_existing_file_mapping, handle_existing_mapping, handle_new_file_mapping, handle_new_mapping, handle_shared_page_fault, FaultOutcome
+        determine_fault_cause, handle_cow_fault, handle_existing_file_mapping,
+        handle_existing_mapping, handle_new_file_mapping, handle_new_mapping,
+        handle_shared_page_fault, FaultOutcome,
     },
     prelude::*,
     processes::{process::preempt_process, registers::NonFlagRegisters},
@@ -51,6 +54,8 @@ lazy_static! {
             .set_handler_fn(naked_syscall_handler)
             .set_privilege_level(x86_64::PrivilegeLevel::Ring3);
         idt[TLB_SHOOTDOWN_VECTOR].set_handler_fn(tlb_shootdown_handler);
+        idt[KEYBOARD_VECTOR].set_handler_fn(keyboard_handler);
+        idt[MOUSE_VECTOR].set_handler_fn(mouse_handler);
         idt
     };
 }
@@ -197,11 +202,11 @@ extern "x86-interrupt" fn page_fault_handler(
         } => {
             handle_cow_fault(page, &mut mapper, pt_flags);
         }
-        FaultOutcome::SharedPage { 
-            page, 
-            mut mapper, 
-            pt_flags, 
-            frame
+        FaultOutcome::SharedPage {
+            page,
+            mut mapper,
+            pt_flags,
+            frame,
         } => {
             handle_shared_page_fault(page, &mut mapper, pt_flags, frame);
         }
