@@ -1,5 +1,5 @@
 use crate::{
-    constants::processes::MAX_FILES,
+    constants::{memory::PAGE_SIZE, processes::MAX_FILES},
     events::{current_running_event, futures::sync::Condition, schedule_kernel_on},
     filesys::ext2::structures::FileMode,
     memory::{frame_allocator::alloc_frame, paging::map_kernel_frame, KERNEL_MAPPER},
@@ -125,14 +125,14 @@ pub trait BlockDevice: Send + Sync {
 /// The main filesystem trait that sits on top of the filesystem
 #[async_trait]
 pub trait FileSystem {
-    async fn create_dir(&mut self, path: &str) -> FilesystemResult<()>;
+    async fn create_dir(&mut self, path: &str, chmod_flags: ChmodMode) -> FilesystemResult<()>;
     async fn open_file(&mut self, path: &str, flags: OpenFlags) -> FilesystemResult<usize>;
     async fn remove(&mut self, fd: usize) -> FilesystemResult<()>;
     async fn close_file(&mut self, fd: usize) -> FilesystemResult<()>;
     async fn write_file(&mut self, fd: usize, buf: &[u8]) -> FilesystemResult<usize>;
     async fn seek_file(&mut self, fd: usize, pos: usize) -> FilesystemResult<()>;
     async fn read_file(&mut self, fd: usize, buf: &mut [u8]) -> FilesystemResult<usize>;
-    async fn read_dir(&self, fd: usize) -> FilesystemResult<Vec<DirEntry>>;
+    async fn read_dir(&self, path: &str) -> FilesystemResult<Vec<DirEntry>>;
     async fn metadata(&self, fd: usize) -> FilesystemResult<File>;
     async fn add_entry_to_page_cache(&mut self, fd: usize, offset: usize) -> FilesystemResult<()>;
     async fn page_cache_get_mapping(
@@ -174,17 +174,35 @@ pub fn get_fd(filepath: &str) -> FilesystemResult<usize> {
 fn chmod_to_filemode(mode: ChmodMode) -> FileMode {
     let mut out = FileMode::DIR; // directory type must be included
 
-    if mode.contains(ChmodMode::UREAD)  { out |= FileMode::UREAD; }
-    if mode.contains(ChmodMode::UWRITE) { out |= FileMode::UWRITE; }
-    if mode.contains(ChmodMode::UEXEC)  { out |= FileMode::UEXEC; }
+    if mode.contains(ChmodMode::UREAD) {
+        out |= FileMode::UREAD;
+    }
+    if mode.contains(ChmodMode::UWRITE) {
+        out |= FileMode::UWRITE;
+    }
+    if mode.contains(ChmodMode::UEXEC) {
+        out |= FileMode::UEXEC;
+    }
 
-    if mode.contains(ChmodMode::GREAD)  { out |= FileMode::GREAD; }
-    if mode.contains(ChmodMode::GWRITE) { out |= FileMode::GWRITE; }
-    if mode.contains(ChmodMode::GEXEC)  { out |= FileMode::GEXEC; }
+    if mode.contains(ChmodMode::GREAD) {
+        out |= FileMode::GREAD;
+    }
+    if mode.contains(ChmodMode::GWRITE) {
+        out |= FileMode::GWRITE;
+    }
+    if mode.contains(ChmodMode::GEXEC) {
+        out |= FileMode::GEXEC;
+    }
 
-    if mode.contains(ChmodMode::OREAD)  { out |= FileMode::OREAD; }
-    if mode.contains(ChmodMode::OWRITE) { out |= FileMode::OWRITE; }
-    if mode.contains(ChmodMode::OEXEC)  { out |= FileMode::OEXEC; }
+    if mode.contains(ChmodMode::OREAD) {
+        out |= FileMode::OREAD;
+    }
+    if mode.contains(ChmodMode::OWRITE) {
+        out |= FileMode::OWRITE;
+    }
+    if mode.contains(ChmodMode::OEXEC) {
+        out |= FileMode::OEXEC;
+    }
 
     out
 }
@@ -217,7 +235,7 @@ impl Ext2Wrapper {
 
 #[async_trait]
 impl FileSystem for Ext2Wrapper {
-    async fn create_dir(&mut self, path: &str) -> FilesystemResult<()> {
+    async fn create_dir(&mut self, path: &str, chmod_flags: ChmodMode) -> FilesystemResult<()> {
         if !FS_INIT_COMPLETE.load(Ordering::Relaxed) {
             Condition::new(
                 FS_INIT_COMPLETE.clone(),
@@ -226,13 +244,10 @@ impl FileSystem for Ext2Wrapper {
             .await;
         }
 
-        let chmod_mode = ChmodMode::UREAD | ChmodMode::UWRITE | ChmodMode::UEXEC |
-                         ChmodMode::GREAD | ChmodMode::GEXEC |
-                         ChmodMode::OREAD | ChmodMode::OEXEC; // 0o755
-
-        let mode = chmod_to_filemode(chmod_mode);
+        let mode = chmod_to_filemode(chmod_flags);
 
         self.filesystem.lock().create_directory(path, mode).await?;
+
         Ok(())
     }
 
@@ -290,34 +305,37 @@ impl FileSystem for Ext2Wrapper {
 
         // remove the file from the filesystem
         let file = file.unwrap();
-        self.filesystem.lock().remove(file.lock().pathname.as_str()).await?;
+        self.filesystem
+            .lock()
+            .remove(file.lock().pathname.as_str())
+            .await?;
 
         // TODO: Remove entry from Page Cache and write those bits back to the file
         // TODO: Think about the policies for what happens if someone has a file open that is removed - what exactly should happen?
         Ok(())
     }
 
-async fn close_file(&mut self, fd: usize) -> FilesystemResult<()> {
-    if !FS_INIT_COMPLETE.load(Ordering::Relaxed) {
-        Condition::new(
-            FS_INIT_COMPLETE.clone(),
-            current_running_event().expect("Fat16 action outside event"),
-        )
-        .await;
-    }
+    async fn close_file(&mut self, fd: usize) -> FilesystemResult<()> {
+        if !FS_INIT_COMPLETE.load(Ordering::Relaxed) {
+            Condition::new(
+                FS_INIT_COMPLETE.clone(),
+                current_running_event().expect("Fat16 action outside event"),
+            )
+            .await;
+        }
 
-    if fd >= MAX_FILES {
-        return Err(FilesystemError::InvalidFd);
-    }
-
-    with_current_pcb(|pcb| {
-        if pcb.fd_table[fd].is_none() {
+        if fd >= MAX_FILES {
             return Err(FilesystemError::InvalidFd);
         }
 
-        pcb.fd_table[fd] = None;
-        Ok(())
-    })
+        with_current_pcb(|pcb| {
+            if pcb.fd_table[fd].is_none() {
+                return Err(FilesystemError::InvalidFd);
+            }
+
+            pcb.fd_table[fd] = None;
+            Ok(())
+        })
 
         // TODO: Think about the logic of when do you write back cached file-backed pages to memory? We need to add some global state that has refcounts for a file
         // being opened and once it's closed by all processes, write back the dirty frames of the page cache
@@ -367,20 +385,50 @@ async fn close_file(&mut self, fd: usize) -> FilesystemResult<()> {
             )
             .await;
         }
+
         let file = get_file(fd)?;
         let mut locked_file = file.lock();
-        let path = &locked_file.pathname;
-        let pos = locked_file.position;
-        let file_buf = self.filesystem.lock().read_file_at(path, pos).await;
-        if file_buf.is_err() {
-            return Err(FilesystemError::InvalidPath);
+        let mut remaining = buf.len();
+        let mut total_read = 0;
+        let mut file_pos = locked_file.position;
+
+        while remaining > 0 {
+            let page_offset = file_pos & !(PAGE_SIZE - 1);
+            let page_offset_in_buf = file_pos % PAGE_SIZE;
+            let copy_len = core::cmp::min(PAGE_SIZE - page_offset_in_buf, remaining);
+            serial_println!("1");
+
+            // Load the page into cache if not already present
+            let virt = match self.page_cache_get_mapping(fd, page_offset).await {
+                Ok(va) => va,
+                Err(_) => {
+                    serial_println!("2");
+                    self.add_entry_to_page_cache(fd, page_offset).await?;
+                    serial_println!("3");
+                    let temp = self.page_cache_get_mapping(fd, page_offset).await?;
+                    serial_println!("4");
+                    temp
+                }
+            };
+
+            serial_println!("load the page");
+
+            unsafe {
+                let page_ptr = virt.as_ptr::<u8>().add(page_offset_in_buf);
+                let dst_ptr = buf.as_mut_ptr().add(total_read);
+                core::ptr::copy_nonoverlapping(page_ptr, dst_ptr, copy_len);
+            }
+
+            file_pos += copy_len;
+            total_read += copy_len;
+            remaining -= copy_len;
         }
-        let file_buf = file_buf.unwrap();
-        buf[..file_buf.len()].copy_from_slice(&(file_buf));
-        locked_file.position += file_buf.len();
-        Ok(file_buf.len())
+
+        locked_file.position = file_pos;
+        Ok(total_read)
     }
-    async fn read_dir(&self, fd: usize) -> FilesystemResult<Vec<DirEntry>> {
+
+    async fn read_dir(&self, path: &str) -> FilesystemResult<Vec<DirEntry>> {
         if !FS_INIT_COMPLETE.load(Ordering::Relaxed) {
             Condition::new(
                 FS_INIT_COMPLETE.clone(),
@@ -388,9 +436,9 @@ async fn close_file(&mut self, fd: usize) -> FilesystemResult<()> {
             )
             .await;
         }
-        let file = get_file(fd)?;
-        let locked_file = file.lock();
-        let path = &locked_file.pathname;
+        // let file = get_file(fd)?;
+        // let locked_file = file.lock();
+        // let path = &locked_file.pathname;
         let entry = self
             .filesystem
             .lock()
@@ -439,20 +487,12 @@ async fn close_file(&mut self, fd: usize) -> FilesystemResult<()> {
         let path = file.pathname.clone();
 
         // read file buffer
-        let file_buf = self
-            .filesystem
-            .lock()
-            .read_file_at(&path, offset)
-            .await?;
+        let file_buf = self.filesystem.lock().read_file_at(&path, offset).await?;
 
         // Do raw pointer write *after* .await to avoid Send violation
         unsafe {
             let buf_ptr = kernel_va.as_mut_ptr();
-            core::ptr::copy_nonoverlapping(
-                file_buf.as_ptr(),
-                buf_ptr,
-                file_buf.len(),
-            );
+            core::ptr::copy_nonoverlapping(file_buf.as_ptr(), buf_ptr, file_buf.len());
         }
 
         file_mappings.insert(offset, (Page::containing_address(kernel_va), true));
@@ -472,11 +512,11 @@ async fn close_file(&mut self, fd: usize) -> FilesystemResult<()> {
             .await;
         }
         let file = get_file(fd)?;
-        let locked_file = file.lock();
+        let locked_file = { file.lock() };
         let inode_number = locked_file.inode_number;
         let pg_cache = self.page_cache.lock();
         if pg_cache.contains_key(&inode_number) {
-            let map = pg_cache.get(&inode_number).unwrap().lock();
+            let map = { pg_cache.get(&inode_number).unwrap().lock() };
             if map.contains_key(&offset) {
                 let page = map.get(&offset).unwrap().0;
                 return Ok(page.start_address());
@@ -485,7 +525,6 @@ async fn close_file(&mut self, fd: usize) -> FilesystemResult<()> {
         return Err(FilesystemError::CacheError);
     }
 }
-
 
 pub static mut FILESYSTEM: Once<Mutex<Ext2Wrapper>> = Once::new();
 

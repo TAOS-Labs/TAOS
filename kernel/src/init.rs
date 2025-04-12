@@ -2,7 +2,9 @@
 //!
 //! Handles the initialization of kernel subsystems and CPU cores.
 
+use alloc::{collections::btree_map::BTreeMap, sync::Arc};
 use bytes::Bytes;
+use spin::Mutex;
 use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use limine::{
     request::SmpRequest,
@@ -11,21 +13,13 @@ use limine::{
 };
 
 use crate::{
-    debug, devices,
-    events::{register_event_runner, run_loop, spawn, yield_now},
-    filesys::{self},
-    interrupts::{self, idt},
-    ipc::{
+    debug, devices::{self, sd_card::{self, SD_CARD}}, events::{register_event_runner, run_loop, schedule_kernel_on, spawn, yield_now}, filesys::{self, ext2::filesystem::Ext2, ChmodMode, Ext2Wrapper, FileSystem, OpenFlags}, interrupts::{self, idt}, ipc::{
         messages::Message,
         mnt_manager,
         namespace::Namespace,
         responses::Rattach,
         spsc::{Receiver, Sender},
-    },
-    logging,
-    memory::{self},
-    processes::{self},
-    serial_println, trace,
+    }, logging, memory::{self}, processes::{self}, serial_println, trace
 };
 extern crate alloc;
 
@@ -67,47 +61,33 @@ pub fn init() -> u32 {
     let bsp_id = wake_cores();
 
     idt::enable();
-    // schedule_kernel_on(
-    //     0,
-    //     async {
-    //         serial_println!("RUNNING SCHEDULED KERNEL EVENT");
-    //         let lock = SD_CARD.lock().clone().unwrap();
-    //         let device = Box::new(lock);
+    schedule_kernel_on(
+        0,
+        async {
+            serial_println!("RUNNING SCHEDULED KERNEL EVENT");
+            let sd_card = Arc::new(SD_CARD.lock().clone().unwrap());
+            let fs = Ext2::new(sd_card).await.unwrap();
+            fs.mount().await.unwrap();
+            let page_cache = Mutex::new(BTreeMap::new());
+            let refcount = Mutex::new(BTreeMap::new());
+            let mut user_fs = Ext2Wrapper::new(page_cache, Mutex::new(fs), refcount);
+            let chmod_mode = ChmodMode::UREAD | ChmodMode::UWRITE | ChmodMode::UEXEC |
+            ChmodMode::GREAD | ChmodMode::GEXEC |
+            ChmodMode::OREAD | ChmodMode::OEXEC; // 0o755
+            let _ = user_fs.create_dir("./temp", chmod_mode).await;
+            let dir_entry = user_fs.read_dir(".").await;
+            serial_println!("Dir entry is {:#?}", dir_entry);
+            let fd = user_fs.open_file("./temp/hello.txt", OpenFlags::O_WRONLY | OpenFlags::O_CREAT).await.unwrap();
+            serial_println!("Did open file");
+            let _ = user_fs.write_file(fd, b"Hello World!").await;
+            let mut buf = [0u8; 20];
+            serial_println!("wrote to file");
+            let buffer = user_fs.read_file(fd, &mut buf).await;
+            serial_println!("buffer {:#?}", buffer);
 
-    //         // Format the filesystem
-    //         let mut filesystem = block_on(async {
-    //             Fat16::format(device)
-    //                 .await
-    //                 .expect("Failed to format filesystem")
-    //         });
-
-    //         let _ = filesystem.create_file("/testfile.txt").await;
-    //         serial_println!("created file");
-    //         let fd = filesystem
-    //             .open_file("/testfile.txt")
-    //             .await
-    //             .expect("could not open file");
-
-    //         let buf: [u8; 1024] = [b'A'; 1024];
-    //         filesystem.write_file(fd, &buf).await.expect("Write failed");
-
-    //         let addr = sys_mmap(
-    //             0x0,
-    //             PAGE_SIZE.try_into().unwrap(),
-    //             ProtFlags::PROT_READ.bits() as u64,
-    //             MmapFlags::MAP_PRIVATE.bits() as u64,
-    //             fd as i64,
-    //             0,
-    //         ) as *mut u8;
-    //         for i in 0..10 {
-    //             unsafe {
-    //                 let c = *addr.add(i);
-    //                 serial_println!("Byte at offset {} is {:#?}", i, c as char);
-    //             }
-    //         }
-    //     },
-    //     3,
-    // );
+        },
+        3,
+    );
 
     bsp_id
 }
