@@ -145,7 +145,7 @@ extern "x86-interrupt" fn page_fault_handler(
     let stack_pointer = stack_frame.stack_pointer.as_u64();
 
     serial_println!(
-        "EXCEPTION: PAGE FAULT\nFaulting Address: {:?}\nError Code: {:X}\n{:#?}",
+        "EXCEPTION: PAGE FAULT\nFaulting Address: 0x{:X}\nError Code: {:X}\n{:#?}",
         faulting_address,
         error_code,
         stack_frame

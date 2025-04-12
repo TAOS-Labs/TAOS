@@ -566,10 +566,11 @@ fn initalize_xhci_info(full_bar: u64, mapper: &mut OffsetPageTable) -> Result<XH
 
     // create the command ring data structure.
     let command_ring = ProducerRingBuffer::new(
-        cmd_page.start_address().as_u64(),
+        cmd_frame.start_address(),
         1,
         ring_buffer::RingType::Command,
         PAGE_SIZE.try_into().unwrap(),
+        mapper.phys_offset(),
     )
     .expect("Error initializing producer ring.");
 
@@ -732,10 +733,11 @@ fn address_device(
         .map_err(|_| XHCIError::MemoryAllocationFailure)?;
     zero_out_page(Page::containing_address(buffer_address));
     let producer_ring_buffer = ProducerRingBuffer::new(
-        buffer_address.as_u64(),
+        buffer_frame.start_address(),
         1,
         RingType::Transfer,
         (PAGE_SIZE).try_into().unwrap(),
+        mapper.phys_offset(),
     )
     .expect("Everything should be alligned");
 

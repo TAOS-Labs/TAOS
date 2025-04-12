@@ -55,21 +55,18 @@ macro_rules! send_icmp_ping {
 }
 
 macro_rules! get_icmp_pong {
-    ( $repr_type:ident, $repr:expr, $payload:expr, $waiting_queue:expr, $remote_addr:expr,
+    ( $repr_type:ident, $repr:expr, $payload:expr, $remote_addr:expr,
       $timestamp:expr, $received:expr ) => {{
         if let $repr_type::EchoReply { seq_no, data, .. } = $repr {
-            if let Some(_) = $waiting_queue.get(&seq_no) {
-                let packet_timestamp_ms = NetworkEndian::read_i64(data);
-                debug_println!(
-                    "{} bytes from {}: icmp_seq={}, time={}ms",
-                    data.len(),
-                    $remote_addr,
-                    seq_no,
-                    $timestamp.total_millis() - packet_timestamp_ms
-                );
-                $waiting_queue.remove(&seq_no);
-                $received += 1;
-            }
+            // let bytes = data.to_le_bytes();
+            // let packet_timestamp_ms = NetworkEndian::read_i64(data);
+            debug_println!(
+                "{} bytes from {}: icmp_seq={}",
+                data.len(),
+                $remote_addr,
+                seq_no,
+            );
+            $received += 1;
         }
     }};
 }
@@ -176,6 +173,7 @@ pub struct ECMDevice {
     in_data_edpoint_id: u32,
     out_data_trb: ProducerRingBuffer,
     out_data_edpoint_id: u32,
+    sending_data_out: bool,
 }
 
 pub struct ECMDeviceRxToken<'a> {
@@ -290,6 +288,8 @@ impl phy::Device for ECMDevice {
                 (event.control >> 16) & 0xF,
                 ((event.control >> 10) & 0b1_1111)
             );
+            // We got an out probally, so we can safely send more data out (probally)
+            self.sending_data_out = false;
             event = self.dequeue_event(&mapper)?;
             // unreachable!();
         }
@@ -333,6 +333,10 @@ impl phy::Device for ECMDevice {
     }
 
     fn transmit(&mut self, _timestamp: Instant) -> Option<Self::TxToken<'_>> {
+        if self.sending_data_out {
+            return Option::None;
+        }
+        self.sending_data_out = true;
         Some(ECMDeviceTxToken {
             out_data_addr: self.out_data_addr,
             slot: self.standard_device.slot,
@@ -555,11 +559,13 @@ pub fn init_cdc_device(
     let input_trb_address = map_page_as_uncacheable(input_trb_buffer.start_address(), &mut mapper)
         .map_err(|_| XHCIError::MemoryAllocationFailure)?;
     zero_out_page(Page::containing_address(input_trb_address));
+    debug_println!("Working on input trb");
     let in_trb = ProducerRingBuffer::new(
-        input_trb_address.as_u64(),
+        input_trb_buffer.start_address(),
         1,
         RingType::Transfer,
         (PAGE_SIZE).try_into().unwrap(),
+        mapper.phys_offset(),
     )
     .expect("Everything should be alligned");
     ep2_ctxt_in.set_trdequeue_ptr(input_trb_buffer.start_address().as_u64());
@@ -569,11 +575,14 @@ pub fn init_cdc_device(
         map_page_as_uncacheable(output_trb_buffer.start_address(), &mut mapper)
             .map_err(|_| XHCIError::MemoryAllocationFailure)?;
     zero_out_page(Page::containing_address(output_trb_address));
+
+    debug_println!("Working on output trb");
     let out_trb = ProducerRingBuffer::new(
-        output_trb_address.as_u64(),
+        output_trb_buffer.start_address(),
         1,
         RingType::Transfer,
         (PAGE_SIZE).try_into().unwrap(),
+        mapper.phys_offset(),
     )
     .expect("Everything should be alligned");
     ep2_ctxt_out.set_trdequeue_ptr(output_trb_buffer.start_address().as_u64());
@@ -644,6 +653,7 @@ pub fn init_cdc_device(
         in_data_edpoint_id: input_id,
         out_data_trb: out_trb,
         out_data_edpoint_id: output_id,
+        sending_data_out: false,
     };
 
     // Test it out by trying to get an ip addr, should use send and recv
@@ -687,8 +697,8 @@ pub fn init_cdc_device(
         }
     };
 
-    let icmp_rx_buffer = icmp::PacketBuffer::new(vec![icmp::PacketMetadata::EMPTY], vec![0;256]);
-    let icmp_tx_buffer = icmp::PacketBuffer::new(vec![icmp::PacketMetadata::EMPTY], vec![0;256]);
+    let icmp_rx_buffer = icmp::PacketBuffer::new(vec![icmp::PacketMetadata::EMPTY], vec![0; 256]);
+    let icmp_tx_buffer = icmp::PacketBuffer::new(vec![icmp::PacketMetadata::EMPTY], vec![0; 256]);
     let icmp_socket = icmp::Socket::new(icmp_rx_buffer, icmp_tx_buffer);
     let mut sockets = SocketSet::new(vec![]);
     let icmp_handle = sockets.add(icmp_socket);
@@ -699,7 +709,7 @@ pub fn init_cdc_device(
     let mut echo_payload = [0xffu8; 40];
     let mut time_count = 1;
     let ident = 0x22b;
-    let remote_addr = IpAddress::from_str("8.8.8.8").unwrap();
+    let remote_addr = IpAddress::from_str("10.0.3.1").unwrap();
     while seq_no < 1024 {
         let mut timestamp = Instant::from_millis(time_count);
         time_count += 1;
@@ -735,11 +745,28 @@ pub fn init_cdc_device(
                         socket,
                         remote_addr
                     );
-                    icmp_repr.emit(&mut icmp_packet,  &device_caps.checksum);
+                    icmp_repr.emit(&mut icmp_packet, &device_caps.checksum);
                 }
-
             }
             seq_no += 1;
+        }
+        if socket.can_recv() {
+            let (payload, _) = socket.recv().unwrap();
+
+            match remote_addr {
+                IpAddress::Ipv4(_) => {
+                    let icmp_packet = Icmpv4Packet::new_checked(&payload).unwrap();
+                    let icmp_repr = Icmpv4Repr::parse(&icmp_packet, &device_caps.checksum).unwrap();
+                    get_icmp_pong!(
+                        Icmpv4Repr,
+                        icmp_repr,
+                        payload,
+                        remote_addr,
+                        timestamp,
+                        recieved
+                    );
+                }
+            }
         }
     }
     debug_println!("After recv fake frame");

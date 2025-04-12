@@ -180,6 +180,9 @@ pub struct ProducerRingBuffer {
     pcs: u8,
     /// The type of this ring, either Command, Transfer, or Event
     ring: RingType,
+
+    last_addr: *mut Trb,
+    phys_offset: VirtAddr,
 }
 unsafe impl Send for ProducerRingBuffer {}
 
@@ -201,13 +204,14 @@ impl ProducerRingBuffer {
     /// - This function preforms a raw pointer access to initialize the Link TRB of the ring
     /// - Assumes that `base_addr` points to a valid memory region of at least `size` bytes
     pub fn new(
-        base_addr: u64,
+        base_addr: PhysAddr,
         cycle_state: u8,
         ring_type: RingType,
         size: isize,
+        phys_offset: VirtAddr,
     ) -> Result<Self, ProducerRingError> {
         // ensure that the base address is aligned to 16
-        if base_addr % 16 != 0 {
+        if base_addr.as_u64() % 16 != 0 {
             return Err(ProducerRingError::UnalignedAddress);
         }
         if size % 16 != 0 {
@@ -215,19 +219,33 @@ impl ProducerRingBuffer {
         }
 
         // initialize the link block at the end of this segment
+        // Link =  0x1803
+        //  standard = 0x421
         let num_blocks = size / 16;
-        let enqueue = base_addr as *mut Trb;
+        let base_virt_addr = base_addr.as_u64() + phys_offset.as_u64();
+        let enqueue = base_virt_addr as *mut Trb;
         unsafe {
+            let nun_blocks_u64: u64 = num_blocks.try_into().unwrap();
+            debug_println!("Base = {:X}", base_addr);
+            debug_println!("Offset = {:X}", base_addr + (nun_blocks_u64 - 1) * 16);
             let last_addr = enqueue.offset(num_blocks - 1);
             // sets the trb type to Link and the toggle cycle bit to 1
-            (*last_addr).control = 0x1802;
-            (*last_addr).parameters = base_addr;
+            let last_trb = TransferRequestBlock {
+                parameters: base_addr.as_u64(),
+                status: 1,
+                control: ((TransferRingTypes::Link as u32) << 10) | 1 << 1 | cycle_state as u32,
+            };
+            let ctrl = ((TransferRingTypes::Link as u32) << 10) | 1 << 1 | cycle_state as u32;
+            debug_println!("ctrl = {ctrl:X}");
+            core::ptr::write_volatile(last_addr, last_trb);
         }
         Ok(ProducerRingBuffer {
-            enqueue: base_addr as *mut Trb,
-            dequeue: base_addr as *mut Trb,
+            enqueue: base_virt_addr as *mut Trb,
+            dequeue: base_virt_addr as *mut Trb,
             pcs: cycle_state,
             ring: ring_type,
+            last_addr: enqueue.wrapping_offset(num_blocks - 1),
+            phys_offset,
         })
     }
 
@@ -304,12 +322,14 @@ impl ProducerRingBuffer {
         self.enqueue = self.enqueue.offset(1);
         // if we are now pointing to a link change self.enqueue to the address in the parameters of the link block
         if self.is_enq_link() {
-            let trb = *self.enqueue;
+            let trb = core::ptr::read_volatile(self.enqueue);
             // if the toggle cycle bit is 1 then toggle cycle_state
             if (trb.control & 0x2) == 2 {
                 self.pcs ^= 1;
             }
-            self.enqueue = (trb.parameters & !0xF) as *mut Trb;
+            let base_addr = trb.parameters;
+            assert!(base_addr & !0xF == base_addr);
+            self.enqueue = (base_addr + self.phys_offset.as_u64()) as *mut Trb;
         }
     }
 
@@ -332,6 +352,11 @@ impl ProducerRingBuffer {
     ///
     pub unsafe fn enqueue(&mut self, mut block: Trb) -> Result<VirtAddr, ProducerRingError> {
         // first make sure that we are trying to enqueue a TRB that belongs on this ring
+        //
+        let new_block = unsafe { core::ptr::read_volatile(self.last_addr) };
+
+        let ctrl = ((TransferRingTypes::Link as u32) << 10) | 1 << 1;
+        assert!(new_block.control & 0xFFFF_FFFE == ctrl);
         match self.ring {
             RingType::Command => {
                 let trb_type = block.get_trb_type();
@@ -356,7 +381,6 @@ impl ProducerRingBuffer {
         block.control = (block.control & !1) | self.pcs as u32;
 
         let enqueue_addr = self.enqueue as u64;
-        debug_println!("putting trb at address: {:X}", enqueue_addr);
         core::ptr::write_volatile(self.enqueue, block);
         // increment the enqueue pointer
         self.increment_enqueue();
@@ -758,15 +782,19 @@ mod test {
     async fn prod_ring_buffer_init() {
         // first get a page and zero init it
         let mut mapper = MAPPER.lock();
-        let page: Page = Page::containing_address(VirtAddr::new(0x500000000));
-        let _ = create_mapping(page, &mut *mapper, None);
+        let frame = alloc_frame().unwrap();
+        let frame_va =
+            VirtAddr::new(mapper.phys_offset().as_u64() + frame.start_address().as_u64());
+        let page: Page = Page::containing_address(frame_va);
+        // let _ = create_mapping(page, &mut *mapper, None);
 
         mmio::zero_out_page(page);
 
         // call the new function
         let base_addr = page.start_address().as_u64();
         let size = page.size() as isize;
-        let _cmd_ring = ProducerRingBuffer::new(base_addr, 1, RingType::Command, size);
+        let _cmd_ring =
+            ProducerRingBuffer::new(base_addr, 1, RingType::Command, size, mapper.phys_offset());
 
         // make sure the link trb is set correctly
         let mut trb_ptr = base_addr as *const Trb;
@@ -791,16 +819,19 @@ mod test {
     async fn prod_ring_buffer_enqueue() {
         // initialize a ring buffer we can enqueue onto
         let mut mapper = MAPPER.lock();
-        let page: Page = Page::containing_address(VirtAddr::new(0x500000000));
-        let _ = create_mapping(page, &mut *mapper, None);
+        let frame = alloc_frame().unwrap();
+        let frame_va =
+            VirtAddr::new(mapper.phys_offset().as_u64() + frame.start_address().as_u64());
+        let page: Page = Page::containing_address(frame_va);
 
         mmio::zero_out_page(page);
 
         // call the new function
         let base_addr = page.start_address().as_u64();
         let size = page.size() as isize;
-        let mut cmd_ring = ProducerRingBuffer::new(base_addr, 1, RingType::Command, size)
-            .expect("Error initializing producer ring");
+        let mut cmd_ring =
+            ProducerRingBuffer::new(base_addr, 1, RingType::Command, size, mapper.phys_offset())
+                .expect("Error initializing producer ring");
 
         // create a block to queue
         let mut cmd = Trb {
@@ -837,16 +868,19 @@ mod test {
     #[test_case]
     async fn prod_ring_buffer_helpers() {
         let mut mapper = MAPPER.lock();
-        let page: Page = Page::containing_address(VirtAddr::new(0x500000000));
-        let _ = create_mapping(page, &mut *mapper, None);
+        let frame = alloc_frame().unwrap();
+        let frame_va =
+            VirtAddr::new(mapper.phys_offset().as_u64() + frame.start_address().as_u64());
+        let page: Page = Page::containing_address(frame_va);
 
         mmio::zero_out_page(page);
 
         // create a small ring buffer
         let base_addr = page.start_address().as_u64();
         let size: isize = 64;
-        let mut cmd_ring = ProducerRingBuffer::new(base_addr, 1, RingType::Command, size)
-            .expect("Error initializing producer ring");
+        let mut cmd_ring =
+            ProducerRingBuffer::new(base_addr, 1, RingType::Command, size, mapper.phys_offset())
+                .expect("Error initializing producer ring");
 
         // test is empty and is full funcs
         let mut result = cmd_ring.is_ring_empty();
@@ -895,16 +929,20 @@ mod test {
     #[test_case]
     async fn prod_ring_buffer_enqueue_accross_segment() {
         let mut mapper = MAPPER.lock();
-        let page: Page = Page::containing_address(VirtAddr::new(0x500000000));
-        let _ = create_mapping(page, &mut *mapper, None);
+
+        let frame = alloc_frame().unwrap();
+        let frame_va =
+            VirtAddr::new(mapper.phys_offset().as_u64() + frame.start_address().as_u64());
+        let page: Page = Page::containing_address(frame_va);
 
         mmio::zero_out_page(page);
 
         // create a small ring buffer
         let base_addr = page.start_address().as_u64();
         let size: isize = 64;
-        let mut cmd_ring = ProducerRingBuffer::new(base_addr, 1, RingType::Command, size)
-            .expect("Error initializing producer ring");
+        let mut cmd_ring =
+            ProducerRingBuffer::new(base_addr, 1, RingType::Command, size, mapper.phys_offset())
+                .expect("Error initializing producer ring");
 
         // create our no op cmd
         let mut cmd = Trb {
