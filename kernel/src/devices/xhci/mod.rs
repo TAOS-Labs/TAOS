@@ -461,10 +461,6 @@ fn get_host_controller_cap_regs(address: u64) -> XHCICapabilities {
 
     let cap_params_2_addr = (address + 0x18) as *const u32;
     let cap_params_2 = unsafe { core::ptr::read_volatile(cap_params_2_addr) };
-    debug_println!(
-        "structural_paramaters_1 = {}",
-        (hcs_params_1 >> 8) & 0b1111111111
-    );
     XHCICapabilities {
         register_length,
         version_number: version_no,
@@ -755,7 +751,6 @@ fn address_device(
     icc.set_add_flag(0, 1);
     icc.set_add_flag(1, 1);
     unsafe { core::ptr::write_volatile(input_control_context_ptr, icc) };
-    debug_println!("Icc = {icc:?}");
 
     // Now handle slot context
     // TODO: Fix as it assumes 32 byte slot context
@@ -855,7 +850,6 @@ fn create_device_event_ring_no_info(
     let er_segment_frame = alloc_frame().ok_or(XHCIError::MemoryAllocationFailure)?;
     let er_segment_vaddr = mmio::map_page_as_uncacheable(er_segment_frame.start_address(), mapper)
         .map_err(|_| XHCIError::MemoryAllocationFailure)?;
-    debug_println!("ers vaddr: {:X}", er_segment_vaddr);
 
     // zero out pages
     let erst_page: Page = Page::containing_address(erst_vaddr);
@@ -888,7 +882,6 @@ fn create_device_event_ring_no_info(
         + ((interrupter as u64) * 32)
         + 0x30) as *mut u64;
     let erst_ba = erst_frame.start_address().as_u64();
-    debug_println!("event ring base address: {:X}", erst_ba);
     let erdp_addr = (base_address.as_u64()
         + (capablities.runtime_register_space_offset as u64)
         + ((interrupter as u64) * 32)
@@ -930,7 +923,9 @@ fn wait_for_events(
         + info.capablities.runtime_register_space_offset as u64
         + 0x38
         + (32 * interrupter as u64);
-    update_deque_ptr(erdp_addr as *mut u64, event_ring, mapper);
+    unsafe {
+        update_deque_ptr(erdp_addr as *mut u64, event_ring, mapper);
+    }
     Result::Ok(event)
 }
 
@@ -968,10 +963,19 @@ fn wait_for_events_including_command_completion(
         info.base_address + info.capablities.runtime_register_space_offset as u64 + 0x38;
     let event_ring_lock = info.primary_event_ring.clone();
     let event_ring = event_ring_lock.lock();
-    update_deque_ptr(erdp_addr as *mut u64, &event_ring, mapper);
+    unsafe {
+        update_deque_ptr(erdp_addr as *mut u64, &event_ring, mapper);
+    }
     Result::Ok(event)
 }
-pub fn update_deque_ptr(
+
+/// Updates the deque pointer in deque pointer register to match the event ring
+///
+/// # Safety
+///
+/// deque_pointer_register should be mapped as uncachable memory and
+/// be the actual virtual address of the deque pointer
+pub unsafe fn update_deque_ptr(
     deque_pointer_register: *mut u64,
     event_ring: &ConsumerRingBuffer,
     mapper: &OffsetPageTable,

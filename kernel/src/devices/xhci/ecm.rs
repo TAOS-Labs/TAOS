@@ -1,12 +1,11 @@
 use core::{
-    i64,
     marker::PhantomData,
     str::{self, FromStr},
 };
 
 use crate::{
     constants::memory::PAGE_SIZE,
-    debug, debug_println,
+    debug_println,
     devices::{
         mmio::{self, map_page_as_uncacheable, zero_out_page},
         xhci::XHCIError,
@@ -186,16 +185,9 @@ impl phy::RxToken for ECMDeviceRxToken<'_> {
     where
         F: FnOnce(&mut [u8]) -> R,
     {
-        // TODO: Recieve the packet
-        // todo!("Recieving is currently broken");
-
         let in_ptr: *mut u8 = self.in_data_addr.as_mut_ptr();
         let in_buf = unsafe { slice::from_raw_parts_mut(in_ptr, 1512) };
-        let result = f(in_buf);
-
-        // let result = f(self.0);
-        debug_println!("rx called");
-        result
+        f(in_buf)
     }
 }
 
@@ -225,7 +217,7 @@ impl phy::TxToken for ECMDeviceTxToken<'_> {
             status: (transfer_length as u32)
                 | ((transfer_size as u32) << 17)
                 | ((interrupter_target as u32) << 22),
-            control: flags.bits() | (TrbTypes::Normal as u32) << 10,
+            control: flags.bits() | ((TrbTypes::Normal as u32) << 10),
         };
         unsafe {
             self.out_trb.enqueue(block).unwrap();
@@ -267,7 +259,7 @@ impl phy::Device for ECMDevice {
                 | ((interrupter_target as u32) << 22),
             control: flags.bits() | ((TrbTypes::Normal as u32) << 10),
         };
-        let trb_addr = unsafe { self.in_data_trb.enqueue(block).ok()? };
+        unsafe { self.in_data_trb.enqueue(block).ok()? };
         let info = XHCI.lock().clone().unwrap();
 
         let doorbell_base: *mut u32 = (info.base_address
@@ -277,24 +269,16 @@ impl phy::Device for ECMDevice {
         unsafe { core::ptr::write_volatile(doorbell_base, 5) };
         drop(info);
         let mut event = self.dequeue_event(&mapper)?;
-        let event_endpoint = (event.control >> 16) & 0xF;
+        let mut event_endpoint = (event.control >> 16) & 0xF;
         // TODO: call function that etermines which event rings deque to update
         while event_endpoint & 1 != 1 {
             // Odd endpoint numbers are for the input
-            debug_println!("Event = {event:#?}, trb = {trb_addr:?}");
-            debug_println!(
-                "Event addr = {:X}, event ep_id = {}, event trb_type = {}",
-                event.parameters,
-                (event.control >> 16) & 0xF,
-                ((event.control >> 10) & 0b1_1111)
-            );
             // We got an out probally, so we can safely send more data out (probally)
             self.sending_data_out = false;
             event = self.dequeue_event(&mapper)?;
-            // unreachable!();
+            event_endpoint = (event.control >> 16) & 0xF;
         }
         drop(mapper);
-        // TODO: determine type of event
 
         let tx_token = ECMDeviceTxToken {
             out_data_addr: self.out_data_addr,
@@ -381,13 +365,15 @@ impl ECMDevice {
             + info.capablities.runtime_register_space_offset as u64
             + 0x38
             + (32 * self.standard_device.slot as u64);
-        update_deque_ptr(
-            erdp_addr as *mut u64,
-            &self.standard_device.event_ring,
-            mapper,
-        );
+        unsafe {
+            update_deque_ptr(
+                erdp_addr as *mut u64,
+                &self.standard_device.event_ring,
+                mapper,
+            );
+        }
 
-        return Some(event);
+        Some(event)
     }
 }
 
@@ -403,12 +389,12 @@ const SUBCLASS_CODE_ECM: u8 = 6;
 ///     was found.
 pub fn find_cdc_device(devices: &mut Vec<USBDeviceInfo>) -> Option<(u8, u8)> {
     for device in devices {
-        debug_println!("Device DESC = {:?}", device.descriptor);
+        // debug_println!("Device DESC = {:?}", device.descriptor);
         if device.descriptor.b_device_class == CLASS_CODE_CDC {
             for configuration in 0..device.descriptor.b_num_configurations {
                 let class_desc =
                     get_class_descriptors_for_configuration(device, configuration).unwrap();
-                debug_println!("class_desc_1 = {class_desc:#?}");
+                // debug_println!("class_desc_1 = {class_desc:#?}");
                 let mut configuration_to_get = 0;
 
                 for descriptor in class_desc {
@@ -417,7 +403,7 @@ pub fn find_cdc_device(devices: &mut Vec<USBDeviceInfo>) -> Option<(u8, u8)> {
                             if config.b_interface_class == CLASS_CODE_CDC
                                 && config.b_interface_sub_class == SUBCLASS_CODE_ECM
                             {
-                                debug_println!("Configuration = {configuration_to_get}");
+                                // debug_println!("Configuration = {configuration_to_get}");
                                 return Option::Some((device.slot, configuration_to_get));
                             }
                         }
@@ -705,7 +691,7 @@ pub fn init_cdc_device(
 
     let mut send_at = Instant::from_millis(0);
     let mut seq_no = 0;
-    let mut recieved = 0;
+    let mut _recieved = 0;
     let mut echo_payload = [0xffu8; 40];
     let mut time_count = 1;
     let ident = 0x22b;
@@ -763,7 +749,7 @@ pub fn init_cdc_device(
                         payload,
                         remote_addr,
                         timestamp,
-                        recieved
+                        _recieved
                     );
                 }
             }
@@ -832,7 +818,6 @@ fn get_class_descriptors_for_configuration(
     configuration: u8,
 ) -> Result<Vec<ECMDeviceDescriptors>, XHCIError> {
     let data_frame = alloc_frame().ok_or(XHCIError::MemoryAllocationFailure)?;
-    debug_println!("Data phys_addr = {:X}", data_frame.start_address().as_u64());
     let mut mapper = MAPPER.lock();
     let data_addr = mmio::map_page_as_uncacheable(data_frame.start_address(), &mut mapper)
         .map_err(|_| XHCIError::MemoryAllocationFailure)?;

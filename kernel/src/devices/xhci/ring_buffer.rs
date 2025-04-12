@@ -226,18 +226,13 @@ impl ProducerRingBuffer {
         let base_virt_addr = base_addr.as_u64() + phys_offset.as_u64();
         let enqueue = base_virt_addr as *mut Trb;
         unsafe {
-            let nun_blocks_u64: u64 = num_blocks.try_into().unwrap();
-            debug_println!("Base = {:X}", base_addr);
-            debug_println!("Offset = {:X}", base_addr + (nun_blocks_u64 - 1) * 16);
             let last_addr = enqueue.offset(num_blocks - 1);
             // sets the trb type to Link and the toggle cycle bit to 1
             let last_trb = TransferRequestBlock {
                 parameters: base_addr.as_u64(),
                 status: 1,
-                control: ((TransferRingTypes::Link as u32) << 10) | 1 << 1 | cycle_state as u32,
+                control: ((TransferRingTypes::Link as u32) << 10) | (1 << 1) | cycle_state as u32,
             };
-            let ctrl = ((TransferRingTypes::Link as u32) << 10) | 1 << 1 | cycle_state as u32;
-            debug_println!("ctrl = {ctrl:X}");
             core::ptr::write_volatile(last_addr, last_trb);
         }
         Ok(ProducerRingBuffer {
@@ -367,7 +362,7 @@ impl ProducerRingBuffer {
         //
         let new_block = unsafe { core::ptr::read_volatile(self.link_trb) };
 
-        let ctrl = ((TransferRingTypes::Link as u32) << 10) | 1 << 1;
+        let ctrl = ((TransferRingTypes::Link as u32) << 10) | (1 << 1);
         assert!(new_block.control & 0xFFFF_FFFE == ctrl);
         match self.ring {
             RingType::Command => {
@@ -450,8 +445,6 @@ impl EventRingSegmentTable {
         let virt_address = segment_vbase.as_u64();
         let phys_address = segment_pbase.as_u64();
         self.address_map.insert(phys_address, virt_address);
-
-        debug_println!("physical address: {:X}", phys_address);
 
         // create the entry
         let entry = Trb {
@@ -546,8 +539,6 @@ impl ConsumerRingBuffer {
         if !(16..=4096).contains(&segment_size) {
             return Err(EventRingError::SegmentSize);
         }
-        debug_println!("erst_base {:X}", erst_base_addr);
-        debug_println!("segment virtual base {:X}", segment_vbase);
 
         // create the ERST for this ring
         let mut erst = EventRingSegmentTable {
@@ -779,8 +770,7 @@ mod test {
         devices::{
             mmio,
             xhci::ring_buffer::{
-                CommandRingTypes, ConsumerRingBuffer, EventRingError, EventRingType,
-                ProducerRingError, TransferRequestBlock,
+                ConsumerRingBuffer, EventRingError, EventRingType, TransferRequestBlock,
             },
         },
         memory::{
@@ -805,8 +795,13 @@ mod test {
         // call the new function
         let base_addr = page.start_address().as_u64();
         let size = page.size() as isize;
-        let _cmd_ring =
-            ProducerRingBuffer::new(base_addr, 1, RingType::Command, size, mapper.phys_offset());
+        let _cmd_ring = ProducerRingBuffer::new(
+            frame.start_address(),
+            1,
+            RingType::Command,
+            size,
+            mapper.phys_offset(),
+        );
 
         // make sure the link trb is set correctly
         let mut trb_ptr = base_addr as *const Trb;
@@ -841,9 +836,14 @@ mod test {
         // call the new function
         let base_addr = page.start_address().as_u64();
         let size = page.size() as isize;
-        let mut cmd_ring =
-            ProducerRingBuffer::new(base_addr, 1, RingType::Command, size, mapper.phys_offset())
-                .expect("Error initializing producer ring");
+        let mut cmd_ring = ProducerRingBuffer::new(
+            frame.start_address(),
+            1,
+            RingType::Command,
+            size,
+            mapper.phys_offset(),
+        )
+        .expect("Error initializing producer ring");
 
         // create a block to queue
         let mut cmd = Trb {
@@ -888,11 +888,15 @@ mod test {
         mmio::zero_out_page(page);
 
         // create a small ring buffer
-        let base_addr = page.start_address().as_u64();
         let size: isize = 64;
-        let mut cmd_ring =
-            ProducerRingBuffer::new(base_addr, 1, RingType::Command, size, mapper.phys_offset())
-                .expect("Error initializing producer ring");
+        let mut cmd_ring = ProducerRingBuffer::new(
+            frame.start_address(),
+            1,
+            RingType::Command,
+            size,
+            mapper.phys_offset(),
+        )
+        .expect("Error initializing producer ring");
 
         // test is empty and is full funcs
         let mut result = cmd_ring.is_ring_empty();
@@ -952,9 +956,14 @@ mod test {
         // create a small ring buffer
         let base_addr = page.start_address().as_u64();
         let size: isize = 64;
-        let mut cmd_ring =
-            ProducerRingBuffer::new(base_addr, 1, RingType::Command, size, mapper.phys_offset())
-                .expect("Error initializing producer ring");
+        let mut cmd_ring = ProducerRingBuffer::new(
+            frame.start_address(),
+            1,
+            RingType::Command,
+            size,
+            mapper.phys_offset(),
+        )
+        .expect("Error initializing producer ring");
 
         // create our no op cmd
         let mut cmd = Trb {
@@ -1010,7 +1019,7 @@ mod test {
     #[test_case]
     async fn consumer_ring_buffer_init() {
         // first get pages for the ERST and first segment
-        let mut mapper: spin::MutexGuard<'_, OffsetPageTable<'_>> = MAPPER.lock();
+        let mapper: spin::MutexGuard<'_, OffsetPageTable<'_>> = MAPPER.lock();
         let erst_frame = alloc_frame().unwrap();
         let erst_page: Page =
             Page::containing_address(mapper.phys_offset() + erst_frame.start_address().as_u64());
@@ -1019,9 +1028,6 @@ mod test {
             Page::containing_address(mapper.phys_offset() + segment_frame.start_address().as_u64());
 
         let fake_device_frame = alloc_frame().unwrap();
-        let fake_device_page: Page = Page::containing_address(
-            mapper.phys_offset() + fake_device_frame.start_address().as_u64(),
-        );
         let segment_frame_addr = segment_frame.start_address();
 
         let erst_entry_size = 16 as isize;
@@ -1194,12 +1200,12 @@ mod test {
 
         // fill in the rest of the TRB: Entries 4-16
         unsafe {
-            for i in 4..SEGMENT_ENTRIES + 1 {
+            for _ in 4..SEGMENT_ENTRIES + 1 {
                 trb_ptr = trb_ptr.offset(1);
                 *trb_ptr = cmd;
             }
 
-            for i in 4..SEGMENT_ENTRIES + 1 {
+            for _ in 4..SEGMENT_ENTRIES + 1 {
                 assert_eq!(event_ring.dequeue().expect("dequeue error"), cmd);
             }
         }
@@ -1267,8 +1273,8 @@ mod test {
 
         // call the initialization function
         let erst_address = erst_page.start_address().as_u64();
-        let first_segment_vaddr = first_segment_page.start_address().as_u64();
-        let second_segment_vaddr = second_segment_page.start_address().as_u64();
+        // let first_segment_vaddr = first_segment_page.start_address().as_u64();
+        // let second_segment_vaddr = second_segment_page.start_address().as_u64();
         let mut event_ring = ConsumerRingBuffer::new(
             erst_address,
             page_size / ERST_ENTRY_SIZE,
@@ -1382,11 +1388,13 @@ mod test {
         )
         .expect("Error initializing consumer ring");
 
-        event_ring.add_segment(
-            second_segment_page.start_address(),
-            SEGMENT_ENTRIES,
-            second_segment_paddr,
-        );
+        event_ring
+            .add_segment(
+                second_segment_page.start_address(),
+                SEGMENT_ENTRIES,
+                second_segment_paddr,
+            )
+            .unwrap();
 
         // test a read on an empty RingBuffer
         unsafe {
@@ -1409,7 +1417,7 @@ mod test {
         let mut trb_ptr = first_segment_vaddr as *mut Trb;
 
         // fill the first segment fully
-        for i in 1..SEGMENT_ENTRIES + 1 {
+        for _ in 1..SEGMENT_ENTRIES + 1 {
             unsafe {
                 *trb_ptr = cmd;
                 trb_ptr = trb_ptr.offset(1);
@@ -1450,7 +1458,7 @@ mod test {
         }
 
         // fill the rest of the second segment and then dequeue it, then ensure we read as empty
-        for i in 2..SEGMENT_ENTRIES + 1 {
+        for _ in 2..SEGMENT_ENTRIES + 1 {
             unsafe {
                 *trb_ptr = cmd;
                 trb_ptr = trb_ptr.offset(1);
@@ -1488,7 +1496,7 @@ mod test {
         }
 
         // go back around one time, the specific cycle bit shouldn't matter, but why not
-        for i in 2..SEGMENT_ENTRIES + 1 {
+        for _ in 2..SEGMENT_ENTRIES + 1 {
             unsafe {
                 *trb_ptr = cmd;
                 trb_ptr = trb_ptr.offset(1);
@@ -1512,7 +1520,7 @@ mod test {
         }
 
         trb_ptr = second_segment_vaddr as *mut Trb;
-        for i in 1..SEGMENT_ENTRIES + 1 {
+        for _ in 1..SEGMENT_ENTRIES + 1 {
             unsafe {
                 *trb_ptr = cmd;
                 trb_ptr = trb_ptr.offset(1);
@@ -1587,7 +1595,6 @@ mod test {
         // call the initialization function
         let erst_address = erst_page.start_address().as_u64();
         let first_segment_vaddr = first_segment_page.start_address().as_u64();
-        let second_segment_vaddr = second_segment_page.start_address().as_u64();
         let mut event_ring = ConsumerRingBuffer::new(
             erst_address,
             page_size / ERST_ENTRY_SIZE,
@@ -1597,11 +1604,13 @@ mod test {
         )
         .expect("Error initializing consumer ring");
 
-        event_ring.add_segment(
-            second_segment_page.start_address(),
-            SEGMENT_ENTRIES,
-            second_segment_paddr,
-        );
+        event_ring
+            .add_segment(
+                second_segment_page.start_address(),
+                SEGMENT_ENTRIES,
+                second_segment_paddr,
+            )
+            .unwrap();
 
         // test a read on an empty RingBuffer
         unsafe {
@@ -1624,7 +1633,7 @@ mod test {
         let mut trb_ptr = first_segment_vaddr as *mut Trb;
 
         // fill the first segment fully
-        for i in 1..SEGMENT_ENTRIES + 1 {
+        for _ in 1..SEGMENT_ENTRIES + 1 {
             unsafe {
                 *trb_ptr = cmd;
                 trb_ptr = trb_ptr.offset(1);
@@ -1666,7 +1675,7 @@ mod test {
         }
 
         // go back around one time, the specific cycle bit shouldn't matter, but why not
-        for i in 2..SEGMENT_ENTRIES + 1 {
+        for _ in 2..SEGMENT_ENTRIES + 1 {
             unsafe {
                 *trb_ptr = cmd;
                 trb_ptr = trb_ptr.offset(1);

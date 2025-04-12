@@ -33,7 +33,10 @@ base_args = [
     "-vga", "std",
 
     # Debugging traces
-    "-trace", "usb*",
+    # USB
+    #"-trace", "usb*",
+    # SD card
+    # "-trace", "sd*",
 
     # Boot media and UEFI settings
     "-cdrom", "{image}",
