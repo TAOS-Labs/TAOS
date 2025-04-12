@@ -6,18 +6,18 @@
 //! - Future device support will be added here
 
 use crate::{memory::MAPPER, serial_println};
-use xhci::{find_xhci_inferface, initalize_xhci_hub};
 use pci::walk_pci_bus;
 use sd_card::{find_sd_card, initalize_sd_card};
+use xhci::{find_xhci_inferface, initalize_xhci_hub};
 pub mod graphics;
 use graphics::framebuffer::{self, colors};
 pub mod keyboard;
+pub mod mmio;
 pub mod mouse;
 pub mod pci;
 pub mod sd_card;
 pub mod serial;
 pub mod xhci;
-pub mod mmio;
 
 /// Initialize hardware devices.
 ///
@@ -72,7 +72,6 @@ pub fn init(cpu_id: u32) {
         initalize_sd_card(&sd_card_device, &mut mapper).unwrap();
         drop(mapper);
         initalize_xhci_hub(&xhci_device).unwrap();
-
 
         keyboard::init().expect("Failed to initialize keyboard");
         mouse::init().expect("Failed to initialize mouse");

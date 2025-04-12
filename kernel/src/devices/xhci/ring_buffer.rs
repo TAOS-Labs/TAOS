@@ -873,7 +873,7 @@ impl ConsumerRingBuffer {
 //         }
 //         assert_eq!(trb.get_trb_type(), TrbTypes::NoOpCmd as u32);
 //         assert_eq!(trb.get_cycle(), 1);
-        
+
 //         dealloc_frame(frame);
 //         // remove_mapped_frame(page, &mut *mapper);
 //     }

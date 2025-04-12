@@ -7,7 +7,7 @@ use x86_64::{
     PhysAddr, VirtAddr,
 };
 
-use crate::{debug_println, memory::paging};
+use crate::memory::paging;
 
 /// An error occured when setting up a frame as uncacheable
 #[derive(Debug)]
