@@ -24,13 +24,10 @@ use x86_64::{
     PrivilegeLevel, VirtAddr,
 };
 
-use crate::{
-    constants::{
+use crate::constants::{
         gdt::{DOUBLE_FAULT_IST_INDEX, IST_STACK_SIZE, RING0_STACK_SIZE},
         MAX_CORES,
-    },
-    serial_println,
-};
+    };
 
 /// Number of base GDT entries: null descriptor + kernel code/data + user code/data
 const BASE_ENTRIES: usize = 5;

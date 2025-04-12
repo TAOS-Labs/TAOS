@@ -10,7 +10,7 @@ use crate::{
         current_running_event_info, nanosleep_current_process, runner_timestamp, schedule_process,
         EventInfo,
     },
-    filesys::fat16::Fat16File,
+    filesys::File,
     interrupts::{
         gdt,
         x2apic::{self, nanos_to_ticks},
@@ -29,9 +29,9 @@ use core::{
     arch::naked_asm,
     borrow::BorrowMut,
     cell::UnsafeCell,
-    sync::atomic::{AtomicU32, AtomicU64, Ordering},
+    sync::atomic::{AtomicU32, Ordering},
 };
-use spin::{lock_api::Mutex, rwlock::RwLock};
+use spin::{rwlock::RwLock, Mutex};
 use x86_64::{
     instructions::interrupts,
     structures::paging::{OffsetPageTable, PageTable, PhysFrame, Size4KiB},
@@ -61,8 +61,8 @@ pub struct PCB {
     pub next_preemption_time: u64,
     pub registers: Registers,
     pub mmap_address: u64,
-    pub fd_table: [Option<Arc<Mutex<Fat16File>>>; MAX_FILES],
-    pub next_fd: Arc<Mutex<u64>>,
+    pub fd_table: [Option<Arc<Mutex<File>>>; MAX_FILES],
+    pub next_fd: Arc<Mutex<usize>>,
     pub mm: Mm,
     pub namespace: Namespace,
 }
@@ -106,6 +106,21 @@ pub fn get_current_pid() -> u32 {
     } else {
         0
     }
+}
+
+pub fn with_current_pcb<F, R>(f: F) -> R
+where
+    F: FnOnce(&mut PCB) -> R,
+{
+    let pid = get_current_pid();
+    let process_table = PROCESS_TABLE.read();
+    let process = process_table
+        .get(&pid)
+        .expect("can't find pcb in process table")
+        .clone();
+
+    let pcb = unsafe { &mut *process.pcb.get() };
+    f(pcb)
 }
 
 /// # Safety

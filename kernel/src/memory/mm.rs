@@ -2,7 +2,7 @@ use crate::serial_println;
 use alloc::{collections::btree_map::BTreeMap, sync::Arc, vec::Vec};
 use bitflags::bitflags;
 use core::fmt::Debug;
-use spin::lock_api::Mutex;
+use spin::Mutex;
 use x86_64::structures::paging::{Mapper, PageTableFlags, PhysFrame, Size4KiB};
 
 type VmaTree = BTreeMap<usize, Arc<Mutex<VmArea>>>;
@@ -395,11 +395,11 @@ impl Mm {
     }
 
     pub fn shrink_vma_left(
-        old_start: u64,
-        new_start: u64,
-        new_end: u64,
-        mapper: &mut impl Mapper<Size4KiB>,
-        tree: &mut VmaTree,
+        _old_start: u64,
+        _new_start: u64,
+        _new_end: u64,
+        _mapper: &mut impl Mapper<Size4KiB>,
+        _tree: &mut VmaTree,
     ) -> Option<Arc<Mutex<VmArea>>> {
         return None;
     }

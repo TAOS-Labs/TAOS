@@ -1,8 +1,8 @@
 use core::ffi::CStr;
 
-use alloc::{borrow::ToOwned, collections::btree_map::BTreeMap};
+use alloc::collections::btree_map::BTreeMap;
 use lazy_static::lazy_static;
-use spin::lock_api::Mutex;
+use spin::Mutex;
 
 use core::{
     future::Future,
@@ -23,7 +23,7 @@ use crate::{
             clear_process_frames, sleep_process_int, sleep_process_syscall, ProcessState,
             PROCESS_TABLE,
         },
-        registers::{NonFlagRegisters, Registers},
+        registers::NonFlagRegisters,
     },
     serial_println,
     syscalls::{fork::sys_fork, memorymap::sys_mmap},
@@ -35,7 +35,8 @@ use super::memorymap::{sys_mprotect, sys_munmap};
 
 lazy_static! {
     pub static ref EXIT_CODES: Mutex<BTreeMap<u32, i64>> = Mutex::new(BTreeMap::new());
-    pub  static ref REGISTER_VALUES: Mutex<BTreeMap<u32, NonFlagRegisters>> = Mutex::new(BTreeMap::new());
+    pub static ref REGISTER_VALUES: Mutex<BTreeMap<u32, NonFlagRegisters>> =
+        Mutex::new(BTreeMap::new());
 }
 
 #[repr(C)]
@@ -212,7 +213,7 @@ pub fn sys_exit(code: i64, reg_vals: &NonFlagRegisters) -> Option<u64> {
 
         (*pcb).state = ProcessState::Terminated;
 
-        // clear_process_frames(&mut *pcb);
+        clear_process_frames(&mut *pcb);
         with_buddy_frame_allocator(|alloc| {
             alloc.print_free_frames();
         });

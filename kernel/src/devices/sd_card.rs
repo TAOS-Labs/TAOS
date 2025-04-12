@@ -16,8 +16,11 @@ use crate::{
     devices::pci::write_pci_command,
     events::{current_running_event, futures::devices::SDCardReq, get_runner_time},
     filesys::{
-        ext2::block_io::{BlockError, BlockIO, BlockResult},
-        BlockDevice, FsError,
+        ext2::{
+            block_io::{BlockError, BlockIO, BlockResult},
+            filesystem::{FilesystemError, FilesystemResult},
+        },
+        BlockDevice,
     },
     memory::paging,
 };
@@ -202,9 +205,9 @@ const SD_SECTOR_SIZE: u32 = 512;
 
 #[async_trait]
 impl BlockDevice for SDCardInfo {
-    async fn read_block(&self, block_num: u64, buf: &mut [u8]) -> Result<(), FsError> {
+    async fn read_block(&self, block_num: u64, buf: &mut [u8]) -> FilesystemResult<u8> {
         if block_num > self.total_sectors {
-            return Result::Err(FsError::IOError);
+            return Result::Err(FilesystemError::DeviceError(BlockError::InvalidBlock));
         }
         let data = read_sd_card(
             self,
@@ -213,15 +216,16 @@ impl BlockDevice for SDCardInfo {
                 .expect("Maxumum block number should not be greater than 32 bits"),
         )
         .await
-        .map_err(|_| FsError::IOError)?;
+        .map_err(|_| FilesystemError::DeviceError(BlockError::DeviceError))?;
+
         buf.copy_from_slice(&data);
 
-        Result::Ok(())
+        Result::Ok(0)
     }
 
-    async fn write_block(&mut self, block_num: u64, buf: &[u8]) -> Result<(), FsError> {
+    async fn write_block(&mut self, block_num: u64, buf: &[u8]) -> FilesystemResult<u8> {
         if block_num > self.total_sectors {
-            return Result::Err(FsError::IOError);
+            return Result::Err(FilesystemError::DeviceError(BlockError::InvalidBlock));
         }
         let mut data: [u8; 512] = [0; 512];
         data.copy_from_slice(buf);
@@ -233,8 +237,8 @@ impl BlockDevice for SDCardInfo {
             data,
         )
         .await
-        .map_err(|_| FsError::IOError)?;
-        Result::Ok(())
+        .map_err(|_| FilesystemError::DeviceError(BlockError::DeviceError))?;
+        Result::Ok(0)
     }
 
     fn block_size(&self) -> usize {

@@ -185,10 +185,8 @@ fn verify_page_table_walk(parent_pcb: &mut PCB, child_pcb: &mut PCB) {
         } else {
             assert_eq!(parent_entry.flags(), child_entry.flags());
             let parent_pdpt_frame = PhysFrame::containing_address(parent_entry.addr());
-            let child_pdpt_frame = PhysFrame::containing_address(child_entry.addr());
             recursive_walk(
                 parent_pdpt_frame,
-                child_pdpt_frame,
                 3,
                 &mut parent_mapper,
                 &mut child_mapper,
@@ -199,13 +197,11 @@ fn verify_page_table_walk(parent_pcb: &mut PCB, child_pcb: &mut PCB) {
 
 fn recursive_walk(
     parent_frame: PhysFrame,
-    child_frame: PhysFrame,
     level: u8,
     parent_mapper: &mut OffsetPageTable,
     child_mapper: &mut OffsetPageTable,
 ) {
     let parent_virt = HHDM_OFFSET.as_u64() + parent_frame.start_address().as_u64();
-    let child_virt = HHDM_OFFSET.as_u64() + child_frame.start_address().as_u64();
 
     let parent_table = unsafe { &mut *(parent_virt as *mut PageTable) };
     let child_table = unsafe { &mut *(parent_virt as *mut PageTable) };
@@ -238,10 +234,8 @@ fn recursive_walk(
         }
         if level > 1 {
             let parent_frame: PhysFrame = PhysFrame::containing_address(parent_entry.addr());
-            let child_frame: PhysFrame = PhysFrame::containing_address(child_entry.addr());
             recursive_walk(
                 parent_frame,
-                child_frame,
                 level - 1,
                 parent_mapper,
                 child_mapper,

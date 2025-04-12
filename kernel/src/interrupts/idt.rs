@@ -206,9 +206,8 @@ extern "x86-interrupt" fn page_fault_handler(
             page,
             mut mapper,
             pt_flags,
-            frame,
         } => {
-            handle_shared_page_fault(page, &mut mapper, pt_flags, frame);
+            handle_shared_page_fault(page, &mut mapper, pt_flags);
         }
         FaultOutcome::Mapped => {
             serial_println!("Page is mapped; no COW fault detected");

@@ -32,10 +32,8 @@ mod tests {
 
     // Helper function to create a test filesystem using the SD card
     async fn create_test_fs() -> Ext2 {
-        let sd_card_lock = SD_CARD.lock();
-        let sd_card = sd_card_lock.clone().unwrap();
-        let sd_arc = Arc::new(sd_card);
-        let fs = Ext2::new(sd_arc).await.unwrap();
+        let sd_card = Arc::new(SD_CARD.lock().clone().unwrap());
+        let fs = Ext2::new(sd_card).await.unwrap();
         fs.mount().await.unwrap();
         fs
     }

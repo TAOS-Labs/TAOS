@@ -1,11 +1,7 @@
-use core::ptr;
-use core::slice;
-use core::usize;
+use core::{ptr, slice, usize};
 
 use alloc::sync::Arc;
 use log::debug;
-use spin::lock_api::Mutex;
-use x86_64::structures::paging::Mapper;
 use x86_64::{
     structures::{
         idt::PageFaultErrorCode,
@@ -17,19 +13,19 @@ use x86_64::{
     PhysAddr, VirtAddr,
 };
 
-use crate::filesys::SeekFrom;
-use crate::memory::paging::update_permissions;
-use crate::serial;
 use crate::{
     constants::{memory::PAGE_SIZE, processes::MAX_FILES},
     filesys::{FileSystem, FILESYSTEM},
     memory::{
         frame_allocator::alloc_frame,
         mm::{vma_to_page_flags, Mm, VmAreaFlags},
-        paging::{create_mapping, create_mapping_to_frame, get_page_flags, update_mapping},
+        paging::{
+            create_mapping, create_mapping_to_frame, get_page_flags, update_mapping,
+            update_permissions,
+        },
         HHDM_OFFSET,
     },
-    processes::process::{get_current_pid, PROCESS_TABLE},
+    processes::process::with_current_pcb,
     serial_println,
 };
 
@@ -72,7 +68,6 @@ pub enum FaultOutcome {
         page: Page<Size4KiB>,
         mapper: OffsetPageTable<'static>,
         pt_flags: PageTableFlags,
-        frame: PhysFrame,
     },
     Mapped,
 }
@@ -105,16 +100,6 @@ pub fn determine_fault_cause(error_code: PageFaultErrorCode) -> FaultOutcome {
     // Compute the faulting page.
     let page = Page::containing_address(VirtAddr::new(faulting_address));
 
-    // Locate the current process.
-    let pid = get_current_pid();
-    let process = {
-        let process_table = PROCESS_TABLE.read();
-        process_table
-            .get(&pid)
-            .expect("can't find pcb in process table")
-            .clone()
-    };
-
     // Check if the page is mapped.
     let translate_result = mapper.translate(page.start_address());
     let is_mapped = match translate_result {
@@ -124,8 +109,8 @@ pub fn determine_fault_cause(error_code: PageFaultErrorCode) -> FaultOutcome {
     };
 
     let mut outcome = None;
-    unsafe {
-        (*process.pcb.get()).mm.with_vma_tree(|tree| {
+    with_current_pcb(|pcb| {
+        pcb.mm.with_vma_tree(|tree| {
             // Find the VMA covering the faulting address.
             let vma_arc = Mm::find_vma(faulting_address, tree).expect("Vma not found?");
             let vma = vma_arc.lock();
@@ -160,28 +145,26 @@ pub fn determine_fault_cause(error_code: PageFaultErrorCode) -> FaultOutcome {
                 // this check works since if there is no backing file, we set fd to usize::MAX
                 // which is trivially larger than MAX_FILES
                 if segment.fd < MAX_FILES {
-                    let pid = get_current_pid();
-                    let pcb = {
-                        let process_table = PROCESS_TABLE.read();
-                        process_table
-                            .get(&pid)
-                            .expect("can't find pcb in process table")
-                            .clone()
-                    };
-                    let pcb = pcb.pcb.get();
-
-                    let file = (*pcb).fd_table[segment.fd]
+                    let file = pcb.fd_table[segment.fd]
                         .clone()
                         .expect("No file associated with this fd.");
-                    let locked_file = file.lock();
-                    let page_cache = &locked_file.page_cache;
-                    let file_offset = segment.pg_offset + fault_offset;
+                    let inode_number = { file.lock().inode_number };
+                    let fs_arc = unsafe { FILESYSTEM.get().expect("Could not get filesystem") };
+                    let fs = fs_arc.lock();
+                    let page_cache_map = fs.page_cache.lock();
+                    let inode_cache = page_cache_map
+                        .get(&inode_number)
+                        .expect("could not find inode number in page cache");
+
+                    let page_cache = inode_cache.lock();
+
+                    let file_offset = (segment.pg_offset + fault_offset) as usize;
                     if page_cache.contains_key(&file_offset) {
                         serial_println!("FAULT IS EXISTING FILE MAPPING");
                         Some(FaultOutcome::ExistingFileMapping {
                             page,
                             mapper,
-                            offset: file_offset,
+                            offset: file_offset as u64,
                             pt_flags,
                         })
                     } else {
@@ -189,7 +172,7 @@ pub fn determine_fault_cause(error_code: PageFaultErrorCode) -> FaultOutcome {
                         Some(FaultOutcome::NewFileMapping {
                             page,
                             mapper,
-                            offset: file_offset,
+                            offset: file_offset as u64,
                             pt_flags,
                             fd: segment.fd,
                         })
@@ -222,22 +205,18 @@ pub fn determine_fault_cause(error_code: PageFaultErrorCode) -> FaultOutcome {
                         mapper,
                         pt_flags,
                     })
-                }
-                else if !cow && caused_by_write && flags.contains(PageTableFlags::PRESENT) {
-                    let frame = PhysFrame::containing_address(PhysAddr::new(anon_vma_chain.unwrap().file_offset_or_frame));
+                } else if !cow && caused_by_write && flags.contains(PageTableFlags::PRESENT) {
                     Some(FaultOutcome::SharedPage {
                         page,
                         mapper,
                         pt_flags,
-                        frame,
                     })
                 } else {
-                    let result = mapper.translate_page(page);
                     Some(FaultOutcome::Mapped)
                 }
             };
         });
-    }
+    });
 
     outcome.expect("Failed to determine fault cause")
 }
@@ -292,22 +271,27 @@ pub async fn handle_new_file_mapping(
     let mut flags = pt_flags;
     flags.set(PageTableFlags::PRESENT, true);
     flags.set(PageTableFlags::WRITABLE, true);
-    
+
     create_mapping(page, mapper, Some(flags));
-    let mut fs = unsafe { FILESYSTEM.get_mut().expect("Could not get filesystem").lock() };
-    fs.add_entry_to_page_cache(fd, offset as usize).await.expect("failed to add entry to page cache");
+    let mut fs = unsafe {
+        FILESYSTEM
+            .get_mut()
+            .expect("Could not get filesystem")
+            .lock()
+    };
+    fs.add_entry_to_page_cache(fd, offset as usize)
+        .await
+        .expect("failed to add entry to page cache");
 
-
-    
     let ptr = page.start_address().as_u64() as *mut u8;
     let buffer: &mut [u8] = unsafe { slice::from_raw_parts_mut(ptr, 1024) };
     {
-
         // Now that the virtual address is mapped, use it to memcpy the file at an offset to the frame
         let mut fs = unsafe { FILESYSTEM.get().expect("Could not get filesystem").lock() };
-        fs.seek_file(fd, SeekFrom::Start(offset)).expect("Seeking file failed.");
+        fs.seek_file(fd, offset as usize)
+            .await
+            .expect("Seeking file failed.");
         fs.read_file(fd, buffer).await.expect("could not read file");
-
     }
 
     if !pt_flags.contains(PageTableFlags::WRITABLE) {
@@ -336,19 +320,12 @@ pub fn handle_new_mapping(
     );
     let mut flags = pt_flags;
     flags.set(PageTableFlags::PRESENT, true);
-    let pid = get_current_pid();
-    let process = {
-        let process_table = PROCESS_TABLE.read();
-        process_table
-            .get(&pid)
-            .expect("can't find pcb in process table")
-            .clone()
-    };
     let frame = create_mapping(page, mapper, Some(flags));
-    unsafe {
-        (*process.pcb.get()).mm.with_vma_tree(|tree| {
+    with_current_pcb(|pcb| {
+        pcb.mm.with_vma_tree(|tree| {
             // Find the VMA covering the faulting address.
-            let vma_arc = Mm::find_vma(page.start_address().as_u64(), tree).expect("Vma not found?");
+            let vma_arc =
+                Mm::find_vma(page.start_address().as_u64(), tree).expect("Vma not found?");
             let vma = vma_arc.lock();
 
             // Compute the fault's offset within the VMA.
@@ -372,16 +349,20 @@ pub fn handle_new_mapping(
             // (Assuming each segment's reverse mappings are keyed relative to its own start.)
             let mapping_offset = fault_offset - seg_key + segment.start;
 
-            backing.insert_mapping(Arc::new(VmaChain::new(mapping_offset, usize::MAX, frame.start_address().as_u64())));
+            backing.insert_mapping(Arc::new(VmaChain::new(
+                mapping_offset,
+                usize::MAX,
+                frame.start_address().as_u64(),
+            )));
         });
-    }
+    });
+
     // let new_frame = create_mapping(page, mapper, Some(flags));
     // backing.insert_mapping(Arc::new(VmaChain {
     //     offset: page.start_address().as_u64(),
     //     fd: usize::MAX,
     //     file_offset_or_frame: new_frame.start_address().as_u64(),
     // }));
-
 }
 
 /// Handles a copy-on-write fault. Saves current data in a buffer
@@ -417,16 +398,12 @@ pub fn handle_cow_fault(
     serial_println!("Completed copy-on-write fault handling.");
 }
 
-
 pub fn handle_shared_page_fault(
     page: Page<Size4KiB>,
     mapper: &mut OffsetPageTable,
     pt_flags: PageTableFlags,
-    frame: PhysFrame,
 ) {
     let mut flags = pt_flags;
     flags.set(PageTableFlags::PRESENT, true);
-    let translation: Result<PhysFrame, x86_64::structures::paging::mapper::TranslateError> = mapper.translate_page(page);
     update_permissions(page, mapper, flags);
-    let translation = mapper.translate_page(page);
 }

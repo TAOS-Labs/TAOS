@@ -11,16 +11,9 @@ use limine::{
 };
 
 use crate::{
-    constants::{
-        memory::PAGE_SIZE,
-        processes::{MMAP_ANON_SIMPLE, TEST_EXIT_CODE, TEST_MMAP_ANON_SHARED, TEST_MMAP_CHILD_WRITES, TEST_SIMPLE_PROCESS, TEST_SIMPLE_STACK_ACCESS},
-    },
-    debug,
-    devices::{self, sd_card::SD_CARD},
-    events::{
-        current_running_event, futures::{await_on::AwaitProcess, sleep}, get_runner_time, register_event_runner, run_loop, schedule_kernel, schedule_kernel_on, schedule_process, spawn, yield_now
-    },
-    filesys::{self, fat16::Fat16, FileSystem, FILESYSTEM},
+    debug, devices,
+    events::{register_event_runner, run_loop, spawn, yield_now},
+    filesys::{self},
     interrupts::{self, idt},
     ipc::{
         messages::Message,
@@ -31,18 +24,9 @@ use crate::{
     },
     logging,
     memory::{self},
-    processes::{
-        self,
-        process::{create_process, get_current_pid, PCB, PROCESS_TABLE},
-    },
-    serial_println,
-    syscalls::{
-        memorymap::{sys_mmap, MmapFlags, ProtFlags},
-        syscall_handlers::{block_on, sys_nanosleep_32, REGISTER_VALUES},
-    },
-    trace,
+    processes::{self},
+    serial_println, trace,
 };
-use alloc::boxed::Box;
 extern crate alloc;
 
 /// Limine base revision request
@@ -83,49 +67,48 @@ pub fn init() -> u32 {
     let bsp_id = wake_cores();
 
     idt::enable();
-    schedule_kernel_on(
-        0,
-        async {
-            serial_println!("RUNNING SCHEDULED KERNEL EVENT");
-            let lock = SD_CARD.lock().clone().unwrap();
-            let device = Box::new(lock);
+    // schedule_kernel_on(
+    //     0,
+    //     async {
+    //         serial_println!("RUNNING SCHEDULED KERNEL EVENT");
+    //         let lock = SD_CARD.lock().clone().unwrap();
+    //         let device = Box::new(lock);
 
-            // Format the filesystem
-            let mut filesystem = block_on(async {
-                Fat16::format(device)
-                    .await
-                    .expect("Failed to format filesystem")
-            });
+    //         // Format the filesystem
+    //         let mut filesystem = block_on(async {
+    //             Fat16::format(device)
+    //                 .await
+    //                 .expect("Failed to format filesystem")
+    //         });
 
+    //         let _ = filesystem.create_file("/testfile.txt").await;
+    //         serial_println!("created file");
+    //         let fd = filesystem
+    //             .open_file("/testfile.txt")
+    //             .await
+    //             .expect("could not open file");
 
-            let _ = filesystem.create_file("/testfile.txt").await;
-            serial_println!("created file");
-            let fd = filesystem
-                .open_file("/testfile.txt")
-                .await
-                .expect("could not open file");
+    //         let buf: [u8; 1024] = [b'A'; 1024];
+    //         filesystem.write_file(fd, &buf).await.expect("Write failed");
 
-            let buf: [u8; 1024] = [b'A'; 1024];
-            filesystem.write_file(fd, &buf).await.expect("Write failed");
+    //         let addr = sys_mmap(
+    //             0x0,
+    //             PAGE_SIZE.try_into().unwrap(),
+    //             ProtFlags::PROT_READ.bits() as u64,
+    //             MmapFlags::MAP_PRIVATE.bits() as u64,
+    //             fd as i64,
+    //             0,
+    //         ) as *mut u8;
+    //         for i in 0..10 {
+    //             unsafe {
+    //                 let c = *addr.add(i);
+    //                 serial_println!("Byte at offset {} is {:#?}", i, c as char);
+    //             }
+    //         }
+    //     },
+    //     3,
+    // );
 
-            let addr = sys_mmap(
-                0x0,
-                PAGE_SIZE.try_into().unwrap(),
-                ProtFlags::PROT_READ.bits() as u64,
-                MmapFlags::MAP_PRIVATE.bits() as u64,
-                fd as i64,
-                0,
-            ) as *mut u8;
-            for i in 0..10 {
-                unsafe {
-                    let c = *addr.add(i);
-                    serial_println!("Byte at offset {} is {:#?}", i, c as char);
-                }
-            }
-        },
-        3,
-    );
-    
     bsp_id
 }
 

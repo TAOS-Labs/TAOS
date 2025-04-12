@@ -28,6 +28,7 @@ pub enum FilesystemError {
     /// Invalid path (empty or malformed)
     InvalidPath,
     CacheError,
+    InvalidFd,
 }
 
 pub type FilesystemResult<T> = Result<T, FilesystemError>;
@@ -313,8 +314,8 @@ impl Ext2 {
         node.read_dir().await.map_err(FilesystemError::NodeError)
     }
 
-    /// Read file contents
-    pub async fn read_file(&self, path: &str) -> FilesystemResult<Vec<u8>> {
+    /// Read file contents from offset
+    pub async fn read_file_at(&self, path: &str, pos: usize) -> FilesystemResult<Vec<u8>> {
         let node = self.get_node(path).await?;
         if !node.is_file() {
             return Err(FilesystemError::NodeError(NodeError::NotFile));
@@ -322,11 +323,16 @@ impl Ext2 {
 
         let size = node.size() as usize;
         let mut buffer = vec![0; size];
-        node.read_at(0, &mut buffer)
+        node.read_at(pos as u64, &mut buffer)
             .await
             .map_err(FilesystemError::NodeError)?;
 
         Ok(buffer)
+    }
+
+    /// Read file contents from beginning
+    pub async fn read_file(&self, path: &str) -> FilesystemResult<Vec<u8>> {
+        self.read_file_at(path, 0).await
     }
 
     /// Get filesystem statistics
@@ -659,16 +665,21 @@ impl Ext2 {
         Ok(())
     }
 
-    /// Write data to a file
-    pub async fn write_file(&self, path: &str, data: &[u8]) -> FilesystemResult<usize> {
+    /// Write data to a file at an offset
+    pub async fn write_file_at(&self, path: &str, data: &[u8], pos: usize) -> FilesystemResult<usize> {
         let node = self.get_node(path).await?;
         if !node.is_file() {
             return Err(FilesystemError::NodeError(NodeError::NotFile));
         }
 
-        node.write_at(0, data)
+        node.write_at(pos as u64, data)
             .await
             .map_err(FilesystemError::NodeError)
+    }
+
+    /// Write data to a file at beginning of file
+    pub async fn write_file(&self, path: &str, data: &[u8]) -> FilesystemResult<usize> {
+        self.write_file_at(path, data, 0).await
     }
 
     /// Read the target of a symbolic link

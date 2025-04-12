@@ -9,19 +9,15 @@ use x86_64::{
 
 use crate::{
     constants::memory::PAGE_SIZE,
-    constants::processes::TEST_MMAP_ANON_SHARED,
-    events::{current_running_event_info, EventInfo, schedule_process},
+    events::{current_running_event_info, EventInfo},
     memory::{
-        mm::{vma_to_page_flags, Mm, VmArea, VmAreaBackings, VmAreaFlags},
+        mm::{vma_to_page_flags, Mm, VmAreaBackings, VmAreaFlags},
         paging::{remove_mapping, update_permissions},
         HHDM_OFFSET,
     },
-    processes::process::{get_current_pid, PROCESS_TABLE, },
+    processes::process::PROCESS_TABLE,
     serial_println,
 };
-
-use crate::events::{get_runner_time,current_running_event};
-use crate::events::futures::await_on::AwaitProcess;
 
 // See https://www.man7.org/linux/man-pages/man2/mmap.2.html
 bitflags! {
@@ -179,8 +175,6 @@ pub fn sys_mmap(addr: u64, len: u64, prot: u64, flags: u64, fd: i64, offset: u64
     let mmap_flags = MmapFlags::from_bits_truncate(flags);
     // Compute the VMA flags using our helper.
     let vma_flags = mmap_prot_to_vma_flags(prot, mmap_flags);
-    // Determine if this is an anonymous mapping.
-    let anon = mmap_flags.contains(MmapFlags::MAP_ANONYMOUS);
 
     // Insert the new VMA into the process's VMA tree.
     unsafe {
@@ -270,7 +264,11 @@ pub fn sys_mprotect(addr: u64, len: u64, prot: u64) -> u64 {
                                 Page::containing_address(VirtAddr::new(l_end)),
                             ) {
                                 if !mapper.translate_page(page).is_err() {
-                                    update_permissions(page, &mut mapper, vma_to_page_flags(new_flags));
+                                    update_permissions(
+                                        page,
+                                        &mut mapper,
+                                        vma_to_page_flags(new_flags),
+                                    );
                                 }
                             }
                             Mm::update_vma_permissions(&left_vma, new_flags);
@@ -290,7 +288,11 @@ pub fn sys_mprotect(addr: u64, len: u64, prot: u64) -> u64 {
                                 Page::containing_address(VirtAddr::new(r_end)),
                             ) {
                                 if !mapper.translate_page(page).is_err() {
-                                    update_permissions(page, &mut mapper, vma_to_page_flags(new_flags));
+                                    update_permissions(
+                                        page,
+                                        &mut mapper,
+                                        vma_to_page_flags(new_flags),
+                                    );
                                 }
                             }
                             Mm::update_vma_permissions(&right_vma, new_flags);
@@ -311,8 +313,11 @@ pub fn sys_mprotect(addr: u64, len: u64, prot: u64) -> u64 {
                                 Page::containing_address(VirtAddr::new(m_end)),
                             ) {
                                 if !mapper.translate_page(page).is_err() {
-                                    update_permissions(page, &mut mapper, vma_to_page_flags(new_flags));
-
+                                    update_permissions(
+                                        page,
+                                        &mut mapper,
+                                        vma_to_page_flags(new_flags),
+                                    );
                                 }
                             }
                             Mm::update_vma_permissions(&middle_vma, new_flags);
@@ -442,18 +447,26 @@ pub fn sys_munmap(addr: u64, len: u64) -> u64 {
 mod tests {
     use super::{MmapFlags, ProtFlags};
     use crate::{
-        constants::{memory::PAGE_SIZE, processes::{MMAP_ANON_SIMPLE, TEST_MMAP_ANON_SHARED, TEST_MMAP_CHILD_WRITES, TEST_MPROTECT_CHILD_WRITES}},
+        constants::{
+            memory::PAGE_SIZE,
+            processes::{
+                MMAP_ANON_SIMPLE, TEST_MMAP_ANON_SHARED, TEST_MMAP_CHILD_WRITES,
+                TEST_MPROTECT_CHILD_WRITES,
+            },
+        },
         devices::sd_card::SD_CARD,
         events::{futures::sleep, schedule_kernel, schedule_kernel_on, schedule_process},
         filesys::{fat16::Fat16, FileSystem, FILESYSTEM},
         processes::process::{create_process, get_current_pid, PCB, PROCESS_TABLE},
         serial_println,
-        syscalls::{memorymap::sys_mmap, syscall_handlers::{sys_nanosleep_32, REGISTER_VALUES}},
+        syscalls::{
+            memorymap::sys_mmap,
+            syscall_handlers::{sys_nanosleep_32, REGISTER_VALUES},
+        },
     };
     use alloc::boxed::Box;
 
-    use crate::events::{get_runner_time,current_running_event};
-    use crate::events::futures::await_on::AwaitProcess;
+    use crate::events::{current_running_event, futures::await_on::AwaitProcess, get_runner_time};
 
     // #[test_case]
     async fn mmap_file_read_test() {
@@ -501,8 +514,6 @@ mod tests {
         assert_eq!(reg_vals_on_exit.r8, 'X' as u64);
         assert_eq!(reg_vals_on_exit.r9, 'Y' as u64);
         assert_eq!(reg_vals_on_exit.r10, 'Z' as u64);
-
-
     }
 
     #[test_case]
@@ -523,7 +534,5 @@ mod tests {
         assert_eq!(reg_vals_on_exit.r8, 'X' as u64);
         assert_eq!(reg_vals_on_exit.r9, 'Y' as u64);
         assert_eq!(reg_vals_on_exit.r10, 'Z' as u64);
-
-
     }
 }
