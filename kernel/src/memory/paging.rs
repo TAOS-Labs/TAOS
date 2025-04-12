@@ -160,7 +160,7 @@ pub fn remove_mapped_frame(page: Page, mapper: &mut impl Mapper<Size4KiB>) {
 ///
 /// TODO Find a better place for this code
 pub fn map_kernel_frame(
-    mapper: &mut OffsetPageTable,
+    mapper: &mut impl Mapper<Size4KiB>,
     frame: PhysFrame,
     flags: PageTableFlags,
 ) -> VirtAddr {

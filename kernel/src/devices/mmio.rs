@@ -28,7 +28,7 @@ pub fn map_page_as_uncacheable(
             flags,
         } => match frame {
             MappedFrame::Size4KiB(_) => {
-                debug_println!("mapped 4KB from {:X}", requested_phys_addr);
+                // debug_println!("mapped 4KB from {:X}", requested_phys_addr);
                 let page: Page<Size4KiB> = Page::containing_address(VirtAddr::new(offset_bar));
                 unsafe {
                     mapper
@@ -41,7 +41,7 @@ pub fn map_page_as_uncacheable(
                 }
             }
             MappedFrame::Size2MiB(_) => {
-                debug_println!("mapped 2MB from {:X}", requested_phys_addr);
+                // debug_println!("mapped 2MB from {:X}", requested_phys_addr);
                 let page: Page<Size2MiB> = Page::containing_address(VirtAddr::new(offset_bar));
                 unsafe {
                     mapper
@@ -54,7 +54,7 @@ pub fn map_page_as_uncacheable(
                 }
             }
             MappedFrame::Size1GiB(_) => {
-                debug_println!("mapped 1GB");
+                // debug_println!("mapped 1GB");
                 let page: Page<Size1GiB> = Page::containing_address(VirtAddr::new(offset_bar));
                 unsafe {
                     mapper
@@ -71,7 +71,7 @@ pub fn map_page_as_uncacheable(
             panic!("Invalid physical address in SD BAR")
         }
         TranslateResult::NotMapped => {
-            debug_println!("notmapped");
+            // debug_println!("notmapped");
             let bar_frame: PhysFrame<Size4KiB> = PhysFrame::containing_address(requested_phys_addr);
             let new_va = paging::map_kernel_frame(
                 mapper,
@@ -92,7 +92,6 @@ pub fn zero_out_page(page: Page) {
             core::ptr::write_volatile(va, 0);
             va = va.add(1);
         }
-        // TODO: Test (allocate 3 pages, middle should be unchanged)
         n += 1;
     }
 }

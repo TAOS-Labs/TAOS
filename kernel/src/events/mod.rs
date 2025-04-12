@@ -202,9 +202,12 @@ pub fn current_running_event_priority() -> usize {
 pub fn inc_runner_clock() {
     let cpuid = x2apic::current_core_id() as u32;
     let runners = EVENT_RUNNERS.read();
-    let mut runner = runners.get(&cpuid).expect("No runner found").write();
+    unsafe {
+        let runner = runners.get(&cpuid).expect("No runner found").as_mut_ptr();
 
-    runner.inc_system_clock();
+        // Safe as long as system clock is ONLY accessed from this core
+        (*runner).inc_system_clock();
+    }
 }
 
 pub fn get_runner_time(offset_nanos: u64) -> u64 {

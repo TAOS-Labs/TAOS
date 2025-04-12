@@ -51,9 +51,8 @@ static CPU_COUNT: AtomicU64 = AtomicU64::new(0);
 /// * `u32` - The BSP's LAPIC ID
 pub fn init() -> u32 {
     assert!(BASE_REVISION.is_supported());
-    interrupts::init(0);
-
     memory::init(0);
+    interrupts::init(0);
 
     register_event_runner();
     devices::init(0);
