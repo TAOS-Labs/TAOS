@@ -180,8 +180,9 @@ pub struct ProducerRingBuffer {
     pcs: u8,
     /// The type of this ring, either Command, Transfer, or Event
     ring: RingType,
-
-    last_addr: *mut Trb,
+    /// The final trb in the producer ring buffer
+    link_trb: *mut Trb,
+    /// How much to add to the physical addresses to get to a virtual address
     phys_offset: VirtAddr,
 }
 unsafe impl Send for ProducerRingBuffer {}
@@ -244,7 +245,7 @@ impl ProducerRingBuffer {
             dequeue: base_virt_addr as *mut Trb,
             pcs: cycle_state,
             ring: ring_type,
-            last_addr: enqueue.wrapping_offset(num_blocks - 1),
+            link_trb: enqueue.wrapping_offset(num_blocks - 1),
             phys_offset,
         })
     }
@@ -330,6 +331,17 @@ impl ProducerRingBuffer {
             let base_addr = trb.parameters;
             assert!(base_addr & !0xF == base_addr);
             self.enqueue = (base_addr + self.phys_offset.as_u64()) as *mut Trb;
+        } else {
+            // We might need to fix up the link trb to have the correct rules
+            let enque_addr = self.enqueue as usize;
+            let deque_addr = self.dequeue as usize;
+            // Do nothing if we are owned by the XHC
+            if deque_addr <= enque_addr {
+                let mut link_trb = core::ptr::read_volatile(self.link_trb);
+
+                link_trb.control = (link_trb.control & !1) | self.pcs as u32;
+                core::ptr::write_volatile(self.link_trb, link_trb);
+            }
         }
     }
 
@@ -353,7 +365,7 @@ impl ProducerRingBuffer {
     pub unsafe fn enqueue(&mut self, mut block: Trb) -> Result<VirtAddr, ProducerRingError> {
         // first make sure that we are trying to enqueue a TRB that belongs on this ring
         //
-        let new_block = unsafe { core::ptr::read_volatile(self.last_addr) };
+        let new_block = unsafe { core::ptr::read_volatile(self.link_trb) };
 
         let ctrl = ((TransferRingTypes::Link as u32) << 10) | 1 << 1;
         assert!(new_block.control & 0xFFFF_FFFE == ctrl);
