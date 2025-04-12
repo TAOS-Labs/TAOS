@@ -134,10 +134,10 @@ pub trait FileSystem {
     async fn read_file(&mut self, fd: usize, buf: &mut [u8]) -> FilesystemResult<usize>;
     async fn read_dir(&self, path: &str) -> FilesystemResult<Vec<DirEntry>>;
     async fn metadata(&self, fd: usize) -> FilesystemResult<File>;
-    async fn add_entry_to_page_cache(&mut self, fd: usize, offset: usize) -> FilesystemResult<()>;
+    async fn add_entry_to_page_cache(&mut self, file: File, offset: usize) -> FilesystemResult<()>;
     async fn page_cache_get_mapping(
         &mut self,
-        fd: usize,
+        file: File,
         offset: usize,
     ) -> FilesystemResult<VirtAddr>;
 }
@@ -387,7 +387,7 @@ impl FileSystem for Ext2Wrapper {
         }
 
         let file = get_file(fd)?;
-        let mut locked_file = file.lock();
+        let mut locked_file = { file.lock() };
         let mut remaining = buf.len();
         let mut total_read = 0;
         let mut file_pos = locked_file.position;
@@ -399,13 +399,13 @@ impl FileSystem for Ext2Wrapper {
             serial_println!("1");
 
             // Load the page into cache if not already present
-            let virt = match self.page_cache_get_mapping(fd, page_offset).await {
+            let virt = match self.page_cache_get_mapping(locked_file.clone(), page_offset).await {
                 Ok(va) => va,
                 Err(_) => {
                     serial_println!("2");
-                    self.add_entry_to_page_cache(fd, page_offset).await?;
+                    self.add_entry_to_page_cache(locked_file.clone(), page_offset).await?;
                     serial_println!("3");
-                    let temp = self.page_cache_get_mapping(fd, page_offset).await?;
+                    let temp = self.page_cache_get_mapping(locked_file.clone(), page_offset).await?;
                     serial_println!("4");
                     temp
                 }
@@ -460,7 +460,7 @@ impl FileSystem for Ext2Wrapper {
         let locked_file = file.lock();
         Ok(locked_file.clone())
     }
-    async fn add_entry_to_page_cache(&mut self, fd: usize, offset: usize) -> FilesystemResult<()> {
+    async fn add_entry_to_page_cache(&mut self, file: File, offset: usize) -> FilesystemResult<()> {
         if !FS_INIT_COMPLETE.load(Ordering::Relaxed) {
             Condition::new(
                 FS_INIT_COMPLETE.clone(),
@@ -469,8 +469,6 @@ impl FileSystem for Ext2Wrapper {
             .await;
         }
 
-        let file = get_file(fd)?;
-        let file = file.lock();
         let inode_number = file.inode_number;
         let mut pg_cache = self.page_cache.lock();
         if !pg_cache.contains_key(&inode_number) {
@@ -501,7 +499,7 @@ impl FileSystem for Ext2Wrapper {
 
     async fn page_cache_get_mapping(
         &mut self,
-        fd: usize,
+        file: File,
         offset: usize,
     ) -> FilesystemResult<VirtAddr> {
         if !FS_INIT_COMPLETE.load(Ordering::Relaxed) {
@@ -511,12 +509,12 @@ impl FileSystem for Ext2Wrapper {
             )
             .await;
         }
-        let file = get_file(fd)?;
-        let locked_file = { file.lock() };
-        let inode_number = locked_file.inode_number;
+        let inode_number = file.inode_number;
         let pg_cache = self.page_cache.lock();
+        serial_println!("locked page cache");
         if pg_cache.contains_key(&inode_number) {
             let map = { pg_cache.get(&inode_number).unwrap().lock() };
+            serial_println!("locked inner page cache");
             if map.contains_key(&offset) {
                 let page = map.get(&offset).unwrap().0;
                 return Ok(page.start_address());

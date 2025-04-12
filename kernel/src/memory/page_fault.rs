@@ -279,7 +279,15 @@ pub async fn handle_new_file_mapping(
             .expect("Could not get filesystem")
             .lock()
     };
-    fs.add_entry_to_page_cache(fd, offset as usize)
+    let file = with_current_pcb(|pcb| {
+        pcb.fd_table[fd]
+            .as_ref()
+            .cloned()
+            .expect("could not get fd from fd table")
+    });
+
+    let file_guard = file.lock();
+    fs.add_entry_to_page_cache(file_guard.clone(), offset as usize)
         .await
         .expect("failed to add entry to page cache");
 

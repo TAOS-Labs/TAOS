@@ -84,6 +84,11 @@ pub fn init() -> u32 {
             serial_println!("wrote to file");
             let buffer = user_fs.read_file(fd, &mut buf).await;
             serial_println!("buffer {:#?}", buffer);
+            if let Ok(s) = core::str::from_utf8(&buf[..buf.len()]) {
+                serial_println!("read string: {}", s);
+            } else {
+                serial_println!("read invalid UTF-8 data");
+            }
 
         },
         3,
