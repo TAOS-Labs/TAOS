@@ -90,15 +90,19 @@ impl IntelHDA {
             device_id: device.device_id,
         };
     
+        hda.regs.gctl |= 1 << 8;
         hda.reset().await;
     
         // Verb: 0xF81 = Set Power State + Init
         hda.send_command(0, 0, 0xF81, 0x00);
         let resp = hda.get_response().await;
         serial_println!("SigmaTel codec kickstart response: 0x{:X}", resp);
+
+        hda.send_command(0, 1, 0xF81, 0x00); // try node 1 (AFG)
+
     
         // Set power state to D0 (0x00)
-        serial_println!("Setting power state to D0 on node 0 and 3...");
+        serial_println!("Setting power state to D0 on node 0 and 3");
         hda.send_command(0, 0, 0x705, 0x00); // Set Power State for node 0
         hda.get_response().await;
         hda.send_command(0, 3, 0x705, 0x00); // Set Power State for node 3
@@ -107,7 +111,7 @@ impl IntelHDA {
         nanosleep_current_event(DELAY_NS * 2000).unwrap().await;
 
     
-        // Enable unsolicited responses early (some codecs require this before widget probing)
+        // Enable unsolicited responses early (some codecs require this before widget probing?)
         hda.regs.gctl |= 1 << 8;
     
         // Run full codec and widget discovery (may be empty if widget types still return 0)
@@ -128,22 +132,13 @@ impl IntelHDA {
             serial_println!("Node {} widget type: 0x{:X}", node, widget_type);
         }
     
-        // 🧪 Verb test after kickstart
-        hda.send_command(0, 2, 0xF00, 0);
-        let type2 = hda.get_response().await;
-        serial_println!("Node 2 (DAC) widget type: 0x{:X}", type2);
-    
-        hda.send_command(0, 3, 0xF00, 0);
-        let type3 = hda.get_response().await;
-        serial_println!("Node 3 (Pin) widget type: 0x{:X}", type3);
-    
         hda.enable_pin(3).await;
     
-        //   NEW: Set pin 3's connection to DAC node 2
+        //Set pin 3's connection to DAC node 2 //doing this manually cause all the widgets arer 0
         hda.send_command(0, 3, 0x701, 0x0); // Select connection index 0 (which points to DAC node 2)
         serial_println!("Pin widget connection select set to DAC node 2");
     
-        //   NEW: Unmute and enable output on pin 3
+        // Unmute and enable output on pin 3
         hda.send_command(0, 3, 0xF07, 0); // Get pin control
         let mut pin_ctrl = hda.get_response().await;
         serial_println!("Raw pin control (before): 0x{:X}", pin_ctrl);
@@ -181,6 +176,7 @@ impl IntelHDA {
             serial_println!("Node 3 connection[{}]: 0x{:X}", i, conn);
         }
     
+        //trying with node 2 now
         serial_println!("Setting power state to D0 on DAC node 2");
         hda.send_command(0, 2, 0x705, 0x00); // Power state D0
         let resp = hda.get_response().await;
@@ -233,107 +229,18 @@ impl IntelHDA {
     pub async fn force_known_widgets() -> Vec<WidgetInfo> {
         let mut widgets = Vec::new();
     
-        // Node 2: DAC
         let mut dac = WidgetInfo::new(2);
-        dac.widget_type = 0x1; // DAC
-        dac.amp_out_caps = 0xFFFFFFFF; // Fake full support
+        dac.widget_type = 1; // 0x1 = DAC
+        dac.amp_out_caps = 0xFFFFFFFF; 
         widgets.push(dac);
     
-        // Node 3: Pin
         let mut pin = WidgetInfo::new(3);
-        pin.widget_type = 0x4; // Pin
-        pin.config_default = 0x400001F0; // Typical out jack
-        pin.conn_list.push(2); // Connect to DAC 2
+        pin.widget_type = 4; // 0x4 = Pin
+        pin.conn_list.push(2); // Connect to DAC node 2
         widgets.push(pin);
     
         widgets
     }
-    
-    
-
-    // pub async fn probe_afg_and_widgets(&mut self) -> Vec<WidgetInfo> {
-    //     let mut widgets = Vec::new();
-    
-    //     //Find ffunction group count
-    //     self.send_command(0, 0, 0xF00, 4); // F00h, param=4
-    //     let fg_count_raw = self.get_response().await;
-    //     let fg_count = fg_count_raw & 0xFF;
-    //     serial_println!("Function group count: {}", fg_count);
-    
-    //     //Check each ggroup to find Audio Function Group (AFG)
-    //     let mut afg_nid = None;
-    //     for i in 1..=fg_count {
-    //         self.send_command(0, i as u8, 0xF00, 5); // F00h, param=5
-    //         let group_type = self.get_response().await;
-    //         serial_println!("Func group node {} type: 0x{:X}", i, group_type);
-    
-    //         if (group_type & 0xF) == 0x01 {
-    //             afg_nid = Some(i as u8);
-    //             break;
-    //         }
-    //     }
-    
-    //     let afg_node = match afg_nid {
-    //         Some(nid) => nid,
-    //         None => {
-    //             serial_println!("No AFG found!");
-    //             return widgets;
-    //         }
-    //     };
-    //     serial_println!("AFG found at node {}", afg_node);
-    
-    //     // Gett widget range: starting subnode + count
-    //     self.send_command(0, afg_node, 0xF02, 0); // F02h = subnode count and start
-    //     let val = self.get_response().await;
-    //     let start_id = (val >> 0) & 0xFF;
-    //     let total_nodes = (val >> 16) & 0xFF;
-    //     serial_println!(
-    //         "AFG {} has {} subnodes starting at {}",
-    //         afg_node,
-    //         total_nodes,
-    //         start_id
-    //     );
-    
-    //     for node in start_id..(start_id + total_nodes) {
-    //         let mut w = WidgetInfo::new(node as u8);
-    
-    //         self.send_command(0, node as u8, 0xF00, 0); // Widget Type
-    //         w.widget_type = self.get_response().await;
-    
-    //         self.send_command(0, node as u8, 0x0C, 0); // Pin Capabilities
-    //         w.pin_caps = self.get_response().await;
-    
-    //         self.send_command(0, node as u8, 0x0D, 0); // Input Amp
-    //         w.amp_in_caps = self.get_response().await;
-    
-    //         self.send_command(0, node as u8, 0x12, 0); // Output Amp
-    //         w.amp_out_caps = self.get_response().await;
-    
-    //         self.send_command(0, node as u8, 0x13, 0); // Volume knob
-    //         w.volume_knob = self.get_response().await;
-    
-    //         self.send_command(0, node as u8, 0x1C, 0); // Config default
-    //         w.config_default = self.get_response().await;
-    
-    //         self.send_command(0, node as u8, 0x0E, 0); // Conn list length
-    //         let conn_len = self.get_response().await & 0x7F;
-    //         for i in 0..conn_len {
-    //             self.send_command(0, node as u8, 0xF02 | ((i as u16) << 8), 0);
-    //             w.conn_list.push(self.get_response().await as u8);
-    //         }
-    
-    //         serial_println!(
-    //             "Widget NID={} type=0x{:X}, connections={:?}",
-    //             w.nid,
-    //             w.widget_type,
-    //             w.conn_list
-    //         );
-    
-    //         widgets.push(w);
-    //     }
-    
-    //     widgets
-    // }
 
     pub async fn probe_afg_and_widgets(&mut self) -> Vec<WidgetInfo> {
         let mut widgets = Vec::new();
@@ -427,6 +334,11 @@ impl IntelHDA {
     
             widgets.push(w);
         }
+        let nonzero_widgets: Vec<_> = widgets.iter().filter(|w| w.widget_type != 0).collect();
+        if nonzero_widgets.is_empty() {
+            serial_println!("All widgets returned 0 — codec likely not present or not initialized correctly.");
+        }
+
     
         widgets
     }
@@ -449,11 +361,13 @@ impl IntelHDA {
             serial_println!("GCTL after setting CRST:   0x{:08X}", read_volatile(gctl));
 
             HWRegisterWrite::new(gctl, 0x1, 1).await;
+            nanosleep_current_event(500_000).unwrap().await; // wait 0.5 ms
+
 
             serial_println!("CRST acknowledged by controller");
 
             // Delay 0.1 ms (can we safely go smaller?)
-            nanosleep_current_event(DELAY_NS).unwrap().await;
+            nanosleep_current_event(3_000_000).unwrap().await;
 
             let statests = read_volatile(&self.regs.statests);
             serial_println!("STATESTS (chheckking codec presence): 0x{:X}", statests);
@@ -483,9 +397,9 @@ impl IntelHDA {
             write_volatile(icis, read_volatile(icis) & !0x1); // Clear ICB
             write_volatile(icis, read_volatile(icis) & !0x2); // Clear IRV
             write_volatile(icoi, final_command); // Write command
-                                                 // serial_println!("ICOI written");
+            // serial_println!("ICOI written");
             write_volatile(icis, read_volatile(icis) | 0x1); // Set ICB
-                                                             // serial_println!("ICIS after setting ICB: 0x{:08X}", read_volatile(icis));
+            // serial_println!("ICIS after setting ICB: 0x{:08X}", read_volatile(icis));
         }
 
         true
@@ -523,10 +437,13 @@ impl IntelHDA {
         let icii = MMioConstPtr((base + 0x64) as *const u32);
 
         // TODO timeout error type similar to SDCardError for HDA
+        // serial_println!("Waiting for ICIS IRV to be set");
         HWRegisterWrite::new(icis.as_ptr(), 0x2, 2).await;
+        // serial_println!("ICIS IRV set!");
+
 
         let val = unsafe { icii.read() };
-        serial_println!("ICII (response): 0x{:08X}", val);
+        // serial_println!("ICII (response): 0x{:08X}", val);
 
         unsafe {
             icis.write(icis.read() & !0x2);
@@ -609,6 +526,12 @@ impl IntelHDA {
         );
     
         serial_println!("setup_bdl returned {} entries", num_entries);
+
+        for i in 0..16 {
+            let b = unsafe { *(audio_buf.virt_addr.as_u64() as *const u8).add(i) };
+            serial_println!("Audio buf[{}] = {:02X}", i, b);
+        }
+        
     
         let stream_base = &self.regs.stream_regs[0] as *const _ as *mut u8;
         let ctl1_ptr = unsafe { MMioPtr(stream_base.add(0x00) as *mut u8) };
