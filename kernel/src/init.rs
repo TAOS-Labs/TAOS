@@ -19,7 +19,7 @@ use crate::{
         namespace::Namespace,
         responses::Rattach,
         spsc::{Receiver, Sender},
-    }, logging, memory::{self}, processes::{self}, serial_println, trace
+    }, logging, memory::{self}, processes::{self, process::with_current_pcb}, serial_println, trace
 };
 extern crate alloc;
 
@@ -89,6 +89,17 @@ pub fn init() -> u32 {
             } else {
                 serial_println!("read invalid UTF-8 data");
             }
+            serial_println!("FILE: {:#?}", user_fs.metadata(fd).await);
+            let fd_table = with_current_pcb(|pcb|{
+                pcb.fd_table.clone()
+            });
+            serial_println!("FD TABLE: {:#?}", fd_table);
+
+            let _ = user_fs.close_file(fd).await;
+            let fd_table = with_current_pcb(|pcb|{
+                pcb.fd_table.clone()
+            });
+            serial_println!("FD TABLE: {:#?}", fd_table);
 
         },
         3,
