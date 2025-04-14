@@ -486,7 +486,6 @@ impl FileSystem for Ext2Wrapper {
         let frame = alloc_frame().ok_or(FilesystemError::CacheError)?;
         let default_flags = PageTableFlags::PRESENT | PageTableFlags::WRITABLE;
         let kernel_va = map_kernel_frame(&mut *KERNEL_MAPPER.lock(), frame, default_flags);
-
         // clone the pathname before await
         let path = file.pathname.clone();
 
@@ -530,7 +529,9 @@ impl FileSystem for Ext2Wrapper {
     }
 }
 
-pub static mut FILESYSTEM: Once<Mutex<Ext2Wrapper>> = Once::new();
+lazy_static! {
+    pub static ref FILESYSTEM: Once<Mutex<Ext2Wrapper>> = Once::new();
+}
 
 pub fn init(cpu_id: u32) {
     serial_println!("INITING FS");
@@ -547,7 +548,7 @@ pub fn init(cpu_id: u32) {
                 let refcount = Mutex::new(BTreeMap::new());
                 let ext2_wrapper = Ext2Wrapper::new(page_cache, Mutex::new(fs), refcount);
                 FS_INIT_COMPLETE.store(true, Ordering::Relaxed);
-                unsafe { FILESYSTEM.call_once(|| ext2_wrapper.into()) };
+                FILESYSTEM.call_once(|| ext2_wrapper.into());
             },
             0,
         );

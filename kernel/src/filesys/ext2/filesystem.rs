@@ -3,6 +3,8 @@ use core::sync::atomic::{AtomicBool, Ordering};
 use spin::{Mutex, RwLock};
 use zerocopy::FromBytes;
 
+use crate::serial_println;
+
 use super::{
     allocator::Allocator,
     block_io::{BlockError, BlockIO},
@@ -276,7 +278,6 @@ impl Ext2 {
                 .read_dir()
                 .await
                 .map_err(FilesystemError::NodeError)?;
-
             let entry = entries
                 .iter()
                 .find(|e| e.name == component)
@@ -316,7 +317,11 @@ impl Ext2 {
 
     /// Read file contents from offset
     pub async fn read_file_at(&self, path: &str, pos: usize) -> FilesystemResult<Vec<u8>> {
-        let node = self.get_node(path).await?;
+        let node: Result<Arc<Node>, FilesystemError> = self.get_node(path).await;
+        if let Err(err) = &node {
+            serial_println!("get_node error: {:?}", err);
+        }
+        let node = node.unwrap();
         if !node.is_file() {
             return Err(FilesystemError::NodeError(NodeError::NotFile));
         }
@@ -666,7 +671,12 @@ impl Ext2 {
     }
 
     /// Write data to a file at an offset
-    pub async fn write_file_at(&self, path: &str, data: &[u8], pos: usize) -> FilesystemResult<usize> {
+    pub async fn write_file_at(
+        &self,
+        path: &str,
+        data: &[u8],
+        pos: usize,
+    ) -> FilesystemResult<usize> {
         let node = self.get_node(path).await?;
         if !node.is_file() {
             return Err(FilesystemError::NodeError(NodeError::NotFile));

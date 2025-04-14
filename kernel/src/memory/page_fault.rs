@@ -6,8 +6,8 @@ use x86_64::{
     structures::{
         idt::PageFaultErrorCode,
         paging::{
-            mapper::TranslateResult, OffsetPageTable, Page, PageTable, PageTableFlags, PhysFrame,
-            Size4KiB, Translate,
+            mapper::TranslateResult, Mapper, OffsetPageTable, Page, PageTable, PageTableFlags,
+            PhysFrame, Size4KiB, Translate,
         },
     },
     PhysAddr, VirtAddr,
@@ -23,10 +23,10 @@ use crate::{
             create_mapping, create_mapping_to_frame, get_page_flags, update_mapping,
             update_permissions,
         },
-        HHDM_OFFSET,
+        HHDM_OFFSET, KERNEL_MAPPER,
     },
     processes::process::with_current_pcb,
-    serial_println,
+    serial_println, syscalls::syscall_handlers::block_on,
 };
 
 use super::mm::{VmAreaBackings, VmaChain};
@@ -46,13 +46,7 @@ pub enum FaultOutcome {
         backing: Arc<VmAreaBackings>,
         pt_flags: PageTableFlags,
     },
-    ExistingFileMapping {
-        page: Page<Size4KiB>,
-        mapper: OffsetPageTable<'static>,
-        offset: u64,
-        pt_flags: PageTableFlags,
-    },
-    NewFileMapping {
+    FileMapping {
         page: Page<Size4KiB>,
         mapper: OffsetPageTable<'static>,
         offset: u64,
@@ -108,6 +102,8 @@ pub fn determine_fault_cause(error_code: PageFaultErrorCode) -> FaultOutcome {
         _ => panic!("Unexpected result during page translation"),
     };
 
+    serial_println!("Translate result is {:#?}", translate_result);
+
     let mut outcome = None;
     with_current_pcb(|pcb| {
         pcb.mm.with_vma_tree(|tree| {
@@ -135,8 +131,10 @@ pub fn determine_fault_cause(error_code: PageFaultErrorCode) -> FaultOutcome {
             let backing = Arc::clone(&segment.backing);
             // Compute the mapping offset within the backing.
             // (Assuming each segment's reverse mappings are keyed relative to its own start.)
-            let mapping_offset = fault_offset - seg_key + segment.start;
-            let anon_vma_chain = backing.find_mapping(mapping_offset);
+            let anon_mapping_offset = fault_offset - seg_key + segment.start;
+            let anon_vma_chain = backing.find_mapping(anon_mapping_offset);
+
+            let file_mapping_offset = fault_offset - seg_key + segment.pg_offset;
 
             let pt_flags = vma_to_page_flags(vma.flags);
 
@@ -145,38 +143,13 @@ pub fn determine_fault_cause(error_code: PageFaultErrorCode) -> FaultOutcome {
                 // this check works since if there is no backing file, we set fd to usize::MAX
                 // which is trivially larger than MAX_FILES
                 if segment.fd < MAX_FILES {
-                    let file = pcb.fd_table[segment.fd]
-                        .clone()
-                        .expect("No file associated with this fd.");
-                    let inode_number = { file.lock().inode_number };
-                    let fs_arc = unsafe { FILESYSTEM.get().expect("Could not get filesystem") };
-                    let fs = fs_arc.lock();
-                    let page_cache_map = fs.page_cache.lock();
-                    let inode_cache = page_cache_map
-                        .get(&inode_number)
-                        .expect("could not find inode number in page cache");
-
-                    let page_cache = inode_cache.lock();
-
-                    let file_offset = (segment.pg_offset + fault_offset) as usize;
-                    if page_cache.contains_key(&file_offset) {
-                        serial_println!("FAULT IS EXISTING FILE MAPPING");
-                        Some(FaultOutcome::ExistingFileMapping {
-                            page,
-                            mapper,
-                            offset: file_offset as u64,
-                            pt_flags,
-                        })
-                    } else {
-                        serial_println!("FAULT IS NEW FILE MAPPING");
-                        Some(FaultOutcome::NewFileMapping {
-                            page,
-                            mapper,
-                            offset: file_offset as u64,
-                            pt_flags,
-                            fd: segment.fd,
-                        })
-                    }
+                    Some(FaultOutcome::FileMapping {
+                        page,
+                        mapper,
+                        offset: file_mapping_offset as u64,
+                        pt_flags,
+                        fd: segment.fd,
+                    })
                 }
                 // if there is no file backing, handle it as an anonymous page
                 else if let Some(chain) = anon_vma_chain {
@@ -259,7 +232,7 @@ pub fn handle_existing_file_mapping(
     );
 }
 
-pub async fn handle_new_file_mapping(
+pub async fn handle_file_mapping(
     page: Page<Size4KiB>,
     mapper: &mut OffsetPageTable<'_>,
     offset: u64,
@@ -270,15 +243,9 @@ pub async fn handle_new_file_mapping(
 
     let mut flags = pt_flags;
     flags.set(PageTableFlags::PRESENT, true);
-    flags.set(PageTableFlags::WRITABLE, true);
 
-    create_mapping(page, mapper, Some(flags));
-    let mut fs = unsafe {
-        FILESYSTEM
-            .get_mut()
-            .expect("Could not get filesystem")
-            .lock()
-    };
+    let mut fs =
+        FILESYSTEM.get().expect("could not get fs").lock();
     let file = with_current_pcb(|pcb| {
         pcb.fd_table[fd]
             .as_ref()
@@ -286,26 +253,38 @@ pub async fn handle_new_file_mapping(
             .expect("could not get fd from fd table")
     });
 
-    let file_guard = file.lock();
-    fs.add_entry_to_page_cache(file_guard.clone(), offset as usize)
+    let file_guard = { file.lock() };
+    let absent_in_page_cache = fs
+        .page_cache_get_mapping(file_guard.clone(), offset as usize)
         .await
-        .expect("failed to add entry to page cache");
-
-    let ptr = page.start_address().as_u64() as *mut u8;
-    let buffer: &mut [u8] = unsafe { slice::from_raw_parts_mut(ptr, 1024) };
-    {
-        // Now that the virtual address is mapped, use it to memcpy the file at an offset to the frame
-        let mut fs = unsafe { FILESYSTEM.get().expect("Could not get filesystem").lock() };
-        fs.seek_file(fd, offset as usize)
+        .is_err();
+    if absent_in_page_cache {
+        serial_println!("OFFSET: {:#?}", offset);
+        fs.add_entry_to_page_cache(file_guard.clone(), offset as usize)
             .await
-            .expect("Seeking file failed.");
-        fs.read_file(fd, buffer).await.expect("could not read file");
+            .expect("failed to add entry to page cache");
     }
 
-    if !pt_flags.contains(PageTableFlags::WRITABLE) {
-        flags.set(PageTableFlags::WRITABLE, false);
-        update_permissions(page, mapper, flags);
-    }
+    let kernel_va = fs
+        .page_cache_get_mapping(file_guard.clone(), offset as usize)
+        .await
+        .unwrap();
+    let kernel_mapper = { KERNEL_MAPPER.lock() };
+    let frame: PhysFrame<Size4KiB> = kernel_mapper
+        .translate_page(Page::containing_address(kernel_va))
+        .expect("Could not translate kernel VA.");
+    create_mapping_to_frame(page, mapper, Some(flags), frame);
+
+    // let ptr = page.start_address().as_u64() as *mut u8;
+    // let buffer: &mut [u8] = unsafe { slice::from_raw_parts_mut(ptr, 1024) };
+    // {
+    //     // Now that the virtual address is mapped, use it to memcpy the file at an offset to the frame
+    //     let mut fs = unsafe { FILESYSTEM.get().expect("Could not get filesystem").lock() };
+    //     fs.seek_file(fd, offset as usize)
+    //         .await
+    //         .expect("Seeking file failed.");
+    //     fs.read_file(fd, buffer).await.expect("could not read file");
+    // }
 }
 
 /// Handles a fault by creating a new mapping and inserting it into the backing.
