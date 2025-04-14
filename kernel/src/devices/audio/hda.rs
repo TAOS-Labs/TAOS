@@ -134,7 +134,6 @@ impl IntelHDA {
         for node in 1..=15 {
             hda.send_command(0, node, 0xF00, 0);
             let widget_type = hda.get_response().await;
-            serial_println!("Node {} widget type: 0x{:X}", node, widget_type);
             serial_println!("Node {} widget type: 0x{:X} ({})", node, widget_type, IntelHDA::decode_widget_type(widget_type));
 
         }
@@ -617,12 +616,13 @@ impl IntelHDA {
         let regs_base = MMioPtr(self.regs as *const _ as *mut u8);
     
         let stream_base = &self.regs.stream_regs[0] as *const _ as *mut u8;
-        let ctl1_ptr = unsafe { MMioPtr(stream_base.add(0x00) as *mut u8) };
+        let ctl0_ptr = unsafe { MMioPtr(stream_base.add(0x00) as *mut u8) };
         let ctl2_ptr = unsafe { MMioPtr(stream_base.add(0x02) as *mut u8) };
         let sts_ptr = unsafe { MMioPtr(stream_base.add(0x03) as *mut u8) };
         let lpib_ptr = unsafe { MMioPtr(stream_base.add(0x04) as *mut u32) };
         let cbl_ptr = unsafe { MMioPtr(stream_base.add(0x08) as *mut u32) };
         let lvi_ptr = unsafe { MMioPtr(stream_base.add(0x0C) as *mut u16) };
+        let fifo_ptr = unsafe { MMioPtr(stream_base.add(0x10) as *mut u16) };
         let fmt_ptr = unsafe { MMioPtr(stream_base.add(0x12) as *mut u16) };
         let bdlpl_ptr = unsafe { MMioPtr(stream_base.add(0x18) as *mut u32) };
         let bdlpu_ptr = unsafe { MMioPtr(stream_base.add(0x1C) as *mut u32) };
@@ -631,7 +631,7 @@ impl IntelHDA {
         serial_println!("---------------------------------------------------------");
         serial_println!("FMT pointer address: 0x{:X}", fmt_ptr.as_ptr() as usize);
         let base = &self.regs.stream_regs[0] as *const _ as usize;
-        serial_println!("Stream 0 base address: 0x{:X}", base);
+        serial_println!("Stream 1 base address: 0x{:X}", base);
         serial_println!("Expected FMT offset from base: 0x12");
         serial_println!("→ Should be at: 0x{:X}", base + 0x12);
         serial_println!("---------------------------------------------------------");
@@ -640,13 +640,13 @@ impl IntelHDA {
     
         // Reset stream
         unsafe {
-            ctl1_ptr.write(1 << 0);
-            serial_println!("Wrote CTL (SRST set): 0x{:08X}", ctl1_ptr.read());
-            HWRegisterWrite::new(ctl1_ptr.as_ptr(), 1, 1).await;
+            ctl0_ptr.write(1 << 0);
+            serial_println!("Wrote CTL (SRST set): 0x{:08X}", ctl0_ptr.read());
+            HWRegisterWrite::new(ctl0_ptr.as_ptr(), 1, 1).await;
     
-            ctl1_ptr.write(0);
-            serial_println!("Wrote CTL (SRST cleared): 0x{:08X}", ctl1_ptr.read());
-            HWRegisterWrite::new(ctl1_ptr.as_ptr(), 1, 0).await;
+            ctl0_ptr.write(0);
+            serial_println!("Wrote CTL (SRST cleared): 0x{:08X}", ctl0_ptr.read());
+            HWRegisterWrite::new(ctl0_ptr.as_ptr(), 1, 0).await;
         }
     
         // Stream configuration
@@ -657,9 +657,12 @@ impl IntelHDA {
     
             write_volatile(cbl_ptr.as_ptr(), audio_buf.size as u32);
             serial_println!("Wrote CBL: {}", cbl_ptr.read());
-    
+
             write_volatile(lvi_ptr.as_ptr(), (num_entries - 1) as u16);
             serial_println!("Wrote LVI: {}", lvi_ptr.read());
+    
+            write_volatile(fifo_ptr.as_ptr(), 8 as u16);
+            serial_println!("Wrote FIFO: {}", fifo_ptr.read());
     
             //Correct ordering of BDLPL and BDLPU
             write_volatile(bdlpl_ptr.as_ptr(), (bdl_phys & 0xFFFFFFFF) as u32);
@@ -697,10 +700,10 @@ impl IntelHDA {
     
         // Start stream (RUN | DEIE | FEIE)
         unsafe {
-            let val = ctl1_ptr.read();
-            let new_ctl = val | (1 << 1) | (1 << 2) | (1 << 3);
-            ctl1_ptr.write(new_ctl);
-            serial_println!("Wrote CTL (RUN | DEIE | FEIE): 0x{:08X}", ctl1_ptr.read());
+            let val = ctl0_ptr.read();
+            let new_ctl = val | (1 << 1) | (1 << 3) | (1 << 4);
+            ctl0_ptr.write(new_ctl);
+            serial_println!("Wrote CTL (RUN | DEIE | FEIE): 0x{:08X}", ctl0_ptr.read());
         }
     
         // Dump stream register state
@@ -730,7 +733,7 @@ impl IntelHDA {
         serial_println!("BDLPU : 0x{:08X}", bdlpu);
 
         // Other values (no change needed if not from packed struct)
-        let ctl = unsafe { (ctl1_ptr.read() as u32) | ((ctl2_ptr.read() as u32) << 16) };
+        let ctl = unsafe { (ctl0_ptr.read() as u32) | ((ctl2_ptr.read() as u32) << 16) };
         
         let gctl_ptr = unsafe { regs_base.add(offset_of!(HdaRegisters, gctl)) };
         let intsts_ptr = unsafe { regs_base.add(offset_of!(HdaRegisters, intsts)) };
@@ -745,7 +748,6 @@ impl IntelHDA {
             gctl,
             intsts
         );
-
     
         // Poll LPIB to watch playback progress
         serial_println!("Polling LPIB...");
@@ -757,7 +759,7 @@ impl IntelHDA {
         }
     
         serial_println!("Stopping stream.");
-        self.stop_stream(0);
+        self.stop_stream(1);
     }
     
 }
