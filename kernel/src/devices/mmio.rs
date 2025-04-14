@@ -8,12 +8,24 @@ impl<T> MMioPtr<T> {
         core::ptr::read_volatile(self.0)
     }
 
+    pub unsafe fn read_unaliged(&self) -> T {
+        core::ptr::read_unaligned(self.0)
+    }
+
     pub unsafe fn write(&self, val: T) {
         core::ptr::write_volatile(self.0, val);
     }
 
+    pub unsafe fn write_unaligned(&self, val: T) {
+        core::ptr::write_unaligned(self.0, val);
+    }
+
     pub fn as_ptr(&self) -> *mut T {
         self.0
+    }
+
+    pub unsafe fn add(&self, offset: usize) -> Self {
+        MMioPtr(self.0.add(offset))
     }
 }
 
@@ -27,8 +39,16 @@ impl<T> MMioConstPtr<T> {
         core::ptr::read_volatile(self.0)
     }
 
+    pub unsafe fn read_unaliged(&self) -> T {
+        core::ptr::read_unaligned(self.0)
+    }
+
     #[allow(dead_code)]
     pub fn as_ptr(&self) -> *const T {
         self.0
+    }
+
+    pub unsafe fn add(&self, offset: usize) -> Self {
+        MMioConstPtr(self.0.add(offset))
     }
 }

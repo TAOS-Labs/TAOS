@@ -13,7 +13,8 @@ use crate::devices::{
     },
     mmio::MMioPtr,
 };
-use core::ptr::{read_volatile, write_volatile};
+use core::{future::Future, mem::offset_of, pin::Pin, ptr::{read_volatile, write_volatile}};
+use alloc::{boxed::Box, vec};
 use alloc::vec::Vec;
 use x86_64::structures::idt::InterruptStackFrame;
 use crate::devices::audio::widget_info::WidgetInfo;
@@ -28,16 +29,18 @@ const DELAY_NS: u64 = 100_000;
 /// - Handles interrupts by reading INTSTS: interrupt status registeer (0x20) and RIRBSTS: response ring buffer status (0x5d).
 /// - Clears the respective bits by writing them back.
 /// - Sends EOI after handling.
+
 pub extern "x86-interrupt" fn hda_interrupt_handler(_frame: InterruptStackFrame) {
     let virt = *HHDM_OFFSET + HDA_BAR_PHYS as u64;
-    let regs = unsafe { &mut *(virt.as_u64() as *mut HdaRegisters) };
+    let regs = unsafe { &*(virt.as_u64() as *const HdaRegisters) };
+
+    let regs_base = regs as *const _ as *const u8;
+    let intsts_ptr = unsafe { regs_base.add(offset_of!(HdaRegisters, intsts)) as *mut u32 };
+    let rirbsts_ptr = unsafe { regs_base.add(offset_of!(HdaRegisters, rirbsts)) as *mut u8 };
 
     unsafe {
-        let intsts = &mut regs.intsts;
-        let rirbsts = &mut regs.rirbsts;
-
-        let int_status = read_volatile(intsts);
-        let rirb_status = read_volatile(rirbsts);
+        let int_status = read_volatile(intsts_ptr);
+        let rirb_status = read_volatile(rirbsts_ptr);
 
         serial_println!(
             "HDA interrupt received: INTSTS=0x{:08X}, RIRBSTS=0x{:02X}",
@@ -46,11 +49,11 @@ pub extern "x86-interrupt" fn hda_interrupt_handler(_frame: InterruptStackFrame)
         );
 
         if int_status != 0 {
-            write_volatile(intsts, int_status);
+            write_volatile(intsts_ptr, int_status);
         }
 
         if rirb_status != 0 {
-            write_volatile(rirbsts, rirb_status);
+            write_volatile(rirbsts_ptr, rirb_status);
         }
     }
 
@@ -130,6 +133,8 @@ impl IntelHDA {
             hda.send_command(0, node, 0xF00, 0);
             let widget_type = hda.get_response().await;
             serial_println!("Node {} widget type: 0x{:X}", node, widget_type);
+            serial_println!("Node {} widget type: 0x{:X} ({})", node, widget_type, IntelHDA::decode_widget_type(widget_type));
+
         }
     
         hda.enable_pin(3).await;
@@ -137,6 +142,14 @@ impl IntelHDA {
         //Set pin 3's connection to DAC node 2 //doing this manually cause all the widgets arer 0
         hda.send_command(0, 3, 0x701, 0x0); // Select connection index 0 (which points to DAC node 2)
         serial_println!("Pin widget connection select set to DAC node 2");
+
+        // Trace the full path from pin 3 to DAC (for verification/debug)
+        serial_println!("___________TRACE_____________");
+        if let Some(path) = hda.trace_path_to_dac(3).await {
+            serial_println!("Traced path from pin node 3 to DAC: {:?}", path);
+        } else {
+            serial_println!("Failed to trace path from pin to DAC.");
+        }
     
         // Unmute and enable output on pin 3
         hda.send_command(0, 3, 0xF07, 0); // Get pin control
@@ -147,6 +160,18 @@ impl IntelHDA {
         pin_ctrl |= 0x20; // Bit 5: Unmute
         hda.send_command(0, 3, 0x707, (pin_ctrl & 0xFF) as u8); // Set updated pin control
         serial_println!("Pin control (after enable+unmute): 0x{:X}", pin_ctrl);
+
+        hda.send_command(0, 3, 0x1C, 0); // Get default config
+        let config_default = hda.get_response().await;
+        let def_device = (config_default >> 20) & 0xF;
+        let def_device_name = match def_device {
+            0x0 => "Line Out",
+            0x1 => "Speaker",
+            0x2 => "HP Out",
+            _ => "Other",
+        };
+        serial_println!("Pin node 3 default device: {} (0x{:X})", def_device_name, def_device);
+
     
         nanosleep_current_event(DELAY_NS).unwrap().await; // Short wait (0.1 ms) after change
     
@@ -226,6 +251,21 @@ impl IntelHDA {
         Some(hda)
     }
 
+    fn decode_widget_type(val: u32) -> &'static str {
+        match val & 0xF {
+            0x0 => "Audio Output (DAC)",
+            0x1 => "Audio Input (ADC)",
+            0x2 => "Mixer",
+            0x3 => "Selector",
+            0x4 => "Pin Complex",
+            0x5 => "Power",
+            0x6 => "Volume Knob",
+            0x7 => "Beep Generator",
+            0x8 => "Vendor Specific",
+            _ => "Unknown",
+        }
+    }
+    
     pub async fn force_known_widgets() -> Vec<WidgetInfo> {
         let mut widgets = Vec::new();
     
@@ -342,25 +382,61 @@ impl IntelHDA {
     
         widgets
     }
-    
-    
 
+    pub async fn trace_path_to_dac(&mut self, start: u8) -> Option<Vec<u8>> {
+        use alloc::vec::Vec;
+        let mut stack: Vec<(u8, Vec<u8>)> = Vec::new();
+        stack.push((start, vec![start]));
+    
+        while let Some((node, path)) = stack.pop() {
+            self.send_command(0, node, 0xF00, 0);
+            let widget_type = self.get_response().await;
+    
+            if widget_type & 0xF == 0x0 {
+                return Some(path); // Found DAC
+            }
+    
+            self.send_command(0, node, 0xF02, 0); // Conn list len
+            let conn_len = self.get_response().await & 0x7F;
+    
+            for i in 0..conn_len {
+                self.send_command(0, node, 0xF02 | ((i as u16) << 8), 0);
+                let conn_node = self.get_response().await as u8;
+                let mut new_path = path.clone();
+                new_path.push(conn_node);
+                stack.push((conn_node, new_path));
+            }
+        }
+    
+        None
+    }
+    
+    
+        
     /// Resets the controller using GCTL register:
     /// - Clears and sets CRST bit (bit 0)
     pub async fn reset(&mut self) {
         unsafe {
-            let gctl = &mut self.regs.gctl;
+            let gctl_ptr = MMioPtr((&self.regs as *const _ as *const u8).add(offset_of!(HdaRegisters, gctl)) as *mut u32);
+            let gctl = gctl_ptr.read();
 
-            serial_println!("GCTL before clearing CRST: 0x{:08X}", read_volatile(gctl));
-            write_volatile(gctl, read_volatile(gctl) & !(1 << 0)); // Clear CRST
+            serial_println!("GCTL before clearing CRST: 0x{:08X}", gctl_ptr.read());
 
-            HWRegisterWrite::new(gctl, 0x1, 0).await;
 
-            serial_println!("GCTL after clearing CRST:  0x{:08X}", read_volatile(gctl));
-            write_volatile(gctl, read_volatile(gctl) | (1 << 0)); // Set CRST
-            serial_println!("GCTL after setting CRST:   0x{:08X}", read_volatile(gctl));
+            gctl_ptr.write(gctl & !(1 << 0));
+            HWRegisterWrite::new(gctl_ptr.as_ptr(), 0x1, 0).await;
 
-            HWRegisterWrite::new(gctl, 0x1, 1).await;
+            let gctl = gctl_ptr.read();
+            serial_println!("GCTL after clearing CRST:  0x{:08X}", gctl);
+
+            
+            gctl_ptr.write(gctl | (1 << 0));
+            serial_println!(
+                "GCTL after setting CRST:   0x{:08X}",
+                 gctl_ptr.read()
+            );
+
+            HWRegisterWrite::new(gctl_ptr.as_ptr(), 0x1, 1).await;
             nanosleep_current_event(500_000).unwrap().await; // wait 0.5 ms
 
 
@@ -369,7 +445,9 @@ impl IntelHDA {
             // Delay 0.1 ms (can we safely go smaller?)
             nanosleep_current_event(3_000_000).unwrap().await;
 
-            let statests = read_volatile(&self.regs.statests);
+
+            let statests_ptr = (&self.regs as *const _ as *const u8).add(offset_of!(HdaRegisters, statests)) as *const u16;
+            let statests = core::ptr::read_unaligned(statests_ptr);
             serial_println!("STATESTS (chheckking codec presence): 0x{:X}", statests);
         }
     }
@@ -418,12 +496,15 @@ impl IntelHDA {
             | (data as u32 & 0xFFFF);
 
         unsafe {
-            let icis = &mut self.regs.icis;
-            let icoi = &mut self.regs.icoi;
+            let icis_ptr = (&self.regs as *const _ as *const u8).add(offset_of!(HdaRegisters, icis)) as *mut u32;
+            let icoi_ptr = (&self.regs as *const _ as *const u8).add(offset_of!(HdaRegisters, icoi)) as *mut u32;
 
-            write_volatile(icis, read_volatile(icis) & !0x3);
-            write_volatile(icoi, final_command);
-            write_volatile(icis, read_volatile(icis) | 0x1);
+            let icis = unsafe { core::ptr::read_unaligned(icis_ptr) };
+            let icoi = unsafe { core::ptr::read_unaligned(icoi_ptr) };
+
+            write_volatile(icis_ptr, read_volatile(icis_ptr) & !0x3);
+            write_volatile(icoi_ptr, final_command);
+            write_volatile(icis_ptr, read_volatile(icis_ptr) | 0x1);
         }
 
         true
@@ -532,6 +613,8 @@ impl IntelHDA {
             serial_println!("Audio buf[{}] = {:02X}", i, b);
         }
         
+
+        let regs_base = MMioPtr(&self.regs as *const _ as *mut u8);
     
         let stream_base = &self.regs.stream_regs[0] as *const _ as *mut u8;
         let ctl1_ptr = unsafe { MMioPtr(stream_base.add(0x00) as *mut u8) };
@@ -544,6 +627,16 @@ impl IntelHDA {
         let bdlpl_ptr = unsafe { MMioPtr(stream_base.add(0x18) as *mut u32) };
         let bdlpu_ptr = unsafe { MMioPtr(stream_base.add(0x1C) as *mut u32) };
         let bdl_phys = bdl_buf.phys_addr.as_u64();
+
+        serial_println!("---------------------------------------------------------");
+        serial_println!("FMT pointer address: 0x{:X}", fmt_ptr.as_ptr() as usize);
+        let base = &self.regs.stream_regs[0] as *const _ as usize;
+        serial_println!("Stream 0 base address: 0x{:X}", base);
+        serial_println!("Expected FMT offset from base: 0x12");
+        serial_println!("→ Should be at: 0x{:X}", base + 0x12);
+        serial_println!("---------------------------------------------------------");
+
+
     
         // Reset stream
         unsafe {
@@ -558,7 +651,7 @@ impl IntelHDA {
     
         // Stream configuration
         unsafe {
-            fmt_ptr.write(0x4011);
+            write_volatile(fmt_ptr.as_ptr(), 0x4011);
             HWRegisterWrite::new(fmt_ptr.as_ptr(), 0xFFFFu16, 0x4011).await;
             serial_println!("Wrote FMT: 0x{:04X}", fmt_ptr.read());
     
@@ -569,10 +662,10 @@ impl IntelHDA {
             serial_println!("Wrote LVI: {}", lvi_ptr.read());
     
             //Correct ordering of BDLPL and BDLPU
-            write_volatile(bdlpl_ptr.as_ptr(), bdl_phys as u32);
+            write_volatile(bdlpl_ptr.as_ptr(), (bdl_phys & 0xFFFFFFFF) as u32);
             serial_println!("Wrote BDLPL: 0x{:08X}", bdlpl_ptr.read());
 
-            write_volatile(bdlpu_ptr.as_ptr(), 0); // High bits = 0 for 32-bit address
+            write_volatile(bdlpu_ptr.as_ptr(), (bdl_phys >> 32) as u32);// High bits = 0 for 32-bit address
             serial_println!("Wrote BDLPU: 0x{:08X}", bdlpu_ptr.read());
         }
     
@@ -591,11 +684,14 @@ impl IntelHDA {
         }
     
         // Enable global DMA
+
+        let gctl_ptr = unsafe { regs_base.add(offset_of!(HdaRegisters, gctl)) };
         unsafe {
-            self.regs.gctl |= 1 << 1;
+            let current = gctl_ptr.read();
+            gctl_ptr.write(current | (1 << 1));
             serial_println!(
                 "GCTL after DMA enable: 0x{:08X}",
-                read_volatile(&self.regs.gctl)
+                gctl_ptr.read()
             );
         }
     
@@ -608,26 +704,42 @@ impl IntelHDA {
         }
     
         // Dump stream register state
-        let sd = &self.regs.stream_regs[0];
-        let ctl_val = unsafe {
-            (read_volatile(&sd.ctl0) as u32) | 
-            ((read_volatile(&sd.ctl1) as u32) << 8) | 
-            ((read_volatile(&sd.ctl2) as u32) << 16)
-        };
+        use core::ptr::read_unaligned;
+
+        let sd_base = &self.regs.stream_regs[0] as *const _ as *const u8;
+
+        let ctl0 = unsafe { read_unaligned(sd_base.add(0x00) as *const u8) };
+        let ctl1 = unsafe { read_unaligned(sd_base.add(0x01) as *const u8) };
+        let ctl2 = unsafe { read_unaligned(sd_base.add(0x02) as *const u8) };
+        let ctl_val = (ctl0 as u32) | ((ctl1 as u32) << 8) | ((ctl2 as u32) << 16);
+
+        let sts    = unsafe { read_unaligned(sd_base.add(0x03) as *const u8) };
+        let lpib   = unsafe { read_unaligned(sd_base.add(0x04) as *const u32) };
+        let cbl    = unsafe { read_unaligned(sd_base.add(0x08) as *const u32) };
+        let lvi    = unsafe { read_unaligned(sd_base.add(0x0C) as *const u16) };
+        let fmt    = unsafe { read_unaligned(sd_base.add(0x12) as *const u16) };
+        let bdlpl  = unsafe { read_unaligned(sd_base.add(0x18) as *const u32) };
+        let bdlpu  = unsafe { read_unaligned(sd_base.add(0x1C) as *const u32) };
+
         serial_println!("--- SD0 Register Dump ---");
         serial_println!("CTL   : 0x{:08X}", ctl_val);
-        serial_println!("STS   : 0x{:02X}", unsafe { read_volatile(&sd.sts) });
-        serial_println!("LPIB  : 0x{:08X}", unsafe { read_volatile(&sd.lpib) });
-        serial_println!("CBL   : 0x{:08X}", unsafe { read_volatile(&sd.cbl) });
-        serial_println!("LVI   : 0x{:04X}", unsafe { read_volatile(&sd.lvi) });
-        serial_println!("FMT   : 0x{:04X}", unsafe { read_volatile(&sd.fmt) });
-        serial_println!("BDLPL : 0x{:08X}", unsafe { read_volatile(&sd.bdlpl) });
-        serial_println!("BDLPU : 0x{:08X}", unsafe { read_volatile(&sd.bdlpu) });
-    
+        serial_println!("STS   : 0x{:02X}", sts);
+        serial_println!("LPIB  : 0x{:08X}", lpib);
+        serial_println!("CBL   : 0x{:08X}", cbl);
+        serial_println!("LVI   : 0x{:04X}", lvi);
+        serial_println!("FMT   : 0x{:04X}", fmt);
+        serial_println!("BDLPL : 0x{:08X}", bdlpl);
+        serial_println!("BDLPU : 0x{:08X}", bdlpu);
+
+        // Other values (no change needed if not from packed struct)
         let ctl = unsafe { (ctl1_ptr.read() as u32) | ((ctl2_ptr.read() as u32) << 16) };
-        let lpib = unsafe { lpib_ptr.read() };
-        let gctl = unsafe { read_volatile(&self.regs.gctl) };
-        let intsts = unsafe { read_volatile(&self.regs.intsts) };
+        
+        let gctl_ptr = unsafe { regs_base.add(offset_of!(HdaRegisters, gctl)) };
+        let intsts_ptr = unsafe { regs_base.add(offset_of!(HdaRegisters, intsts)) };
+
+        let gctl = unsafe { gctl_ptr.read() };
+        let intsts = unsafe { intsts_ptr.read() };
+
         serial_println!(
             "After RUN -> CTL=0x{:08X}, LPIB=0x{:X}, GCTL=0x{:08X}, INTSTS=0x{:08X}",
             ctl,
@@ -635,6 +747,7 @@ impl IntelHDA {
             gctl,
             intsts
         );
+
     
         // Poll LPIB to watch playback progress
         serial_println!("Polling LPIB...");
