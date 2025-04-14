@@ -92,7 +92,9 @@ impl IntelHDA {
             vendor_id: device.vendor_id,
             device_id: device.device_id,
         };
-    
+
+        serial_println!("BASE: 0x{:08X}", hda.base);
+
         hda.regs.gctl |= 1 << 8;
         hda.reset().await;
     
@@ -417,7 +419,7 @@ impl IntelHDA {
     /// - Clears and sets CRST bit (bit 0)
     pub async fn reset(&mut self) {
         unsafe {
-            let gctl_ptr = MMioPtr((&self.regs as *const _ as *const u8).add(offset_of!(HdaRegisters, gctl)) as *mut u32);
+            let gctl_ptr = MMioPtr((self.regs as *const _ as *const u8).add(offset_of!(HdaRegisters, gctl)) as *mut u32);
             let gctl = gctl_ptr.read();
 
             serial_println!("GCTL before clearing CRST: 0x{:08X}", gctl_ptr.read());
@@ -428,9 +430,8 @@ impl IntelHDA {
 
             let gctl = gctl_ptr.read();
             serial_println!("GCTL after clearing CRST:  0x{:08X}", gctl);
-
             
-            gctl_ptr.write(gctl | (1 << 0));
+            gctl_ptr.write(gctl | (1 << 0));        // THIS IS THE CULPRIT <------
             serial_println!(
                 "GCTL after setting CRST:   0x{:08X}",
                  gctl_ptr.read()
@@ -446,8 +447,8 @@ impl IntelHDA {
             nanosleep_current_event(3_000_000).unwrap().await;
 
 
-            let statests_ptr = (&self.regs as *const _ as *const u8).add(offset_of!(HdaRegisters, statests)) as *const u16;
-            let statests = core::ptr::read_unaligned(statests_ptr);
+            let statests_ptr = (self.regs as *const _ as *const u8).add(offset_of!(HdaRegisters, statests)) as *const u16;
+            let statests = core::ptr::read_volatile(statests_ptr);
             serial_println!("STATESTS (chheckking codec presence): 0x{:X}", statests);
         }
     }
@@ -464,8 +465,10 @@ impl IntelHDA {
             | (data as u32 & 0xFF);
 
         let base = (*HHDM_OFFSET + self.base as u64).as_u64();
-        let icis = (base + 0x68) as *mut u32;
-        let icoi = (base + 0x60) as *mut u32;
+        let icis = (base + offset_of!(HdaRegisters, icis) as u64) as *mut u32;  // TODO double check this calc?
+        let icoi = (base + offset_of!(HdaRegisters, icoi) as u64) as *mut u32;
+
+        // serial_println!("Base: 0x{:08X} Offset 0x{:08X}", self.base, offset_of!(HdaRegisters, icis));
 
         // serial_println!("--- send_command ---");
         // serial_println!("Command: 0x{:08X}", final_command);
@@ -496,11 +499,8 @@ impl IntelHDA {
             | (data as u32 & 0xFFFF);
 
         unsafe {
-            let icis_ptr = (&self.regs as *const _ as *const u8).add(offset_of!(HdaRegisters, icis)) as *mut u32;
-            let icoi_ptr = (&self.regs as *const _ as *const u8).add(offset_of!(HdaRegisters, icoi)) as *mut u32;
-
-            let icis = unsafe { core::ptr::read_unaligned(icis_ptr) };
-            let icoi = unsafe { core::ptr::read_unaligned(icoi_ptr) };
+            let icis_ptr = (self.regs as *const _ as *const u8).add(offset_of!(HdaRegisters, icis)) as *mut u32;
+            let icoi_ptr = (self.regs as *const _ as *const u8).add(offset_of!(HdaRegisters, icoi)) as *mut u32;
 
             write_volatile(icis_ptr, read_volatile(icis_ptr) & !0x3);
             write_volatile(icoi_ptr, final_command);
@@ -514,8 +514,8 @@ impl IntelHDA {
     pub async fn get_response(&mut self) -> u32 {
         let base = (*HHDM_OFFSET + self.base as u64).as_u64();
 
-        let icis = MMioPtr((base + 0x68) as *mut u32);
-        let icii = MMioConstPtr((base + 0x64) as *const u32);
+        let icis = MMioPtr((base + offset_of!(HdaRegisters, icis) as u64) as *mut u32);
+        let icii = MMioConstPtr((base + offset_of!(HdaRegisters, icii) as u64) as *const u32);
 
         // TODO timeout error type similar to SDCardError for HDA
         // serial_println!("Waiting for ICIS IRV to be set");
@@ -614,7 +614,7 @@ impl IntelHDA {
         }
         
 
-        let regs_base = MMioPtr(&self.regs as *const _ as *mut u8);
+        let regs_base = MMioPtr(self.regs as *const _ as *mut u8);
     
         let stream_base = &self.regs.stream_regs[0] as *const _ as *mut u8;
         let ctl1_ptr = unsafe { MMioPtr(stream_base.add(0x00) as *mut u8) };
@@ -704,22 +704,20 @@ impl IntelHDA {
         }
     
         // Dump stream register state
-        use core::ptr::read_unaligned;
-
         let sd_base = &self.regs.stream_regs[0] as *const _ as *const u8;
 
-        let ctl0 = unsafe { read_unaligned(sd_base.add(0x00) as *const u8) };
-        let ctl1 = unsafe { read_unaligned(sd_base.add(0x01) as *const u8) };
-        let ctl2 = unsafe { read_unaligned(sd_base.add(0x02) as *const u8) };
+        let ctl0 = unsafe { read_volatile(sd_base.add(0x00) as *const u8) };
+        let ctl1 = unsafe { read_volatile(sd_base.add(0x01) as *const u8) };
+        let ctl2 = unsafe { read_volatile(sd_base.add(0x02) as *const u8) };
         let ctl_val = (ctl0 as u32) | ((ctl1 as u32) << 8) | ((ctl2 as u32) << 16);
 
-        let sts    = unsafe { read_unaligned(sd_base.add(0x03) as *const u8) };
-        let lpib   = unsafe { read_unaligned(sd_base.add(0x04) as *const u32) };
-        let cbl    = unsafe { read_unaligned(sd_base.add(0x08) as *const u32) };
-        let lvi    = unsafe { read_unaligned(sd_base.add(0x0C) as *const u16) };
-        let fmt    = unsafe { read_unaligned(sd_base.add(0x12) as *const u16) };
-        let bdlpl  = unsafe { read_unaligned(sd_base.add(0x18) as *const u32) };
-        let bdlpu  = unsafe { read_unaligned(sd_base.add(0x1C) as *const u32) };
+        let sts    = unsafe { read_volatile(sd_base.add(0x03) as *const u8) };
+        let lpib   = unsafe { read_volatile(sd_base.add(0x04) as *const u32) };
+        let cbl    = unsafe { read_volatile(sd_base.add(0x08) as *const u32) };
+        let lvi    = unsafe { read_volatile(sd_base.add(0x0C) as *const u16) };
+        let fmt    = unsafe { read_volatile(sd_base.add(0x12) as *const u16) };
+        let bdlpl  = unsafe { read_volatile(sd_base.add(0x18) as *const u32) };
+        let bdlpu  = unsafe { read_volatile(sd_base.add(0x1C) as *const u32) };
 
         serial_println!("--- SD0 Register Dump ---");
         serial_println!("CTL   : 0x{:08X}", ctl_val);

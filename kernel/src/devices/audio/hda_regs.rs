@@ -31,6 +31,7 @@ pub struct HdaRegisters {
     pub rirblbase: u32,
     pub rirbubase: u32,
     pub rirbwp: u16,
+    pub rintcnt: u16,
     pub rirbctl: u8,
     pub rirbsts: u8,
     pub rirbsize: u8,
@@ -46,7 +47,7 @@ pub struct HdaRegisters {
 }
 
 
-#[repr(C, packed)]
+#[repr(C)]
 pub struct StreamDescriptor {
     pub ctl0: u8,
     pub ctl1: u8,
@@ -56,6 +57,7 @@ pub struct StreamDescriptor {
     pub cbl: u32,
     pub lvi: u16,
     pub _pad: u16,
+    pub fifo: u16,
     pub fmt: u16,
     pub _pad1: u32,
     pub bdlpl: u32,
