@@ -2,23 +2,19 @@ use crate::{
     devices::{
         mmio::MMioConstPtr,
         pci::{read_config, walk_pci_bus, DeviceInfo},
-    }, events::{futures::devices::HWRegisterWrite, nanosleep_current_event}, interrupts::x2apic, memory::HHDM_OFFSET, serial, serial_print, serial_println
+    }, events::{futures::devices::HWRegisterWrite, nanosleep_current_event}, interrupts::x2apic, memory::HHDM_OFFSET, serial_print, serial_println
 };
 
 use crate::devices::{
-    audio::{
-        buffer::{setup_bdl, BdlEntry},
-        dma::DmaBuffer,
-        hda_regs::HdaRegisters,
-    },
+    audio::hda_regs::HdaRegisters,
     mmio::MMioPtr,
 };
-use core::{future::Future, mem::offset_of, pin::Pin, ptr::{read_volatile, write_volatile}};
-use alloc::{boxed::Box, vec};
+use core::{mem::offset_of, ptr::{read_volatile, write_volatile}};
+use alloc::vec;
 use alloc::vec::Vec;
 use x86_64::structures::idt::InterruptStackFrame;
-use crate::devices::audio::widget_info::WidgetInfo;
 
+use super::widget_info::WidgetInfo;
 
 /// Physical BAR address (used during development before PCI scan)
 /// TODO - need to find a betterr way so this variable doesnt exist
@@ -213,7 +209,7 @@ impl IntelHDA {
         serial_println!("DAC node 2 current power state: 0x{:X}", state);
 
     
-        hda.set_stream_channel(2, 0x10);
+        hda.set_stream_channel(2, 0x00);    //Was 0x10
 
     
         /*
@@ -226,7 +222,7 @@ impl IntelHDA {
         hda.set_converter_format(2, 0x4011);
     
         hda.regs.intctl = 1; // Enable global interrupts
-        hda.regs.stream_regs[0].ctl0 |= 1 << 2; // Enable stream interrupt
+        hda.regs.stream_regs[4].ctl0 |= 1 << 2; // Enable stream interrupt
         hda.regs.gctl |= 1 << 8; // Enable unsolicited responses
     
         serial_println!("HDA setup complete");
@@ -618,6 +614,8 @@ impl IntelHDA {
             }
         }
 
+        // Flush cache to ensure BDL/Audio in RAM for DMA
+        unsafe { core::arch::asm!("wbinvd"); }
 
         for i in 0..16 {
             let b = unsafe { *(audio_buf.virt_addr.as_u64() as *const u8).add(i) };
@@ -627,14 +625,14 @@ impl IntelHDA {
 
         let regs_base = MMioPtr(self.regs as *const _ as *mut u8);
     
-        let stream_base = &self.regs.stream_regs[0] as *const _ as *mut u8;
+        let stream_base = &self.regs.stream_regs[4] as *const _ as *mut u8;
         let ctl0_ptr = unsafe { MMioPtr(stream_base.add(0x00) as *mut u8) };
         let ctl2_ptr = unsafe { MMioPtr(stream_base.add(0x02) as *mut u8) };
         let sts_ptr = unsafe { MMioPtr(stream_base.add(0x03) as *mut u8) };
         let lpib_ptr = unsafe { MMioPtr(stream_base.add(0x04) as *mut u32) };
         let cbl_ptr = unsafe { MMioPtr(stream_base.add(0x08) as *mut u32) };
         let lvi_ptr = unsafe { MMioPtr(stream_base.add(0x0C) as *mut u16) };
-        let fifo_ptr = unsafe { MMioPtr(stream_base.add(0x10) as *mut u16) };
+        let _fifo_ptr = unsafe { MMioPtr(stream_base.add(0x10) as *mut u16) };
         let fmt_ptr = unsafe { MMioPtr(stream_base.add(0x12) as *mut u16) };
 
         let bdlpl_ptr = unsafe { MMioPtr(stream_base.add(0x18) as *mut u32) }; 
@@ -643,7 +641,7 @@ impl IntelHDA {
 
         serial_println!("---------------------------------------------------------");
         serial_println!("FMT pointer address: 0x{:X}", fmt_ptr.as_ptr() as usize);
-        let base = &self.regs.stream_regs[0] as *const _ as usize;
+        let base = &self.regs.stream_regs[4] as *const _ as usize;
         serial_println!("Stream 1 base address: 0x{:X}", base);
         serial_println!("Expected FMT offset from base: 0x12");
         serial_println!("→ Should be at: 0x{:X}", base + 0x12);
@@ -653,11 +651,11 @@ impl IntelHDA {
     
         // Reset stream
         unsafe {
-            ctl0_ptr.write(1 << 0);
+            ctl0_ptr.write(ctl0_ptr.read() | 1);
             serial_println!("Wrote CTL (SRST set): 0x{:08X}", ctl0_ptr.read());
             HWRegisterWrite::new(ctl0_ptr.as_ptr(), 1, 1).await;
     
-            ctl0_ptr.write(0);
+            ctl0_ptr.write(ctl0_ptr.read() & 0);
             serial_println!("Wrote CTL (SRST cleared): 0x{:08X}", ctl0_ptr.read());
             HWRegisterWrite::new(ctl0_ptr.as_ptr(), 1, 0).await;
         }
@@ -673,9 +671,6 @@ impl IntelHDA {
 
             write_volatile(lvi_ptr.as_ptr(), (num_entries - 1) as u16);
             serial_println!("Wrote LVI: {}", lvi_ptr.read());
-    
-            write_volatile(fifo_ptr.as_ptr(), 8 as u16);
-            serial_println!("Wrote FIFO: {}", fifo_ptr.read());
     
             //Correct ordering of BDLPL and BDLPU
             write_volatile(bdlpl_ptr.as_ptr(), (bdl_phys & 0xFFFFFFFF) as u32);
@@ -701,7 +696,7 @@ impl IntelHDA {
     
         // Enable global DMA
 
-        let gctl_ptr = unsafe { regs_base.add(offset_of!(HdaRegisters, gctl)) };
+        let gctl_ptr: MMioPtr<u32> = unsafe { regs_base.add(offset_of!(HdaRegisters, gctl)) };
         unsafe {
             let current = gctl_ptr.read();
             gctl_ptr.write(current | (1 << 1));
@@ -710,7 +705,15 @@ impl IntelHDA {
                 gctl_ptr.read()
             );
         }
-    
+
+        // Find num streams (temp)
+        unsafe {
+            let gcap_ptr: MMioPtr<u16> = regs_base.add(offset_of!(HdaRegisters, gcap));
+            let gcap = gcap_ptr.read();
+            serial_println!("GCAP: 0x{:08X}", gcap);
+            serial_println!("Number of input streams: {}", (gcap & (0xF << 8)) >> 8);
+        }
+
         // Start stream (RUN | DEIE | FEIE)
         unsafe {
             let val = ctl0_ptr.read();
@@ -720,7 +723,7 @@ impl IntelHDA {
         }
     
         // Dump stream register state
-        let sd_base = &self.regs.stream_regs[0] as *const _ as *const u8;
+        let sd_base = &self.regs.stream_regs[4] as *const _ as *const u8;
 
         let ctl0 = unsafe { read_volatile(sd_base.add(0x00) as *const u8) };
         let ctl1 = unsafe { read_volatile(sd_base.add(0x01) as *const u8) };
@@ -746,17 +749,16 @@ impl IntelHDA {
         serial_println!("BDLPU : 0x{:08X}", bdlpu);
 
         unsafe {
-            let lpib_ptr = MMioPtr((&self.regs.stream_regs[0] as *const _ as *mut u8).add(0x04) as *mut u32);
+            let lpib_ptr = MMioPtr((&self.regs.stream_regs[4] as *const _ as *mut u8).add(0x04) as *mut u32);
             lpib_ptr.write(0x100);
             serial_println!("LPIB after manual write: 0x{:X}", lpib_ptr.read());
         }
-        
 
         // Other values (no change needed if not from packed struct)
         let ctl = unsafe { (ctl0_ptr.read() as u32) | ((ctl2_ptr.read() as u32) << 16) };
         
-        let gctl_ptr = unsafe { regs_base.add(offset_of!(HdaRegisters, gctl)) };
-        let intsts_ptr = unsafe { regs_base.add(offset_of!(HdaRegisters, intsts)) };
+        let gctl_ptr: MMioPtr<u32> = unsafe { regs_base.add(offset_of!(HdaRegisters, gctl)) };
+        let intsts_ptr: MMioPtr<u32> = unsafe { regs_base.add(offset_of!(HdaRegisters, intsts)) };
 
         let gctl = unsafe { gctl_ptr.read() };
         let intsts = unsafe { intsts_ptr.read() };

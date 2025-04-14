@@ -6,14 +6,11 @@
 //! - Timer interrupt handling
 //! - Functions to enable/disable interrupts
 
-use core::{
-    arch::naked_asm,
-    sync::atomic::{AtomicU64, Ordering},
-};
+use core::arch::naked_asm;
 
 use lazy_static::lazy_static;
 use x86_64::{
-    instructions::{interrupts, port::Port},
+    instructions::interrupts,
     structures::{
         idt::{InterruptDescriptorTable, InterruptStackFrame, PageFaultErrorCode},
         paging::{OffsetPageTable, Page, PageTable},

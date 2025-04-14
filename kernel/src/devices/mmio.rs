@@ -26,8 +26,8 @@ impl<T> MMioPtr<T> {
         self.0
     }
 
-    pub unsafe fn add(&self, offset: usize) -> Self {
-        MMioPtr(self.0.add(offset))
+    pub unsafe fn add<EndType>(&self, offset: usize) -> MMioPtr<EndType> {
+        MMioPtr(self.0.add(offset) as *mut EndType)
     }
 }
 
@@ -52,7 +52,7 @@ impl<T> MMioConstPtr<T> {
     }
 
     #[allow(dead_code)]
-    pub unsafe fn add(&self, offset: usize) -> Self {
-        MMioConstPtr(self.0.add(offset))
+    pub unsafe fn add<EndType>(&self, offset: usize) -> MMioConstPtr<EndType> {
+        MMioConstPtr(self.0.add(offset) as *mut EndType)
     }
 }

@@ -13,7 +13,6 @@ use futures::task::ArcWake;
 use crate::{
     devices::sd_card::{PresentState, SDCardError},
     events::{current_running_event, runner_timestamp, Event},
-    serial_println,
 };
 
 /// Future to sleep an event until a target timestamp (in system ticks)
