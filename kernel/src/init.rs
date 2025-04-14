@@ -4,22 +4,34 @@
 
 use alloc::{collections::btree_map::BTreeMap, sync::Arc};
 use bytes::Bytes;
-use spin::Mutex;
 use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use limine::{
     request::SmpRequest,
     smp::{Cpu, RequestFlags},
     BaseRevision,
 };
+use spin::Mutex;
 
 use crate::{
-    debug, devices::{self, sd_card::{self, SD_CARD}}, events::{register_event_runner, run_loop, schedule_kernel_on, spawn, yield_now}, filesys::{self, ext2::filesystem::Ext2, ChmodMode, Ext2Wrapper, FileSystem, OpenFlags}, interrupts::{self, idt}, ipc::{
+    debug,
+    devices::{
+        self,
+        sd_card::{self, SD_CARD},
+    },
+    events::{register_event_runner, run_loop, schedule_kernel_on, spawn, yield_now},
+    filesys::{self, ext2::filesystem::Ext2, ChmodMode, Ext2Wrapper, FileSystem, OpenFlags},
+    interrupts::{self, idt},
+    ipc::{
         messages::Message,
         mnt_manager,
         namespace::Namespace,
         responses::Rattach,
         spsc::{Receiver, Sender},
-    }, logging, memory::{self}, processes::{self, process::with_current_pcb}, serial_println, trace
+    },
+    logging,
+    memory::{self},
+    processes::{self, process::with_current_pcb},
+    serial_println, trace,
 };
 extern crate alloc;
 
@@ -61,49 +73,6 @@ pub fn init() -> u32 {
     let bsp_id = wake_cores();
 
     idt::enable();
-    schedule_kernel_on(
-        0,
-        async {
-            serial_println!("RUNNING SCHEDULED KERNEL EVENT");
-            let sd_card = Arc::new(SD_CARD.lock().clone().unwrap());
-            let fs = Ext2::new(sd_card).await.unwrap();
-            fs.mount().await.unwrap();
-            let page_cache = Mutex::new(BTreeMap::new());
-            let refcount = Mutex::new(BTreeMap::new());
-            let mut user_fs = Ext2Wrapper::new(page_cache, Mutex::new(fs), refcount);
-            let chmod_mode = ChmodMode::UREAD | ChmodMode::UWRITE | ChmodMode::UEXEC |
-            ChmodMode::GREAD | ChmodMode::GEXEC |
-            ChmodMode::OREAD | ChmodMode::OEXEC; // 0o755
-            let _ = user_fs.create_dir("./temp", chmod_mode).await;
-            let dir_entry = user_fs.read_dir(".").await;
-            serial_println!("Dir entry is {:#?}", dir_entry);
-            let fd = user_fs.open_file("./temp/hello.txt", OpenFlags::O_WRONLY | OpenFlags::O_CREAT).await.unwrap();
-            serial_println!("Did open file");
-            let _ = user_fs.write_file(fd, b"Hello World!").await;
-            let mut buf = [0u8; 20];
-            serial_println!("wrote to file");
-            let buffer = user_fs.read_file(fd, &mut buf).await;
-            serial_println!("buffer {:#?}", buffer);
-            if let Ok(s) = core::str::from_utf8(&buf[..buf.len()]) {
-                serial_println!("read string: {}", s);
-            } else {
-                serial_println!("read invalid UTF-8 data");
-            }
-            serial_println!("FILE: {:#?}", user_fs.metadata(fd).await);
-            let fd_table = with_current_pcb(|pcb|{
-                pcb.fd_table.clone()
-            });
-            serial_println!("FD TABLE: {:#?}", fd_table);
-
-            let _ = user_fs.close_file(fd).await;
-            let fd_table = with_current_pcb(|pcb|{
-                pcb.fd_table.clone()
-            });
-            serial_println!("FD TABLE: {:#?}", fd_table);
-
-        },
-        3,
-    );
 
     bsp_id
 }

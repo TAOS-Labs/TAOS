@@ -399,13 +399,19 @@ impl FileSystem for Ext2Wrapper {
             serial_println!("1");
 
             // Load the page into cache if not already present
-            let virt = match self.page_cache_get_mapping(locked_file.clone(), page_offset).await {
+            let virt = match self
+                .page_cache_get_mapping(locked_file.clone(), page_offset)
+                .await
+            {
                 Ok(va) => va,
                 Err(_) => {
                     serial_println!("2");
-                    self.add_entry_to_page_cache(locked_file.clone(), page_offset).await?;
+                    self.add_entry_to_page_cache(locked_file.clone(), page_offset)
+                        .await?;
                     serial_println!("3");
-                    let temp = self.page_cache_get_mapping(locked_file.clone(), page_offset).await?;
+                    let temp = self
+                        .page_cache_get_mapping(locked_file.clone(), page_offset)
+                        .await?;
                     serial_println!("4");
                     temp
                 }
@@ -545,5 +551,168 @@ pub fn init(cpu_id: u32) {
             },
             0,
         );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use alloc::{collections::btree_map::BTreeMap, sync::Arc};
+    use spin::Mutex;
+
+    use crate::{
+        devices::sd_card::SD_CARD,
+        filesys::{get_file, ChmodMode, FileSystem, OpenFlags},
+        processes::process::with_current_pcb,
+    };
+
+    use super::{ext2::filesystem::Ext2, Ext2Wrapper};
+
+    fn active_fd_count() -> usize {
+        with_current_pcb(|pcb| pcb.fd_table.iter().filter(|entry| entry.is_some()).count())
+    }
+
+    pub async fn setup_fs() -> Ext2Wrapper {
+        let sd_card = Arc::new(SD_CARD.lock().clone().unwrap());
+        let fs = Ext2::new(sd_card).await.unwrap();
+        fs.mount().await.unwrap();
+
+        let page_cache = Mutex::new(BTreeMap::new());
+        let refcount = Mutex::new(BTreeMap::new());
+
+        Ext2Wrapper::new(page_cache, Mutex::new(fs), refcount)
+    }
+
+    #[test_case]
+    pub async fn test_create_and_read_dir() {
+        let mut user_fs = setup_fs().await;
+
+        let chmod_mode = ChmodMode::from_bits_truncate(0o755);
+        user_fs.create_dir("./temp", chmod_mode).await.unwrap();
+
+        let root_entries = user_fs.read_dir(".").await.unwrap();
+        assert!(root_entries.iter().any(|e| e.name == "temp"));
+
+        let sub_entries = user_fs.read_dir("./temp").await.unwrap();
+        // . and .. entries
+        assert_eq!(sub_entries.len(), 2);
+    }
+
+    #[test_case]
+    pub async fn test_open_write_read_close() {
+        let mut user_fs = setup_fs().await;
+        user_fs
+            .create_dir("./temp", ChmodMode::from_bits_truncate(0o755))
+            .await
+            .unwrap();
+
+        let fd = user_fs
+            .open_file("./temp/test.txt", OpenFlags::O_WRONLY | OpenFlags::O_CREAT)
+            .await
+            .unwrap();
+        assert!(active_fd_count() > 0);
+
+        user_fs.write_file(fd, b"Test 123").await.unwrap();
+        user_fs.seek_file(fd, 0).await.unwrap();
+
+        let mut buf = [0u8; 20];
+        let read_bytes = user_fs.read_file(fd, &mut buf).await.unwrap();
+        assert_eq!(read_bytes, 20);
+        assert_eq!(&buf[..8], b"Test 123");
+
+        user_fs.close_file(fd).await.unwrap();
+        assert_eq!(active_fd_count(), 0);
+    }
+
+    #[test_case]
+    pub async fn test_remove_file() {
+        let mut user_fs = setup_fs().await;
+        user_fs
+            .create_dir("./temp", ChmodMode::from_bits_truncate(0o755))
+            .await
+            .unwrap();
+
+        let fd = user_fs
+            .open_file(
+                "./temp/delete_me.txt",
+                OpenFlags::O_WRONLY | OpenFlags::O_CREAT,
+            )
+            .await
+            .unwrap();
+        user_fs.write_file(fd, b"temp").await.unwrap();
+        user_fs.remove(fd).await.unwrap();
+
+        let entries = user_fs.read_dir("./temp").await.unwrap();
+        assert!(!entries.iter().any(|e| e.name == "delete_me.txt"));
+    }
+
+    #[test_case]
+    pub async fn test_seek_file() {
+        let mut user_fs = setup_fs().await;
+        user_fs
+            .create_dir("./temp", ChmodMode::from_bits_truncate(0o755))
+            .await
+            .unwrap();
+
+        let fd = user_fs
+            .open_file("./temp/seek.txt", OpenFlags::O_WRONLY | OpenFlags::O_CREAT)
+            .await
+            .unwrap();
+        user_fs.write_file(fd, b"abcdefghij").await.unwrap();
+
+        user_fs.seek_file(fd, 5).await.unwrap();
+        let mut buf = [0u8; 5];
+        let read_bytes = user_fs.read_file(fd, &mut buf).await.unwrap();
+        assert_eq!(read_bytes, 5);
+        assert_eq!(&buf[..5], b"fghij");
+
+        user_fs.close_file(fd).await.unwrap();
+    }
+
+    #[test_case]
+    pub async fn test_metadata() {
+        let mut user_fs = setup_fs().await;
+        user_fs
+            .create_dir("./temp", ChmodMode::from_bits_truncate(0o755))
+            .await
+            .unwrap();
+
+        let fd = user_fs
+            .open_file("./temp/meta.txt", OpenFlags::O_WRONLY | OpenFlags::O_CREAT)
+            .await
+            .unwrap();
+        user_fs.write_file(fd, b"metadata").await.unwrap();
+
+        let meta = user_fs.metadata(fd).await.unwrap();
+        assert_eq!(meta.pathname, "./temp/meta.txt");
+        assert_eq!(meta.fd, 0);
+
+        user_fs.close_file(fd).await.unwrap();
+    }
+
+    #[test_case]
+    pub async fn test_page_cache_entry() {
+        let mut user_fs = setup_fs().await;
+        user_fs
+            .create_dir("./temp", ChmodMode::from_bits_truncate(0o755))
+            .await
+            .unwrap();
+
+        let fd = user_fs
+            .open_file("./temp/cache.txt", OpenFlags::O_WRONLY | OpenFlags::O_CREAT)
+            .await
+            .unwrap();
+        user_fs.write_file(fd, b"pagecache").await.unwrap();
+        user_fs.seek_file(fd, 0).await.unwrap();
+
+        let file = get_file(fd).unwrap().lock().clone();
+        user_fs
+            .add_entry_to_page_cache(file.clone(), 0)
+            .await
+            .unwrap();
+
+        let result = user_fs.page_cache_get_mapping(file.clone(), 0).await;
+        assert!(!result.is_err());
+
+        user_fs.close_file(fd).await.unwrap();
     }
 }

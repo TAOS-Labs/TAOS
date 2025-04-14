@@ -456,7 +456,7 @@ mod tests {
         },
         devices::sd_card::SD_CARD,
         events::{futures::sleep, schedule_kernel, schedule_kernel_on, schedule_process},
-        filesys::{fat16::Fat16, FileSystem, FILESYSTEM},
+        filesys::{FileSystem, FILESYSTEM},
         processes::process::{create_process, get_current_pid, PCB, PROCESS_TABLE},
         serial_println,
         syscalls::{
