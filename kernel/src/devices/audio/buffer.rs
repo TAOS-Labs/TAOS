@@ -38,12 +38,13 @@ pub fn setup_bdl(
 
     for i in 0..num_entries {
         let phys_addr = buffer_phys_start + offset as u64;
-        let entry = BdlEntry::new(phys_addr, entry_size, true);
-
+        let is_last = i == num_entries - 1;
+        let entry = BdlEntry::new(phys_addr, entry_size, is_last);
+    
         unsafe {
             write_volatile(bdl_virt_addr.add(i as usize), entry);
         }
-
+    
         offset += entry_size;
     }
 

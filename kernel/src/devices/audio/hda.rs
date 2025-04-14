@@ -2,7 +2,7 @@ use crate::{
     devices::{
         mmio::MMioConstPtr,
         pci::{read_config, walk_pci_bus, DeviceInfo},
-    }, events::{futures::devices::HWRegisterWrite, nanosleep_current_event}, interrupts::x2apic, memory::HHDM_OFFSET, serial, serial_println
+    }, events::{futures::devices::HWRegisterWrite, nanosleep_current_event}, interrupts::x2apic, memory::HHDM_OFFSET, serial, serial_print, serial_println
 };
 
 use crate::devices::{
@@ -596,6 +596,9 @@ impl IntelHDA {
                     if i % 2 == 0 { 0x00 } else { 0xFF };
             }
         }
+        serial_println!("before assertt for bbdl");
+        assert_eq!(bdl_buf.phys_addr.as_u64() % 128, 0, "BDL not 128-byte aligned");
+
     
         let bdl_ptr = bdl_buf.as_ptr::<BdlEntry>();
         let num_entries = setup_bdl(
@@ -606,6 +609,15 @@ impl IntelHDA {
         );
     
         serial_println!("setup_bdl returned {} entries", num_entries);
+        serial_println!("Raw BDL memory:");
+        for i in 0..(num_entries * 16) {
+            let byte = unsafe { *(bdl_buf.virt_addr.as_ptr::<u8>().add(i)) };
+            serial_print!("{:02X} ", byte);
+            if i % 16 == 15 {
+                serial_println!();
+            }
+        }
+
 
         for i in 0..16 {
             let b = unsafe { *(audio_buf.virt_addr.as_u64() as *const u8).add(i) };
@@ -731,6 +743,13 @@ impl IntelHDA {
         serial_println!("FMT   : 0x{:04X}", fmt);
         serial_println!("BDLPL : 0x{:08X}", bdlpl);
         serial_println!("BDLPU : 0x{:08X}", bdlpu);
+
+        unsafe {
+            let lpib_ptr = MMioPtr((&self.regs.stream_regs[0] as *const _ as *mut u8).add(0x04) as *mut u32);
+            lpib_ptr.write(0x100);
+            serial_println!("LPIB after manual write: 0x{:X}", lpib_ptr.read());
+        }
+        
 
         // Other values (no change needed if not from packed struct)
         let ctl = unsafe { (ctl0_ptr.read() as u32) | ((ctl2_ptr.read() as u32) << 16) };
