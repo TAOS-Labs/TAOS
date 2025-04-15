@@ -4,13 +4,16 @@ mod sync_tests;
 
 use alloc::sync::Arc;
 use core::{
-    future::Future, ops::{Deref, DerefMut}, pin::Pin, sync::atomic::{AtomicBool, AtomicUsize, Ordering}, task::{Context, Poll}
+    future::Future,
+    ops::{Deref, DerefMut},
+    pin::Pin,
+    sync::atomic::{AtomicBool, AtomicUsize, Ordering},
+    task::{Context, Poll},
 };
 
-use futures::task::ArcWake;
-use crate::events::{current_running_event, Event};
-use crate::events::RwLock;
+use crate::events::{current_running_event, Event, RwLock};
 use alloc::vec::Vec;
+use futures::task::ArcWake;
 
 /// Future to block an event until a boolean is set to true (by some other event)
 pub struct Condition {
@@ -21,14 +24,8 @@ pub struct Condition {
 unsafe impl Send for Condition {}
 
 impl Condition {
-    pub fn new(
-        state: Arc<AtomicBool>,
-        event: Arc<Event>,
-    ) -> Condition {
-        Condition {
-            state,
-            event,
-        }
+    pub fn new(state: Arc<AtomicBool>, event: Arc<Event>) -> Condition {
+        Condition { state, event }
     }
 
     pub fn awake(&self) {
@@ -44,14 +41,13 @@ impl Future for Condition {
     type Output = ();
 
     fn poll(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<Self::Output> {
-      if self.state.load(Ordering::Relaxed) {
-          Poll::Ready(())
-      } else {
-          Poll::Pending
-      }
-  }
+        if self.state.load(Ordering::Relaxed) {
+            Poll::Ready(())
+        } else {
+            Poll::Pending
+        }
+    }
 }
-
 
 pub struct Barrier {
     count: Arc<AtomicUsize>,
@@ -140,7 +136,7 @@ impl<T> BoundedBuffer<T> {
 
         self.head.fetch_add(1, Ordering::Release);
         self.count.fetch_sub(1, Ordering::Release);
-        self.put_event.clone().wake(); 
+        self.put_event.clone().wake();
 
         val
     }
@@ -148,7 +144,7 @@ impl<T> BoundedBuffer<T> {
 
 pub struct BlockMutex<T> {
     unlocked: Arc<AtomicBool>,
-    data: T
+    data: T,
 }
 
 unsafe impl<T> Send for BlockMutex<T> {}
@@ -156,9 +152,9 @@ unsafe impl<T> Sync for BlockMutex<T> {}
 
 impl<T> BlockMutex<T> {
     pub fn new(data: T) -> BlockMutex<T> {
-        BlockMutex { 
-            unlocked: Arc::new(AtomicBool::new(true)), 
-            data
+        BlockMutex {
+            unlocked: Arc::new(AtomicBool::new(true)),
+            data,
         }
     }
 
@@ -168,21 +164,19 @@ impl<T> BlockMutex<T> {
 
         self.unlocked.store(false, Ordering::Relaxed);
 
-        BlockMutexGuard {
-            mutex: self
-        }
-    } 
+        BlockMutexGuard { mutex: self }
+    }
 
     fn unlock(&mut self) {
         self.unlocked.store(true, Ordering::Relaxed);
-    } 
+    }
 }
 
 pub struct BlockMutexGuard<'a, T> {
     mutex: &'a mut BlockMutex<T>,
 }
 
-impl<'a, T> Deref for BlockMutexGuard<'_, T> {
+impl<T> Deref for BlockMutexGuard<'_, T> {
     type Target = T;
 
     fn deref(&self) -> &Self::Target {
@@ -190,13 +184,13 @@ impl<'a, T> Deref for BlockMutexGuard<'_, T> {
     }
 }
 
-impl<'a, T> DerefMut for BlockMutexGuard<'_, T> {
+impl<T> DerefMut for BlockMutexGuard<'_, T> {
     fn deref_mut(&mut self) -> &mut Self::Target {
         &mut self.mutex.data
     }
 }
 
-impl<'a, T> Drop for BlockMutexGuard<'_, T> {
+impl<T> Drop for BlockMutexGuard<'_, T> {
     fn drop(&mut self) {
         self.mutex.unlock();
     }
