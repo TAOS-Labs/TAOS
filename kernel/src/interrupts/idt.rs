@@ -26,9 +26,9 @@ use crate::{
     memory::{
         mm::Mm,
         page_fault::{
-            determine_fault_cause, handle_cow_fault,
-            handle_existing_mapping, handle_new_mapping, handle_private_file_mapping,
-            handle_shared_file_mapping, handle_shared_page_fault, FaultOutcome,
+            determine_fault_cause, handle_cow_fault, handle_existing_mapping, handle_new_mapping,
+            handle_private_file_mapping, handle_shared_file_mapping, handle_shared_page_fault,
+            FaultOutcome,
         },
     },
     prelude::*,
@@ -210,7 +210,15 @@ extern "x86-interrupt" fn page_fault_handler(
                 } => {
                     serial_println!("GOING TO HANDLE PRIVATE FILE MAPPING!");
                     block_on(async {
-                        handle_private_file_mapping(page, &mut mapper, offset, pt_flags, fd, &mut vma).await
+                        handle_private_file_mapping(
+                            page,
+                            &mut mapper,
+                            offset,
+                            pt_flags,
+                            fd,
+                            &mut vma,
+                        )
+                        .await
                     });
                 }
                 FaultOutcome::CopyOnWrite {
@@ -358,7 +366,6 @@ fn syscall_handler(rsp: u64) {
 }
 
 #[naked]
-#[allow(undefined_naked_function_abi)]
 extern "x86-interrupt" fn naked_timer_handler(_: InterruptStackFrame) {
     unsafe {
         core::arch::naked_asm!(

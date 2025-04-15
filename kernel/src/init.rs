@@ -2,7 +2,7 @@
 //!
 //! Handles the initialization of kernel subsystems and CPU cores.
 
-use alloc::{collections::btree_map::BTreeMap, sync::Arc};
+use alloc::sync::Arc;
 use bytes::Bytes;
 use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use limine::{
@@ -10,17 +10,16 @@ use limine::{
     smp::{Cpu, RequestFlags},
     BaseRevision,
 };
-use spin::Mutex;
 
 use crate::{
     debug,
     devices::{
         self,
-        sd_card::{self, SD_CARD},
+        sd_card::SD_CARD,
     },
     events::{register_event_runner, run_loop, schedule_kernel_on, spawn, yield_now},
     filesys::{
-        self, ext2::filesystem::Ext2, ChmodMode, Ext2Wrapper, FileSystem, OpenFlags, FILESYSTEM,
+        self, ext2::filesystem::Ext2, ChmodMode, FileSystem, OpenFlags, FILESYSTEM,
     },
     interrupts::{self, idt},
     ipc::{
@@ -32,7 +31,7 @@ use crate::{
     },
     logging,
     memory::{self},
-    processes::{self, process::with_current_pcb},
+    processes::{self},
     serial_println,
     syscalls::memorymap::{sys_mmap, MmapFlags, ProtFlags},
     trace,

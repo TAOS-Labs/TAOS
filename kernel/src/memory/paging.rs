@@ -296,7 +296,7 @@ pub fn update_permissions(page: Page, mapper: &mut impl Mapper<Size4KiB>, flags:
 mod tests {
     use super::*;
 
-    use alloc::{sync::Arc, vec::Vec};
+    use alloc::vec::Vec;
     use core::{
         ptr::{read_volatile, write_volatile},
         sync::atomic::{AtomicU64, Ordering},
@@ -310,11 +310,7 @@ mod tests {
     use crate::{
         constants::memory::PAGE_SIZE,
         events::schedule_kernel_on,
-        memory::{
-            mm::{Mm, VmAreaFlags},
-            KERNEL_MAPPER,
-        },
-        processes::process::{get_current_pid, PROCESS_TABLE},
+        memory::KERNEL_MAPPER,
     };
 
     // Used for TLB shootdown testcases.

@@ -393,7 +393,6 @@ pub async unsafe fn run_process_ring3(pid: u32) {
 }
 
 #[naked]
-#[allow(undefined_naked_function_abi)]
 #[no_mangle]
 unsafe fn call_process(
     registers: *const Registers,

@@ -20,7 +20,7 @@ use crate::{
         frame_allocator::alloc_frame,
         mm::{vma_to_page_flags, Mm, VmAreaFlags},
         paging::{
-            create_mapping, create_mapping_to_frame, get_page_flags, update_mapping,
+            create_mapping, create_mapping_to_frame, update_mapping,
             update_permissions,
         },
         HHDM_OFFSET, KERNEL_MAPPER,
@@ -95,7 +95,7 @@ pub fn determine_fault_cause(error_code: PageFaultErrorCode, vma: &VmArea) -> Fa
     let new_pml4_phys = pml4.start_address();
     let new_pml4_virt = VirtAddr::new((*HHDM_OFFSET).as_u64()) + new_pml4_phys.as_u64();
     let new_pml4_ptr: *mut PageTable = new_pml4_virt.as_mut_ptr();
-    let mut mapper =
+    let mapper =
         unsafe { OffsetPageTable::new(&mut *new_pml4_ptr, VirtAddr::new((*HHDM_OFFSET).as_u64())) };
 
     // Compute the faulting page.

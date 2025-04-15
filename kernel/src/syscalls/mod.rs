@@ -12,7 +12,7 @@ mod tests {
             current_running_event, futures::await_on::AwaitProcess, get_runner_time,
             schedule_process,
         },
-        processes::process::create_process, serial_println, syscalls::syscall_handlers::REGISTER_VALUES,
+        processes::process::create_process,
     };
 
     use super::*;
