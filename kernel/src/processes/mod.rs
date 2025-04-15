@@ -19,7 +19,6 @@ mod tests {
             schedule_process,
         },
         processes::process::create_process,
-        serial_println,
     };
 
     #[test_case]
@@ -32,8 +31,6 @@ mod tests {
             current_running_event().unwrap(),
         ) // TODO how to get event corresponding to testcase?
         .await;
-        serial_println!("AWAITED");
-
         assert!(waiter.is_ok());
     }
 }

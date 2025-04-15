@@ -31,6 +31,7 @@ use crate::memory::paging::map_kernel_frame;
 /// * 'elf_bytes' - byte stream of ELF executable to parse
 /// * 'user_mapper' - Page table for user that maps VAs from section headers to frames
 /// * 'kernel mapper' - kernel page table for mapping VAs to frames for writing ELF metadata to frames
+/// * 'mm' - The process' mm struct for access to the VMAs
 ///
 /// # Returns:
 /// Virtual address of the top of user stack and entry point for process

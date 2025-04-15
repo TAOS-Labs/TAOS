@@ -175,7 +175,7 @@ extern "x86-interrupt" fn page_fault_handler(
 
             let fault = determine_fault_cause(error_code, &vma);
             match fault {
-                FaultOutcome::ExistingMapping {
+                FaultOutcome::SharedAnonMapping {
                     page,
                     mut mapper,
                     chain,
@@ -183,7 +183,7 @@ extern "x86-interrupt" fn page_fault_handler(
                 } => {
                     handle_existing_mapping(page, &mut mapper, chain, pt_flags);
                 }
-                FaultOutcome::NewMapping {
+                FaultOutcome::NewAnonMapping {
                     page,
                     mut mapper,
                     backing,
@@ -221,14 +221,14 @@ extern "x86-interrupt" fn page_fault_handler(
                         .await
                     });
                 }
-                FaultOutcome::CopyOnWrite {
+                FaultOutcome::UnmappedCopyOnWrite {
                     page,
                     mut mapper,
                     pt_flags,
                 } => {
                     handle_cow_fault(page, &mut mapper, pt_flags);
                 }
-                FaultOutcome::SharedPage {
+                FaultOutcome::UnmappedSharedPage {
                     page,
                     mut mapper,
                     pt_flags,
@@ -236,14 +236,11 @@ extern "x86-interrupt" fn page_fault_handler(
                     handle_shared_page_fault(page, &mut mapper, pt_flags);
                 }
                 FaultOutcome::Mapped => {
-                    serial_println!("Page is mapped; no COW fault detected");
                     panic!();
                 }
             }
         });
     });
-
-    serial_println!("At end of page fault handler");
 }
 
 // TODO: Refactor this to follow the way 64 bit works
@@ -316,10 +313,8 @@ fn syscall_handler(rsp: u64) {
         p5 = *stack_ptr.add(6);
         p6 = *stack_ptr.add(7);
     }
-    serial_println!("IN SYSCALL HANDLER");
     match syscall_num {
         SYSCALL_EXIT => {
-            serial_println!("ATTEMPTING EXIT");
             sys_exit(p1 as i64, &NonFlagRegisters::default());
         }
         SYSCALL_PRINT => {

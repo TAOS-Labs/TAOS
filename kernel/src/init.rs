@@ -2,7 +2,6 @@
 //!
 //! Handles the initialization of kernel subsystems and CPU cores.
 
-use alloc::sync::Arc;
 use bytes::Bytes;
 use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use limine::{
@@ -13,9 +12,9 @@ use limine::{
 
 use crate::{
     debug,
-    devices::{self, sd_card::SD_CARD},
-    events::{register_event_runner, run_loop, schedule_kernel_on, spawn, yield_now},
-    filesys::{self, ext2::filesystem::Ext2, ChmodMode, FileSystem, OpenFlags, FILESYSTEM},
+    devices::{self},
+    events::{register_event_runner, run_loop, spawn, yield_now},
+    filesys::{self},
     interrupts::{self, idt},
     ipc::{
         messages::Message,
@@ -27,9 +26,7 @@ use crate::{
     logging,
     memory::{self},
     processes::{self},
-    serial_println,
-    syscalls::memorymap::{sys_mmap, MmapFlags, ProtFlags},
-    trace,
+    serial_println, trace,
 };
 extern crate alloc;
 
@@ -71,78 +68,6 @@ pub fn init() -> u32 {
     let bsp_id = wake_cores();
 
     idt::enable();
-    schedule_kernel_on(
-        0,
-        async {
-            serial_println!("RUNNING SCHEDULED KERNEL EVENT");
-            let sd_card = Arc::new(SD_CARD.lock().clone().unwrap());
-            let fs = Ext2::new(sd_card).await.unwrap();
-            fs.mount().await.unwrap();
-            let fd = {
-                let mut user_fs = FILESYSTEM.get().expect("could not get fs").lock();
-                let chmod_mode = ChmodMode::UREAD
-                    | ChmodMode::UWRITE
-                    | ChmodMode::UEXEC
-                    | ChmodMode::GREAD
-                    | ChmodMode::GEXEC
-                    | ChmodMode::OREAD
-                    | ChmodMode::OEXEC; // 0o755
-                let _ = user_fs.create_dir("/temp", chmod_mode).await;
-                let fd = user_fs
-                    .open_file("/temp/hello.txt", OpenFlags::O_WRONLY | OpenFlags::O_CREAT)
-                    .await
-                    .unwrap();
-                let mut buf = *b"Hello World!";
-                let buf: &mut [u8] = &mut buf;
-                let _ = user_fs.write_file(fd, buf).await;
-                fd
-            };
-
-            let ptr = sys_mmap(
-                0x0,
-                0x1000,
-                (ProtFlags::PROT_READ | ProtFlags::PROT_WRITE).bits(),
-                MmapFlags::MAP_PRIVATE.bits(),
-                fd as i64,
-                0,
-            );
-
-            let byte_ptr = ptr as *mut u8;
-
-            unsafe {
-                for i in 0..10 {
-                    let byte = *byte_ptr.add(i);
-                    serial_println!("byte[{}] = {} (char: {:?})", i, byte, byte as char);
-                }
-            };
-
-            serial_println!("Now modifying some of the bytes of the file.");
-
-            let msg = b"suck my dick";
-
-            unsafe {
-                for (i, &c) in msg.iter().enumerate() {
-                    *byte_ptr.add(i) = c;
-                }
-            };
-
-            let mut backing = [0u8; 20];
-            let buf: &mut [u8] = &mut backing;
-            let mut user_fs = FILESYSTEM.get().expect("could not get fs").lock();
-            let _ = user_fs.read_file(fd, buf).await;
-            serial_println!("buf as str: {:?}", core::str::from_utf8(buf));
-
-            let byte_ptr = ptr as *mut u8;
-
-            unsafe {
-                for i in 0..10 {
-                    let byte = *byte_ptr.add(i);
-                    serial_println!("byte[{}] = {} (char: {:?})", i, byte, byte as char);
-                }
-            }
-        },
-        3,
-    );
     bsp_id
 }
 

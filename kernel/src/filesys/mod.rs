@@ -500,8 +500,6 @@ impl FileSystem for Ext2Wrapper {
             let page_offset = file_pos & !(PAGE_SIZE - 1);
             let page_offset_in_buf = file_pos % PAGE_SIZE;
             let copy_len = core::cmp::min(PAGE_SIZE - page_offset_in_buf, remaining);
-            serial_println!("1");
-
             // Load the page into cache if not already present
             let virt = match self
                 .page_cache_get_mapping(locked_file.clone(), page_offset)
@@ -509,14 +507,11 @@ impl FileSystem for Ext2Wrapper {
             {
                 Ok(va) => va,
                 Err(_) => {
-                    serial_println!("2");
                     self.add_entry_to_page_cache(locked_file.clone(), page_offset)
                         .await?;
-                    serial_println!("3");
                     let temp = self
                         .page_cache_get_mapping(locked_file.clone(), page_offset)
                         .await?;
-                    serial_println!("4");
                     temp
                 }
             };
@@ -694,7 +689,7 @@ mod tests {
         assert_eq!(sub_entries.len(), 2);
     }
 
-    // #[test_case]
+    #[test_case]
     pub async fn test_open_write_read_close() {
         let mut user_fs = setup_fs().await;
         user_fs
@@ -720,7 +715,7 @@ mod tests {
         assert_eq!(active_fd_count(), 0);
     }
 
-    // #[test_case]
+    #[test_case]
     pub async fn test_remove_file() {
         let mut user_fs = setup_fs().await;
         user_fs
@@ -742,7 +737,7 @@ mod tests {
         assert!(!entries.iter().any(|e| e.name == "delete_me.txt"));
     }
 
-    // #[test_case]
+    #[test_case]
     pub async fn test_seek_file() {
         let mut user_fs = setup_fs().await;
         user_fs
@@ -765,7 +760,7 @@ mod tests {
         user_fs.close_file(fd).await.unwrap();
     }
 
-    // #[test_case]
+    #[test_case]
     pub async fn test_metadata() {
         let mut user_fs = setup_fs().await;
         user_fs
@@ -789,7 +784,7 @@ mod tests {
         user_fs.close_file(fd).await.unwrap();
     }
 
-    // #[test_case]
+    #[test_case]
     pub async fn test_page_cache_entry() {
         let mut user_fs = setup_fs().await;
         user_fs

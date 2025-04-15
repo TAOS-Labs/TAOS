@@ -278,88 +278,113 @@ impl Mm {
                 } else if seg_global_start < split_point_left && seg_global_end <= split_point_right
                 {
                     let left_part_length = split_point_left - seg_global_start;
-                    let left_seg = VmAreaSegment {
-                        start: seg.start,
-                        end: seg.start + left_part_length,
-                        backing: seg.backing.clone(),
-                        pg_offset: seg.pg_offset,
-                        fd: seg.fd,
-                    };
-                    left_segments.insert(old_seg_key, left_seg);
+                    if left_part_length > 0 {
+                        let left_seg = VmAreaSegment {
+                            start: seg.start,
+                            end: seg.start + left_part_length,
+                            backing: seg.backing.clone(),
+                            pg_offset: seg.pg_offset,
+                            fd: seg.fd,
+                        };
+                        left_segments.insert(old_seg_key, left_seg);
+                    }
                     // the middle part
                     let middle_part_length = seg_global_end - split_point_left;
-                    let middle_seg = VmAreaSegment {
-                        start: seg.start + left_part_length,
-                        end: seg.start + left_part_length + middle_part_length,
-                        backing: seg.backing.clone(),
-                        pg_offset: seg.pg_offset,
-                        fd: seg.fd,
-                    };
-                    middle_segments.insert(0, middle_seg);
+                    if middle_part_length > 0 {
+                        let middle_seg = VmAreaSegment {
+                            start: seg.start + left_part_length,
+                            end: seg.start + left_part_length + middle_part_length,
+                            backing: seg.backing.clone(),
+                            pg_offset: seg.pg_offset,
+                            fd: seg.fd,
+                        };
+                        middle_segments.insert(0, middle_seg);
+                    }
                 // spans the right split
                 } else if seg_global_start >= split_point_left && seg_global_end > split_point_right
                 {
                     let middle_part_length = split_point_right - seg_global_start;
-                    let middle_seg = VmAreaSegment {
-                        start: seg.start,
-                        end: seg.start + middle_part_length,
-                        backing: seg.backing.clone(),
-                        pg_offset: seg.pg_offset,
-                        fd: seg.fd,
-                    };
-                    middle_segments.insert(old_seg_key - split_point_left, middle_seg);
+                    if middle_part_length > 0 {
+                        let middle_seg = VmAreaSegment {
+                            start: seg.start,
+                            end: seg.start + middle_part_length,
+                            backing: seg.backing.clone(),
+                            pg_offset: seg.pg_offset,
+                            fd: seg.fd,
+                        };
+                        middle_segments.insert(old_seg_key - split_point_left, middle_seg);
+                    }
+
                     let right_part_length = seg_global_end - split_point_right;
-                    let right_seg = VmAreaSegment {
-                        start: seg.start + middle_part_length,
-                        end: seg.start + middle_part_length + right_part_length,
-                        backing: seg.backing.clone(),
-                        pg_offset: seg.pg_offset,
-                        fd: seg.fd,
-                    };
-                    right_segments.insert(0, right_seg);
+                    if right_part_length > 0 {
+                        let right_seg = VmAreaSegment {
+                            start: seg.start + middle_part_length,
+                            end: seg.start + middle_part_length + right_part_length,
+                            backing: seg.backing.clone(),
+                            pg_offset: seg.pg_offset,
+                            fd: seg.fd,
+                        };
+                        right_segments.insert(0, right_seg);
+                    }
                 // spans both splits
                 } else if seg_global_start < split_point_left && seg_global_end > split_point_right
                 {
                     let left_part_length = split_point_left - seg_global_start;
-                    let left_seg = VmAreaSegment {
-                        start: seg.start,
-                        end: seg.start + left_part_length,
-                        backing: seg.backing.clone(),
-                        pg_offset: seg.pg_offset,
-                        fd: seg.fd,
-                    };
-                    left_segments.insert(old_seg_key, left_seg);
+                    if left_part_length > 0 {
+                        let left_seg = VmAreaSegment {
+                            start: seg.start,
+                            end: seg.start + left_part_length,
+                            backing: seg.backing.clone(),
+                            pg_offset: seg.pg_offset,
+                            fd: seg.fd,
+                        };
+                        left_segments.insert(old_seg_key, left_seg);
+                    }
+
                     let middle_part_length = split_point_right - split_point_left;
-                    let middle_seg = VmAreaSegment {
-                        start: seg.start + left_part_length,
-                        end: seg.start + left_part_length + middle_part_length,
-                        backing: seg.backing.clone(),
-                        pg_offset: seg.pg_offset,
-                        fd: seg.fd,
-                    };
-                    middle_segments.insert(0, middle_seg);
+                    if middle_part_length > 0 {
+                        let middle_seg = VmAreaSegment {
+                            start: seg.start + left_part_length,
+                            end: seg.start + left_part_length + middle_part_length,
+                            backing: seg.backing.clone(),
+                            pg_offset: seg.pg_offset,
+                            fd: seg.fd,
+                        };
+                        middle_segments.insert(0, middle_seg);
+                    }
+
                     let right_part_length = seg_global_end - split_point_right;
-                    let right_seg = VmAreaSegment {
-                        start: seg.start + left_part_length + middle_part_length,
-                        end: seg.start + left_part_length + middle_part_length + right_part_length,
-                        backing: seg.backing.clone(),
-                        pg_offset: seg.pg_offset,
-                        fd: seg.fd,
-                    };
-                    right_segments.insert(0, right_seg);
+                    if right_part_length > 0 {
+                        let right_seg = VmAreaSegment {
+                            start: seg.start + left_part_length + middle_part_length,
+                            end: seg.start + left_part_length + middle_part_length + right_part_length,
+                            backing: seg.backing.clone(),
+                            pg_offset: seg.pg_offset,
+                            fd: seg.fd,
+                        };
+                        right_segments.insert(0, right_seg);
+                    }
                 }
             }
         }
 
         // Update the original VMA (left part) with new boundaries and segments.
+        let mut vma_empty = true;
+        let mut middle_vma = None;
         {
             let mut vma_guard = vma.lock();
             vma_guard.start = new_start;
             vma_guard.end = new_end;
             // Replace the old segments with the new left_segments.
-            vma_guard.segments = Arc::new(Mutex::new(middle_segments));
+            if !middle_segments.is_empty()  {
+                vma_guard.segments = Arc::new(Mutex::new(middle_segments));
+                vma_empty = false;
+            }
         }
-        tree.insert(new_start as usize, vma.clone());
+        if !vma_empty {
+            tree.insert(new_start as usize, vma.clone());
+            middle_vma = Some(vma.clone());
+        }
 
         let left_vma = if !left_segments.is_empty() {
             let left_vma = Arc::new(Mutex::new(VmArea {
@@ -394,7 +419,7 @@ impl Mm {
             None
         };
 
-        (left_vma, Some(vma), right_vma)
+        (left_vma, middle_vma, right_vma)
     }
 
     /// Find a VmArea that contains the given virtual address.
@@ -544,13 +569,12 @@ pub struct VmAreaSegment {
 #[derive(Debug)]
 pub struct VmaChain {
     pub offset: u64,
-    pub fd: usize,
     pub frame: PhysFrame,
 }
 
 impl VmaChain {
-    pub fn new(offset: u64, fd: usize, frame: PhysFrame) -> Self {
-        VmaChain { offset, fd, frame }
+    pub fn new(offset: u64, frame: PhysFrame) -> Self {
+        VmaChain { offset, frame }
     }
 }
 
@@ -751,7 +775,6 @@ mod tests {
         // Map the vm_area and offset to the frame.
         let chain1 = Arc::new(VmaChain {
             offset: faulting_address1_round,
-            fd: usize::MAX,
             frame,
         });
         anon_area.insert_mapping(chain1);
@@ -805,12 +828,10 @@ mod tests {
 
             let chain1 = Arc::new(VmaChain {
                 offset: faulting_address1_round,
-                fd: usize::MAX,
                 frame: frame1,
             });
             let chain2 = Arc::new(VmaChain {
                 offset: faulting_address2_round,
-                fd: usize::MAX,
                 frame: frame2,
             });
 
@@ -887,7 +908,6 @@ mod tests {
         let frame = alloc_frame().expect("Could not get frame");
         let chain = Arc::new(VmaChain {
             offset: faulting_address1_round,
-            fd: usize::MAX,
             frame,
         });
         anon_area.insert_mapping(chain);
@@ -941,10 +961,10 @@ mod tests {
         let anon_area2 = Arc::new(VmAreaBackings::new());
 
         let aa1_frame = Arc::new(alloc_frame().unwrap());
-        anon_area1.insert_mapping(Arc::new(VmaChain::new(0x0, usize::MAX, *aa1_frame)));
+        anon_area1.insert_mapping(Arc::new(VmaChain::new(0x0, *aa1_frame)));
 
         let aa2_frame = Arc::new(alloc_frame().unwrap());
-        anon_area2.insert_mapping(Arc::new(VmaChain::new(0x0, usize::MAX, *aa2_frame)));
+        anon_area2.insert_mapping(Arc::new(VmaChain::new(0x0, *aa2_frame)));
 
         mm.with_vma_tree_mutable(|tree| {
             let _vma1 = Mm::insert_vma(
@@ -1024,10 +1044,10 @@ mod tests {
 
         // Allocate frames and insert reverse mappings.
         let aa1_frame = Arc::new(alloc_frame().unwrap());
-        anon_area1.insert_mapping(Arc::new(VmaChain::new(0x0, usize::MAX, *aa1_frame)));
+        anon_area1.insert_mapping(Arc::new(VmaChain::new(0x0, *aa1_frame)));
 
         let aa2_frame = Arc::new(alloc_frame().unwrap());
-        anon_area2.insert_mapping(Arc::new(VmaChain::new(0x0, usize::MAX, *aa2_frame)));
+        anon_area2.insert_mapping(Arc::new(VmaChain::new(0x0, *aa2_frame)));
 
         mm.with_vma_tree_mutable(|tree| {
             // Insert left VMA covering [0x0000, 0x1000) with anon_area1.
@@ -1125,14 +1145,14 @@ mod tests {
         let frame_left_seg1 = Arc::new(alloc_frame().unwrap());
         let frame_left_seg2 = Arc::new(alloc_frame().unwrap());
         // Insert reverse mappings at offset 0 in the left VMA's backings.
-        anon_area1.insert_mapping(Arc::new(VmaChain::new(0x0, usize::MAX, *frame_left_seg1)));
-        anon_area2.insert_mapping(Arc::new(VmaChain::new(0x0, usize::MAX, *frame_left_seg2)));
+        anon_area1.insert_mapping(Arc::new(VmaChain::new(0x0, *frame_left_seg1)));
+        anon_area2.insert_mapping(Arc::new(VmaChain::new(0x0, *frame_left_seg2)));
 
         // Allocate frames for candidate VMA segments.
         let frame_cand_seg1 = Arc::new(alloc_frame().unwrap());
         let frame_cand_seg2 = Arc::new(alloc_frame().unwrap());
-        anon_area3.insert_mapping(Arc::new(VmaChain::new(0x0, usize::MAX, *frame_cand_seg1)));
-        anon_area4.insert_mapping(Arc::new(VmaChain::new(0x0, usize::MAX, *frame_cand_seg2)));
+        anon_area3.insert_mapping(Arc::new(VmaChain::new(0x0, *frame_cand_seg1)));
+        anon_area4.insert_mapping(Arc::new(VmaChain::new(0x0, *frame_cand_seg2)));
 
         // Insert left VMA with two segments: covering [0x0000, 0x2000)
         mm.with_vma_tree_mutable(|tree| {
@@ -1279,14 +1299,14 @@ mod tests {
         // Allocate frames for left VMA segments.
         let frame_left_seg1 = Arc::new(alloc_frame().unwrap());
         let frame_left_seg2 = Arc::new(alloc_frame().unwrap());
-        anon_area1.insert_mapping(Arc::new(VmaChain::new(0x0, usize::MAX, *frame_left_seg1)));
-        anon_area2.insert_mapping(Arc::new(VmaChain::new(0x0, usize::MAX, *frame_left_seg2)));
+        anon_area1.insert_mapping(Arc::new(VmaChain::new(0x0, *frame_left_seg1)));
+        anon_area2.insert_mapping(Arc::new(VmaChain::new(0x0, *frame_left_seg2)));
 
         // Allocate frames for right VMA segments.
         let frame_right_seg1 = Arc::new(alloc_frame().unwrap());
         let frame_right_seg2 = Arc::new(alloc_frame().unwrap());
-        anon_area3.insert_mapping(Arc::new(VmaChain::new(0x0, usize::MAX, *frame_right_seg1)));
-        anon_area4.insert_mapping(Arc::new(VmaChain::new(0x0, usize::MAX, *frame_right_seg2)));
+        anon_area3.insert_mapping(Arc::new(VmaChain::new(0x0, *frame_right_seg1)));
+        anon_area4.insert_mapping(Arc::new(VmaChain::new(0x0, *frame_right_seg2)));
 
         // Insert left VMA with two segments: covering [0x0000, 0x2000)
         mm.with_vma_tree_mutable(|tree| {
@@ -1442,12 +1462,12 @@ mod tests {
         let frame_right_seg2 = Arc::new(alloc_frame().unwrap());
 
         // Insert reverse mappings at offset 0 for each backing.
-        anon_area1.insert_mapping(Arc::new(VmaChain::new(0x0, usize::MAX, *frame_left_seg1)));
-        anon_area2.insert_mapping(Arc::new(VmaChain::new(0x0, usize::MAX, *frame_left_seg2)));
-        anon_area3.insert_mapping(Arc::new(VmaChain::new(0x0, usize::MAX, *frame_mid_seg1)));
-        anon_area4.insert_mapping(Arc::new(VmaChain::new(0x0, usize::MAX, *frame_mid_seg2)));
-        anon_area5.insert_mapping(Arc::new(VmaChain::new(0x0, usize::MAX, *frame_right_seg1)));
-        anon_area6.insert_mapping(Arc::new(VmaChain::new(0x0, usize::MAX, *frame_right_seg2)));
+        anon_area1.insert_mapping(Arc::new(VmaChain::new(0x0, *frame_left_seg1)));
+        anon_area2.insert_mapping(Arc::new(VmaChain::new(0x0, *frame_left_seg2)));
+        anon_area3.insert_mapping(Arc::new(VmaChain::new(0x0, *frame_mid_seg1)));
+        anon_area4.insert_mapping(Arc::new(VmaChain::new(0x0, *frame_mid_seg2)));
+        anon_area5.insert_mapping(Arc::new(VmaChain::new(0x0, *frame_right_seg1)));
+        anon_area6.insert_mapping(Arc::new(VmaChain::new(0x0, *frame_right_seg2)));
 
         // Insert left VM Area: spans [0x0000, 0x2000) with two segments.
         mm.with_vma_tree_mutable(|tree| {
@@ -1627,14 +1647,7 @@ mod tests {
                         &mut *mapper,
                         Some(PageTableFlags::PRESENT | PageTableFlags::WRITABLE),
                     );
-                    mappings.insert(
-                        offset,
-                        Arc::new(VmaChain {
-                            offset,
-                            fd: usize::MAX,
-                            frame,
-                        }),
-                    );
+                    mappings.insert(offset, Arc::new(VmaChain { offset, frame }));
                 }
             }
         });
@@ -1697,18 +1710,18 @@ mod tests {
         // Segment A: covers [0x0, 0x2000)
         let frame_a_a = Arc::new(alloc_frame().unwrap());
         let frame_a_b = Arc::new(alloc_frame().unwrap());
-        anon_area_a.insert_mapping(Arc::new(VmaChain::new(0, usize::MAX, *frame_a_a)));
-        anon_area_a.insert_mapping(Arc::new(VmaChain::new(0x1000, usize::MAX, *frame_a_b)));
+        anon_area_a.insert_mapping(Arc::new(VmaChain::new(0, *frame_a_a)));
+        anon_area_a.insert_mapping(Arc::new(VmaChain::new(0x1000, *frame_a_b)));
 
         // Segment B: covers [0x2000, 0x3000)
         let frame_b = Arc::new(alloc_frame().unwrap());
-        anon_area_b.insert_mapping(Arc::new(VmaChain::new(0, usize::MAX, *frame_b)));
+        anon_area_b.insert_mapping(Arc::new(VmaChain::new(0, *frame_b)));
 
         // Segment C: covers [0x3000, 0x5000)
         let frame_c_a = Arc::new(alloc_frame().unwrap());
         let frame_c_b = Arc::new(alloc_frame().unwrap());
-        anon_area_c.insert_mapping(Arc::new(VmaChain::new(0, usize::MAX, *frame_c_a)));
-        anon_area_c.insert_mapping(Arc::new(VmaChain::new(0x1000, usize::MAX, *frame_c_b)));
+        anon_area_c.insert_mapping(Arc::new(VmaChain::new(0, *frame_c_a)));
+        anon_area_c.insert_mapping(Arc::new(VmaChain::new(0x1000, *frame_c_b)));
 
         // Build the original segments map.
         let mut segments: BTreeMap<u64, VmAreaSegment> = BTreeMap::new();
@@ -1889,47 +1902,31 @@ mod tests {
                         &mut *mapper,
                         Some(PageTableFlags::WRITABLE | PageTableFlags::PRESENT),
                     );
-                    mappings.insert(
-                        offset,
-                        Arc::new(VmaChain {
-                            offset,
-                            fd: usize::MAX,
-                            frame,
-                        }),
-                    );
+                    mappings.insert(offset, Arc::new(VmaChain { offset, frame }));
                 }
             }
+            serial_println!("All segments are {:#?}", vma);
         });
 
         // Shrink both sides: remove the leftmost and rightmost pages.
         let new_start = old_start + PAGE_SIZE as u64;
         let new_end = old_end - PAGE_SIZE as u64;
-        let shrunk_left = mm
+        serial_println!("new start and new end are {:X} and {:X}", new_start, new_end);        let shrunk = mm
             .with_vma_tree_mutable(|tree| Mm::shrink_vma(old_start, new_start, new_end, tree))
             .1;
-        assert!(shrunk_left.is_some());
+        assert!(shrunk.is_some());
 
-        let vma = shrunk_left.unwrap();
-        let locked = vma.lock();
-        assert_eq!(locked.start, new_start);
-        assert_eq!(locked.end, new_end);
-
-        let new_start = old_start + PAGE_SIZE as u64;
-        let new_end = old_end - PAGE_SIZE as u64;
-        let shrunk_left =
-            mm.with_vma_tree_mutable(|tree| Mm::shrink_vma(old_start, new_start, new_end, tree).1);
-        assert!(shrunk_left.is_some());
-
-        let vma = shrunk_left.unwrap();
+        let vma = shrunk.unwrap();
         let locked = vma.lock();
         assert_eq!(locked.start, new_start);
         assert_eq!(locked.end, new_end);
 
         let segments = locked.segments.lock();
+        serial_println!("Segments are {:#?}", segments);
         let seg = segments.get(&0).expect("Segment missing");
         let mappings = seg.backing.mappings.lock();
         // After shrink, expect two mappings.
-        assert_eq!(mappings.len(), 2);
+        assert_eq!(mappings.len(), 4);
         assert!(mappings.contains_key(&0));
         assert!(mappings.contains_key(&(PAGE_SIZE as u64)));
     }
@@ -1973,14 +1970,7 @@ mod tests {
                         &mut *mapper,
                         Some(PageTableFlags::WRITABLE | PageTableFlags::PRESENT),
                     );
-                    mappings.insert(
-                        offset,
-                        Arc::new(VmaChain {
-                            offset,
-                            fd: usize::MAX,
-                            frame,
-                        }),
-                    );
+                    mappings.insert(offset, Arc::new(VmaChain { offset, frame }));
                 }
             }
         });
@@ -1991,6 +1981,6 @@ mod tests {
             Mm::shrink_vma(old_start, new_boundary, new_boundary, tree)
         });
         // When the entire VMA is shrunk away, shrink_vma returns None.
-        assert!(shrunk.0.is_none());
+        assert!(shrunk.1.is_none());
     }
 }

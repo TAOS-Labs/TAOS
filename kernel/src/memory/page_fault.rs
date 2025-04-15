@@ -1,7 +1,6 @@
 use core::ptr;
 
 use alloc::sync::Arc;
-use log::debug;
 use x86_64::{
     structures::{
         idt::PageFaultErrorCode,
@@ -23,7 +22,6 @@ use crate::{
         HHDM_OFFSET, KERNEL_MAPPER,
     },
     processes::process::with_current_pcb,
-    serial_println,
 };
 
 use super::mm::{VmArea, VmAreaBackings, VmaChain};
@@ -31,26 +29,40 @@ use super::mm::{VmArea, VmAreaBackings, VmaChain};
 /// Fault outcome enum to route what to do in IDT
 #[derive(Debug)]
 pub enum FaultOutcome {
-    /// The mapping already exists
-    ExistingMapping {
+    /// There is allocated frame created by a different process but it is not updated
+    /// in this process' page table
+    SharedAnonMapping {
+        /// page containing faulting address
         page: Page<Size4KiB>,
+        /// this process' page table mapper
         mapper: OffsetPageTable<'static>,
+        /// The backing of frames for the mmap'ed area that contains the faulting address
         chain: Arc<VmaChain>,
+        /// the page table flags for the page
         pt_flags: PageTableFlags,
     },
-    NewMapping {
+    /// There is no allocated frame, so we need to allocate a new frame, since we are doing lazy
+    /// allocations
+    NewAnonMapping {
+        /// page containing faulting address
         page: Page<Size4KiB>,
+        /// this process' page table mapper
         mapper: OffsetPageTable<'static>,
+        /// backings to use
         backing: Arc<VmAreaBackings>,
         pt_flags: PageTableFlags,
     },
+    /// There is a file-backed mapping and it is shared between multiple processes
     SharedFileMapping {
+        /// page containing faulting address
         page: Page<Size4KiB>,
+        /// this process' page table mapper
         mapper: OffsetPageTable<'static>,
         offset: u64,
         pt_flags: PageTableFlags,
         fd: usize,
     },
+    /// There is a file-backed mapping but it is private and copy on write (COW)
     PrivateFileMapping {
         page: Page<Size4KiB>,
         mapper: OffsetPageTable<'static>,
@@ -58,12 +70,14 @@ pub enum FaultOutcome {
         pt_flags: PageTableFlags,
         fd: usize,
     },
-    CopyOnWrite {
+    /// The VMA is marked as COW and is not mapped
+    UnmappedCopyOnWrite {
         page: Page<Size4KiB>,
         mapper: OffsetPageTable<'static>,
         pt_flags: PageTableFlags,
     },
-    SharedPage {
+    /// The VMA is not marked as COW and is not mapped
+    UnmappedSharedPage {
         page: Page<Size4KiB>,
         mapper: OffsetPageTable<'static>,
         pt_flags: PageTableFlags,
@@ -106,8 +120,6 @@ pub fn determine_fault_cause(error_code: PageFaultErrorCode, vma: &VmArea) -> Fa
         TranslateResult::NotMapped => false,
         _ => panic!("Unexpected result during page translation"),
     };
-    serial_println!("Translate result is {:#?}", translate_result);
-
     // Compute the fault's offset within the VMA.
     let fault_offset = page.start_address().as_u64() - vma.start;
 
@@ -160,14 +172,14 @@ pub fn determine_fault_cause(error_code: PageFaultErrorCode, vma: &VmArea) -> Fa
         }
         // if there is no file backing, handle it as an anonymous page
         else if let Some(chain) = anon_vma_chain {
-            Some(FaultOutcome::ExistingMapping {
+            Some(FaultOutcome::SharedAnonMapping {
                 page,
                 mapper,
                 chain,
                 pt_flags,
             })
         } else {
-            Some(FaultOutcome::NewMapping {
+            Some(FaultOutcome::NewAnonMapping {
                 page,
                 mapper,
                 backing,
@@ -180,13 +192,13 @@ pub fn determine_fault_cause(error_code: PageFaultErrorCode, vma: &VmArea) -> Fa
             !vma.flags.contains(VmAreaFlags::SHARED) && vma.flags.contains(VmAreaFlags::WRITABLE);
         let caused_by_write = error_code.contains(PageFaultErrorCode::CAUSED_BY_WRITE);
         if cow && caused_by_write {
-            Some(FaultOutcome::CopyOnWrite {
+            Some(FaultOutcome::UnmappedCopyOnWrite {
                 page,
                 mapper,
                 pt_flags,
             })
         } else if !cow && caused_by_write {
-            Some(FaultOutcome::SharedPage {
+            Some(FaultOutcome::UnmappedSharedPage {
                 page,
                 mapper,
                 pt_flags,
@@ -219,13 +231,18 @@ pub fn handle_existing_mapping(
     create_mapping_to_frame(page, mapper, Some(flags), chain.frame);
 }
 
+///
+///
+/// * `page`:
+/// * `mapper`:
+/// * `offset`:
+/// * `pt_flags`:
 pub fn handle_existing_file_mapping(
     page: Page<Size4KiB>,
     mapper: &mut OffsetPageTable,
     offset: u64,
     pt_flags: PageTableFlags,
 ) {
-    serial_println!("File not mapped; using existing frame mapping");
     create_mapping_to_frame(
         page,
         mapper,
@@ -241,8 +258,6 @@ pub async fn handle_shared_file_mapping(
     pt_flags: PageTableFlags,
     fd: usize,
 ) {
-    serial_println!("Creating a new mapping for a file-backed page.");
-
     let mut flags = pt_flags;
     flags.set(PageTableFlags::PRESENT, true);
 
@@ -284,8 +299,6 @@ pub async fn handle_private_file_mapping(
     fd: usize,
     vma: &mut VmArea,
 ) {
-    serial_println!("Creating a new mapping for a file-backed page.");
-
     let mut flags = pt_flags;
 
     // Setting it as COW - make sure PTE is read only
@@ -338,11 +351,6 @@ pub fn handle_new_mapping(
     backing: &Arc<VmAreaBackings>,
     pt_flags: PageTableFlags,
 ) {
-    serial_println!("Page not mapped; creating a new mapping.");
-    debug!(
-        "Diagnositcs:\n\tPage: {:#?}\n\tBacking: {:#?}\n\tPT Flags: {:#?}",
-        page, backing, pt_flags
-    );
     let mut flags = pt_flags;
     flags.set(PageTableFlags::PRESENT, true);
     let frame = create_mapping(page, mapper, Some(flags));
@@ -374,16 +382,9 @@ pub fn handle_new_mapping(
             // (Assuming each segment's reverse mappings are keyed relative to its own start.)
             let mapping_offset = fault_offset - seg_key + segment.start;
 
-            backing.insert_mapping(Arc::new(VmaChain::new(mapping_offset, usize::MAX, frame)));
+            backing.insert_mapping(Arc::new(VmaChain::new(mapping_offset, frame)));
         });
     });
-
-    // let new_frame = create_mapping(page, mapper, Some(flags));
-    // backing.insert_mapping(Arc::new(VmaChain {
-    //     offset: page.start_address().as_u64(),
-    //     fd: usize::MAX,
-    //     file_offset_or_frame: new_frame.start_address().as_u64(),
-    // }));
 }
 
 /// Handles a copy-on-write fault. Saves current data in a buffer
@@ -398,7 +399,6 @@ pub fn handle_cow_fault(
     mapper: &mut OffsetPageTable,
     pt_flags: PageTableFlags,
 ) {
-    serial_println!("Handling copy-on-write fault.");
     let start = page.start_address();
     let src_ptr = start.as_mut_ptr();
 
@@ -416,7 +416,6 @@ pub fn handle_cow_fault(
     unsafe {
         ptr::copy_nonoverlapping(buffer.as_mut_ptr(), src_ptr, PAGE_SIZE);
     }
-    serial_println!("Completed copy-on-write fault handling.");
 }
 
 pub fn handle_shared_page_fault(

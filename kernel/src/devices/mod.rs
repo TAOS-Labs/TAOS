@@ -66,7 +66,6 @@ pub fn init(cpu_id: u32) {
             find_sd_card(&devices).expect("Build system currently sets up an sd-card");
         let mut mapper = KERNEL_MAPPER.lock();
         initalize_sd_card(&sd_card_device, &mut mapper).unwrap();
-        serial_println!("GOT HERE");
         serial_println!("Sd card initialized");
 
         keyboard::init().expect("Failed to initialize keyboard");

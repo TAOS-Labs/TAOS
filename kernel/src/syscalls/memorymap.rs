@@ -147,10 +147,8 @@ pub fn mmap_prot_to_vma_flags(prot: u64, mmap_flags: MmapFlags) -> VmAreaFlags {
 pub fn sys_mmap(_addr: u64, len: u64, prot: u64, flags: u64, fd: i64, offset: u64) -> u64 {
     // Basic sanity check.
     if len == 0 {
-        serial_println!("Zero length mapping");
         panic!("mmap called with zero length");
     }
-    serial_println!("Fd is {}", fd);
 
     let event: EventInfo = current_running_event_info();
     let pid = event.pid;
@@ -190,8 +188,6 @@ pub fn sys_mmap(_addr: u64, len: u64, prot: u64, flags: u64, fd: i64, offset: u6
             );
         })
     }
-
-    serial_println!("Finished mmap call");
     addr_to_return
 }
 
@@ -448,7 +444,10 @@ mod tests {
     use crate::{
         constants::processes::{
             TEST_MMAP_ANON_SHARED, TEST_MMAP_CHILD_WRITES, TEST_MPROTECT_CHILD_WRITES,
-        }, events::schedule_process, processes::process::create_process, serial_println, syscalls::syscall_handlers::REGISTER_VALUES
+        },
+        events::schedule_process,
+        processes::process::create_process,
+        syscalls::syscall_handlers::REGISTER_VALUES,
     };
 
     use crate::events::{current_running_event, futures::await_on::AwaitProcess, get_runner_time};

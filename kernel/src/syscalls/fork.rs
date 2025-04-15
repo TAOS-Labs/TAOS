@@ -60,6 +60,7 @@ pub fn sys_fork(reg_vals: &NonFlagRegisters) -> u64 {
     let child_pml4_frame =
         duplicate_page_table_recursive(unsafe { (*parent_pcb).mm.pml4_frame }, 4);
 
+    // TODO: go through this logic and ensure that both parent and child VMAs are set to COW
     unsafe {
         (*parent_pcb).mm.with_vma_tree_mutable(|tree| {
             for vma_entry in tree.iter_mut() {
@@ -163,30 +164,31 @@ fn duplicate_page_table_recursive(parent_frame: PhysFrame, level: u8) -> PhysFra
 
 #[cfg(test)]
 mod tests {
-    use x86_64::structures::paging::{PageTable, PageTableFlags, PhysFrame, Size4KiB, OffsetPageTable};
+    use x86_64::structures::paging::{
+        OffsetPageTable, PageTable, PageTableFlags, PhysFrame, Size4KiB,
+    };
 
     use crate::{
         constants::processes::FORK_SIMPLE,
-        events::{schedule_process,get_runner_time, current_running_event},
+        events::{
+            current_running_event, futures::await_on::AwaitProcess, get_runner_time,
+            schedule_process,
+        },
         memory::HHDM_OFFSET,
-        processes::{process::{create_process, PCB, PROCESS_TABLE}, registers::NonFlagRegisters},
-        serial_println, syscalls::syscall_handlers::{EXIT_CODES, PML4_FRAMES, REGISTER_VALUES},
+        processes::{process::create_process, registers::NonFlagRegisters},
+        syscalls::syscall_handlers::{EXIT_CODES, PML4_FRAMES, REGISTER_VALUES},
     };
-    use crate::events::futures::await_on::AwaitProcess;
-
 
     fn verify_page_table_walk(parent_pml4: PhysFrame<Size4KiB>, child_pml4: PhysFrame<Size4KiB>) {
-
-
-        let parent_mapper = unsafe { 
+        let parent_mapper = unsafe {
             let virt = *HHDM_OFFSET + parent_pml4.start_address().as_u64();
             let ptr = virt.as_mut_ptr::<PageTable>();
-            OffsetPageTable::new(unsafe { &mut *ptr }, *HHDM_OFFSET)
+            OffsetPageTable::new(&mut *ptr, *HHDM_OFFSET)
         };
         let child_mapper = unsafe {
             let virt = *HHDM_OFFSET + child_pml4.start_address().as_u64();
             let ptr = virt.as_mut_ptr::<PageTable>();
-            OffsetPageTable::new(unsafe { &mut *ptr }, *HHDM_OFFSET)
+            OffsetPageTable::new(&mut *ptr, *HHDM_OFFSET)
         };
 
         for i in 0..256 {
@@ -220,11 +222,6 @@ mod tests {
             // from the parent and child tables, ensure each entry is the same
             assert_eq!(parent_entry.flags(), child_entry.flags());
             if level == 1 {
-                serial_println!(
-                    "Parent frame is {:#?}, Child frame is {:#?}",
-                    parent_entry.frame(),
-                    child_entry.frame()
-                );
                 // This logic is not correct and only works if you don't update the Writable flag during COW duplicate
                 if parent_entry.flags().contains(PageTableFlags::WRITABLE) {
                     assert!(parent_entry.flags().contains(PageTableFlags::BIT_9));
@@ -246,7 +243,7 @@ mod tests {
     async fn test_simple_fork() {
         let parent_pid = create_process(FORK_SIMPLE);
         schedule_process(parent_pid);
-        let waiter = AwaitProcess::new(
+        let _waiter = AwaitProcess::new(
             parent_pid,
             get_runner_time(3_000_000_000),
             current_running_event().unwrap(),
@@ -254,37 +251,44 @@ mod tests {
         .await;
         let child_pid = parent_pid + 1;
 
-        serial_println!("PARENT PID {}", parent_pid);
-
-        let waiter = AwaitProcess::new(
+        let _waiter = AwaitProcess::new(
             parent_pid,
             get_runner_time(3_000_000_000),
             current_running_event().unwrap(),
         )
         .await;
 
-        let waiter = AwaitProcess::new(
+        let _waiter = AwaitProcess::new(
             child_pid,
             get_runner_time(3_000_000_000),
             current_running_event().unwrap(),
         )
         .await;
-        
-        let exit_codes = EXIT_CODES.lock();
-        let parent_exit_code = exit_codes.get(&parent_pid).expect("Could not find parent pid.");
-        let child_exit_code = exit_codes.get(&child_pid).expect("Could not find child pid.");
 
-        let mut registers = REGISTER_VALUES.lock();
+        let exit_codes = EXIT_CODES.lock();
+        let parent_exit_code = exit_codes
+            .get(&parent_pid)
+            .expect("Could not find parent pid.");
+        let child_exit_code = exit_codes
+            .get(&child_pid)
+            .expect("Could not find child pid.");
+
+        let registers = REGISTER_VALUES.lock();
 
         let (parent_regs_ptr, child_regs_ptr) = {
-            let parent = registers.get(&parent_pid).expect("Could not find parent pid.") as *const NonFlagRegisters;
-            let child = registers.get(&child_pid).expect("Could not find child pid.") as *const NonFlagRegisters;
+            let parent = registers
+                .get(&parent_pid)
+                .expect("Could not find parent pid.")
+                as *const NonFlagRegisters;
+            let child = registers
+                .get(&child_pid)
+                .expect("Could not find child pid.")
+                as *const NonFlagRegisters;
             (parent, child)
         };
 
-        let mut parent_regs: &mut NonFlagRegisters = unsafe { &mut *(parent_regs_ptr as *mut _) };
-        let mut child_regs: &mut NonFlagRegisters = unsafe { &mut *(child_regs_ptr as *mut _) };
-
+        let parent_regs: &mut NonFlagRegisters = unsafe { &mut *(parent_regs_ptr as *mut _) };
+        let child_regs: &mut NonFlagRegisters = unsafe { &mut *(child_regs_ptr as *mut _) };
 
         let frames = PML4_FRAMES.lock();
         let parent_pml4 = frames.get(&parent_pid).expect("Could not find parent pid.");
@@ -292,12 +296,10 @@ mod tests {
 
         assert_eq!(parent_exit_code, child_exit_code);
         assert_eq!(child_pid as u64, parent_regs.r12);
-        child_regs.r12  = child_pid as u64;
+        child_regs.r12 = child_pid as u64;
         assert_eq!(parent_regs, child_regs);
 
         // check that the pml4 frame is set correctly
-        unsafe {
-            verify_page_table_walk(*parent_pml4, *child_pml4);
-        }
+        verify_page_table_walk(*parent_pml4, *child_pml4);
     }
 }
