@@ -4,18 +4,12 @@ mod sync_tests;
 
 use alloc::sync::Arc;
 use core::{
-    future::Future,
-    pin::Pin,
-    task::{Context, Poll},
-    sync::atomic::{Ordering, AtomicBool, AtomicUsize},
+    cell::UnsafeCell, future::Future, ops::{Deref, DerefMut}, pin::Pin, sync::atomic::{AtomicBool, AtomicUsize, Ordering}, task::{Context, Poll}
 };
 
 use futures::task::ArcWake;
-use crate::serial_println;
-use crate::events::Event;
+use crate::events::{current_running_event, Event};
 use crate::events::RwLock;
-use crate::events::EventQueue;
-use crate::events::BTreeSet;
 use alloc::vec::Vec;
 
 /// Future to block an event until a boolean is set to true (by some other event)
@@ -152,3 +146,51 @@ impl<T> BoundedBuffer<T> {
     }
 }
 
+pub struct BlockMutex<T> {
+    unlocked: Arc<AtomicBool>,
+    data: UnsafeCell<T>
+}
+
+unsafe impl<T> Send for BlockMutex<T> {}
+unsafe impl<T> Sync for BlockMutex<T> {}
+
+impl<T> BlockMutex<T> {
+    pub async fn lock(&mut self) -> BlockMutexGuard<T> {
+        let event = current_running_event().expect("Using BlockMutex outside event");
+        Condition::new(self.unlocked.clone(), event).await;
+
+        self.unlocked.store(false, Ordering::Relaxed);
+
+        BlockMutexGuard {
+            mutex: self
+        }
+    } 
+
+    fn unlock(&mut self) {
+        self.unlocked.store(true, Ordering::Relaxed);
+    } 
+}
+
+pub struct BlockMutexGuard<'a, T> {
+    mutex: &'a mut BlockMutex<T>,
+}
+
+impl<'a, T> Deref for BlockMutexGuard<'_, T> {
+    type Target = T;
+
+    fn deref(&self) -> &Self::Target {
+        unsafe { self.mutex.data.as_ref_unchecked() }
+    }
+}
+
+impl<'a, T> DerefMut for BlockMutexGuard<'_, T> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        self.mutex.data.get_mut()
+    }
+}
+
+impl<'a, T> Drop for BlockMutexGuard<'_, T> {
+    fn drop(&mut self) {
+        self.mutex.unlock();
+    }
+}

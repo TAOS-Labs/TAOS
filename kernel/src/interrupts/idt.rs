@@ -251,7 +251,6 @@ fn syscall_handler(rsp: u64) {
 }
 
 #[naked]
-#[allow(undefined_naked_function_abi)]
 extern "x86-interrupt" fn naked_timer_handler(_: InterruptStackFrame) {
     unsafe {
         core::arch::naked_asm!(
