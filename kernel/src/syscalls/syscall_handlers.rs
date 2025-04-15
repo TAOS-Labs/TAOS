@@ -3,6 +3,7 @@ use core::ffi::CStr;
 use alloc::collections::btree_map::BTreeMap;
 use lazy_static::lazy_static;
 use spin::Mutex;
+use x86_64::structures::paging::{PhysFrame, Size4KiB};
 
 use core::{
     future::Future,
@@ -34,6 +35,8 @@ lazy_static! {
     pub static ref EXIT_CODES: Mutex<BTreeMap<u32, i64>> = Mutex::new(BTreeMap::new());
     pub static ref REGISTER_VALUES: Mutex<BTreeMap<u32, NonFlagRegisters>> =
         Mutex::new(BTreeMap::new());
+    pub static ref PML4_FRAMES: Mutex<BTreeMap<u32, PhysFrame<Size4KiB>>> =
+    Mutex::new(BTreeMap::new());
 }
 
 #[repr(C)]
@@ -218,6 +221,7 @@ pub fn sys_exit(code: i64, reg_vals: &NonFlagRegisters) -> Option<u64> {
         EXIT_CODES.lock().insert(event.pid, code);
         serial_println!("Event pid is {}", event.pid);
         REGISTER_VALUES.lock().insert(event.pid, reg_vals.clone());
+        PML4_FRAMES.lock().insert(event.pid, (*pcb).mm.pml4_frame);
 
         process_table.remove(&event.pid);
         ((*pcb).kernel_rsp, (*pcb).kernel_rip)

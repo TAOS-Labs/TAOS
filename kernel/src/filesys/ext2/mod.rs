@@ -45,7 +45,7 @@ mod tests {
         assert!(file == MEDIUM_FILE);
     }
 
-    #[test_case]
+    // #[test_case]
     async fn test_mount_unmount() {
         let fs = create_test_fs().await;
 

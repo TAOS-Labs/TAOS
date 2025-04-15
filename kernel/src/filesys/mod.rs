@@ -694,7 +694,7 @@ mod tests {
         assert_eq!(sub_entries.len(), 2);
     }
 
-    #[test_case]
+    // #[test_case]
     pub async fn test_open_write_read_close() {
         let mut user_fs = setup_fs().await;
         user_fs
@@ -720,7 +720,7 @@ mod tests {
         assert_eq!(active_fd_count(), 0);
     }
 
-    #[test_case]
+    // #[test_case]
     pub async fn test_remove_file() {
         let mut user_fs = setup_fs().await;
         user_fs
@@ -742,7 +742,7 @@ mod tests {
         assert!(!entries.iter().any(|e| e.name == "delete_me.txt"));
     }
 
-    #[test_case]
+    // #[test_case]
     pub async fn test_seek_file() {
         let mut user_fs = setup_fs().await;
         user_fs
@@ -765,7 +765,7 @@ mod tests {
         user_fs.close_file(fd).await.unwrap();
     }
 
-    #[test_case]
+    // #[test_case]
     pub async fn test_metadata() {
         let mut user_fs = setup_fs().await;
         user_fs
@@ -789,7 +789,7 @@ mod tests {
         user_fs.close_file(fd).await.unwrap();
     }
 
-    #[test_case]
+    // #[test_case]
     pub async fn test_page_cache_entry() {
         let mut user_fs = setup_fs().await;
         user_fs

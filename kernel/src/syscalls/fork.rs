@@ -163,27 +163,31 @@ fn duplicate_page_table_recursive(parent_frame: PhysFrame, level: u8) -> PhysFra
 
 #[cfg(test)]
 mod tests {
-    use x86_64::structures::paging::{PageTable, PageTableFlags, PhysFrame};
+    use x86_64::structures::paging::{PageTable, PageTableFlags, PhysFrame, Size4KiB, OffsetPageTable};
 
     use crate::{
         constants::processes::FORK_SIMPLE,
-        events::schedule_process,
+        events::{schedule_process,get_runner_time, current_running_event},
         memory::HHDM_OFFSET,
-        processes::process::{create_process, PCB, PROCESS_TABLE},
-        serial_println,
+        processes::{process::{create_process, PCB, PROCESS_TABLE}, registers::NonFlagRegisters},
+        serial_println, syscalls::syscall_handlers::{EXIT_CODES, PML4_FRAMES, REGISTER_VALUES},
     };
-    use crate::events::current_running_event;
-    use crate::events::get_runner_time;
     use crate::events::futures::await_on::AwaitProcess;
 
 
-    fn verify_page_table_walk(parent_pcb: &mut PCB, child_pcb: &mut PCB) {
-        assert_eq!(
-            parent_pcb.mm.pml4_frame.start_address(),
-            child_pcb.mm.pml4_frame.start_address()
-        );
-        let parent_mapper = unsafe { parent_pcb.create_mapper() };
-        let child_mapper = unsafe { child_pcb.create_mapper() };
+    fn verify_page_table_walk(parent_pml4: PhysFrame<Size4KiB>, child_pml4: PhysFrame<Size4KiB>) {
+
+
+        let parent_mapper = unsafe { 
+            let virt = *HHDM_OFFSET + parent_pml4.start_address().as_u64();
+            let ptr = virt.as_mut_ptr::<PageTable>();
+            OffsetPageTable::new(unsafe { &mut *ptr }, *HHDM_OFFSET)
+        };
+        let child_mapper = unsafe {
+            let virt = *HHDM_OFFSET + child_pml4.start_address().as_u64();
+            let ptr = virt.as_mut_ptr::<PageTable>();
+            OffsetPageTable::new(unsafe { &mut *ptr }, *HHDM_OFFSET)
+        };
 
         for i in 0..256 {
             let parent_entry = &parent_mapper.level_4_table()[i];
@@ -252,36 +256,48 @@ mod tests {
 
         serial_println!("PARENT PID {}", parent_pid);
 
-        // since no other processes are running or being created we assume that
-        // the child pid is one more than the child pid
-        let process_table = PROCESS_TABLE.read();
+        let waiter = AwaitProcess::new(
+            parent_pid,
+            get_runner_time(3_000_000_000),
+            current_running_event().unwrap(),
+        )
+        .await;
 
-        assert!(
-            process_table.contains_key(&child_pid),
-            "Child process not found in table"
-        );
+        let waiter = AwaitProcess::new(
+            child_pid,
+            get_runner_time(3_000_000_000),
+            current_running_event().unwrap(),
+        )
+        .await;
+        
+        let exit_codes = EXIT_CODES.lock();
+        let parent_exit_code = exit_codes.get(&parent_pid).expect("Could not find parent pid.");
+        let child_exit_code = exit_codes.get(&child_pid).expect("Could not find child pid.");
 
-        let parent_pcb = process_table
-            .get(&parent_pid)
-            .expect("Could not get parent pcb from process table")
-            .pcb
-            .get();
-        let child_pcb = process_table
-            .get(&child_pid)
-            .expect("Could not get child pcb from process table")
-            .pcb
-            .get();
+        let mut registers = REGISTER_VALUES.lock();
 
-        // check that some of the fields are equivalent
-        unsafe {
-            assert_eq!((*parent_pcb).kernel_rip, (*child_pcb).kernel_rip);
-            assert_eq!((*parent_pcb).kernel_rsp, (*child_pcb).kernel_rsp);
-            assert_eq!((*parent_pcb).registers, (*child_pcb).registers);
-        }
+        let (parent_regs_ptr, child_regs_ptr) = {
+            let parent = registers.get(&parent_pid).expect("Could not find parent pid.") as *const NonFlagRegisters;
+            let child = registers.get(&child_pid).expect("Could not find child pid.") as *const NonFlagRegisters;
+            (parent, child)
+        };
+
+        let mut parent_regs: &mut NonFlagRegisters = unsafe { &mut *(parent_regs_ptr as *mut _) };
+        let mut child_regs: &mut NonFlagRegisters = unsafe { &mut *(child_regs_ptr as *mut _) };
+
+
+        let frames = PML4_FRAMES.lock();
+        let parent_pml4 = frames.get(&parent_pid).expect("Could not find parent pid.");
+        let child_pml4 = frames.get(&child_pid).expect("Could not find child pid.");
+
+        assert_eq!(parent_exit_code, child_exit_code);
+        assert_eq!(child_pid as u64, parent_regs.r12);
+        child_regs.r12  = child_pid as u64;
+        assert_eq!(parent_regs, child_regs);
 
         // check that the pml4 frame is set correctly
         unsafe {
-            verify_page_table_walk(&mut *parent_pcb, &mut *child_pcb);
+            verify_page_table_walk(*parent_pml4, *child_pml4);
         }
     }
 }

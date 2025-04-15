@@ -448,10 +448,7 @@ mod tests {
     use crate::{
         constants::processes::{
             TEST_MMAP_ANON_SHARED, TEST_MMAP_CHILD_WRITES, TEST_MPROTECT_CHILD_WRITES,
-        },
-        events::schedule_process,
-        processes::process::create_process,
-        syscalls::syscall_handlers::REGISTER_VALUES,
+        }, events::schedule_process, processes::process::create_process, serial_println, syscalls::syscall_handlers::REGISTER_VALUES
     };
 
     use crate::events::{current_running_event, futures::await_on::AwaitProcess, get_runner_time};
