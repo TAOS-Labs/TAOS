@@ -94,6 +94,7 @@ pub struct File {
     position: usize,
     flags: OpenFlags,
     pub inode_number: u32,
+    pub refcounts: BTreeMap<u32, u64>,
 }
 
 impl File {
@@ -103,6 +104,7 @@ impl File {
         position: usize,
         flags: OpenFlags,
         inode_number: u32,
+        refcounts: BTreeMap<u32, u64>,
     ) -> File {
         File {
             pathname,
@@ -110,6 +112,7 @@ impl File {
             position,
             flags,
             inode_number,
+            refcounts,
         }
     }
 }
@@ -276,18 +279,35 @@ impl FileSystem for Ext2Wrapper {
             self.filesystem.lock().get_node(path).await?.number()
         };
 
-        let file = with_current_pcb(|pcb| {
+        let fd = with_current_pcb(|pcb| {
             let mut next_fd_guard = pcb.next_fd.lock();
             let fd = *next_fd_guard;
             *next_fd_guard += 1;
 
-            let file = File::new(path.to_string(), fd, 0, flags, inode_number);
+            let file = File::new(
+                path.to_string(),
+                fd,
+                0,
+                flags,
+                inode_number,
+                BTreeMap::new(),
+            );
             pcb.fd_table[fd] = Some(Arc::new(Mutex::new(file)));
 
             fd
         });
-
-        Ok(file)
+        let file = with_current_pcb(|pcb| {
+            pcb.fd_table[fd]
+                .as_ref()
+                .expect("could not get file from fd table")
+                .clone()
+        });
+        let mut file = file.lock();
+        file.refcounts
+            .entry(inode_number)
+            .and_modify(|v| *v += 1)
+            .or_insert(1);
+        Ok(fd)
     }
 
     async fn remove(&mut self, fd: usize) -> FilesystemResult<()> {
@@ -327,13 +347,31 @@ impl FileSystem for Ext2Wrapper {
         if fd >= MAX_FILES {
             return Err(FilesystemError::InvalidFd);
         }
+        let file = get_file(fd)?;
+        let path = &file.lock().pathname;
+        let inode_number = self.filesystem.lock().get_node(&path).await?.number();
+        let file = with_current_pcb(|pcb| {
+            pcb.fd_table[fd]
+                .as_ref()
+                .expect("could not get file from fd table")
+                .clone()
+        });
+        let mut file = file.lock();
+        file.refcounts
+            .entry(inode_number)
+            .and_modify(|v| *v -= 1)
+            .or_insert(1);
+
+        if file.refcounts.get(&inode_number).unwrap().eq(&0) {
+            // write back
+        }
 
         with_current_pcb(|pcb| {
             if pcb.fd_table[fd].is_none() {
                 return Err(FilesystemError::InvalidFd);
             }
-
             pcb.fd_table[fd] = None;
+
             Ok(())
         })
 
@@ -348,16 +386,42 @@ impl FileSystem for Ext2Wrapper {
             )
             .await;
         }
-
+    
         let file = get_file(fd)?;
-        let file = file.lock();
-        let bytes_written = self
-            .filesystem
-            .lock()
-            .write_file_at(file.pathname.as_str(), buf, file.position)
-            .await?;
+        let (locked_file, bytes_written, old_size) = {
+            let fs = self.filesystem.lock();
+    
+            let locked_file = file.lock();
+            let old_size = fs.get_node(locked_file.pathname.as_str()).await?.size();
+    
+            let bytes_written = fs
+                .write_file_at(locked_file.pathname.as_str(), buf, locked_file.position)
+                .await?;
+            (locked_file, bytes_written, old_size)
+        };
+    
+        // Round down the start offset and round up the end offset to page boundaries
+        let start_offset = (old_size & !((PAGE_SIZE - 1) as u64)) as usize;
+        let end_offset = (locked_file.position + bytes_written + PAGE_SIZE - 1) & !(PAGE_SIZE - 1);
+    
+        // Invalidate page cache entries
+        let mut offset = start_offset;
+        if !self.page_cache_get_mapping(locked_file.clone(), offset as usize).await.is_err() {
+            let page_cache_guard = self.page_cache.lock();
+            let mut inner_mapping = page_cache_guard.get(&locked_file.inode_number).unwrap().lock();
+            inner_mapping.remove(&start_offset);
+        }
+    
+        // Repopulate page cache entries
+        offset = start_offset;
+        while offset < end_offset {
+            self.add_entry_to_page_cache(locked_file.clone(), offset as usize).await?;
+            offset += PAGE_SIZE;
+        }
+    
         Ok(bytes_written)
     }
+
     async fn seek_file(&mut self, fd: usize, pos: usize) -> FilesystemResult<()> {
         if !FS_INIT_COMPLETE.load(Ordering::Relaxed) {
             Condition::new(
@@ -377,6 +441,7 @@ impl FileSystem for Ext2Wrapper {
         file.position = pos;
         Ok(())
     }
+
     async fn read_file(&mut self, fd: usize, buf: &mut [u8]) -> FilesystemResult<usize> {
         if !FS_INIT_COMPLETE.load(Ordering::Relaxed) {
             Condition::new(

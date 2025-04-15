@@ -13,16 +13,29 @@ use limine::{
 use spin::Mutex;
 
 use crate::{
-    debug, devices::{
+    debug,
+    devices::{
         self,
         sd_card::{self, SD_CARD},
-    }, events::{register_event_runner, run_loop, schedule_kernel_on, spawn, yield_now}, filesys::{self, ext2::filesystem::Ext2, ChmodMode, Ext2Wrapper, FileSystem, OpenFlags, FILESYSTEM}, interrupts::{self, idt}, ipc::{
+    },
+    events::{register_event_runner, run_loop, schedule_kernel_on, spawn, yield_now},
+    filesys::{
+        self, ext2::filesystem::Ext2, ChmodMode, Ext2Wrapper, FileSystem, OpenFlags, FILESYSTEM,
+    },
+    interrupts::{self, idt},
+    ipc::{
         messages::Message,
         mnt_manager,
         namespace::Namespace,
         responses::Rattach,
         spsc::{Receiver, Sender},
-    }, logging, memory::{self}, processes::{self, process::with_current_pcb}, serial_println, syscalls::memorymap::{sys_mmap, MmapFlags, ProtFlags}, trace
+    },
+    logging,
+    memory::{self},
+    processes::{self, process::with_current_pcb},
+    serial_println,
+    syscalls::memorymap::{sys_mmap, MmapFlags, ProtFlags},
+    trace,
 };
 extern crate alloc;
 
@@ -71,29 +84,34 @@ pub fn init() -> u32 {
             let sd_card = Arc::new(SD_CARD.lock().clone().unwrap());
             let fs = Ext2::new(sd_card).await.unwrap();
             fs.mount().await.unwrap();
-            let fd = 
-            {
+            let fd = {
                 let mut user_fs = FILESYSTEM.get().expect("could not get fs").lock();
-                let chmod_mode = ChmodMode::UREAD | ChmodMode::UWRITE | ChmodMode::UEXEC |
-                ChmodMode::GREAD | ChmodMode::GEXEC |
-                ChmodMode::OREAD | ChmodMode::OEXEC; // 0o755
+                let chmod_mode = ChmodMode::UREAD
+                    | ChmodMode::UWRITE
+                    | ChmodMode::UEXEC
+                    | ChmodMode::GREAD
+                    | ChmodMode::GEXEC
+                    | ChmodMode::OREAD
+                    | ChmodMode::OEXEC; // 0o755
                 let _ = user_fs.create_dir("/temp", chmod_mode).await;
-                let fd = user_fs.open_file("/temp/hello.txt", OpenFlags::O_WRONLY | OpenFlags::O_CREAT).await.unwrap();
-                // let dir_entry = user_fs.read_dir("/temp").await;
-                // serial_println!("Dir entry of temp is {:#?}", dir_entry);
-                // serial_println!("Did open file");
-                let _ = user_fs.write_file(fd, b"Hello World!").await;
+                let fd = user_fs
+                    .open_file("/temp/hello.txt", OpenFlags::O_WRONLY | OpenFlags::O_CREAT)
+                    .await
+                    .unwrap();
+                let mut buf = *b"Hello World!"; 
+                let buf: &mut [u8] = &mut buf;
+                let _ = user_fs.write_file(fd, buf).await;
                 fd
             };
-            // let dir_entry = user_fs.read_dir("./temp").await;
-            // serial_println!("Dir entry is {:#?}", dir_entry);
-            // let mut buf = [0u8; 20];
-            // serial_println!("wrote to file");
-            // with_current_pcb(|pcb| {
-            // serial_println!("FILE OBJECT: {:#?}", pcb.fd_table[fd]);
-            // });
-            
-            let ptr = sys_mmap(0x0, 0x1000, (ProtFlags::PROT_READ | ProtFlags::PROT_WRITE).bits(), MmapFlags::MAP_PRIVATE.bits(), fd as i64, 0);
+
+            let ptr = sys_mmap(
+                0x0,
+                0x1000,
+                (ProtFlags::PROT_READ | ProtFlags::PROT_WRITE).bits(),
+                MmapFlags::MAP_PRIVATE.bits(),
+                fd as i64,
+                0,
+            );
 
             let byte_ptr = ptr as *mut u8;
 
@@ -113,7 +131,7 @@ pub fn init() -> u32 {
                     *byte_ptr.add(i) = c;
                 }
             };
-            
+
             let mut backing = [0u8; 20];
             let buf: &mut [u8] = &mut backing;
             let mut user_fs = FILESYSTEM.get().expect("could not get fs").lock();
@@ -128,7 +146,6 @@ pub fn init() -> u32 {
                     serial_println!("byte[{}] = {} (char: {:?})", i, byte, byte as char);
                 }
             }
-
         },
         3,
     );
