@@ -1,7 +1,7 @@
 use alloc::{boxed::Box, sync::Arc, vec::Vec};
 use async_trait::async_trait;
 use spin::Mutex;
-use x86_64::{structures::paging::OffsetPageTable, PhysAddr};
+use x86_64::PhysAddr;
 
 use crate::{
     constants::devices::SD_REQ_TIMEOUT_NANOS,
@@ -12,6 +12,7 @@ use crate::{
         ext2::block_io::{BlockError, BlockIO, BlockResult},
         BlockDevice, FsError,
     },
+    memory::MAPPER,
 };
 use bitflags::bitflags;
 
@@ -319,14 +320,12 @@ pub fn find_sd_card(devices: &Vec<Arc<Mutex<DeviceInfo>>>) -> Option<Arc<Mutex<D
 /// Sets up an sd card, returning an SDCardInfo that can be used for further
 /// accesses to the sd card
 /// THIS ASSUMES A VERSION 2 SDCARD as of writing
-pub fn initalize_sd_card(
-    sd_arc: &Arc<Mutex<DeviceInfo>>,
-    mapper: &mut OffsetPageTable,
-) -> Result<(), SDCardError> {
+pub fn initalize_sd_card(sd_arc: &Arc<Mutex<DeviceInfo>>) -> Result<(), SDCardError> {
     // Assume sd_card is a device info for an SD Crd
     // Lets assume 1 slot, and it uses BAR 1
 
     // Disable Commands from being sent over the Memory Space
+    let mut mapper = MAPPER.lock();
     let sd_lock = sd_arc.clone();
     let sd_card = sd_lock.lock();
     let command = sd_card.command & !PCICommand::MEMORY_SPACE;
@@ -335,7 +334,7 @@ pub fn initalize_sd_card(
     // Determine the Base Address, and setup a mapping
     let base_address_register = read_config(sd_card.bus, sd_card.device, 0, 0x10);
     let bar_address: u64 = (base_address_register & 0xFFFFFF00).into();
-    let base_virtual_addr = map_page_as_uncacheable(PhysAddr::new(bar_address), mapper)
+    let base_virtual_addr = map_page_as_uncacheable(PhysAddr::new(bar_address), &mut mapper)
         .map_err(|_| SDCardError::GenericSDError)?;
     let offset_bar = base_virtual_addr.as_u64();
     // Re-enable memory space commands

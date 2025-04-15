@@ -24,6 +24,7 @@ pub mod interrupts;
 pub mod ipc;
 pub mod logging;
 pub mod memory;
+pub mod net;
 pub mod processes;
 pub mod syscalls;
 

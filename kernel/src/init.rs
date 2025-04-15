@@ -23,6 +23,7 @@ use crate::{
     },
     logging,
     memory::{self},
+    net::get_ip_addr,
     serial_println, trace,
 };
 
@@ -59,7 +60,8 @@ pub fn init() -> u32 {
     // Should be kept after devices in case logging gets complicated
     // Right now log writes to serial, but if it were to switch to VGA, this would be important
     logging::init(0);
-
+    get_ip_addr().unwrap();
+    // schedule_kernel(get_ip_addr()., 1);
     debug!("Waking cores");
     let bsp_id = wake_cores();
 

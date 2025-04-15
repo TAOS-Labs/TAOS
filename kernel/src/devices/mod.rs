@@ -5,7 +5,7 @@
 //! - Frame buffer for screen output
 //! - Future device support will be added here
 
-use crate::{memory::MAPPER, serial_println};
+use crate::serial_println;
 use pci::walk_pci_bus;
 use sd_card::{find_sd_card, initalize_sd_card};
 use xhci::{find_xhci_inferface, initalize_xhci_hub};
@@ -63,14 +63,13 @@ pub fn init(cpu_id: u32) {
         serial_println!("Text drawn");
 
         let devices = walk_pci_bus();
+
         let sd_card_device =
             find_sd_card(&devices).expect("Build system currently sets up an sd-card");
+        initalize_sd_card(&sd_card_device).unwrap();
+
         let xhci_device =
             find_xhci_inferface(&devices).expect("Build system currently sets up xhci device");
-
-        let mut mapper = MAPPER.lock();
-        initalize_sd_card(&sd_card_device, &mut mapper).unwrap();
-        drop(mapper);
         initalize_xhci_hub(&xhci_device).unwrap();
 
         keyboard::init().expect("Failed to initialize keyboard");

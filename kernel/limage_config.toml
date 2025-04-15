@@ -34,7 +34,7 @@ base_args = [
 
     # Debugging traces
     # USB
-    #"-trace", "usb*",
+    # "-trace", "usb*",
     # SD card
     # "-trace", "sd*",
 

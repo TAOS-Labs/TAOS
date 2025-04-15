@@ -1,11 +1,7 @@
-use core::{
-    marker::PhantomData,
-    str::{self, FromStr},
-};
+use core::marker::PhantomData;
 
 use crate::{
     constants::memory::PAGE_SIZE,
-    debug_println,
     devices::{
         mmio::{self, map_page_as_uncacheable, zero_out_page},
         xhci::XHCIError,
@@ -17,11 +13,9 @@ use crate::{
 };
 use bitflags::bitflags;
 use smoltcp::{
-    iface::{Interface, SocketSet},
     phy::{self, DeviceCapabilities, Medium},
-    socket::{dhcpv4, icmp},
     time::Instant,
-    wire::{EthernetAddress, Icmpv4Packet, Icmpv4Repr, IpAddress, IpCidr, Ipv4Cidr},
+    wire::EthernetAddress,
 };
 
 use super::{
@@ -31,44 +25,11 @@ use super::{
     USBDeviceConfigurationDescriptor, USBDeviceDescriptor, USBDeviceEndpointDescriptor,
     USBDeviceInfo, USBDeviceInterfaceDescriptor, XHCI,
 };
-use alloc::{slice, vec, vec::Vec};
+use alloc::{slice, str, vec::Vec};
 use x86_64::{
     structures::paging::{OffsetPageTable, Page},
     VirtAddr,
 };
-
-macro_rules! send_icmp_ping {
-    ( $repr_type:ident, $packet_type:ident, $ident:expr, $seq_no:expr,
-      $echo_payload:expr, $socket:expr, $remote_addr:expr ) => {{
-        let icmp_repr = $repr_type::EchoRequest {
-            ident: $ident,
-            seq_no: $seq_no,
-            data: &$echo_payload,
-        };
-
-        let icmp_payload = $socket.send(icmp_repr.buffer_len(), $remote_addr).unwrap();
-
-        let icmp_packet = $packet_type::new_unchecked(icmp_payload);
-        (icmp_repr, icmp_packet)
-    }};
-}
-
-macro_rules! get_icmp_pong {
-    ( $repr_type:ident, $repr:expr, $payload:expr, $remote_addr:expr,
-      $timestamp:expr, $received:expr ) => {{
-        if let $repr_type::EchoReply { seq_no, data, .. } = $repr {
-            // let bytes = data.to_le_bytes();
-            // let packet_timestamp_ms = NetworkEndian::read_i64(data);
-            debug_println!(
-                "{} bytes from {}: icmp_seq={}",
-                data.len(),
-                $remote_addr,
-                seq_no,
-            );
-            $received += 1;
-        }
-    }};
-}
 
 bitflags! {
     pub struct TRBFlags: u32 {
@@ -375,6 +336,62 @@ impl ECMDevice {
 
         Some(event)
     }
+
+    pub fn get_eth_addr(&mut self) -> Result<EthernetAddress, XHCIError> {
+        // self.descriptors
+        // Find string descriptor
+        let eth_descriptor = self
+            .get_ethernet_descriptor()
+            .ok_or(XHCIError::NoDescriptor)?;
+        let data_frame = alloc_frame().ok_or(XHCIError::MemoryAllocationFailure)?;
+        let mut mapper = MAPPER.lock();
+        let data_addr = mmio::map_page_as_uncacheable(data_frame.start_address(), &mut mapper)
+            .map_err(|_| XHCIError::MemoryAllocationFailure)?;
+        drop(mapper);
+        let bm_request_type: u8 = 0b10000000;
+        let b_request: u8 = 6; // Get descriptor
+        let descriptor_type: u8 = 3; // string decriptor
+        let descriptor_idx: u8 = eth_descriptor.imac_address;
+        let w_value: u16 = ((descriptor_type as u16) << 8) | (descriptor_idx as u16);
+        let w_idx: u16 = 0x09; // English language id
+        let w_length: u16 = 1024;
+        let paramaters: u64 = ((w_length as u64) << 48)
+            | ((w_idx as u64) << 32)
+            | ((w_value as u64) << 16)
+            | ((b_request as u64) << 8)
+            | (bm_request_type as u64);
+
+        self.standard_device
+            .send_command(paramaters, data_frame.start_address(), 1024)
+            .unwrap();
+        let mut eth_data_str: [u8; 12] = [0; 12];
+        let mut eth_str_idx = 0;
+        for str_idx in 0..=24 {
+            let data_pointer: *const u8 = (data_addr + str_idx).as_ptr();
+            let value = unsafe { core::ptr::read_volatile(data_pointer) };
+            if value >= 48 {
+                eth_data_str[eth_str_idx] = value;
+                eth_str_idx += 1;
+            }
+        }
+        let mut eth_data: [u8; 6] = [0; 6];
+        for idx in 0..6 {
+            let new_string = str::from_utf8(&eth_data_str[(2 * idx)..=((2 * idx) + 1)]).unwrap();
+            eth_data[idx] = u8::from_str_radix(new_string, 16).unwrap();
+        }
+
+        dealloc_frame(data_frame);
+        Result::Ok(EthernetAddress::from_bytes(&eth_data))
+    }
+
+    fn get_ethernet_descriptor(&self) -> Option<&EthernetNetworkingFunctionalDescriptor> {
+        for descriptor in &self.descriptors {
+            if let ECMDeviceDescriptors::Ethernet(eth_descriptor) = descriptor {
+                return Option::Some(eth_descriptor);
+            }
+        }
+        Option::None
+    }
 }
 
 const CLASS_CODE_CDC: u8 = 2;
@@ -389,12 +406,10 @@ const SUBCLASS_CODE_ECM: u8 = 6;
 ///     was found.
 pub fn find_cdc_device(devices: &mut Vec<USBDeviceInfo>) -> Option<(u8, u8)> {
     for device in devices {
-        // debug_println!("Device DESC = {:?}", device.descriptor);
         if device.descriptor.b_device_class == CLASS_CODE_CDC {
             for configuration in 0..device.descriptor.b_num_configurations {
                 let class_desc =
                     get_class_descriptors_for_configuration(device, configuration).unwrap();
-                // debug_println!("class_desc_1 = {class_desc:#?}");
                 let mut configuration_to_get = 0;
 
                 for descriptor in class_desc {
@@ -545,7 +560,6 @@ pub fn init_cdc_device(
     let input_trb_address = map_page_as_uncacheable(input_trb_buffer.start_address(), &mut mapper)
         .map_err(|_| XHCIError::MemoryAllocationFailure)?;
     zero_out_page(Page::containing_address(input_trb_address));
-    debug_println!("Working on input trb");
     let in_trb = ProducerRingBuffer::new(
         input_trb_buffer.start_address(),
         1,
@@ -562,7 +576,6 @@ pub fn init_cdc_device(
             .map_err(|_| XHCIError::MemoryAllocationFailure)?;
     zero_out_page(Page::containing_address(output_trb_address));
 
-    debug_println!("Working on output trb");
     let out_trb = ProducerRingBuffer::new(
         output_trb_buffer.start_address(),
         1,
@@ -606,17 +619,7 @@ pub fn init_cdc_device(
     unsafe { core::ptr::write_volatile(doorbell_base, 0) };
     wait_for_events_including_command_completion(&mut info, &mapper)?;
 
-    // Now get our ethernet address
-    let mut str_addr: u8 = 0;
-    for descriptor in &descriptors {
-        if let ECMDeviceDescriptors::Ethernet(desc) = descriptor {
-            str_addr = desc.imac_address;
-        }
-    }
-
     drop(mapper);
-
-    let hw_addr = get_eth_addr(&mut device, str_addr)?;
 
     // Setup data buffers for input and output
     let in_frame = alloc_frame().ok_or(XHCIError::MemoryAllocationFailure)?;
@@ -628,9 +631,8 @@ pub fn init_cdc_device(
     let out_buff_vaddr = mmio::map_page_as_uncacheable(out_frame.start_address(), &mut mapper)
         .map_err(|_| XHCIError::MemoryAllocationFailure)?;
     mmio::zero_out_page(Page::containing_address(out_buff_vaddr));
-    drop(mapper);
 
-    let mut ecm_device = ECMDevice {
+    let ecm_device = ECMDevice {
         standard_device: device,
         descriptors,
         in_data_addr: in_buff_vaddr,
@@ -641,175 +643,7 @@ pub fn init_cdc_device(
         out_data_edpoint_id: output_id,
         sending_data_out: false,
     };
-
-    // Test it out by trying to get an ip addr, should use send and recv
-    debug_println!("ethernet addr: {:?}", hw_addr);
-    let device_caps = phy::Device::capabilities(&ecm_device);
-    let config = smoltcp::iface::Config::new(smoltcp::wire::HardwareAddress::Ethernet(hw_addr));
-    let mut interface = smoltcp::iface::Interface::new(config, &mut ecm_device, Instant::ZERO);
-    let dhcp_socket = dhcpv4::Socket::new();
-    let socket_vec = Vec::new();
-    let mut sockets = SocketSet::new(socket_vec);
-    let dhcp_handle = sockets.add(dhcp_socket);
-    interface.poll(Instant::from_micros(1), &mut ecm_device, &mut sockets);
-    let event = sockets.get_mut::<dhcpv4::Socket>(dhcp_handle).poll();
-    match event {
-        None => {}
-        Some(dhcpv4::Event::Configured(config)) => {
-            debug_println!("DHCP config acquired!");
-
-            debug_println!("IP address:      {}", config.address);
-            set_ipv4_addr(&mut interface, config.address);
-
-            if let Some(router) = config.router {
-                debug_println!("Default gateway: {}", router);
-                interface
-                    .routes_mut()
-                    .add_default_ipv4_route(router)
-                    .unwrap();
-            } else {
-                debug_println!("Default gateway: None");
-                interface.routes_mut().remove_default_ipv4_route();
-            }
-
-            for (i, s) in config.dns_servers.iter().enumerate() {
-                debug_println!("DNS server {}:    {}", i, s);
-            }
-        }
-        Some(dhcpv4::Event::Deconfigured) => {
-            debug_println!("DHCP lost config!");
-            interface.update_ip_addrs(|addrs| addrs.clear());
-            interface.routes_mut().remove_default_ipv4_route();
-        }
-    };
-
-    let icmp_rx_buffer = icmp::PacketBuffer::new(vec![icmp::PacketMetadata::EMPTY], vec![0; 256]);
-    let icmp_tx_buffer = icmp::PacketBuffer::new(vec![icmp::PacketMetadata::EMPTY], vec![0; 256]);
-    let icmp_socket = icmp::Socket::new(icmp_rx_buffer, icmp_tx_buffer);
-    let mut sockets = SocketSet::new(vec![]);
-    let icmp_handle = sockets.add(icmp_socket);
-
-    let mut send_at = Instant::from_millis(0);
-    let mut seq_no = 0;
-    let mut _recieved = 0;
-    let mut echo_payload = [0xffu8; 40];
-    let mut time_count = 1;
-    let ident = 0x22b;
-    let remote_addr = IpAddress::from_str("10.0.3.1").unwrap();
-    while seq_no < 1024 {
-        let mut timestamp = Instant::from_millis(time_count);
-        time_count += 1;
-        interface.poll(timestamp, &mut ecm_device, &mut sockets);
-
-        timestamp = Instant::from_millis(time_count);
-        time_count += 1;
-
-        let socket = sockets.get_mut::<icmp::Socket>(icmp_handle);
-        if !socket.is_open() {
-            socket.bind(icmp::Endpoint::Ident(ident)).unwrap();
-            send_at = timestamp;
-        }
-        if socket.can_send() && seq_no < 1024 && send_at <= timestamp {
-            // ::write_i64(&mut echo_payload, timestamp.total_millis());
-            let bytes = timestamp.total_millis().to_le_bytes();
-            echo_payload[0] = bytes[0];
-            echo_payload[1] = bytes[1];
-            echo_payload[2] = bytes[2];
-            echo_payload[3] = bytes[3];
-            echo_payload[4] = bytes[4];
-            echo_payload[5] = bytes[5];
-            echo_payload[6] = bytes[6];
-            echo_payload[7] = bytes[7];
-            match remote_addr {
-                IpAddress::Ipv4(_) => {
-                    let (icmp_repr, mut icmp_packet) = send_icmp_ping!(
-                        Icmpv4Repr,
-                        Icmpv4Packet,
-                        ident,
-                        seq_no,
-                        echo_payload,
-                        socket,
-                        remote_addr
-                    );
-                    icmp_repr.emit(&mut icmp_packet, &device_caps.checksum);
-                }
-            }
-            seq_no += 1;
-        }
-        if socket.can_recv() {
-            let (payload, _) = socket.recv().unwrap();
-
-            match remote_addr {
-                IpAddress::Ipv4(_) => {
-                    let icmp_packet = Icmpv4Packet::new_checked(&payload).unwrap();
-                    let icmp_repr = Icmpv4Repr::parse(&icmp_packet, &device_caps.checksum).unwrap();
-                    get_icmp_pong!(
-                        Icmpv4Repr,
-                        icmp_repr,
-                        payload,
-                        remote_addr,
-                        timestamp,
-                        _recieved
-                    );
-                }
-            }
-        }
-    }
-    debug_println!("After recv fake frame");
-    Result::Err(XHCIError::UnknownPort)
-}
-
-fn set_ipv4_addr(iface: &mut Interface, cidr: Ipv4Cidr) {
-    iface.update_ip_addrs(|addrs| {
-        addrs.clear();
-        addrs.push(IpCidr::Ipv4(cidr)).unwrap();
-    });
-}
-
-/// Determines the ethernet address for the given device
-fn get_eth_addr(device: &mut USBDeviceInfo, idx: u8) -> Result<EthernetAddress, XHCIError> {
-    let data_frame = alloc_frame().ok_or(XHCIError::MemoryAllocationFailure)?;
-    let mut mapper = MAPPER.lock();
-    let data_addr = mmio::map_page_as_uncacheable(data_frame.start_address(), &mut mapper)
-        .map_err(|_| XHCIError::MemoryAllocationFailure)?;
-    drop(mapper);
-    let bm_request_type: u8 = 0b10000000;
-    let b_request: u8 = 6; // Get descriptor
-    let descriptor_type: u8 = 3; // string decriptor
-    let descriptor_idx: u8 = idx;
-    let w_value: u16 = ((descriptor_type as u16) << 8) | (descriptor_idx as u16);
-    let w_idx: u16 = 0x09; // English language id
-    let w_length: u16 = 1024;
-    let paramaters: u64 = ((w_length as u64) << 48)
-        | ((w_idx as u64) << 32)
-        | ((w_value as u64) << 16)
-        | ((b_request as u64) << 8)
-        | (bm_request_type as u64);
-
-    device
-        .send_command(paramaters, data_frame.start_address(), 1024)
-        .unwrap();
-    let mut eth_data_str: [u8; 12] = [0; 12];
-    let mut eth_str_idx = 0;
-    for str_idx in 0..=24 {
-        let data_pointer: *const u8 = (data_addr + str_idx).as_ptr();
-        let value = unsafe { core::ptr::read_volatile(data_pointer) };
-        if value >= 48 {
-            eth_data_str[eth_str_idx] = value;
-            eth_str_idx += 1;
-        }
-    }
-    let mut eth_data: [u8; 6] = [0; 6];
-    for idx in 0..6 {
-        let new_string = str::from_utf8(&eth_data_str[(2 * idx)..=((2 * idx) + 1)]).unwrap();
-        eth_data[idx] = u8::from_str_radix(new_string, 16).unwrap();
-    }
-
-    // TODO: When we update the mapper to not have 2mib pages we would want to
-    // remove the uncachable flags from the pte, (BUT not unmap the page to
-    //keep our ability to fix data)
-    dealloc_frame(data_frame);
-    Result::Ok(EthernetAddress::from_bytes(&eth_data))
+    Result::Ok(ecm_device)
 }
 
 /// Returns the class descriptors for a particular configuration
@@ -880,7 +714,8 @@ fn get_class_descriptors_for_configuration(
     }
     // TODO: When we update the mapper to not have 2mib pages we would want to
     // remove the uncachable flags from the pte, (BUT not unmap the page to
-    //keep our ability to fix data)
+    // keep the idea that the kernel mapper has access to every physical
+    // page in memory
     dealloc_frame(data_frame);
     Result::Ok(descriptors)
 }

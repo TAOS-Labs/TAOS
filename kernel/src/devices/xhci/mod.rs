@@ -4,7 +4,7 @@
 //! https://www.intel.com/content/dam/www/public/us/en/documents/technical-specifications/extensible-host-controler-interface-usb-xhci.pdf
 
 pub mod context;
-mod ecm;
+pub mod ecm;
 pub mod ring_buffer;
 
 use core::{cmp::min, mem::MaybeUninit};
@@ -13,7 +13,11 @@ use crate::{
     constants::memory::PAGE_SIZE,
     debug_println,
     devices::mmio::zero_out_page,
-    memory::{frame_allocator::alloc_frame, MAPPER},
+    memory::{
+        frame_allocator::{alloc_frame, dealloc_frame},
+        MAPPER,
+    },
+    net::set_interface,
 };
 use alloc::{sync::Arc, vec::Vec};
 use bitflags::bitflags;
@@ -199,12 +203,8 @@ impl USBDeviceInfo {
             + info.capablities.doorbell_offset as u64
             + (self.slot as u64) * 4) as *mut u32;
         unsafe { core::ptr::write_volatile(doorbell_base, 1) };
-        debug_println!("Before waiting for events");
         let mapper = &mut MAPPER.lock();
-        debug_println!("After getting mapper");
         wait_for_events(&info, &mut self.event_ring, self.slot.into(), mapper)?;
-
-        debug_println!("After waiting for events");
         Ok(())
     }
 
@@ -256,6 +256,7 @@ pub enum XHCIError {
     TransferRingError,
     Timeout,
     NoInterface,
+    NoDescriptor,
 }
 
 bitflags! {
@@ -397,19 +398,21 @@ pub fn initalize_xhci_hub(device: &Arc<Mutex<DeviceInfo>>) -> Result<(), XHCIErr
             data_frame.start_address(),
             1024,
         )?;
-        debug_println!("Got device descriptor uing send_command");
         // We have the descriptor at the start of the adddress
         let descriptor_ptr: *const USBDeviceDescriptor = data_addr.as_ptr();
         device.descriptor = unsafe { core::ptr::read_volatile(descriptor_ptr) };
+        dealloc_frame(data_frame);
     }
     // Now look for devices
     let slot_config = find_cdc_device(&mut devices).unwrap();
     let slot = slot_config.0;
     let configuration = slot_config.1;
-    let _ = init_cdc_device(
+    let mut device = init_cdc_device(
         find_device_in_slot(&mut devices, slot).expect("Found device should be in list of devices"),
         configuration,
-    );
+    )?;
+    let hw_address = device.get_eth_addr()?;
+    set_interface(device, hw_address);
     Result::Ok(())
 }
 
@@ -602,33 +605,22 @@ fn boot_up_all_ports(
 ) -> Result<Vec<USBDeviceInfo>, XHCIError> {
     let mut devices = Vec::new();
     for device in 0..MAX_USB_DEVICES {
-        debug_println!("Device = {device}");
         let device_offset: u64 = 0x10 * <u8 as Into<u64>>::into(device);
         let port_status_addr =
             (info.operational_register_address + 0x400 + device_offset) as *const u32;
-        // debug_println!("Offset = {port_status_addr:?}, device = {device}");
         let device_connected = unsafe {
             PortStatusAndControl::from_bits_retain(core::ptr::read_volatile(port_status_addr))
         };
-        // debug_println!("PortStatusAndCtrl = {device_connected:?}");
         if PortStatusAndControl::CurrentConnectStatus.intersects(device_connected) {
-            debug_println!("PortStatusAndCtrl = {device_connected:?}");
             let slot = boot_up_usb_port(info, device, device_connected, mapper)?;
             let address_tuple = address_device(info, slot, mapper)?;
             let input_context = address_tuple.0;
             let producer_buffer = address_tuple.1;
             // Issue the get_descriptor
 
-            // configure_endpoint(info, slot, mapper, input_context)?;
             let event_ring = create_device_event_ring(info, slot as u16, mapper)?;
-            // let descriptor =
-            //     get_device_descriptor(info, &mut producer_buffer, &mut event_ring, mapper, slot)?;
-            // debug_println!("descriptor = {:?}", descriptor);
             let device = prepare_device(event_ring, producer_buffer, slot, input_context)?;
             devices.push(device);
-            // Now that everything is set up, pass to upper level driver to finish it up
-            // Should probally get class, so we know who to send it to
-            // We need the endpoint 0 trb, and the input context
         } else {
             continue;
         }
@@ -665,7 +657,6 @@ fn boot_up_usb_port(
     if PortStatusAndControl::PortEnabled.intersects(port_status) {
         debug_println!("USB3 detected and successfull");
     } else if port_link_status == PortLinkStateRead::Polling as u32 {
-        debug_println!("USB2 detected, or USB3 still working");
         let mut new_status = port_status.union(PortStatusAndControl::PortReset);
         new_status.remove(PortStatusAndControl::CurrentConnectStatus);
         new_status = PortStatusAndControl::from_bits_retain(new_status.bits() & (!(0b1111 << 5)));
@@ -764,13 +755,6 @@ fn address_device(
         core::ptr::write_volatile(slot_context_ptr, slot_context);
     }
 
-    // let array_vaddr = info.base_address_array + slot as u64 * 8;
-    // let array_ptr: *mut u64 = array_vaddr.as_mut_ptr();
-    // debug_println!("my dcbaap = {:X}", info.base_address_array );
-    // debug_println!("my addr = {:X}", array_vaddr );
-    // debug_println!("my addr placed = {:X}", slot_context_va.as_u64() - mapper.phys_offset().as_u64() );
-    // unsafe {core::ptr::write_volatile(array_ptr, slot_context_va.as_u64() - mapper.phys_offset().as_u64());}
-
     // Endpoint 0 context (Bidirectional)
     let ep0_context_va = device_context_address + 0x40;
     let ep0_context_ptr: *mut EndpointContext = ep0_context_va.as_mut_ptr();
@@ -789,8 +773,6 @@ fn address_device(
     unsafe {
         core::ptr::write_volatile(ep0_context_ptr, endpoint_zero_context);
     }
-    // Now Generate 30 contexts (out 1, in 1, out 2, in 2, ... out 15, in 15)
-    // Can zero them out, but that should already be done
     // Load output to device context base array
     let slot_addr_vadr = info.base_address_array + (slot as u64 * 8);
     let slot_addr = slot_addr_vadr.as_mut_ptr();
