@@ -11,8 +11,6 @@ base_args = [
     "-smp", "2", 
     "-cpu", "Conroe-v1,+x2apic,+invtsc",
 
-    "-enable-kvm", # TODO: do not forget to remove this line before merging to main
-    
     # USB
     "-device", "qemu-xhci",
 
