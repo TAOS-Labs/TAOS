@@ -1,4 +1,4 @@
-use core::{ptr, slice, usize};
+use core::{ptr, usize};
 
 use alloc::sync::Arc;
 use log::debug;
@@ -26,10 +26,10 @@ use crate::{
         HHDM_OFFSET, KERNEL_MAPPER,
     },
     processes::process::with_current_pcb,
-    serial_println, syscalls::syscall_handlers::block_on,
+    serial_println,
 };
 
-use super::mm::{VmAreaBackings, VmaChain};
+use super::mm::{VmArea, VmAreaBackings, VmaChain};
 
 /// Fault outcome enum to route what to do in IDT
 #[derive(Debug)]
@@ -46,7 +46,14 @@ pub enum FaultOutcome {
         backing: Arc<VmAreaBackings>,
         pt_flags: PageTableFlags,
     },
-    FileMapping {
+    SharedFileMapping {
+        page: Page<Size4KiB>,
+        mapper: OffsetPageTable<'static>,
+        offset: u64,
+        pt_flags: PageTableFlags,
+        fd: usize,
+    },
+    PrivateFileMapping {
         page: Page<Size4KiB>,
         mapper: OffsetPageTable<'static>,
         offset: u64,
@@ -77,7 +84,7 @@ pub enum FaultOutcome {
 /// # Returns
 /// Returns a FaultOutcome enum with values that would be relevant for each function
 /// This design should allow for easier debugging in the PF handler itself
-pub fn determine_fault_cause(error_code: PageFaultErrorCode) -> FaultOutcome {
+pub fn determine_fault_cause(error_code: PageFaultErrorCode, vma: &VmArea) -> FaultOutcome {
     use x86_64::registers::control::{Cr2, Cr3};
 
     // Read fault info.
@@ -101,97 +108,99 @@ pub fn determine_fault_cause(error_code: PageFaultErrorCode) -> FaultOutcome {
         TranslateResult::NotMapped => false,
         _ => panic!("Unexpected result during page translation"),
     };
-
     serial_println!("Translate result is {:#?}", translate_result);
 
-    let mut outcome = None;
-    with_current_pcb(|pcb| {
-        pcb.mm.with_vma_tree(|tree| {
-            // Find the VMA covering the faulting address.
-            let vma_arc = Mm::find_vma(faulting_address, tree).expect("Vma not found?");
-            let vma = vma_arc.lock();
+    // Compute the fault's offset within the VMA.
+    let fault_offset = page.start_address().as_u64() - vma.start;
 
-            // Compute the fault's offset within the VMA.
-            let fault_offset = page.start_address().as_u64() - vma.start;
+    // Look up the segment covering this fault.
+    // We use a range query to find the segment with the greatest key <= fault_offset.
+    let segments = vma.segments.lock();
+    let seg_entry = segments
+        .range(..=fault_offset)
+        .next_back()
+        .expect("No segment found covering fault offset");
+    let seg_key = *seg_entry.0;
+    let segment = seg_entry.1;
+    if fault_offset >= segment.end {
+        panic!("Fault offset {} not covered by segment", fault_offset);
+    }
 
-            // Look up the segment covering this fault.
-            // We use a range query to find the segment with the greatest key <= fault_offset.
-            let segments = vma.segments.lock();
-            let seg_entry = segments
-                .range(..=fault_offset)
-                .next_back()
-                .expect("No segment found covering fault offset");
-            let seg_key = *seg_entry.0;
-            let segment = seg_entry.1;
-            if fault_offset >= segment.end {
-                panic!("Fault offset {} not covered by segment", fault_offset);
-            }
+    // Use the segment's backing.
+    let backing = Arc::clone(&segment.backing);
+    // Compute the mapping offset within the backing.
+    // (Assuming each segment's reverse mappings are keyed relative to its own start.)
+    let anon_mapping_offset = fault_offset - seg_key + segment.start;
+    let anon_vma_chain = backing.find_mapping(anon_mapping_offset);
 
-            // Use the segment's backing.
-            let backing = Arc::clone(&segment.backing);
-            // Compute the mapping offset within the backing.
-            // (Assuming each segment's reverse mappings are keyed relative to its own start.)
-            let anon_mapping_offset = fault_offset - seg_key + segment.start;
-            let anon_vma_chain = backing.find_mapping(anon_mapping_offset);
+    let file_mapping_offset = fault_offset - seg_key + segment.pg_offset;
 
-            let file_mapping_offset = fault_offset - seg_key + segment.pg_offset;
+    let pt_flags = vma_to_page_flags(vma.flags);
 
-            let pt_flags = vma_to_page_flags(vma.flags);
-
-            outcome = if !is_mapped {
-                // if there is a backing file
-                // this check works since if there is no backing file, we set fd to usize::MAX
-                // which is trivially larger than MAX_FILES
-                if segment.fd < MAX_FILES {
-                    Some(FaultOutcome::FileMapping {
-                        page,
-                        mapper,
-                        offset: file_mapping_offset as u64,
-                        pt_flags,
-                        fd: segment.fd,
-                    })
-                }
-                // if there is no file backing, handle it as an anonymous page
-                else if let Some(chain) = anon_vma_chain {
-                    Some(FaultOutcome::ExistingMapping {
-                        page,
-                        mapper,
-                        chain,
-                        pt_flags,
-                    })
-                } else {
-                    Some(FaultOutcome::NewMapping {
-                        page,
-                        mapper,
-                        backing,
-                        pt_flags,
-                    })
-                }
+    let outcome = if !is_mapped {
+        // if there is a backing file
+        // this check works since if there is no backing file, we set fd to usize::MAX
+        // which is trivially larger than MAX_FILES
+        if segment.fd < MAX_FILES {
+            if vma.flags.contains(VmAreaFlags::SHARED) {
+                Some(FaultOutcome::SharedFileMapping {
+                    page,
+                    mapper,
+                    offset: file_mapping_offset as u64,
+                    pt_flags,
+                    fd: segment.fd,
+                })
             } else {
-                // For mapped pages, check if a Copy-On-Write fault occurred.
-                let flags = get_page_flags(page, &mut mapper).expect("Could not get page flags");
-                let cow = !vma.flags.contains(VmAreaFlags::SHARED);
-                let caused_by_write = error_code.contains(PageFaultErrorCode::CAUSED_BY_WRITE);
-                if cow && caused_by_write && flags.contains(PageTableFlags::PRESENT) {
-                    Some(FaultOutcome::CopyOnWrite {
-                        page,
-                        mapper,
-                        pt_flags,
-                    })
-                } else if !cow && caused_by_write && flags.contains(PageTableFlags::PRESENT) {
-                    Some(FaultOutcome::SharedPage {
-                        page,
-                        mapper,
-                        pt_flags,
-                    })
-                } else {
-                    Some(FaultOutcome::Mapped)
-                }
-            };
-        });
-    });
-
-    outcome.expect("Failed to determine fault cause")
+                Some(FaultOutcome::PrivateFileMapping {
+                    page,
+                    mapper,
+                    offset: file_mapping_offset as u64,
+                    pt_flags,
+                    fd: segment.fd,
+                })
+            }
+        }
+        // if there is no file backing, handle it as an anonymous page
+        else if let Some(chain) = anon_vma_chain {
+            Some(FaultOutcome::ExistingMapping {
+                page,
+                mapper,
+                chain,
+                pt_flags,
+            })
+        } else {
+            Some(FaultOutcome::NewMapping {
+                page,
+                mapper,
+                backing,
+                pt_flags,
+            })
+        }
+    } else {
+        // For mapped pages, check if a Copy-On-Write fault occurred.
+        let cow =
+            !vma.flags.contains(VmAreaFlags::SHARED) && vma.flags.contains(VmAreaFlags::WRITABLE);
+        let caused_by_write = error_code.contains(PageFaultErrorCode::CAUSED_BY_WRITE);
+        if cow && caused_by_write {
+            Some(FaultOutcome::CopyOnWrite {
+                page,
+                mapper,
+                pt_flags,
+            })
+        } else if !cow && caused_by_write {
+            Some(FaultOutcome::SharedPage {
+                page,
+                mapper,
+                pt_flags,
+            })
+        } else {
+            None
+        }
+    };
+    if outcome.is_none() {
+        panic!("Could not determine fault cause.");
+    }
+    outcome.unwrap()
 }
 
 /// Handles a fault by using an existing anonymous VMA chain mapping.
@@ -232,7 +241,7 @@ pub fn handle_existing_file_mapping(
     );
 }
 
-pub async fn handle_file_mapping(
+pub async fn handle_shared_file_mapping(
     page: Page<Size4KiB>,
     mapper: &mut OffsetPageTable<'_>,
     offset: u64,
@@ -244,8 +253,7 @@ pub async fn handle_file_mapping(
     let mut flags = pt_flags;
     flags.set(PageTableFlags::PRESENT, true);
 
-    let mut fs =
-        FILESYSTEM.get().expect("could not get fs").lock();
+    let mut fs = FILESYSTEM.get().expect("could not get fs").lock();
     let file = with_current_pcb(|pcb| {
         pcb.fd_table[fd]
             .as_ref()
@@ -259,7 +267,6 @@ pub async fn handle_file_mapping(
         .await
         .is_err();
     if absent_in_page_cache {
-        serial_println!("OFFSET: {:#?}", offset);
         fs.add_entry_to_page_cache(file_guard.clone(), offset as usize)
             .await
             .expect("failed to add entry to page cache");
@@ -274,17 +281,55 @@ pub async fn handle_file_mapping(
         .translate_page(Page::containing_address(kernel_va))
         .expect("Could not translate kernel VA.");
     create_mapping_to_frame(page, mapper, Some(flags), frame);
+}
 
-    // let ptr = page.start_address().as_u64() as *mut u8;
-    // let buffer: &mut [u8] = unsafe { slice::from_raw_parts_mut(ptr, 1024) };
-    // {
-    //     // Now that the virtual address is mapped, use it to memcpy the file at an offset to the frame
-    //     let mut fs = unsafe { FILESYSTEM.get().expect("Could not get filesystem").lock() };
-    //     fs.seek_file(fd, offset as usize)
-    //         .await
-    //         .expect("Seeking file failed.");
-    //     fs.read_file(fd, buffer).await.expect("could not read file");
-    // }
+pub async fn handle_private_file_mapping(
+    page: Page<Size4KiB>,
+    mapper: &mut OffsetPageTable<'_>,
+    offset: u64,
+    pt_flags: PageTableFlags,
+    fd: usize,
+    vma: &mut VmArea,
+) {
+    serial_println!("Creating a new mapping for a file-backed page.");
+
+    let mut flags = pt_flags;
+
+    // Setting it as COW - make sure PTE is read only
+    flags.set(PageTableFlags::PRESENT, true);
+    flags.set(PageTableFlags::WRITABLE, false);
+
+    // Set VMA SHARED flag to false so it's COW
+    vma.flags.set(VmAreaFlags::SHARED, false);
+
+    let mut fs = FILESYSTEM.get().expect("could not get fs").lock();
+    let file = with_current_pcb(|pcb| {
+        pcb.fd_table[fd]
+            .as_ref()
+            .cloned()
+            .expect("could not get fd from fd table")
+    });
+
+    let file_guard = { file.lock() };
+    let absent_in_page_cache = fs
+        .page_cache_get_mapping(file_guard.clone(), offset as usize)
+        .await
+        .is_err();
+    if absent_in_page_cache {
+        fs.add_entry_to_page_cache(file_guard.clone(), offset as usize)
+            .await
+            .expect("failed to add entry to page cache");
+    }
+
+    let kernel_va = fs
+        .page_cache_get_mapping(file_guard.clone(), offset as usize)
+        .await
+        .unwrap();
+    let kernel_mapper = { KERNEL_MAPPER.lock() };
+    let frame: PhysFrame<Size4KiB> = kernel_mapper
+        .translate_page(Page::containing_address(kernel_va))
+        .expect("Could not translate kernel VA.");
+    create_mapping_to_frame(page, mapper, Some(flags), frame);
 }
 
 /// Handles a fault by creating a new mapping and inserting it into the backing.

@@ -93,7 +93,7 @@ pub fn init() -> u32 {
             // serial_println!("FILE OBJECT: {:#?}", pcb.fd_table[fd]);
             // });
             
-            let ptr = sys_mmap(0x0, 0x1000, (ProtFlags::PROT_READ | ProtFlags::PROT_WRITE).bits(), MmapFlags::MAP_SHARED.bits(), fd as i64, 0);
+            let ptr = sys_mmap(0x0, 0x1000, (ProtFlags::PROT_READ | ProtFlags::PROT_WRITE).bits(), MmapFlags::MAP_PRIVATE.bits(), fd as i64, 0);
 
             let byte_ptr = ptr as *mut u8;
 
@@ -102,7 +102,7 @@ pub fn init() -> u32 {
                     let byte = *byte_ptr.add(i);
                     serial_println!("byte[{}] = {} (char: {:?})", i, byte, byte as char);
                 }
-            }
+            };
 
             serial_println!("Now modifying some of the bytes of the file.");
 
@@ -112,13 +112,22 @@ pub fn init() -> u32 {
                 for (i, &c) in msg.iter().enumerate() {
                     *byte_ptr.add(i) = c;
                 }
+            };
             
             let mut backing = [0u8; 20];
             let buf: &mut [u8] = &mut backing;
             let mut user_fs = FILESYSTEM.get().expect("could not get fs").lock();
-            user_fs.read_file(fd, buf).await;
+            let _ = user_fs.read_file(fd, buf).await;
             serial_println!("buf as str: {:?}", core::str::from_utf8(buf));
-}
+
+            let byte_ptr = ptr as *mut u8;
+
+            unsafe {
+                for i in 0..10 {
+                    let byte = *byte_ptr.add(i);
+                    serial_println!("byte[{}] = {} (char: {:?})", i, byte, byte as char);
+                }
+            }
 
         },
         3,

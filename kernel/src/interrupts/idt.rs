@@ -11,6 +11,7 @@ use core::arch::naked_asm;
 use lazy_static::lazy_static;
 use x86_64::{
     instructions::interrupts,
+    registers::control::Cr2,
     structures::idt::{InterruptDescriptorTable, InterruptStackFrame, PageFaultErrorCode},
 };
 
@@ -22,11 +23,19 @@ use crate::{
     devices::{keyboard::keyboard_handler, mouse::mouse_handler},
     events::inc_runner_clock,
     interrupts::x2apic::{self, current_core_id, TLB_SHOOTDOWN_ADDR},
-    memory::page_fault::{
-        determine_fault_cause, handle_cow_fault, handle_existing_file_mapping, handle_existing_mapping, handle_file_mapping, handle_new_mapping, handle_shared_page_fault, FaultOutcome
+    memory::{
+        mm::Mm,
+        page_fault::{
+            determine_fault_cause, handle_cow_fault,
+            handle_existing_mapping, handle_new_mapping, handle_private_file_mapping,
+            handle_shared_file_mapping, handle_shared_page_fault, FaultOutcome,
+        },
     },
     prelude::*,
-    processes::{process::preempt_process, registers::NonFlagRegisters},
+    processes::{
+        process::{preempt_process, with_current_pcb},
+        registers::NonFlagRegisters,
+    },
     syscalls::{
         memorymap::sys_mmap,
         syscall_handlers::{block_on, sys_exit, sys_nanosleep_32, sys_print},
@@ -147,6 +156,7 @@ extern "x86-interrupt" fn page_fault_handler(
     stack_frame: InterruptStackFrame,
     error_code: PageFaultErrorCode,
 ) {
+    let faulting_address = Cr2::read().expect("Cannot read faulting address").as_u64();
     serial_println!("Page fault");
     serial_println!("Stack pointer: 0x{:X}", stack_frame.stack_pointer);
     serial_println!(
@@ -155,55 +165,76 @@ extern "x86-interrupt" fn page_fault_handler(
     );
     serial_println!("Error code: {:#?}", error_code);
 
-    let fault = determine_fault_cause(error_code);
-    match fault {
-        FaultOutcome::ExistingMapping {
-            page,
-            mut mapper,
-            chain,
-            pt_flags,
-        } => {
-            handle_existing_mapping(page, &mut mapper, chain, pt_flags);
-        }
-        FaultOutcome::NewMapping {
-            page,
-            mut mapper,
-            backing,
-            pt_flags,
-        } => {
-            handle_new_mapping(page, &mut mapper, &backing, pt_flags);
-        }
-        FaultOutcome::FileMapping {
-            page,
-            mut mapper,
-            offset,
-            pt_flags,
-            fd,
-        } => {
-            serial_println!("GOING TO HANDLE FILE MAPPING!");
-            block_on(async {
-                handle_file_mapping(page, &mut mapper, offset, pt_flags, fd).await
-            });
-        }
-        FaultOutcome::CopyOnWrite {
-            page,
-            mut mapper,
-            pt_flags,
-        } => {
-            handle_cow_fault(page, &mut mapper, pt_flags);
-        }
-        FaultOutcome::SharedPage {
-            page,
-            mut mapper,
-            pt_flags,
-        } => {
-            handle_shared_page_fault(page, &mut mapper, pt_flags);
-        }
-        FaultOutcome::Mapped => {
-            serial_println!("Page is mapped; no COW fault detected");
-            panic!();
-        }
-    }
+    with_current_pcb(|pcb| {
+        pcb.mm.with_vma_tree(|tree| {
+            // Find the VMA covering the faulting address.
+            let vma_arc = Mm::find_vma(faulting_address, tree).expect("Vma not found?");
+            let mut vma = vma_arc.lock();
+
+            let fault = determine_fault_cause(error_code, &vma);
+            match fault {
+                FaultOutcome::ExistingMapping {
+                    page,
+                    mut mapper,
+                    chain,
+                    pt_flags,
+                } => {
+                    handle_existing_mapping(page, &mut mapper, chain, pt_flags);
+                }
+                FaultOutcome::NewMapping {
+                    page,
+                    mut mapper,
+                    backing,
+                    pt_flags,
+                } => {
+                    handle_new_mapping(page, &mut mapper, &backing, pt_flags);
+                }
+                FaultOutcome::SharedFileMapping {
+                    page,
+                    mut mapper,
+                    offset,
+                    pt_flags,
+                    fd,
+                } => {
+                    serial_println!("GOING TO HANDLE SHARED FILE MAPPING!");
+                    block_on(async {
+                        handle_shared_file_mapping(page, &mut mapper, offset, pt_flags, fd).await
+                    });
+                }
+                FaultOutcome::PrivateFileMapping {
+                    page,
+                    mut mapper,
+                    offset,
+                    pt_flags,
+                    fd,
+                } => {
+                    serial_println!("GOING TO HANDLE PRIVATE FILE MAPPING!");
+                    block_on(async {
+                        handle_private_file_mapping(page, &mut mapper, offset, pt_flags, fd, &mut vma).await
+                    });
+                }
+                FaultOutcome::CopyOnWrite {
+                    page,
+                    mut mapper,
+                    pt_flags,
+                } => {
+                    handle_cow_fault(page, &mut mapper, pt_flags);
+                }
+                FaultOutcome::SharedPage {
+                    page,
+                    mut mapper,
+                    pt_flags,
+                } => {
+                    handle_shared_page_fault(page, &mut mapper, pt_flags);
+                }
+                FaultOutcome::Mapped => {
+                    serial_println!("Page is mapped; no COW fault detected");
+                    panic!();
+                }
+            }
+        });
+    });
+
     serial_println!("At end of page fault handler");
 }
 
