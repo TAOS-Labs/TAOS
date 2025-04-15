@@ -230,7 +230,7 @@ impl ProducerRingBuffer {
             // sets the trb type to Link and the toggle cycle bit to 1
             let last_trb = TransferRequestBlock {
                 parameters: base_addr.as_u64(),
-                status: 1,
+                status: 0,
                 control: ((TransferRingTypes::Link as u32) << 10) | (1 << 1) | cycle_state as u32,
             };
             core::ptr::write_volatile(last_addr, last_trb);
@@ -297,12 +297,12 @@ impl ProducerRingBuffer {
         let next_enq = if self.is_next_link() {
             // if so, set next_enq to the pointer stored in trb.parameters
             let next_trb = *(self.enqueue.offset(1));
-            (next_trb.parameters & !0xF) as *mut Trb
+            ((next_trb.parameters + self.phys_offset.as_u64()) & !0xF) as *mut Trb
         } else {
             // otherwise, just set next_enq to enqueue offsetted by one
             self.enqueue.offset(1)
         };
-        core::ptr::eq(self.enqueue, next_enq)
+        core::ptr::eq(self.dequeue, next_enq)
     }
 
     /// Checks if the ring is empty. Empty is defined as if `enqueue` == `dequeue`.
@@ -757,964 +757,961 @@ impl ConsumerRingBuffer {
     }
 }
 
-// #[cfg(test)]
-// mod test {
-//     use alloc::format;
-//     use x86_64::{
-//         addr::VirtAddr,
-//         structures::paging::{Mapper, OffsetPageTable, Page},
-//     };
-
-//     use super::*;
-//     use crate::{
-//         devices::{
-//             mmio,
-//             xhci::ring_buffer::{
-//                 ConsumerRingBuffer, EventRingError, EventRingType, TransferRequestBlock,
-//             },
-//         },
-//         memory::{
-//             frame_allocator::{alloc_frame, dealloc_frame},
-//             paging::{self, create_mapping, remove_mapped_frame},
-//             MAPPER,
-//         },
-//     };
-
-//     #[test_case]
-//     async fn prod_ring_buffer_init() {
-//         // first get a page and zero init it
-//         let mut mapper = MAPPER.lock();
-//         let frame = alloc_frame().unwrap();
-//         let frame_va =
-//             VirtAddr::new(mapper.phys_offset().as_u64() + frame.start_address().as_u64());
-//         let page: Page = Page::containing_address(frame_va);
-//         // let _ = create_mapping(page, &mut *mapper, None);
-
-//         mmio::zero_out_page(page);
-
-//         // call the new function
-//         let base_addr = page.start_address().as_u64();
-//         let size = page.size() as isize;
-//         let _cmd_ring = ProducerRingBuffer::new(
-//             frame.start_address(),
-//             1,
-//             RingType::Command,
-//             size,
-//             mapper.phys_offset(),
-//         );
-
-//         // make sure the link trb is set correctly
-//         let mut trb_ptr = base_addr as *const Trb;
-//         let trb: Trb;
-//         unsafe {
-//             trb_ptr = trb_ptr.offset(size / 16 - 1);
-//             trb = *trb_ptr;
-//         }
-
-//         let params = trb.parameters;
-//         let status = trb.status;
-//         let control = trb.control;
-
-//         assert_eq!(params, base_addr);
-//         assert_eq!(status, 0);
-//         assert_eq!(control, 0x1802);
-
-//         dealloc_frame(frame);
-//     }
-
-//     #[test_case]
-//     async fn prod_ring_buffer_enqueue() {
-//         // initialize a ring buffer we can enqueue onto
-//         let mut mapper = MAPPER.lock();
-//         let frame = alloc_frame().unwrap();
-//         let frame_va =
-//             VirtAddr::new(mapper.phys_offset().as_u64() + frame.start_address().as_u64());
-//         let page: Page = Page::containing_address(frame_va);
-
-//         mmio::zero_out_page(page);
-
-//         // call the new function
-//         let base_addr = page.start_address().as_u64();
-//         let size = page.size() as isize;
-//         let mut cmd_ring = ProducerRingBuffer::new(
-//             frame.start_address(),
-//             1,
-//             RingType::Command,
-//             size,
-//             mapper.phys_offset(),
-//         )
-//         .expect("Error initializing producer ring");
-
-//         // create a block to queue
-//         let mut cmd = Trb {
-//             parameters: 0,
-//             status: 0,
-//             control: 0,
-//         };
-//         cmd.set_trb_type(TrbTypes::NoOpCmd as u32);
-
-//         // enqueue the block
-//         unsafe {
-//             cmd_ring.enqueue(cmd).expect("enqueue error");
-//         }
-
-//         let ring_base = base_addr as *mut Trb;
-//         let mut trb: Trb;
-//         unsafe {
-//             trb = *ring_base;
-//         }
-//         assert_eq!(trb.get_trb_type(), TrbTypes::NoOpCmd as u32);
-//         assert_eq!(trb.get_cycle(), 1);
-
-//         // enqueue another block
-//         unsafe {
-//             cmd_ring.enqueue(cmd).expect("enqueue error");
-//             trb = *(ring_base.offset(1));
-//         }
-//         assert_eq!(trb.get_trb_type(), TrbTypes::NoOpCmd as u32);
-//         assert_eq!(trb.get_cycle(), 1);
-
-//         dealloc_frame(frame);
-//         // remove_mapped_frame(page, &mut *mapper);
-//     }
-
-//     #[test_case]
-//     async fn prod_ring_buffer_helpers() {
-//         let mut mapper = MAPPER.lock();
-//         let frame = alloc_frame().unwrap();
-//         let frame_va =
-//             VirtAddr::new(mapper.phys_offset().as_u64() + frame.start_address().as_u64());
-//         let page: Page = Page::containing_address(frame_va);
-
-//         mmio::zero_out_page(page);
-
-//         // create a small ring buffer
-//         let size: isize = 64;
-//         let mut cmd_ring = ProducerRingBuffer::new(
-//             frame.start_address(),
-//             1,
-//             RingType::Command,
-//             size,
-//             mapper.phys_offset(),
-//         )
-//         .expect("Error initializing producer ring");
-
-//         // test is empty and is full funcs
-//         let mut result = cmd_ring.is_ring_empty();
-//         assert_eq!(result, true);
-
-//         unsafe {
-//             result = cmd_ring.is_ring_full();
-//         }
-
-//         assert_eq!(result, false);
-
-//         // create a no-op cmd to queue a couple of times
-//         let mut cmd = Trb {
-//             parameters: 0,
-//             status: 0,
-//             control: 0,
-//         };
-//         cmd.set_trb_type(TrbTypes::NoOpCmd as u32);
-
-//         unsafe {
-//             cmd_ring.enqueue(cmd).expect("enqueue error");
-//         }
-
-//         // both empty and true should be false
-//         result = cmd_ring.is_ring_empty();
-//         assert_eq!(result, false);
-
-//         unsafe {
-//             result = cmd_ring.is_ring_full();
-//             assert_eq!(result, false);
-//             cmd_ring.enqueue(cmd).expect("enqueue error");
-//         }
-
-//         // empty should be false and full should be true
-//         result = cmd_ring.is_ring_empty();
-//         assert_eq!(result, false);
-
-//         unsafe {
-//             result = cmd_ring.is_ring_full();
-//         }
-//         assert_eq!(result, true);
-
-//         dealloc_frame(frame);
-//         // remove_mapped_frame(page, &mut *mapper);
-//     }
-
-//     #[test_case]
-//     async fn prod_ring_buffer_enqueue_accross_segment() {
-//         let mut mapper = MAPPER.lock();
-
-//         let frame = alloc_frame().unwrap();
-//         let frame_va =
-//             VirtAddr::new(mapper.phys_offset().as_u64() + frame.start_address().as_u64());
-//         let page: Page = Page::containing_address(frame_va);
-
-//         mmio::zero_out_page(page);
-
-//         // create a small ring buffer
-//         let base_addr = page.start_address().as_u64();
-//         let size: isize = 64;
-//         let mut cmd_ring = ProducerRingBuffer::new(
-//             frame.start_address(),
-//             1,
-//             RingType::Command,
-//             size,
-//             mapper.phys_offset(),
-//         )
-//         .expect("Error initializing producer ring");
-
-//         // create our no op cmd
-//         let mut cmd = Trb {
-//             parameters: 0,
-//             status: 0,
-//             control: 0,
-//         };
-//         cmd.set_trb_type(TrbTypes::NoOpCmd as u32);
-
-//         // queue it up so we can test that later the cycle bit gets correctly written
-//         unsafe {
-//             cmd_ring.enqueue(cmd).expect("enqueue error");
-//         }
-//         // move the enqueue to the last block before the end and then the dequeue over one
-//         cmd_ring
-//             .set_enqueue(base_addr + 32)
-//             .expect("set_enqueue error");
-//         // cmd_ring
-//         //     .set_dequeue(base_addr + 16)
-//         //     .expect("set_dequeue error");
-
-//         // now try to enqueue
-//         unsafe {
-//             cmd_ring.enqueue(cmd).expect("enqueue error");
-//         }
-
-//         // ring should be considered full now
-//         unsafe {
-//             assert!(cmd_ring.is_ring_full());
-//         }
-
-//         // now move dequeue so we can test that enqueue properly writes the cycle bit to 0
-//         cmd_ring
-//             .set_dequeue(base_addr + 32)
-//             .expect("set_dequeue error");
-
-//         unsafe {
-//             cmd_ring.enqueue(cmd).expect("enqueue error");
-//         }
-
-//         // now lettuce check that the cycle bit of the very first block is 0
-//         let trb_ptr = base_addr as *const Trb;
-//         let trb: Trb;
-//         unsafe {
-//             trb = *trb_ptr;
-//         }
-
-//         assert_eq!(trb.get_cycle(), 0);
-
-//         dealloc_frame(frame);
-//         // remove_mapped_frame(page, &mut *mapper);
-//     }
-
-//     // #[test_case]
-//     // async fn consumer_ring_buffer_init() {
-//     //     // first get pages for the ERST and first segment
-//     //     let mapper: spin::MutexGuard<'_, OffsetPageTable<'_>> = MAPPER.lock();
-//     //     let erst_frame = alloc_frame().unwrap();
-//     //     let erst_page: Page =
-//     //         Page::containing_address(mapper.phys_offset() + erst_frame.start_address().as_u64());
-//     //     let segment_frame = alloc_frame().unwrap();
-//     //     let segment_page: Page =
-//     //         Page::containing_address(mapper.phys_offset() + segment_frame.start_address().as_u64());
-
-//     //     let fake_device_frame = alloc_frame().unwrap();
-//     //     let segment_frame_addr = segment_frame.start_address();
-
-//     //     let erst_entry_size = 16 as isize;
-
-//     //     mmio::zero_out_page(erst_page);
-//     //     mmio::zero_out_page(segment_page);
-//     //     // call the initialization function
-//     //     let erst_address = erst_page.start_address().as_u64();
-//     //     let segment_address = segment_page.start_address().as_u64();
-//     //     let page_size = erst_page.size() as isize;
-//     //     let event_ring = ConsumerRingBuffer::new(
-//     //         erst_address,
-//     //         page_size / erst_entry_size,
-//     //         segment_page.start_address(),
-//     //         segment_frame_addr,
-//     //         (page_size / size_of::<TransferRequestBlock>() as isize) as u32,
-//     //     )
-//     //     .expect("Error initializing consumer ring");
-
-//     //     // Ensure the RingBuffer thinks that it is empty
-//     //     unsafe {
-//     //         assert_eq!(true, event_ring.is_empty());
-//     //     }
-
-//     //     // verify that the ERST was properly initialized
-
-//     //     // check that the first TRB's worth of the ERST contains the correct information about the segment
-//     //     let mut trb_ptr = erst_address as *const Trb;
-//     //     let mut trb;
-//     //     unsafe {
-//     //         trb = *trb_ptr;
-//     //     }
-
-//     //     // added due to "unaligned padded struct field" error, probably not actually a good solution, I'd like
-//     //     // to know how we were unaligned
-//     //     let mut parameters = trb.parameters;
-//     //     let mut status = trb.status;
-//     //     let mut control = trb.control;
-
-//     //     assert_eq!(parameters, segment_frame_addr.as_u64() & !0x3F);
-//     //     assert_eq!(
-//     //         status,
-//     //         (page_size / size_of::<TransferRequestBlock>() as isize) as u32 & 0xFFFF
-//     //     );
-//     //     assert_eq!(control, 0);
-
-//     //     // check that the rest of the TRB's worth of the ERST is still zeroed
-//     //     for _ in 1..(page_size / erst_entry_size) {
-//     //         unsafe {
-//     //             trb_ptr = trb_ptr.offset(1);
-//     //             trb = *trb_ptr;
-//     //         }
-
-//     //         parameters = trb.parameters;
-//     //         status = trb.status;
-//     //         control = trb.control;
-
-//     //         assert_eq!(parameters, 0);
-//     //         assert_eq!(status, 0);
-//     //         assert_eq!(control, 0);
-//     //     }
-
-//     //     // check that the data segment remains untouched
-//     //     trb_ptr = segment_address as *const Trb;
-//     //     unsafe {
-//     //         trb = *trb_ptr;
-//     //     }
-
-//     //     for _ in 1..(page_size / erst_entry_size) {
-//     //         parameters = trb.parameters;
-//     //         status = trb.status;
-//     //         control = trb.control;
-
-//     //         assert_eq!(parameters, 0);
-//     //         assert_eq!(status, 0);
-//     //         assert_eq!(control, 0);
-
-//     //         unsafe {
-//     //             assert_eq!(size_of::<TransferRequestBlock>() as isize, 16);
-//     //             trb_ptr = trb_ptr.offset(1);
-//     //             trb = *trb_ptr;
-//     //         }
-//     //     }
-//     //     dealloc_frame(erst_frame);
-//     //     dealloc_frame(segment_frame);
-//     //     dealloc_frame(fake_device_frame);
-//     // }
-
-//     #[test_case]
-//     async fn consumer_ring_buffer_single_segment_dequeue() {
-//         // some constants
-//         const SEGMENT_ENTRIES: u32 = 16;
-//         const ERST_ENTRY_SIZE: isize = 16;
-
-//         // get pages for the ERST and data segment
-//         let mut mapper: spin::MutexGuard<'_, OffsetPageTable<'_>> = MAPPER.lock();
-
-//         let erst_page: Page = Page::containing_address(VirtAddr::new(0x500000000));
-//         let segment_page: Page = Page::containing_address(VirtAddr::new(0x600000000));
-//         create_mapping(erst_page, &mut *mapper, None);
-//         create_mapping(segment_page, &mut *mapper, None);
-
-//         let page_size = erst_page.size() as isize;
-
-//         let segment_frame = mapper
-//             .translate_page(segment_page)
-//             .expect("error translating page");
-//         let segment_paddr = segment_frame.start_address();
-
-//         // zero the pages we grabbed
-//         mmio::zero_out_page(erst_page);
-//         mmio::zero_out_page(segment_page);
-
-//         // call the initialization function
-//         let erst_address = erst_page.start_address().as_u64();
-//         let segment_vaddr = segment_page.start_address().as_u64();
-//         let mut event_ring = ConsumerRingBuffer::new(
-//             erst_address,
-//             page_size / ERST_ENTRY_SIZE,
-//             segment_page.start_address(),
-//             segment_paddr,
-//             SEGMENT_ENTRIES,
-//         )
-//         .expect("Error initializing consumer ring");
-
-//         // test a read on an empty RingBuffer
-//         unsafe {
-//             assert_eq!(
-//                 event_ring.dequeue().unwrap_err(),
-//                 EventRingError::RingEmptyError
-//             );
-//         }
-
-//         // write a dummy TRB to the current head of the data segment
-//         let mut cmd = Trb {
-//             parameters: 0,
-//             status: 0,
-//             control: 0,
-//         };
-//         cmd.set_cycle(1);
-//         cmd.set_trb_type(EventRingType::CmdCompleteEvent as u32);
-//         cmd.status |= 0xFF << 24;
-
-//         let mut trb_ptr = segment_vaddr as *mut Trb;
-//         unsafe {
-//             *trb_ptr = cmd;
-//             assert_eq!(event_ring.dequeue().expect("dequeue error"), cmd);
-//         }
-
-//         // make sure that the ring thinks it is empty again
-//         unsafe {
-//             assert_eq!(
-//                 event_ring.dequeue().unwrap_err(),
-//                 EventRingError::RingEmptyError
-//             );
-//         }
-
-//         // add a couple of TRBs and then read them
-//         unsafe {
-//             trb_ptr = trb_ptr.offset(1);
-//             *trb_ptr = cmd;
-//             trb_ptr = trb_ptr.offset(1);
-//             *trb_ptr = cmd;
-
-//             event_ring.print_ring();
-
-//             assert_eq!(event_ring.dequeue().expect("dequeue error"), cmd);
-//             assert_eq!(event_ring.dequeue().expect("dequeue error"), cmd);
-//         }
-
-//         // fill in the rest of the TRB: Entries 4-16
-//         unsafe {
-//             for _ in 4..SEGMENT_ENTRIES + 1 {
-//                 trb_ptr = trb_ptr.offset(1);
-//                 *trb_ptr = cmd;
-//             }
-
-//             for _ in 4..SEGMENT_ENTRIES + 1 {
-//                 assert_eq!(event_ring.dequeue().expect("dequeue error"), cmd);
-//             }
-//         }
-
-//         // make sure that the ring thinks it is empty again
-//         unsafe {
-//             assert_eq!(
-//                 event_ring.dequeue().unwrap_err(),
-//                 EventRingError::RingEmptyError
-//             );
-//         }
-
-//         // make sure we properly wrap around
-//         cmd.set_cycle(0);
-//         trb_ptr = segment_vaddr as *mut Trb;
-//         unsafe {
-//             *trb_ptr = cmd;
-
-//             assert_eq!(event_ring.dequeue().expect("dequeue error"), cmd);
-//         }
-
-//         // make sure that the ring thinks it is empty again
-//         unsafe {
-//             assert_eq!(
-//                 event_ring.dequeue().unwrap_err(),
-//                 EventRingError::RingEmptyError
-//             );
-//         }
-
-//         remove_mapped_frame(erst_page, &mut *mapper);
-//         remove_mapped_frame(segment_page, &mut *mapper);
-//     }
-
-//     #[test_case]
-//     async fn consumer_ring_add_segment() {
-//         // some constants
-//         const SEGMENT_ENTRIES: u32 = 16;
-//         const ERST_ENTRY_SIZE: isize = 16;
-
-//         // get pages for the ERST and data segment
-//         let mut mapper: spin::MutexGuard<'_, OffsetPageTable<'_>> = MAPPER.lock();
-
-//         let erst_page: Page = Page::containing_address(VirtAddr::new(0x500000000));
-//         let first_segment_page: Page = Page::containing_address(VirtAddr::new(0x600000000));
-//         let second_segment_page: Page = Page::containing_address(VirtAddr::new(0x700000000));
-//         create_mapping(erst_page, &mut *mapper, None);
-//         create_mapping(first_segment_page, &mut *mapper, None);
-//         create_mapping(second_segment_page, &mut *mapper, None);
-
-//         let page_size = erst_page.size() as isize;
-
-//         let first_segment_frame = mapper
-//             .translate_page(first_segment_page)
-//             .expect("error translating page");
-//         let second_segment_frame = mapper
-//             .translate_page(second_segment_page)
-//             .expect("error translating page");
-//         let first_segment_paddr = first_segment_frame.start_address();
-//         let second_segment_paddr = second_segment_frame.start_address();
-
-//         // zero the pages we grabbed
-//         mmio::zero_out_page(erst_page);
-//         mmio::zero_out_page(first_segment_page);
-//         mmio::zero_out_page(second_segment_page);
-
-//         // call the initialization function
-//         let erst_address = erst_page.start_address().as_u64();
-//         // let first_segment_vaddr = first_segment_page.start_address().as_u64();
-//         // let second_segment_vaddr = second_segment_page.start_address().as_u64();
-//         let mut event_ring = ConsumerRingBuffer::new(
-//             erst_address,
-//             page_size / ERST_ENTRY_SIZE,
-//             first_segment_page.start_address(),
-//             first_segment_paddr,
-//             SEGMENT_ENTRIES,
-//         )
-//         .expect("Error initializing consumer ring");
-
-//         event_ring
-//             .add_segment(
-//                 second_segment_page.start_address(),
-//                 SEGMENT_ENTRIES,
-//                 second_segment_paddr,
-//             )
-//             .expect("Error adding new segment to ring");
-
-//         // check the state of the ERST
-
-//         // check that the first two TRB's worth of the ERST contains the correct information about the segments
-//         let mut trb_ptr = erst_address as *const Trb;
-//         let mut trb;
-//         unsafe {
-//             trb = *trb_ptr;
-//         }
-
-//         let mut parameters = trb.parameters;
-//         let mut status = trb.status;
-//         let mut control = trb.control;
-
-//         assert_eq!(parameters, first_segment_paddr.as_u64() & !0x3F);
-//         assert_eq!(status, SEGMENT_ENTRIES as u32 & 0xFFFF);
-//         assert_eq!(control, 0);
-
-//         unsafe {
-//             trb_ptr = trb_ptr.offset(1);
-//             trb = *trb_ptr;
-//         }
-
-//         parameters = trb.parameters;
-//         status = trb.status;
-//         control = trb.control;
-
-//         assert_eq!(parameters, second_segment_paddr.as_u64() & !0x3F);
-//         assert_eq!(status, SEGMENT_ENTRIES as u32 & 0xFFFF);
-//         assert_eq!(control, 0);
-
-//         // check that the rest of the TRB's worth of the ERST is still zeroed
-//         for _ in 2..(page_size / ERST_ENTRY_SIZE) {
-//             unsafe {
-//                 trb_ptr = trb_ptr.offset(1);
-//                 trb = *trb_ptr;
-//             }
-
-//             parameters = trb.parameters;
-//             status = trb.status;
-//             control = trb.control;
-
-//             assert_eq!(parameters, 0);
-//             assert_eq!(status, 0);
-//             assert_eq!(control, 0);
-//         }
-
-//         remove_mapped_frame(erst_page, &mut *mapper);
-//         remove_mapped_frame(first_segment_page, &mut *mapper);
-//         remove_mapped_frame(second_segment_page, &mut *mapper);
-//     }
-
-//     #[test_case]
-//     async fn consumer_ring_buffer_multi_segment_dequeue() {
-//         // some constants
-//         const SEGMENT_ENTRIES: u32 = 16;
-//         const ERST_ENTRY_SIZE: isize = 16;
-
-//         // get pages for the ERST and data segment
-//         let mut mapper: spin::MutexGuard<'_, OffsetPageTable<'_>> = MAPPER.lock();
-
-//         let erst_page: Page = Page::containing_address(VirtAddr::new(0x500000000));
-//         let first_segment_page: Page = Page::containing_address(VirtAddr::new(0x600000000));
-//         let second_segment_page: Page = Page::containing_address(VirtAddr::new(0x700000000));
-//         create_mapping(erst_page, &mut *mapper, None);
-//         create_mapping(first_segment_page, &mut *mapper, None);
-//         create_mapping(second_segment_page, &mut *mapper, None);
-
-//         let page_size = erst_page.size() as isize;
-
-//         let first_segment_frame = mapper
-//             .translate_page(first_segment_page)
-//             .expect("error translating page");
-//         let second_segment_frame = mapper
-//             .translate_page(second_segment_page)
-//             .expect("error translating page");
-//         let first_segment_paddr = first_segment_frame.start_address();
-//         let second_segment_paddr = second_segment_frame.start_address();
-
-//         // zero the pages we grabbed
-//         mmio::zero_out_page(erst_page);
-//         mmio::zero_out_page(first_segment_page);
-//         mmio::zero_out_page(second_segment_page);
-
-//         // call the initialization function
-//         let erst_address = erst_page.start_address().as_u64();
-//         let first_segment_vaddr = first_segment_page.start_address().as_u64();
-//         let second_segment_vaddr = second_segment_page.start_address().as_u64();
-//         let mut event_ring = ConsumerRingBuffer::new(
-//             erst_address,
-//             page_size / ERST_ENTRY_SIZE,
-//             first_segment_page.start_address(),
-//             first_segment_paddr,
-//             SEGMENT_ENTRIES,
-//         )
-//         .expect("Error initializing consumer ring");
-
-//         event_ring
-//             .add_segment(
-//                 second_segment_page.start_address(),
-//                 SEGMENT_ENTRIES,
-//                 second_segment_paddr,
-//             )
-//             .unwrap();
-
-//         // test a read on an empty RingBuffer
-//         unsafe {
-//             assert_eq!(
-//                 event_ring.dequeue().unwrap_err(),
-//                 EventRingError::RingEmptyError
-//             );
-//         }
-
-//         // make sure that we actually check the second segment
-//         let mut cmd = Trb {
-//             parameters: 0,
-//             status: 0,
-//             control: 0,
-//         };
-//         cmd.set_cycle(1);
-//         cmd.set_trb_type(EventRingType::CmdCompleteEvent as u32);
-//         cmd.status |= 0xFF << 24;
-
-//         let mut trb_ptr = first_segment_vaddr as *mut Trb;
-
-//         // fill the first segment fully
-//         for _ in 1..SEGMENT_ENTRIES + 1 {
-//             unsafe {
-//                 *trb_ptr = cmd;
-//                 trb_ptr = trb_ptr.offset(1);
-//             }
-//         }
-
-//         // read the entire first segment
-//         for i in 1..SEGMENT_ENTRIES + 1 {
-//             unsafe {
-//                 assert_eq!(
-//                     event_ring
-//                         .dequeue()
-//                         .expect(&format!("dequeue error for TRB {i}")),
-//                     cmd
-//                 );
-//             }
-//         }
-
-//         // ensure the ring is empty
-//         unsafe {
-//             assert_eq!(
-//                 event_ring.dequeue().unwrap_err(),
-//                 EventRingError::RingEmptyError
-//             );
-//         }
-
-//         // try to read from the second segment and sanity check that we still realize we're empty
-//         unsafe {
-//             trb_ptr = second_segment_vaddr as *mut Trb;
-//             *trb_ptr = cmd;
-//             trb_ptr = trb_ptr.offset(1);
-
-//             assert_eq!(event_ring.dequeue().expect("dequeue error"), cmd);
-//             assert_eq!(
-//                 event_ring.dequeue().unwrap_err(),
-//                 EventRingError::RingEmptyError
-//             );
-//         }
-
-//         // fill the rest of the second segment and then dequeue it, then ensure we read as empty
-//         for _ in 2..SEGMENT_ENTRIES + 1 {
-//             unsafe {
-//                 *trb_ptr = cmd;
-//                 trb_ptr = trb_ptr.offset(1);
-//             }
-//         }
-//         for i in 2..SEGMENT_ENTRIES + 1 {
-//             unsafe {
-//                 assert_eq!(
-//                     event_ring
-//                         .dequeue()
-//                         .expect(&format!("dequeue error for TRB {i}")),
-//                     cmd
-//                 );
-//             }
-//         }
-//         unsafe {
-//             assert_eq!(
-//                 event_ring.dequeue().unwrap_err(),
-//                 EventRingError::RingEmptyError
-//             );
-//         }
-
-//         // make sure we wrap back around to the first segment with cycle set to zero, then read as empty
-//         cmd.set_cycle(0);
-//         trb_ptr = first_segment_vaddr as *mut Trb;
-//         unsafe {
-//             *trb_ptr = cmd;
-//             trb_ptr = trb_ptr.offset(1);
-
-//             assert_eq!(event_ring.dequeue().expect("dequeue error"), cmd);
-//             assert_eq!(
-//                 event_ring.dequeue().unwrap_err(),
-//                 EventRingError::RingEmptyError
-//             );
-//         }
-
-//         // go back around one time, the specific cycle bit shouldn't matter, but why not
-//         for _ in 2..SEGMENT_ENTRIES + 1 {
-//             unsafe {
-//                 *trb_ptr = cmd;
-//                 trb_ptr = trb_ptr.offset(1);
-//             }
-//         }
-//         for i in 2..SEGMENT_ENTRIES + 1 {
-//             unsafe {
-//                 assert_eq!(
-//                     event_ring
-//                         .dequeue()
-//                         .expect(&format!("dequeue error for TRB {i}")),
-//                     cmd
-//                 );
-//             }
-//         }
-//         unsafe {
-//             assert_eq!(
-//                 event_ring.dequeue().unwrap_err(),
-//                 EventRingError::RingEmptyError
-//             );
-//         }
-
-//         trb_ptr = second_segment_vaddr as *mut Trb;
-//         for _ in 1..SEGMENT_ENTRIES + 1 {
-//             unsafe {
-//                 *trb_ptr = cmd;
-//                 trb_ptr = trb_ptr.offset(1);
-//             }
-//         }
-//         for i in 1..SEGMENT_ENTRIES + 1 {
-//             unsafe {
-//                 assert_eq!(
-//                     event_ring
-//                         .dequeue()
-//                         .expect(&format!("dequeue error for TRB {i}")),
-//                     cmd
-//                 );
-//             }
-//         }
-//         unsafe {
-//             assert_eq!(
-//                 event_ring.dequeue().unwrap_err(),
-//                 EventRingError::RingEmptyError
-//             );
-//         }
-
-//         cmd.set_cycle(1);
-//         trb_ptr = first_segment_vaddr as *mut Trb;
-//         unsafe {
-//             *trb_ptr = cmd;
-
-//             assert_eq!(event_ring.dequeue().expect("dequeue error"), cmd);
-//             assert_eq!(
-//                 event_ring.dequeue().unwrap_err(),
-//                 EventRingError::RingEmptyError
-//             );
-//         }
-
-//         remove_mapped_frame(erst_page, &mut *mapper);
-//         remove_mapped_frame(first_segment_page, &mut *mapper);
-//         remove_mapped_frame(second_segment_page, &mut *mapper);
-//     }
-
-//     #[test_case]
-//     async fn consumer_ring_buffer_multi_segment_skip() {
-//         // some constants
-//         const SEGMENT_ENTRIES: u32 = 16;
-//         const ERST_ENTRY_SIZE: isize = 16;
-
-//         // get pages for the ERST and data segment
-//         let mut mapper: spin::MutexGuard<'_, OffsetPageTable<'_>> = MAPPER.lock();
-
-//         let erst_page: Page = Page::containing_address(VirtAddr::new(0x500000000));
-//         let first_segment_page: Page = Page::containing_address(VirtAddr::new(0x600000000));
-//         let second_segment_page: Page = Page::containing_address(VirtAddr::new(0x700000000));
-//         create_mapping(erst_page, &mut *mapper, None);
-//         create_mapping(first_segment_page, &mut *mapper, None);
-//         create_mapping(second_segment_page, &mut *mapper, None);
-
-//         let page_size = erst_page.size() as isize;
-
-//         let first_segment_frame = mapper
-//             .translate_page(first_segment_page)
-//             .expect("error translating page");
-//         let second_segment_frame = mapper
-//             .translate_page(second_segment_page)
-//             .expect("error translating page");
-//         let first_segment_paddr = first_segment_frame.start_address();
-//         let second_segment_paddr = second_segment_frame.start_address();
-
-//         // zero the pages we grabbed
-//         mmio::zero_out_page(erst_page);
-//         mmio::zero_out_page(first_segment_page);
-//         mmio::zero_out_page(second_segment_page);
-
-//         // call the initialization function
-//         let erst_address = erst_page.start_address().as_u64();
-//         let first_segment_vaddr = first_segment_page.start_address().as_u64();
-//         let mut event_ring = ConsumerRingBuffer::new(
-//             erst_address,
-//             page_size / ERST_ENTRY_SIZE,
-//             first_segment_page.start_address(),
-//             first_segment_paddr,
-//             SEGMENT_ENTRIES,
-//         )
-//         .expect("Error initializing consumer ring");
-
-//         event_ring
-//             .add_segment(
-//                 second_segment_page.start_address(),
-//                 SEGMENT_ENTRIES,
-//                 second_segment_paddr,
-//             )
-//             .unwrap();
-
-//         // test a read on an empty RingBuffer
-//         unsafe {
-//             assert_eq!(
-//                 event_ring.dequeue().unwrap_err(),
-//                 EventRingError::RingEmptyError
-//             );
-//         }
-
-//         // make sure that we actually check the second segment
-//         let mut cmd = Trb {
-//             parameters: 0,
-//             status: 0,
-//             control: 0,
-//         };
-//         cmd.set_cycle(1);
-//         cmd.set_trb_type(EventRingType::CmdCompleteEvent as u32);
-//         cmd.status |= 0xFF << 24;
-
-//         let mut trb_ptr = first_segment_vaddr as *mut Trb;
-
-//         // fill the first segment fully
-//         for _ in 1..SEGMENT_ENTRIES + 1 {
-//             unsafe {
-//                 *trb_ptr = cmd;
-//                 trb_ptr = trb_ptr.offset(1);
-//             }
-//         }
-
-//         // read the entire first segment
-//         for i in 1..SEGMENT_ENTRIES + 1 {
-//             unsafe {
-//                 assert_eq!(
-//                     event_ring
-//                         .dequeue()
-//                         .expect(&format!("dequeue error for TRB {i}")),
-//                     cmd
-//                 );
-//             }
-//         }
-
-//         // ensure the ring is empty
-//         unsafe {
-//             assert_eq!(
-//                 event_ring.dequeue().unwrap_err(),
-//                 EventRingError::RingEmptyError
-//             );
-//         }
-
-//         // skip the second segment and make sure the consumer follows suite
-//         cmd.set_cycle(0);
-//         trb_ptr = first_segment_vaddr as *mut Trb;
-//         unsafe {
-//             *trb_ptr = cmd;
-//             trb_ptr = trb_ptr.offset(1);
-
-//             assert_eq!(event_ring.dequeue().expect("dequeue error"), cmd);
-//             assert_eq!(
-//                 event_ring.dequeue().unwrap_err(),
-//                 EventRingError::RingEmptyError
-//             );
-//         }
-
-//         // go back around one time, the specific cycle bit shouldn't matter, but why not
-//         for _ in 2..SEGMENT_ENTRIES + 1 {
-//             unsafe {
-//                 *trb_ptr = cmd;
-//                 trb_ptr = trb_ptr.offset(1);
-//             }
-//         }
-//         for i in 2..SEGMENT_ENTRIES + 1 {
-//             unsafe {
-//                 assert_eq!(
-//                     event_ring
-//                         .dequeue()
-//                         .expect(&format!("dequeue error for TRB {i}")),
-//                     cmd
-//                 );
-//             }
-//         }
-//         unsafe {
-//             assert_eq!(
-//                 event_ring.dequeue().unwrap_err(),
-//                 EventRingError::RingEmptyError
-//             );
-//         }
-
-//         cmd.set_cycle(1);
-//         trb_ptr = first_segment_vaddr as *mut Trb;
-//         unsafe {
-//             *trb_ptr = cmd;
-
-//             assert_eq!(event_ring.dequeue().expect("dequeue error"), cmd);
-//             assert_eq!(
-//                 event_ring.dequeue().unwrap_err(),
-//                 EventRingError::RingEmptyError
-//             );
-//         }
-
-//         remove_mapped_frame(erst_page, &mut *mapper);
-//         remove_mapped_frame(first_segment_page, &mut *mapper);
-//         remove_mapped_frame(second_segment_page, &mut *mapper);
-//     }
-// }
+#[cfg(test)]
+mod test {
+    use alloc::format;
+    use x86_64::{
+        addr::VirtAddr,
+        structures::paging::{Mapper, OffsetPageTable, Page},
+    };
+
+    use super::*;
+    use crate::{
+        devices::{
+            mmio,
+            xhci::ring_buffer::{
+                ConsumerRingBuffer, EventRingError, EventRingType, TransferRequestBlock,
+            },
+        },
+        memory::{
+            frame_allocator::{alloc_frame, dealloc_frame},
+            paging::{self, create_mapping, remove_mapped_frame},
+            MAPPER,
+        },
+    };
+
+    #[test_case]
+    async fn producer_ring_buffer_init() {
+        // first get a page and zero init it
+        let mut mapper = MAPPER.lock();
+        let frame = alloc_frame().unwrap();
+        let frame_va =
+            VirtAddr::new(mapper.phys_offset().as_u64() + frame.start_address().as_u64());
+        let page: Page = Page::containing_address(frame_va);
+
+        mmio::zero_out_page(page);
+
+        // call the new function
+        let base_addr = page.start_address().as_u64();
+        let size = page.size() as isize;
+        let _cmd_ring = ProducerRingBuffer::new(
+            frame.start_address(),
+            1,
+            RingType::Command,
+            size,
+            mapper.phys_offset(),
+        );
+
+        // make sure the link trb is set correctly
+        let mut trb_ptr = base_addr as *const Trb;
+        let trb: Trb;
+        unsafe {
+            trb_ptr = trb_ptr.offset(size / 16 - 1);
+            trb = *trb_ptr;
+        }
+
+        let params = trb.parameters;
+        let status = trb.status;
+        let control = trb.control;
+
+        assert_eq!(params, base_addr - mapper.phys_offset().as_u64());
+        assert_eq!(status, 0);
+        assert_eq!(control, 0x1803);
+
+        dealloc_frame(frame);
+    }
+
+    #[test_case]
+    async fn producer_ring_buffer_enqueue() {
+        // initialize a ring buffer we can enqueue onto
+        let mut mapper = MAPPER.lock();
+        let frame = alloc_frame().unwrap();
+        let frame_va =
+            VirtAddr::new(mapper.phys_offset().as_u64() + frame.start_address().as_u64());
+        let page: Page = Page::containing_address(frame_va);
+
+        mmio::zero_out_page(page);
+
+        // call the new function
+        let base_addr = page.start_address().as_u64();
+        let size = page.size() as isize;
+        let mut cmd_ring = ProducerRingBuffer::new(
+            frame.start_address(),
+            1,
+            RingType::Command,
+            size,
+            mapper.phys_offset(),
+        )
+        .expect("Error initializing producer ring");
+
+        // create a block to queue
+        let mut cmd = Trb {
+            parameters: 0,
+            status: 0,
+            control: 0,
+        };
+        cmd.set_trb_type(TrbTypes::NoOpCmd as u32);
+
+        // enqueue the block
+        unsafe {
+            cmd_ring.enqueue(cmd).expect("enqueue error");
+        }
+
+        let ring_base = base_addr as *mut Trb;
+        let mut trb: Trb;
+        unsafe {
+            trb = *ring_base;
+        }
+        assert_eq!(trb.get_trb_type(), TrbTypes::NoOpCmd as u32);
+        assert_eq!(trb.get_cycle(), 1);
+
+        // enqueue another block
+        unsafe {
+            cmd_ring.enqueue(cmd).expect("enqueue error");
+            trb = *(ring_base.offset(1));
+        }
+        assert_eq!(trb.get_trb_type(), TrbTypes::NoOpCmd as u32);
+        assert_eq!(trb.get_cycle(), 1);
+
+        dealloc_frame(frame);
+    }
+
+    #[test_case]
+    async fn producer_ring_buffer_helpers() {
+        let mut mapper = MAPPER.lock();
+        let frame = alloc_frame().unwrap();
+        let frame_va =
+            VirtAddr::new(mapper.phys_offset().as_u64() + frame.start_address().as_u64());
+        let page: Page = Page::containing_address(frame_va);
+
+        mmio::zero_out_page(page);
+
+        // create a small ring buffer
+        let size: isize = 64;
+        let mut cmd_ring = ProducerRingBuffer::new(
+            frame.start_address(),
+            1,
+            RingType::Command,
+            size,
+            mapper.phys_offset(),
+        )
+        .expect("Error initializing producer ring");
+
+        // test is empty and is full funcs
+        let mut result = cmd_ring.is_ring_empty();
+        assert_eq!(result, true);
+
+        unsafe {
+            result = cmd_ring.is_ring_full();
+        }
+
+        assert_eq!(result, false);
+
+        // create a no-op cmd to queue a couple of times
+        let mut cmd = Trb {
+            parameters: 0,
+            status: 0,
+            control: 0,
+        };
+        cmd.set_trb_type(TrbTypes::NoOpCmd as u32);
+
+        unsafe {
+            cmd_ring.enqueue(cmd).expect("enqueue error");
+        }
+
+        // both empty and true should be false
+        result = cmd_ring.is_ring_empty();
+        assert_eq!(result, false);
+
+        unsafe {
+            result = cmd_ring.is_ring_full();
+            assert_eq!(result, false);
+            cmd_ring.enqueue(cmd).expect("enqueue error");
+        }
+
+        // empty should be false and full should be true
+        result = cmd_ring.is_ring_empty();
+        assert_eq!(result, false);
+
+        unsafe {
+            result = cmd_ring.is_ring_full();
+        }
+        assert_eq!(result, true);
+
+        dealloc_frame(frame);
+    }
+
+    #[test_case]
+    async fn producer_ring_buffer_enqueue_accross_segment() {
+        let mut mapper = MAPPER.lock();
+
+        let frame = alloc_frame().unwrap();
+        let frame_va =
+            VirtAddr::new(mapper.phys_offset().as_u64() + frame.start_address().as_u64());
+        let page: Page = Page::containing_address(frame_va);
+
+        mmio::zero_out_page(page);
+
+        // create a small ring buffer
+        let base_addr = page.start_address().as_u64();
+        let size: isize = 64;
+        let mut cmd_ring = ProducerRingBuffer::new(
+            frame.start_address(),
+            1,
+            RingType::Command,
+            size,
+            mapper.phys_offset(),
+        )
+        .expect("Error initializing producer ring");
+
+        // create our no op cmd
+        let mut cmd = Trb {
+            parameters: 0,
+            status: 0,
+            control: 0,
+        };
+        cmd.set_trb_type(TrbTypes::NoOpCmd as u32);
+
+        // queue it up so we can test that later the cycle bit gets correctly written
+        unsafe {
+            cmd_ring.enqueue(cmd).expect("enqueue error");
+        }
+        // move the enqueue to the last block before the end and then the dequeue over one
+        cmd_ring
+            .set_enqueue(base_addr + 32)
+            .expect("set_enqueue error");
+        cmd_ring
+            .set_dequeue(base_addr + 16)
+            .expect("set_dequeue error");
+
+        // now try to enqueue
+        unsafe {
+            cmd_ring.enqueue(cmd).expect("enqueue error");
+        }
+
+        // ring should be considered full now
+        unsafe {
+            assert!(cmd_ring.is_ring_full());
+        }
+
+        // now move dequeue so we can test that enqueue properly writes the cycle bit to 0
+        cmd_ring
+            .set_dequeue(base_addr + 32)
+            .expect("set_dequeue error");
+
+        unsafe {
+            cmd_ring.enqueue(cmd).expect("enqueue error");
+        }
+
+        // now lettuce check that the cycle bit of the very first block is 0
+        let trb_ptr = base_addr as *const Trb;
+        let trb: Trb;
+        unsafe {
+            trb = *trb_ptr;
+        }
+
+        assert_eq!(trb.get_cycle(), 0);
+
+        dealloc_frame(frame);
+        // remove_mapped_frame(page, &mut *mapper);
+    }
+
+    #[test_case]
+    async fn consumer_ring_buffer_init() {
+        // first get pages for the ERST and first segment
+        let mapper: spin::MutexGuard<'_, OffsetPageTable<'_>> = MAPPER.lock();
+        let erst_frame = alloc_frame().unwrap();
+        let erst_page: Page =
+            Page::containing_address(mapper.phys_offset() + erst_frame.start_address().as_u64());
+        let segment_frame = alloc_frame().unwrap();
+        let segment_page: Page =
+            Page::containing_address(mapper.phys_offset() + segment_frame.start_address().as_u64());
+
+        let fake_device_frame = alloc_frame().unwrap();
+        let segment_frame_addr = segment_frame.start_address();
+
+        let erst_entry_size = 16 as isize;
+
+        mmio::zero_out_page(erst_page);
+        mmio::zero_out_page(segment_page);
+        // call the initialization function
+        let erst_address = erst_page.start_address().as_u64();
+        let segment_address = segment_page.start_address().as_u64();
+        let page_size = erst_page.size() as isize;
+        let event_ring = ConsumerRingBuffer::new(
+            erst_address,
+            page_size / erst_entry_size,
+            segment_page.start_address(),
+            segment_frame_addr,
+            (page_size / size_of::<TransferRequestBlock>() as isize) as u32,
+        )
+        .expect("Error initializing consumer ring");
+
+        // Ensure the RingBuffer thinks that it is empty
+        unsafe {
+            assert_eq!(true, event_ring.is_empty());
+        }
+
+        // verify that the ERST was properly initialized
+
+        // check that the first TRB's worth of the ERST contains the correct information about the segment
+        let mut trb_ptr = erst_address as *const Trb;
+        let mut trb;
+        unsafe {
+            trb = *trb_ptr;
+        }
+
+        // added due to "unaligned padded struct field" error, probably not actually a good solution, I'd like
+        // to know how we were unaligned
+        let mut parameters = trb.parameters;
+        let mut status = trb.status;
+        let mut control = trb.control;
+
+        assert_eq!(parameters, segment_frame_addr.as_u64() & !0x3F);
+        assert_eq!(
+            status,
+            (page_size / size_of::<TransferRequestBlock>() as isize) as u32 & 0xFFFF
+        );
+        assert_eq!(control, 0);
+
+        // check that the rest of the TRB's worth of the ERST is still zeroed
+        for _ in 1..(page_size / erst_entry_size) {
+            unsafe {
+                trb_ptr = trb_ptr.offset(1);
+                trb = *trb_ptr;
+            }
+
+            parameters = trb.parameters;
+            status = trb.status;
+            control = trb.control;
+
+            assert_eq!(parameters, 0);
+            assert_eq!(status, 0);
+            assert_eq!(control, 0);
+        }
+
+        // check that the data segment remains untouched
+        trb_ptr = segment_address as *const Trb;
+        unsafe {
+            trb = *trb_ptr;
+        }
+
+        for _ in 1..(page_size / erst_entry_size) {
+            parameters = trb.parameters;
+            status = trb.status;
+            control = trb.control;
+
+            assert_eq!(parameters, 0);
+            assert_eq!(status, 0);
+            assert_eq!(control, 0);
+
+            unsafe {
+                assert_eq!(size_of::<TransferRequestBlock>() as isize, 16);
+                trb_ptr = trb_ptr.offset(1);
+                trb = *trb_ptr;
+            }
+        }
+        dealloc_frame(erst_frame);
+        dealloc_frame(segment_frame);
+        dealloc_frame(fake_device_frame);
+    }
+
+    #[test_case]
+    async fn consumer_ring_buffer_single_segment_dequeue() {
+        // some constants
+        const SEGMENT_ENTRIES: u32 = 16;
+        const ERST_ENTRY_SIZE: isize = 16;
+
+        // get pages for the ERST and data segment
+        let mut mapper: spin::MutexGuard<'_, OffsetPageTable<'_>> = MAPPER.lock();
+
+        let erst_page: Page = Page::containing_address(VirtAddr::new(0x500000000));
+        let segment_page: Page = Page::containing_address(VirtAddr::new(0x600000000));
+        create_mapping(erst_page, &mut *mapper, None);
+        create_mapping(segment_page, &mut *mapper, None);
+
+        let page_size = erst_page.size() as isize;
+
+        let segment_frame = mapper
+            .translate_page(segment_page)
+            .expect("error translating page");
+        let segment_paddr = segment_frame.start_address();
+
+        // zero the pages we grabbed
+        mmio::zero_out_page(erst_page);
+        mmio::zero_out_page(segment_page);
+
+        // call the initialization function
+        let erst_address = erst_page.start_address().as_u64();
+        let segment_vaddr = segment_page.start_address().as_u64();
+        let mut event_ring = ConsumerRingBuffer::new(
+            erst_address,
+            page_size / ERST_ENTRY_SIZE,
+            segment_page.start_address(),
+            segment_paddr,
+            SEGMENT_ENTRIES,
+        )
+        .expect("Error initializing consumer ring");
+
+        // test a read on an empty RingBuffer
+        unsafe {
+            assert_eq!(
+                event_ring.dequeue().unwrap_err(),
+                EventRingError::RingEmptyError
+            );
+        }
+
+        // write a dummy TRB to the current head of the data segment
+        let mut cmd = Trb {
+            parameters: 0,
+            status: 0,
+            control: 0,
+        };
+        cmd.set_cycle(1);
+        cmd.set_trb_type(EventRingType::CmdCompleteEvent as u32);
+        cmd.status |= 0xFF << 24;
+
+        let mut trb_ptr = segment_vaddr as *mut Trb;
+        unsafe {
+            *trb_ptr = cmd;
+            assert_eq!(event_ring.dequeue().expect("dequeue error"), cmd);
+        }
+
+        // make sure that the ring thinks it is empty again
+        unsafe {
+            assert_eq!(
+                event_ring.dequeue().unwrap_err(),
+                EventRingError::RingEmptyError
+            );
+        }
+
+        // add a couple of TRBs and then read them
+        unsafe {
+            trb_ptr = trb_ptr.offset(1);
+            *trb_ptr = cmd;
+            trb_ptr = trb_ptr.offset(1);
+            *trb_ptr = cmd;
+
+            event_ring.print_ring();
+
+            assert_eq!(event_ring.dequeue().expect("dequeue error"), cmd);
+            assert_eq!(event_ring.dequeue().expect("dequeue error"), cmd);
+        }
+
+        // fill in the rest of the TRB: Entries 4-16
+        unsafe {
+            for _ in 4..SEGMENT_ENTRIES + 1 {
+                trb_ptr = trb_ptr.offset(1);
+                *trb_ptr = cmd;
+            }
+
+            for _ in 4..SEGMENT_ENTRIES + 1 {
+                assert_eq!(event_ring.dequeue().expect("dequeue error"), cmd);
+            }
+        }
+
+        // make sure that the ring thinks it is empty again
+        unsafe {
+            assert_eq!(
+                event_ring.dequeue().unwrap_err(),
+                EventRingError::RingEmptyError
+            );
+        }
+
+        // make sure we properly wrap around
+        cmd.set_cycle(0);
+        trb_ptr = segment_vaddr as *mut Trb;
+        unsafe {
+            *trb_ptr = cmd;
+
+            assert_eq!(event_ring.dequeue().expect("dequeue error"), cmd);
+        }
+
+        // make sure that the ring thinks it is empty again
+        unsafe {
+            assert_eq!(
+                event_ring.dequeue().unwrap_err(),
+                EventRingError::RingEmptyError
+            );
+        }
+
+        remove_mapped_frame(erst_page, &mut *mapper);
+        remove_mapped_frame(segment_page, &mut *mapper);
+    }
+
+    #[test_case]
+    async fn consumer_ring_add_segment() {
+        // some constants
+        const SEGMENT_ENTRIES: u32 = 16;
+        const ERST_ENTRY_SIZE: isize = 16;
+
+        // get pages for the ERST and data segment
+        let mut mapper: spin::MutexGuard<'_, OffsetPageTable<'_>> = MAPPER.lock();
+
+        let erst_page: Page = Page::containing_address(VirtAddr::new(0x500000000));
+        let first_segment_page: Page = Page::containing_address(VirtAddr::new(0x600000000));
+        let second_segment_page: Page = Page::containing_address(VirtAddr::new(0x700000000));
+        create_mapping(erst_page, &mut *mapper, None);
+        create_mapping(first_segment_page, &mut *mapper, None);
+        create_mapping(second_segment_page, &mut *mapper, None);
+
+        let page_size = erst_page.size() as isize;
+
+        let first_segment_frame = mapper
+            .translate_page(first_segment_page)
+            .expect("error translating page");
+        let second_segment_frame = mapper
+            .translate_page(second_segment_page)
+            .expect("error translating page");
+        let first_segment_paddr = first_segment_frame.start_address();
+        let second_segment_paddr = second_segment_frame.start_address();
+
+        // zero the pages we grabbed
+        mmio::zero_out_page(erst_page);
+        mmio::zero_out_page(first_segment_page);
+        mmio::zero_out_page(second_segment_page);
+
+        // call the initialization function
+        let erst_address = erst_page.start_address().as_u64();
+        // let first_segment_vaddr = first_segment_page.start_address().as_u64();
+        // let second_segment_vaddr = second_segment_page.start_address().as_u64();
+        let mut event_ring = ConsumerRingBuffer::new(
+            erst_address,
+            page_size / ERST_ENTRY_SIZE,
+            first_segment_page.start_address(),
+            first_segment_paddr,
+            SEGMENT_ENTRIES,
+        )
+        .expect("Error initializing consumer ring");
+
+        event_ring
+            .add_segment(
+                second_segment_page.start_address(),
+                SEGMENT_ENTRIES,
+                second_segment_paddr,
+            )
+            .expect("Error adding new segment to ring");
+
+        // check the state of the ERST
+
+        // check that the first two TRB's worth of the ERST contains the correct information about the segments
+        let mut trb_ptr = erst_address as *const Trb;
+        let mut trb;
+        unsafe {
+            trb = *trb_ptr;
+        }
+
+        let mut parameters = trb.parameters;
+        let mut status = trb.status;
+        let mut control = trb.control;
+
+        assert_eq!(parameters, first_segment_paddr.as_u64() & !0x3F);
+        assert_eq!(status, SEGMENT_ENTRIES as u32 & 0xFFFF);
+        assert_eq!(control, 0);
+
+        unsafe {
+            trb_ptr = trb_ptr.offset(1);
+            trb = *trb_ptr;
+        }
+
+        parameters = trb.parameters;
+        status = trb.status;
+        control = trb.control;
+
+        assert_eq!(parameters, second_segment_paddr.as_u64() & !0x3F);
+        assert_eq!(status, SEGMENT_ENTRIES as u32 & 0xFFFF);
+        assert_eq!(control, 0);
+
+        // check that the rest of the TRB's worth of the ERST is still zeroed
+        for _ in 2..(page_size / ERST_ENTRY_SIZE) {
+            unsafe {
+                trb_ptr = trb_ptr.offset(1);
+                trb = *trb_ptr;
+            }
+
+            parameters = trb.parameters;
+            status = trb.status;
+            control = trb.control;
+
+            assert_eq!(parameters, 0);
+            assert_eq!(status, 0);
+            assert_eq!(control, 0);
+        }
+
+        remove_mapped_frame(erst_page, &mut *mapper);
+        remove_mapped_frame(first_segment_page, &mut *mapper);
+        remove_mapped_frame(second_segment_page, &mut *mapper);
+    }
+
+    #[test_case]
+    async fn consumer_ring_buffer_multi_segment_dequeue() {
+        // some constants
+        const SEGMENT_ENTRIES: u32 = 16;
+        const ERST_ENTRY_SIZE: isize = 16;
+
+        // get pages for the ERST and data segment
+        let mut mapper: spin::MutexGuard<'_, OffsetPageTable<'_>> = MAPPER.lock();
+
+        let erst_page: Page = Page::containing_address(VirtAddr::new(0x500000000));
+        let first_segment_page: Page = Page::containing_address(VirtAddr::new(0x600000000));
+        let second_segment_page: Page = Page::containing_address(VirtAddr::new(0x700000000));
+        create_mapping(erst_page, &mut *mapper, None);
+        create_mapping(first_segment_page, &mut *mapper, None);
+        create_mapping(second_segment_page, &mut *mapper, None);
+
+        let page_size = erst_page.size() as isize;
+
+        let first_segment_frame = mapper
+            .translate_page(first_segment_page)
+            .expect("error translating page");
+        let second_segment_frame = mapper
+            .translate_page(second_segment_page)
+            .expect("error translating page");
+        let first_segment_paddr = first_segment_frame.start_address();
+        let second_segment_paddr = second_segment_frame.start_address();
+
+        // zero the pages we grabbed
+        mmio::zero_out_page(erst_page);
+        mmio::zero_out_page(first_segment_page);
+        mmio::zero_out_page(second_segment_page);
+
+        // call the initialization function
+        let erst_address = erst_page.start_address().as_u64();
+        let first_segment_vaddr = first_segment_page.start_address().as_u64();
+        let second_segment_vaddr = second_segment_page.start_address().as_u64();
+        let mut event_ring = ConsumerRingBuffer::new(
+            erst_address,
+            page_size / ERST_ENTRY_SIZE,
+            first_segment_page.start_address(),
+            first_segment_paddr,
+            SEGMENT_ENTRIES,
+        )
+        .expect("Error initializing consumer ring");
+
+        event_ring
+            .add_segment(
+                second_segment_page.start_address(),
+                SEGMENT_ENTRIES,
+                second_segment_paddr,
+            )
+            .unwrap();
+
+        // test a read on an empty RingBuffer
+        unsafe {
+            assert_eq!(
+                event_ring.dequeue().unwrap_err(),
+                EventRingError::RingEmptyError
+            );
+        }
+
+        // make sure that we actually check the second segment
+        let mut cmd = Trb {
+            parameters: 0,
+            status: 0,
+            control: 0,
+        };
+        cmd.set_cycle(1);
+        cmd.set_trb_type(EventRingType::CmdCompleteEvent as u32);
+        cmd.status |= 0xFF << 24;
+
+        let mut trb_ptr = first_segment_vaddr as *mut Trb;
+
+        // fill the first segment fully
+        for _ in 1..SEGMENT_ENTRIES + 1 {
+            unsafe {
+                *trb_ptr = cmd;
+                trb_ptr = trb_ptr.offset(1);
+            }
+        }
+
+        // read the entire first segment
+        for i in 1..SEGMENT_ENTRIES + 1 {
+            unsafe {
+                assert_eq!(
+                    event_ring
+                        .dequeue()
+                        .expect(&format!("dequeue error for TRB {i}")),
+                    cmd
+                );
+            }
+        }
+
+        // ensure the ring is empty
+        unsafe {
+            assert_eq!(
+                event_ring.dequeue().unwrap_err(),
+                EventRingError::RingEmptyError
+            );
+        }
+
+        // try to read from the second segment and sanity check that we still realize we're empty
+        unsafe {
+            trb_ptr = second_segment_vaddr as *mut Trb;
+            *trb_ptr = cmd;
+            trb_ptr = trb_ptr.offset(1);
+
+            assert_eq!(event_ring.dequeue().expect("dequeue error"), cmd);
+            assert_eq!(
+                event_ring.dequeue().unwrap_err(),
+                EventRingError::RingEmptyError
+            );
+        }
+
+        // fill the rest of the second segment and then dequeue it, then ensure we read as empty
+        for _ in 2..SEGMENT_ENTRIES + 1 {
+            unsafe {
+                *trb_ptr = cmd;
+                trb_ptr = trb_ptr.offset(1);
+            }
+        }
+        for i in 2..SEGMENT_ENTRIES + 1 {
+            unsafe {
+                assert_eq!(
+                    event_ring
+                        .dequeue()
+                        .expect(&format!("dequeue error for TRB {i}")),
+                    cmd
+                );
+            }
+        }
+        unsafe {
+            assert_eq!(
+                event_ring.dequeue().unwrap_err(),
+                EventRingError::RingEmptyError
+            );
+        }
+
+        // make sure we wrap back around to the first segment with cycle set to zero, then read as empty
+        cmd.set_cycle(0);
+        trb_ptr = first_segment_vaddr as *mut Trb;
+        unsafe {
+            *trb_ptr = cmd;
+            trb_ptr = trb_ptr.offset(1);
+
+            assert_eq!(event_ring.dequeue().expect("dequeue error"), cmd);
+            assert_eq!(
+                event_ring.dequeue().unwrap_err(),
+                EventRingError::RingEmptyError
+            );
+        }
+
+        // go back around one time, the specific cycle bit shouldn't matter, but why not
+        for _ in 2..SEGMENT_ENTRIES + 1 {
+            unsafe {
+                *trb_ptr = cmd;
+                trb_ptr = trb_ptr.offset(1);
+            }
+        }
+        for i in 2..SEGMENT_ENTRIES + 1 {
+            unsafe {
+                assert_eq!(
+                    event_ring
+                        .dequeue()
+                        .expect(&format!("dequeue error for TRB {i}")),
+                    cmd
+                );
+            }
+        }
+        unsafe {
+            assert_eq!(
+                event_ring.dequeue().unwrap_err(),
+                EventRingError::RingEmptyError
+            );
+        }
+
+        trb_ptr = second_segment_vaddr as *mut Trb;
+        for _ in 1..SEGMENT_ENTRIES + 1 {
+            unsafe {
+                *trb_ptr = cmd;
+                trb_ptr = trb_ptr.offset(1);
+            }
+        }
+        for i in 1..SEGMENT_ENTRIES + 1 {
+            unsafe {
+                assert_eq!(
+                    event_ring
+                        .dequeue()
+                        .expect(&format!("dequeue error for TRB {i}")),
+                    cmd
+                );
+            }
+        }
+        unsafe {
+            assert_eq!(
+                event_ring.dequeue().unwrap_err(),
+                EventRingError::RingEmptyError
+            );
+        }
+
+        cmd.set_cycle(1);
+        trb_ptr = first_segment_vaddr as *mut Trb;
+        unsafe {
+            *trb_ptr = cmd;
+
+            assert_eq!(event_ring.dequeue().expect("dequeue error"), cmd);
+            assert_eq!(
+                event_ring.dequeue().unwrap_err(),
+                EventRingError::RingEmptyError
+            );
+        }
+
+        remove_mapped_frame(erst_page, &mut *mapper);
+        remove_mapped_frame(first_segment_page, &mut *mapper);
+        remove_mapped_frame(second_segment_page, &mut *mapper);
+    }
+
+    #[test_case]
+    async fn consumer_ring_buffer_multi_segment_skip() {
+        // some constants
+        const SEGMENT_ENTRIES: u32 = 16;
+        const ERST_ENTRY_SIZE: isize = 16;
+
+        // get pages for the ERST and data segment
+        let mut mapper: spin::MutexGuard<'_, OffsetPageTable<'_>> = MAPPER.lock();
+
+        let erst_page: Page = Page::containing_address(VirtAddr::new(0x500000000));
+        let first_segment_page: Page = Page::containing_address(VirtAddr::new(0x600000000));
+        let second_segment_page: Page = Page::containing_address(VirtAddr::new(0x700000000));
+        create_mapping(erst_page, &mut *mapper, None);
+        create_mapping(first_segment_page, &mut *mapper, None);
+        create_mapping(second_segment_page, &mut *mapper, None);
+
+        let page_size = erst_page.size() as isize;
+
+        let first_segment_frame = mapper
+            .translate_page(first_segment_page)
+            .expect("error translating page");
+        let second_segment_frame = mapper
+            .translate_page(second_segment_page)
+            .expect("error translating page");
+        let first_segment_paddr = first_segment_frame.start_address();
+        let second_segment_paddr = second_segment_frame.start_address();
+
+        // zero the pages we grabbed
+        mmio::zero_out_page(erst_page);
+        mmio::zero_out_page(first_segment_page);
+        mmio::zero_out_page(second_segment_page);
+
+        // call the initialization function
+        let erst_address = erst_page.start_address().as_u64();
+        let first_segment_vaddr = first_segment_page.start_address().as_u64();
+        let mut event_ring = ConsumerRingBuffer::new(
+            erst_address,
+            page_size / ERST_ENTRY_SIZE,
+            first_segment_page.start_address(),
+            first_segment_paddr,
+            SEGMENT_ENTRIES,
+        )
+        .expect("Error initializing consumer ring");
+
+        event_ring
+            .add_segment(
+                second_segment_page.start_address(),
+                SEGMENT_ENTRIES,
+                second_segment_paddr,
+            )
+            .unwrap();
+
+        // test a read on an empty RingBuffer
+        unsafe {
+            assert_eq!(
+                event_ring.dequeue().unwrap_err(),
+                EventRingError::RingEmptyError
+            );
+        }
+
+        // make sure that we actually check the second segment
+        let mut cmd = Trb {
+            parameters: 0,
+            status: 0,
+            control: 0,
+        };
+        cmd.set_cycle(1);
+        cmd.set_trb_type(EventRingType::CmdCompleteEvent as u32);
+        cmd.status |= 0xFF << 24;
+
+        let mut trb_ptr = first_segment_vaddr as *mut Trb;
+
+        // fill the first segment fully
+        for _ in 1..SEGMENT_ENTRIES + 1 {
+            unsafe {
+                *trb_ptr = cmd;
+                trb_ptr = trb_ptr.offset(1);
+            }
+        }
+
+        // read the entire first segment
+        for i in 1..SEGMENT_ENTRIES + 1 {
+            unsafe {
+                assert_eq!(
+                    event_ring
+                        .dequeue()
+                        .expect(&format!("dequeue error for TRB {i}")),
+                    cmd
+                );
+            }
+        }
+
+        // ensure the ring is empty
+        unsafe {
+            assert_eq!(
+                event_ring.dequeue().unwrap_err(),
+                EventRingError::RingEmptyError
+            );
+        }
+
+        // skip the second segment and make sure the consumer follows suite
+        cmd.set_cycle(0);
+        trb_ptr = first_segment_vaddr as *mut Trb;
+        unsafe {
+            *trb_ptr = cmd;
+            trb_ptr = trb_ptr.offset(1);
+
+            assert_eq!(event_ring.dequeue().expect("dequeue error"), cmd);
+            assert_eq!(
+                event_ring.dequeue().unwrap_err(),
+                EventRingError::RingEmptyError
+            );
+        }
+
+        // go back around one time, the specific cycle bit shouldn't matter, but why not
+        for _ in 2..SEGMENT_ENTRIES + 1 {
+            unsafe {
+                *trb_ptr = cmd;
+                trb_ptr = trb_ptr.offset(1);
+            }
+        }
+        for i in 2..SEGMENT_ENTRIES + 1 {
+            unsafe {
+                assert_eq!(
+                    event_ring
+                        .dequeue()
+                        .expect(&format!("dequeue error for TRB {i}")),
+                    cmd
+                );
+            }
+        }
+        unsafe {
+            assert_eq!(
+                event_ring.dequeue().unwrap_err(),
+                EventRingError::RingEmptyError
+            );
+        }
+
+        cmd.set_cycle(1);
+        trb_ptr = first_segment_vaddr as *mut Trb;
+        unsafe {
+            *trb_ptr = cmd;
+
+            assert_eq!(event_ring.dequeue().expect("dequeue error"), cmd);
+            assert_eq!(
+                event_ring.dequeue().unwrap_err(),
+                EventRingError::RingEmptyError
+            );
+        }
+
+        remove_mapped_frame(erst_page, &mut *mapper);
+        remove_mapped_frame(first_segment_page, &mut *mapper);
+        remove_mapped_frame(second_segment_page, &mut *mapper);
+    }
+}
