@@ -111,7 +111,7 @@ impl IntelHDA {
     
         hda.reset().await;
 
-        let intctl = (hda.base + 0x20) as *mut u32;
+        let intctl = (HHDM_OFFSET.as_u64() + hda.base as u64 + 0x20) as *mut u32;
         unsafe {write_volatile(intctl, 0xFFFFFFFF)};
         serial_println!("INTCTL: 0x{:08X}", unsafe {read_volatile(intctl)});
 

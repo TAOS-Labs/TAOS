@@ -45,7 +45,7 @@ unsafe impl Sync for CommandBuffer {}
 
 impl CommandBuffer {
     pub async unsafe fn new(base: usize, corb_buf: &DmaBuffer, rirb_buf: &DmaBuffer) -> Self {
-        let base = (HHDM_OFFSET.as_u64() + base as u64) as usize;
+        // let base = (HHDM_OFFSET.as_u64() + base as u64) as usize;
 
         Self {
             corb_virt: corb_buf.virt_addr.as_mut_ptr() as *mut u32,
