@@ -19,10 +19,7 @@ use crate::{
     interrupts::x2apic,
     memory::frame_allocator::with_buddy_frame_allocator,
     processes::{
-        process::{
-            clear_process_frames, sleep_process_int, sleep_process_syscall, ProcessState,
-            PROCESS_TABLE,
-        },
+        process::{sleep_process_int, sleep_process_syscall, ProcessState, PROCESS_TABLE},
         registers::NonFlagRegisters,
     },
     serial_println,
@@ -213,7 +210,7 @@ pub fn sys_exit(code: i64, reg_vals: &NonFlagRegisters) -> Option<u64> {
 
         (*pcb).state = ProcessState::Terminated;
 
-        clear_process_frames(&mut *pcb);
+        // clear_process_frames(&mut *pcb);
         with_buddy_frame_allocator(|alloc| {
             alloc.print_free_frames();
         });

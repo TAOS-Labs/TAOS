@@ -1,3 +1,8 @@
+//! Filesystem traits and global state
+//! Includes definitions for Filesystem related flags and the filesystem trait
+//! The filesystem trait sits on top of a filesystem as an abstraction layer and contains the
+//! page cache
+
 use crate::{
     constants::{memory::PAGE_SIZE, processes::MAX_FILES},
     events::{current_running_event, futures::sync::Condition, schedule_kernel_on},
@@ -36,11 +41,16 @@ use bitflags::bitflags;
 use crate::{devices::sd_card::SD_CARD, serial_println};
 
 lazy_static! {
+    /// Whether the filesystem has finished initialization
     static ref FS_INIT_COMPLETE: Arc<AtomicBool> = Arc::new(AtomicBool::new(false));
+
+    /// Global filesystem instance
+    pub static ref FILESYSTEM: Once<Mutex<Ext2Wrapper>> = Once::new();
 }
 
 bitflags! {
     #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+    /// Flags for creating and opening files
     pub struct OpenFlags: u32 {
         // Access modes (no shift needed)
         const O_RDONLY      = 0;             // 0b00
@@ -76,6 +86,7 @@ bitflags! {
 
 bitflags::bitflags! {
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    /// Flags for file permissions
     pub struct ChmodMode: u16 {
         const UREAD  = 0o400;
         const UWRITE = 0o200;
@@ -90,24 +101,29 @@ bitflags::bitflags! {
 }
 
 #[derive(Debug, Clone)]
+/// A file object in the filesystem trait
 pub struct File {
+    /// The pathname in the filesystem
     pathname: String,
+    /// File descriptor
     pub fd: usize,
+    /// Position we are seeking from in the file
     position: usize,
     #[allow(unused)]
+    /// Flags used to open/create file
     flags: OpenFlags,
+    /// The inode number associated with this file
     pub inode_number: u32,
-    pub refcounts: BTreeMap<u32, u64>,
 }
 
 impl File {
+    /// Creates a new File
     pub fn new(
         pathname: String,
         fd: usize,
         position: usize,
         flags: OpenFlags,
         inode_number: u32,
-        refcounts: BTreeMap<u32, u64>,
     ) -> File {
         File {
             pathname,
@@ -115,7 +131,6 @@ impl File {
             position,
             flags,
             inode_number,
-            refcounts,
         }
     }
 }
@@ -131,16 +146,56 @@ pub trait BlockDevice: Send + Sync {
 /// The main filesystem trait that sits on top of the filesystem
 #[async_trait]
 pub trait FileSystem {
+    /// Creates a directory
+    ///
+    /// * `path`: The path for the directory
+    /// * `chmod_flags`: Permissions for the directory
     async fn create_dir(&mut self, path: &str, chmod_flags: ChmodMode) -> FilesystemResult<()>;
+    /// Open a file
+    ///
+    /// * `path`: Filepath to open
+    /// * `flags`: Permissions on open
     async fn open_file(&mut self, path: &str, flags: OpenFlags) -> FilesystemResult<usize>;
+    /// Delete a file
+    ///
+    /// * `fd`: File descriptor for the file to delete
     async fn remove(&mut self, fd: usize) -> FilesystemResult<()>;
+    /// Close a file
+    ///
+    /// * `fd`: File descriptor for the file to close
     async fn close_file(&mut self, fd: usize) -> FilesystemResult<()>;
+    /// Write to a file
+    ///
+    /// * `fd`: File descriptor for the file to write to
+    /// * `buf`: Contents to write
     async fn write_file(&mut self, fd: usize, buf: &[u8]) -> FilesystemResult<usize>;
+    /// Set current file position
+    ///
+    /// * `fd`: File descriptor for the file to seek
+    /// * `pos`: new position to seek to
     async fn seek_file(&mut self, fd: usize, pos: usize) -> FilesystemResult<()>;
+    /// Read a file
+    ///
+    /// * `fd`: File descriptor for the file to read
+    /// * `buf`: Buffer to read into
     async fn read_file(&mut self, fd: usize, buf: &mut [u8]) -> FilesystemResult<usize>;
+    /// Read a directory
+    ///
+    /// * `path`: Path for the directory to read
     async fn read_dir(&self, path: &str) -> FilesystemResult<Vec<DirEntry>>;
+    /// Returns a File struct
+    ///
+    /// * `fd`: File descriptor to return associated File struct for
     async fn metadata(&self, fd: usize) -> FilesystemResult<File>;
+    /// Adds entry to page cache at offset
+    ///
+    /// * `file`: File to add entry for
+    /// * `offset`: Offset at which to map an entry
     async fn add_entry_to_page_cache(&mut self, file: File, offset: usize) -> FilesystemResult<()>;
+    /// Get a Page virtual address from the page cache at an offset
+    ///
+    /// * `file`: File to get page address for
+    /// * `offset`: Offset at which to get an entry
     async fn page_cache_get_mapping(
         &mut self,
         file: File,
@@ -148,6 +203,9 @@ pub trait FileSystem {
     ) -> FilesystemResult<VirtAddr>;
 }
 
+/// Gets the File from the file descriptor
+///
+/// * `fd`: The relevant file descriptor to get the File for
 pub fn get_file(fd: usize) -> FilesystemResult<Arc<Mutex<File>>> {
     if fd >= MAX_FILES {
         return Err(FilesystemError::InvalidFd);
@@ -163,6 +221,9 @@ pub fn get_file(fd: usize) -> FilesystemResult<Arc<Mutex<File>>> {
     Ok(file.unwrap())
 }
 
+/// Gets the file descriptor from the file path
+///
+/// * `filepath`: The relevant file path to get the File for
 pub fn get_fd(filepath: &str) -> FilesystemResult<usize> {
     with_current_pcb(|pcb| {
         for (fd, file_opt) in pcb.fd_table.iter().enumerate() {
@@ -177,6 +238,9 @@ pub fn get_fd(filepath: &str) -> FilesystemResult<usize> {
     })
 }
 
+/// Convert between the ChmodMode and the FileMode
+///
+/// * `mode`: the ChmodMode to convert
 fn chmod_to_filemode(mode: ChmodMode) -> FileMode {
     let mut out = FileMode::DIR; // directory type must be included
 
@@ -213,6 +277,7 @@ fn chmod_to_filemode(mode: ChmodMode) -> FileMode {
     out
 }
 
+/// Type for the filesystem layer's page cache
 type PageCache = Mutex<BTreeMap<u32, Arc<Mutex<BTreeMap<usize, Page<Size4KiB>>>>>>;
 
 pub struct Ext2Wrapper {
@@ -223,7 +288,7 @@ pub struct Ext2Wrapper {
     // Wrapper for Ext2 Filesystem
     filesystem: Mutex<Ext2>,
 
-    // Maps inode # to number of processes
+    // Maps inode number to number of processes
     refcount: Mutex<BTreeMap<u32, usize>>,
 }
 
@@ -289,26 +354,13 @@ impl FileSystem for Ext2Wrapper {
             let fd = *next_fd_guard;
             *next_fd_guard += 1;
 
-            let file = File::new(
-                path.to_string(),
-                fd,
-                0,
-                flags,
-                inode_number,
-                BTreeMap::new(),
-            );
+            let file = File::new(path.to_string(), fd, 0, flags, inode_number);
             pcb.fd_table[fd] = Some(Arc::new(Mutex::new(file)));
 
             fd
         });
-        let file = with_current_pcb(|pcb| {
-            pcb.fd_table[fd]
-                .as_ref()
-                .expect("could not get file from fd table")
-                .clone()
-        });
-        let mut file = file.lock();
-        file.refcounts
+        self.refcount
+            .lock()
             .entry(inode_number)
             .and_modify(|v| *v += 1)
             .or_insert(1);
@@ -335,8 +387,6 @@ impl FileSystem for Ext2Wrapper {
             .remove(file.lock().pathname.as_str())
             .await?;
 
-        // TODO: Remove entry from Page Cache and write those bits back to the file
-        // TODO: Think about the policies for what happens if someone has a file open that is removed - what exactly should happen?
         Ok(())
     }
 
@@ -354,12 +404,12 @@ impl FileSystem for Ext2Wrapper {
         }
         let fs = self.filesystem.lock();
         let file = get_file(fd)?;
-        let mut file_guard = file.lock();
+        let file_guard = file.lock();
         let path = file_guard.pathname.clone();
         let inode_number = fs.get_node(&path).await?.number();
 
-        file_guard
-            .refcounts
+        self.refcount
+            .lock()
             .entry(inode_number)
             .and_modify(|v| *v -= 1);
 
@@ -612,10 +662,6 @@ impl FileSystem for Ext2Wrapper {
     }
 }
 
-lazy_static! {
-    pub static ref FILESYSTEM: Once<Mutex<Ext2Wrapper>> = Once::new();
-}
-
 pub fn init(cpu_id: u32) {
     serial_println!("INITING FS");
     if cpu_id == 0 {
@@ -623,7 +669,6 @@ pub fn init(cpu_id: u32) {
         schedule_kernel_on(
             0,
             async {
-                serial_println!("ABOUT TO FORMAT FS ON INIT");
                 let sd_card = Arc::new(SD_CARD.lock().clone().unwrap());
                 let fs = Ext2::new(sd_card).await.unwrap();
                 fs.mount().await.unwrap();
@@ -704,7 +749,6 @@ mod tests {
         assert_eq!(&buf[..8], b"Test 123");
 
         user_fs.close_file(fd).await.unwrap();
-        crate::serial_println!("GOT HERE 3");
         assert_eq!(active_fd_count(), 0);
     }
 
@@ -753,7 +797,7 @@ mod tests {
         user_fs.close_file(fd).await.unwrap();
     }
 
-    // #[test_case]
+    #[test_case]
     pub async fn test_metadata() {
         let mut user_fs = setup_fs().await;
         user_fs

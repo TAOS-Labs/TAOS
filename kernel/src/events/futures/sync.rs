@@ -12,21 +12,29 @@ use crate::events::Event;
 
 /// Future to block an event until a boolean is set to true (by some other event)
 pub struct Condition {
+    /// Ready or not
     state: Arc<AtomicBool>,
+    /// The event to block on
     event: Arc<Event>,
 }
 
 unsafe impl Send for Condition {}
 
 impl Condition {
+    /// Create a new Condition
+    ///
+    /// * `state`: the starting state
+    /// * `event`: the relevant event
     pub fn new(state: Arc<AtomicBool>, event: Arc<Event>) -> Condition {
         Condition { state, event }
     }
 
+    /// The associated event is ready to make progress
     pub fn awake(&self) {
         self.event.clone().wake();
     }
 
+    /// Returns the associated event id
     pub fn get_id(&self) -> u64 {
         self.event.eid.0
     }

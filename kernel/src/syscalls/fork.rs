@@ -172,6 +172,10 @@ mod tests {
         processes::process::{create_process, PCB, PROCESS_TABLE},
         serial_println,
     };
+    use crate::events::current_running_event;
+    use crate::events::get_runner_time;
+    use crate::events::futures::await_on::AwaitProcess;
+
 
     fn verify_page_table_walk(parent_pcb: &mut PCB, child_pcb: &mut PCB) {
         assert_eq!(
@@ -238,7 +242,12 @@ mod tests {
     async fn test_simple_fork() {
         let parent_pid = create_process(FORK_SIMPLE);
         schedule_process(parent_pid);
-        for _ in 0..100000000_u64 {}
+        let waiter = AwaitProcess::new(
+            parent_pid,
+            get_runner_time(3_000_000_000),
+            current_running_event().unwrap(),
+        )
+        .await;
         let child_pid = parent_pid + 1;
 
         serial_println!("PARENT PID {}", parent_pid);
