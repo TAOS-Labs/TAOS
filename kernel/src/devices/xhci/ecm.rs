@@ -288,7 +288,7 @@ impl phy::Device for ECMDevice {
             out_data_addr: self.out_data_addr,
             slot: self.standard_device.slot,
             out_trb: &mut self.out_data_trb,
-            endpoint_id: self.out_data_endpoint_id
+            endpoint_id: self.out_data_endpoint_id,
         })
     }
     fn capabilities(&self) -> DeviceCapabilities {
