@@ -13,6 +13,7 @@ const IRV: u16 = 1 << 1;
 pub struct WidgetAddr(pub u8, pub u8);
 
 pub struct CommandBuffer {
+    pub base: usize,
     pub corb_virt: *mut u32,
     pub corb_phys: u64,
     pub corb_wp: *mut u16,
@@ -48,6 +49,7 @@ impl CommandBuffer {
         // let base = (HHDM_OFFSET.as_u64() + base as u64) as usize;
 
         Self {
+            base: base,
             corb_virt: corb_buf.virt_addr.as_mut_ptr() as *mut u32,
             corb_phys: corb_buf.phys_addr.as_u64(),
             corb_wp: (base + 0x48) as *mut u16,
@@ -77,15 +79,25 @@ impl CommandBuffer {
     }
 
     pub async unsafe fn init(&mut self, use_imm: bool) {
-
         self.use_immediate = use_imm;
-
+    
         if self.use_immediate {
             write_volatile(self.corb_ctl, 0);
             write_volatile(self.rirb_ctl, 0);
             return;
         }
 
+        
+    
+        let gctl_ptr = (self.base + 0x08) as *mut u32;
+        write_volatile(gctl_ptr, read_volatile(gctl_ptr) | 0x1);
+        serial_println!("GCTL after setting CRST: 0x{:08X}", read_volatile(gctl_ptr));
+        while read_volatile(gctl_ptr) & 0x1 == 0 {
+            serial_println!("Waiting for GCTL.CRST to be acknowledged");
+        }
+    
+        nanosleep_current_event(100_000_000).unwrap().await;
+    
         let cap = (read_volatile(self.corb_size) >> 4) & 0xF;
         self.corb_count = if cap & 0x4 != 0 {
             256
@@ -94,20 +106,52 @@ impl CommandBuffer {
         } else {
             2
         };
+    
         write_volatile(self.corb_addr_l, self.corb_phys as u32);
         write_volatile(self.corb_addr_h, (self.corb_phys >> 32) as u32);
-
+    
         for i in 0..self.corb_count {
             write_volatile(self.corb_virt.add(i), 0);
         }
+    
         write_volatile(self.corb_size, (read_volatile(self.corb_size) & 0xF8) | 0x2);
-        write_volatile(self.corb_rp, CORBRPRST);
-        write_volatile(self.corb_wp, 0);
+    
+        //ADD THE CORBRP RESET HERE
+        let corbrp_ptr = (self.base + 0x4A) as *mut u16;
+        assert!(self.corb_phys & 0x7F == 0);
+        serial_println!("CORB_ADDR_L = 0x{:08X}", read_volatile(self.corb_addr_l));
+        serial_println!("CORB_ADDR_H = 0x{:08X}", read_volatile(self.corb_addr_h));
+        serial_println!("CORB_SIZE   = 0x{:02X}", read_volatile(self.corb_size));
+        serial_println!("CORB_CTL    = 0x{:02X}", read_volatile(self.corb_ctl));
+        serial_println!("CORB_RP     = 0x{:04X}", read_volatile(self.corb_rp));
+        serial_println!("CORB_WP     = 0x{:04X}", read_volatile(self.corb_wp));
+        serial_println!("CORB_PTR    = 0x{:X}", corbrp_ptr as usize);
 
+        serial_println!("CORBRP register at: 0x{:X}", corbrp_ptr as usize);
+
+        serial_println!("Sleeping before CORBRP reset");
+        // nanosleep_current_event(10_000_000).unwrap().await; // 10 ms
+
+        write_volatile(corbrp_ptr, 0x8000);
+        while read_volatile(corbrp_ptr) & 0x8000 == 0 {
+            serial_println!("Waiting for CORBRPRST to be latched by controller...");
+        }
+
+        let mut val = read_volatile(corbrp_ptr);
+        serial_println!("CORBRP after write = 0x{:04X}", val);
+
+        write_volatile(corbrp_ptr, 0x0000);
+        while (read_volatile(corbrp_ptr) & 0x8000) != 0 {
+            serial_println!("Waiting for controller to clear CORBRPRST");
+        }
+        
+
+        write_volatile(self.corb_wp, 0);
+    
         for i in 0..self.rirb_count {
             write_volatile(self.rirb_virt.add(i), 0);
         }
-
+    
         let cap = (read_volatile(self.rirb_size) >> 4) & 0xF;
         self.rirb_count = if cap & 0x4 != 0 {
             256
@@ -116,33 +160,29 @@ impl CommandBuffer {
         } else {
             2
         };
+    
         write_volatile(self.rirb_addr_l, self.rirb_phys as u32);
         write_volatile(self.rirb_addr_h, (self.rirb_phys >> 32) as u32);
         write_volatile(self.rirb_size, (read_volatile(self.rirb_size) & 0xF8) | 0x2);
         write_volatile(self.rirb_wp, RIRBWPRST);
         self.rirb_rp_shadow = 0;
-
-        serial_println!("CORB base low:   0x{:08x}", read_volatile(self.corb_addr_l));
-        serial_println!("CORB base high:  0x{:08x}", read_volatile(self.corb_addr_h));
-        serial_println!("CORB size:       0x{:08x}", read_volatile(self.corb_size));
-        serial_println!("CORB RP:         0x{:08x}", read_volatile(self.corb_rp));
-        serial_println!("CORB WP:         0x{:08x}", read_volatile(self.corb_wp));
-        serial_println!("CORB CTL:        0x{:08x}", read_volatile(self.corb_ctl));
-
+    
+        // serial_println!("CORB base low:   0x{:08x}", read_volatile(self.corb_addr_l));
+        // serial_println!("CORB base high:  0x{:08x}", read_volatile(self.corb_addr_h));
+        // serial_println!("CORB size:       0x{:08x}", read_volatile(self.corb_size));
+        // serial_println!("CORB RP:         0x{:08x}", read_volatile(self.corb_rp));
+        // serial_println!("CORB WP:         0x{:08x}", read_volatile(self.corb_wp));
+        // serial_println!("CORB CTL:        0x{:08x}", read_volatile(self.corb_ctl));
+    
         write_volatile(self.corb_ctl, CORBRUN);
-        write_volatile(self.corb_rp, 0);   
-
-        while read_volatile(self.corb_rp) & CORBRPRST != 0 {
-            serial_println!("Waiting forr CORBRPRST to be clear");
-        }
         write_volatile(self.rirb_ctl, RIRBDMAEN | RINTCTL);
-        serial_println!("RIRB CTL: 0x{:02X}", read_volatile(self.rirb_ctl));
-        serial_println!("RIRB base low:   0x{:08X}", read_volatile(self.rirb_addr_l));
-        serial_println!("RIRB base high:  0x{:08X}", read_volatile(self.rirb_addr_h));
-        serial_println!("RIRB size:       0x{:02X}", read_volatile(self.rirb_size));
-        serial_println!("RIRB WP:         0x{:04X}", read_volatile(self.rirb_wp));
-        serial_println!("RIRB CTL:        0x{:02X}", read_volatile(self.rirb_ctl));
-
+    
+        // serial_println!("RIRB CTL:        0x{:02X}", read_volatile(self.rirb_ctl));
+        // serial_println!("RIRB base low:   0x{:08X}", read_volatile(self.rirb_addr_l));
+        // serial_println!("RIRB base high:  0x{:08X}", read_volatile(self.rirb_addr_h));
+        // serial_println!("RIRB size:       0x{:02X}", read_volatile(self.rirb_size));
+        // serial_println!("RIRB WP:         0x{:04X}", read_volatile(self.rirb_wp));
+        // serial_println!("RIRB CTL:        0x{:02X}", read_volatile(self.rirb_ctl));
     }
 
     pub async unsafe fn send(&mut self, cmd: u32) -> u64 {
