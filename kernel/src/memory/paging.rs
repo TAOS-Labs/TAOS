@@ -217,17 +217,13 @@ pub fn get_page_flags(
     page: Page,
     mapper: &mut OffsetPageTable,
 ) -> Result<PageTableFlags, PagingError> {
-    let translate_result = mapper.translate(page.start_address());
-    match translate_result {
+    match mapper.translate(page.start_address()) {
         TranslateResult::Mapped {
-            frame,
-            offset: _,
+            frame: MappedFrame::Size4KiB(_),
             flags,
-        } => match frame {
-            MappedFrame::Size4KiB(_) => return Result::Ok(flags),
-            _ => Result::Err(PagingError::PageNotMappedErr),
-        },
-        _ => Result::Err(PagingError::PageNotMappedErr),
+            ..
+        } => Ok(flags),
+        _ => Err(PagingError::PageNotMappedErr),
     }
 }
 
@@ -307,11 +303,7 @@ mod tests {
     };
 
     // Import functions from the kernel memory module.
-    use crate::{
-        constants::memory::PAGE_SIZE,
-        events::schedule_kernel_on,
-        memory::KERNEL_MAPPER,
-    };
+    use crate::{constants::memory::PAGE_SIZE, events::schedule_kernel_on, memory::KERNEL_MAPPER};
 
     // Used for TLB shootdown testcases.
     static PRE_READ: AtomicU64 = AtomicU64::new(0);

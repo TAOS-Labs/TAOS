@@ -2,7 +2,11 @@ use crate::{
     constants::{memory::PAGE_SIZE, processes::MAX_FILES},
     events::{current_running_event, futures::sync::Condition, schedule_kernel_on},
     filesys::ext2::structures::FileMode,
-    memory::{frame_allocator::alloc_frame, paging::map_kernel_frame, KERNEL_MAPPER},
+    memory::{
+        frame_allocator::{alloc_frame, dealloc_frame},
+        paging::map_kernel_frame,
+        KERNEL_MAPPER,
+    },
     processes::process::with_current_pcb,
 };
 use alloc::{
@@ -20,7 +24,7 @@ use ext2::{
 use lazy_static::lazy_static;
 use spin::{Mutex, Once};
 use x86_64::{
-    structures::paging::{Page, PageTableFlags, Size4KiB},
+    structures::paging::{Mapper, Page, PageTableFlags, Size4KiB},
     VirtAddr,
 };
 pub mod ext2;
@@ -33,8 +37,6 @@ use crate::{devices::sd_card::SD_CARD, serial_println};
 
 lazy_static! {
     static ref FS_INIT_COMPLETE: Arc<AtomicBool> = Arc::new(AtomicBool::new(false));
-    static ref PAGE_CACHE: Mutex<BTreeMap<usize, Mutex<BTreeMap<usize, Page<Size4KiB>>>>> =
-        Mutex::new(BTreeMap::new());
 }
 
 bitflags! {
@@ -92,6 +94,7 @@ pub struct File {
     pathname: String,
     pub fd: usize,
     position: usize,
+    #[allow(unused)]
     flags: OpenFlags,
     pub inode_number: u32,
     pub refcounts: BTreeMap<u32, u64>,
@@ -210,23 +213,25 @@ fn chmod_to_filemode(mode: ChmodMode) -> FileMode {
     out
 }
 
+type PageCache = Mutex<BTreeMap<u32, Arc<Mutex<BTreeMap<usize, (Page<Size4KiB>, bool)>>>>>;
+
 pub struct Ext2Wrapper {
     // Outer BTreeMap maps inode # to inner BTreeMap
     // Inner BTreeMap maps file offset (page-aligned) to the kernel virtual address of that associated frame and a dirty bit
-    pub page_cache: Mutex<BTreeMap<u32, Arc<Mutex<BTreeMap<usize, (Page<Size4KiB>, bool)>>>>>,
+    pub page_cache: PageCache,
 
     // Wrapper for Ext2 Filesystem
     filesystem: Mutex<Ext2>,
 
     // Maps inode # to number of processes
-    refcount: Mutex<BTreeMap<usize, usize>>,
+    refcount: Mutex<BTreeMap<u32, usize>>,
 }
 
 impl Ext2Wrapper {
     pub fn new(
-        page_cache: Mutex<BTreeMap<u32, Arc<Mutex<BTreeMap<usize, (Page<Size4KiB>, bool)>>>>>,
+        page_cache: PageCache,
         filesystem: Mutex<Ext2>,
-        refcount: Mutex<BTreeMap<usize, usize>>,
+        refcount: Mutex<BTreeMap<u32, usize>>,
     ) -> Ext2Wrapper {
         Ext2Wrapper {
             page_cache,
@@ -349,7 +354,7 @@ impl FileSystem for Ext2Wrapper {
         }
         let file = get_file(fd)?;
         let path = &file.lock().pathname;
-        let inode_number = self.filesystem.lock().get_node(&path).await?.number();
+        let inode_number = self.filesystem.lock().get_node(path).await?.number();
         let file = with_current_pcb(|pcb| {
             pcb.fd_table[fd]
                 .as_ref()
@@ -362,8 +367,24 @@ impl FileSystem for Ext2Wrapper {
             .and_modify(|v| *v -= 1)
             .or_insert(1);
 
-        if file.refcounts.get(&inode_number).unwrap().eq(&0) {
-            // write back
+        if let Some(&0) = self.refcount.lock().get(&inode_number) {
+            if let Some(inner_arc) = self.page_cache.lock().get(&inode_number) {
+                let inner = inner_arc.lock();
+                for entry in inner.iter() {
+                    let page = entry.1 .0;
+                    let dirty = entry.1 .1;
+                    if dirty {
+                        let start_addr = page.start_address().as_u64();
+                        let ptr = start_addr as *const u8;
+                        let _buffer: &[u8] = unsafe { core::slice::from_raw_parts(ptr, 4096) };
+                        // TODO: actually write?
+                    }
+
+                    let mapper = KERNEL_MAPPER.lock();
+                    let frame = mapper.translate_page(page).unwrap();
+                    dealloc_frame(frame);
+                }
+            }
         }
 
         with_current_pcb(|pcb| {
@@ -371,13 +392,11 @@ impl FileSystem for Ext2Wrapper {
                 return Err(FilesystemError::InvalidFd);
             }
             pcb.fd_table[fd] = None;
-
             Ok(())
-        })
-
-        // TODO: Think about the logic of when do you write back cached file-backed pages to memory? We need to add some global state that has refcounts for a file
-        // being opened and once it's closed by all processes, write back the dirty frames of the page cache
+        })?;
+        Ok(())
     }
+
     async fn write_file(&mut self, fd: usize, buf: &[u8]) -> FilesystemResult<usize> {
         if !FS_INIT_COMPLETE.load(Ordering::Relaxed) {
             Condition::new(
@@ -386,39 +405,47 @@ impl FileSystem for Ext2Wrapper {
             )
             .await;
         }
-    
+
         let file = get_file(fd)?;
         let (locked_file, bytes_written, old_size) = {
             let fs = self.filesystem.lock();
-    
+
             let locked_file = file.lock();
             let old_size = fs.get_node(locked_file.pathname.as_str()).await?.size();
-    
+
             let bytes_written = fs
                 .write_file_at(locked_file.pathname.as_str(), buf, locked_file.position)
                 .await?;
             (locked_file, bytes_written, old_size)
         };
-    
+
         // Round down the start offset and round up the end offset to page boundaries
         let start_offset = (old_size & !((PAGE_SIZE - 1) as u64)) as usize;
         let end_offset = (locked_file.position + bytes_written + PAGE_SIZE - 1) & !(PAGE_SIZE - 1);
-    
+
         // Invalidate page cache entries
         let mut offset = start_offset;
-        if !self.page_cache_get_mapping(locked_file.clone(), offset as usize).await.is_err() {
+        if self
+            .page_cache_get_mapping(locked_file.clone(), offset)
+            .await
+            .is_ok()
+        {
             let page_cache_guard = self.page_cache.lock();
-            let mut inner_mapping = page_cache_guard.get(&locked_file.inode_number).unwrap().lock();
+            let mut inner_mapping = page_cache_guard
+                .get(&locked_file.inode_number)
+                .unwrap()
+                .lock();
             inner_mapping.remove(&start_offset);
         }
-    
+
         // Repopulate page cache entries
         offset = start_offset;
         while offset < end_offset {
-            self.add_entry_to_page_cache(locked_file.clone(), offset as usize).await?;
+            self.add_entry_to_page_cache(locked_file.clone(), offset)
+                .await?;
             offset += PAGE_SIZE;
         }
-    
+
         Ok(bytes_written)
     }
 
@@ -531,6 +558,7 @@ impl FileSystem for Ext2Wrapper {
         let locked_file = file.lock();
         Ok(locked_file.clone())
     }
+
     async fn add_entry_to_page_cache(&mut self, file: File, offset: usize) -> FilesystemResult<()> {
         if !FS_INIT_COMPLETE.load(Ordering::Relaxed) {
             Condition::new(
@@ -542,9 +570,9 @@ impl FileSystem for Ext2Wrapper {
 
         let inode_number = file.inode_number;
         let mut pg_cache = self.page_cache.lock();
-        if !pg_cache.contains_key(&inode_number) {
-            pg_cache.insert(inode_number, Arc::new(Mutex::new(BTreeMap::new())));
-        }
+        pg_cache
+            .entry(inode_number)
+            .or_insert_with(|| Arc::new(Mutex::new(BTreeMap::new())));
         let mut file_mappings = pg_cache.get(&inode_number).unwrap().lock();
 
         // allocate and map frame
@@ -751,6 +779,7 @@ mod tests {
         let meta = user_fs.metadata(fd).await.unwrap();
         assert_eq!(meta.pathname, "./temp/meta.txt");
         assert_eq!(meta.fd, 0);
+        assert_eq!(meta.flags, OpenFlags::O_WRONLY | OpenFlags::O_CREAT);
 
         user_fs.close_file(fd).await.unwrap();
     }

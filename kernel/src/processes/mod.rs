@@ -22,7 +22,7 @@ mod tests {
         serial_println,
     };
 
-    // #[test_case]
+    #[test_case]
     async fn test_simple_process() {
         let pid = create_process(TEST_SIMPLE_PROCESS);
         schedule_process(pid);

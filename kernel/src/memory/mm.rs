@@ -3,7 +3,7 @@ use alloc::{collections::btree_map::BTreeMap, sync::Arc, vec::Vec};
 use bitflags::bitflags;
 use core::fmt::Debug;
 use spin::Mutex;
-use x86_64::structures::paging::{Mapper, PageTableFlags, PhysFrame, Size4KiB};
+use x86_64::structures::paging::{PageTableFlags, PhysFrame, Size4KiB};
 
 type VmaTree = BTreeMap<usize, Arc<Mutex<VmArea>>>;
 
@@ -62,9 +62,7 @@ impl Mm {
         )));
 
         let new_vma = Self::coalesce_vma_left(new_vma.clone(), tree);
-        let new_vma = Self::coalesce_vma_right(new_vma.clone(), tree);
-
-        new_vma
+        Self::coalesce_vma_right(new_vma.clone(), tree)
     }
 
     pub fn coalesce_vma(candidate: Arc<Mutex<VmArea>>, tree: &mut VmaTree) -> Arc<Mutex<VmArea>> {
@@ -91,9 +89,7 @@ impl Mm {
         let new_vma = Arc::new(Mutex::new(VmArea::new_copied(start, end, segments, flags)));
 
         let new_vma = Self::coalesce_vma_left(new_vma.clone(), tree);
-        let new_vma = Self::coalesce_vma_right(new_vma.clone(), tree);
-
-        new_vma
+        Self::coalesce_vma_right(new_vma.clone(), tree)
     }
 
     /// Attempts to coalesce the candidate VMA with its left neighbor.
@@ -111,7 +107,7 @@ impl Mm {
         };
 
         // cannot do a left merge if there can be no left VMA
-        if cand_start <= 0 {
+        if cand_start == 0 {
             return candidate;
         }
 
@@ -223,6 +219,7 @@ impl Mm {
         tree.remove_entry(&(start as usize))
     }
 
+    // TODO: VERIFY NO OFF BY ONE ERRORS
     pub fn shrink_vma(
         old_start: u64,
         new_start: u64,
@@ -268,7 +265,8 @@ impl Mm {
                 } else if seg_global_start > split_point_right {
                     right_segments.insert(old_seg_key - split_point_right, seg.clone());
                 // guaranteed to be a middle only segment
-                } else if seg_global_start >= split_point_left && seg_global_end <= split_point_right
+                } else if seg_global_start >= split_point_left
+                    && seg_global_end <= split_point_right
                 {
                     middle_segments.insert(old_seg_key - split_point_left, seg.clone());
                 // spans the left split
@@ -279,7 +277,7 @@ impl Mm {
                         start: seg.start,
                         end: seg.start + left_part_length,
                         backing: seg.backing.clone(),
-                        pg_offset: seg.pg_offset.clone(),
+                        pg_offset: seg.pg_offset,
                         fd: seg.fd,
                     };
                     left_segments.insert(old_seg_key, left_seg);
@@ -289,7 +287,7 @@ impl Mm {
                         start: seg.start + left_part_length,
                         end: seg.start + left_part_length + middle_part_length,
                         backing: seg.backing.clone(),
-                        pg_offset: seg.pg_offset.clone(),
+                        pg_offset: seg.pg_offset,
                         fd: seg.fd,
                     };
                     middle_segments.insert(0, middle_seg);
@@ -301,7 +299,7 @@ impl Mm {
                         start: seg.start,
                         end: seg.start + middle_part_length,
                         backing: seg.backing.clone(),
-                        pg_offset: seg.pg_offset.clone(),
+                        pg_offset: seg.pg_offset,
                         fd: seg.fd,
                     };
                     middle_segments.insert(old_seg_key - split_point_left, middle_seg);
@@ -310,7 +308,7 @@ impl Mm {
                         start: seg.start + middle_part_length,
                         end: seg.start + middle_part_length + right_part_length,
                         backing: seg.backing.clone(),
-                        pg_offset: seg.pg_offset.clone(),
+                        pg_offset: seg.pg_offset,
                         fd: seg.fd,
                     };
                     right_segments.insert(0, right_seg);
@@ -322,7 +320,7 @@ impl Mm {
                         start: seg.start,
                         end: seg.start + left_part_length,
                         backing: seg.backing.clone(),
-                        pg_offset: seg.pg_offset.clone(),
+                        pg_offset: seg.pg_offset,
                         fd: seg.fd,
                     };
                     left_segments.insert(old_seg_key, left_seg);
@@ -331,7 +329,7 @@ impl Mm {
                         start: seg.start + left_part_length,
                         end: seg.start + left_part_length + middle_part_length,
                         backing: seg.backing.clone(),
-                        pg_offset: seg.pg_offset.clone(),
+                        pg_offset: seg.pg_offset,
                         fd: seg.fd,
                     };
                     middle_segments.insert(0, middle_seg);
@@ -340,7 +338,7 @@ impl Mm {
                         start: seg.start + left_part_length + middle_part_length,
                         end: seg.start + left_part_length + middle_part_length + right_part_length,
                         backing: seg.backing.clone(),
-                        pg_offset: seg.pg_offset.clone(),
+                        pg_offset: seg.pg_offset,
                         fd: seg.fd,
                     };
                     right_segments.insert(0, right_seg);
@@ -392,16 +390,6 @@ impl Mm {
         };
 
         (left_vma, Some(vma), right_vma)
-    }
-
-    pub fn shrink_vma_left(
-        _old_start: u64,
-        _new_start: u64,
-        _new_end: u64,
-        _mapper: &mut impl Mapper<Size4KiB>,
-        _tree: &mut VmaTree,
-    ) -> Option<Arc<Mutex<VmArea>>> {
-        return None;
     }
 
     /// Find a VmArea that contains the given virtual address.
@@ -571,6 +559,12 @@ pub struct VmAreaBackings {
     /// Reverse mappings keyed by offset.
     pub mappings: Mutex<BTreeMap<u64, Arc<VmaChain>>>,
     pub vmas: Mutex<Vec<Arc<Mutex<VmArea>>>>,
+}
+
+impl Default for VmAreaBackings {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl VmAreaBackings {
@@ -1736,9 +1730,9 @@ mod tests {
 
         let new_start = old_start + PAGE_SIZE as u64;
         let new_end = old_end;
-        let shrunk = mm.with_vma_tree_mutable(|tree| {
+        let (_, shrunk , _)= mm.with_vma_tree_mutable(|tree| {
             let mut mapper = KERNEL_MAPPER.lock();
-            Mm::shrink_vma_left(old_start, new_start, new_end, &mut *mapper, tree)
+            Mm::shrink_vma(old_start, new_start, new_end, tree)
         });
         assert!(shrunk.is_some());
         let vma = shrunk.unwrap();
@@ -2024,9 +2018,9 @@ mod tests {
         // Shrink both sides: remove the leftmost and rightmost pages.
         let new_start = old_start + PAGE_SIZE as u64;
         let new_end = old_end - PAGE_SIZE as u64;
-        let shrunk_left = mm.with_vma_tree_mutable(|tree| {
+        let (_, shrunk_left, _) = mm.with_vma_tree_mutable(|tree| {
             let mut mapper = KERNEL_MAPPER.lock();
-            Mm::shrink_vma_left(old_start, new_start, new_end, &mut *mapper, tree)
+            Mm::shrink_vma(old_start, new_start, new_end, tree)
         });
         assert!(shrunk_left.is_some());
 

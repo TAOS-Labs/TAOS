@@ -1,7 +1,7 @@
 use core::sync::atomic::Ordering;
 
 use alloc::sync::Arc;
-use x86_64::structures::paging::{OffsetPageTable, PageTable, PageTableFlags, PhysFrame};
+use x86_64::structures::paging::{PageTable, PageTableFlags, PhysFrame};
 
 use crate::{
     events::{current_running_event_info, schedule_process_on},
@@ -11,7 +11,7 @@ use crate::{
         HHDM_OFFSET,
     },
     processes::{
-        process::{ProcessState, UnsafePCB, NEXT_PID, PCB, PROCESS_TABLE},
+        process::{ProcessState, UnsafePCB, NEXT_PID, PROCESS_TABLE},
         registers::NonFlagRegisters,
     },
     serial_println,
@@ -161,101 +161,81 @@ fn duplicate_page_table_recursive(parent_frame: PhysFrame, level: u8) -> PhysFra
     child_frame
 }
 
-/// Helper to get mutable reference to a page table from a physical frame
-fn get_table_mut(frame: PhysFrame) -> &'static mut PageTable {
-    let phys_addr = frame.start_address();
-    let virt_addr = HHDM_OFFSET.as_u64() + phys_addr.as_u64();
-    unsafe { &mut *(virt_addr as *mut PageTable) }
-}
-
-fn verify_page_table_walk(parent_pcb: &mut PCB, child_pcb: &mut PCB) {
-    assert_eq!(
-        parent_pcb.mm.pml4_frame.start_address(),
-        child_pcb.mm.pml4_frame.start_address()
-    );
-    let mut parent_mapper = unsafe { parent_pcb.create_mapper() };
-    let mut child_mapper = unsafe { child_pcb.create_mapper() };
-
-    for i in 0..256 {
-        let parent_entry = &parent_mapper.level_4_table()[i];
-        let child_entry = &child_mapper.level_4_table()[i];
-        if parent_entry.is_unused() {
-            assert!(child_entry.is_unused());
-            continue;
-        } else {
-            assert_eq!(parent_entry.flags(), child_entry.flags());
-            let parent_pdpt_frame = PhysFrame::containing_address(parent_entry.addr());
-            recursive_walk(
-                parent_pdpt_frame,
-                3,
-                &mut parent_mapper,
-                &mut child_mapper,
-            );
-        }
-    }
-}
-
-fn recursive_walk(
-    parent_frame: PhysFrame,
-    level: u8,
-    parent_mapper: &mut OffsetPageTable,
-    child_mapper: &mut OffsetPageTable,
-) {
-    let parent_virt = HHDM_OFFSET.as_u64() + parent_frame.start_address().as_u64();
-
-    let parent_table = unsafe { &mut *(parent_virt as *mut PageTable) };
-    let child_table = unsafe { &mut *(parent_virt as *mut PageTable) };
-
-    for i in 0..512 {
-        let parent_entry = &parent_table[i];
-        let child_entry = &child_table[i];
-        if parent_entry.is_unused() {
-            assert!(child_entry.is_unused());
-            continue;
-        }
-
-        // from the parent and child tables, ensure each entry is the same
-        assert_eq!(parent_entry.flags(), child_entry.flags());
-        if level == 1 {
-            serial_println!(
-                "Parent frame is {:#?}, Child frame is {:#?}",
-                parent_entry.frame(),
-                child_entry.frame()
-            );
-            // This logic is not correct and only works if you don't update the Writable flag during COW duplicate
-            if parent_entry.flags().contains(PageTableFlags::WRITABLE) {
-                assert!(parent_entry.flags().contains(PageTableFlags::BIT_9));
-            }
-            assert_eq!(parent_entry.addr(), child_entry.addr());
-            assert_eq!(
-                parent_entry.frame().expect("Could not find frame."),
-                child_entry.frame().expect("Could not find frame.")
-            );
-        }
-        if level > 1 {
-            let parent_frame: PhysFrame = PhysFrame::containing_address(parent_entry.addr());
-            recursive_walk(
-                parent_frame,
-                level - 1,
-                parent_mapper,
-                child_mapper,
-            );
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
+    use x86_64::structures::paging::{PageTable, PageTableFlags, PhysFrame};
 
-    use super::*;
+    use crate::{
+        constants::processes::FORK_SIMPLE,
+        events::schedule_process,
+        memory::HHDM_OFFSET,
+        processes::process::{create_process, PCB, PROCESS_TABLE},
+        serial_println,
+    };
 
-    // #[test_case]
-    fn test_simple_fork() {
-        use crate::{
-            constants::processes::FORK_SIMPLE, events::schedule_process,
-            processes::process::create_process,
-        };
+    fn verify_page_table_walk(parent_pcb: &mut PCB, child_pcb: &mut PCB) {
+        assert_eq!(
+            parent_pcb.mm.pml4_frame.start_address(),
+            child_pcb.mm.pml4_frame.start_address()
+        );
+        let parent_mapper = unsafe { parent_pcb.create_mapper() };
+        let child_mapper = unsafe { child_pcb.create_mapper() };
 
+        for i in 0..256 {
+            let parent_entry = &parent_mapper.level_4_table()[i];
+            let child_entry = &child_mapper.level_4_table()[i];
+            if parent_entry.is_unused() {
+                assert!(child_entry.is_unused());
+                continue;
+            } else {
+                assert_eq!(parent_entry.flags(), child_entry.flags());
+                let parent_pdpt_frame = PhysFrame::containing_address(parent_entry.addr());
+                recursive_walk(parent_pdpt_frame, 3);
+            }
+        }
+    }
+
+    fn recursive_walk(parent_frame: PhysFrame, level: u8) {
+        let parent_virt = HHDM_OFFSET.as_u64() + parent_frame.start_address().as_u64();
+
+        let parent_table = unsafe { &mut *(parent_virt as *mut PageTable) };
+        let child_table = unsafe { &mut *(parent_virt as *mut PageTable) };
+
+        for i in 0..512 {
+            let parent_entry = &parent_table[i];
+            let child_entry = &child_table[i];
+            if parent_entry.is_unused() {
+                assert!(child_entry.is_unused());
+                continue;
+            }
+
+            // from the parent and child tables, ensure each entry is the same
+            assert_eq!(parent_entry.flags(), child_entry.flags());
+            if level == 1 {
+                serial_println!(
+                    "Parent frame is {:#?}, Child frame is {:#?}",
+                    parent_entry.frame(),
+                    child_entry.frame()
+                );
+                // This logic is not correct and only works if you don't update the Writable flag during COW duplicate
+                if parent_entry.flags().contains(PageTableFlags::WRITABLE) {
+                    assert!(parent_entry.flags().contains(PageTableFlags::BIT_9));
+                }
+                assert_eq!(parent_entry.addr(), child_entry.addr());
+                assert_eq!(
+                    parent_entry.frame().expect("Could not find frame."),
+                    child_entry.frame().expect("Could not find frame.")
+                );
+            }
+            if level > 1 {
+                let parent_frame: PhysFrame = PhysFrame::containing_address(parent_entry.addr());
+                recursive_walk(parent_frame, level - 1);
+            }
+        }
+    }
+
+    #[test_case]
+    async fn test_simple_fork() {
         let parent_pid = create_process(FORK_SIMPLE);
         schedule_process(parent_pid);
         for _ in 0..100000000_u64 {}
@@ -266,9 +246,7 @@ mod tests {
         // since no other processes are running or being created we assume that
         // the child pid is one more than the child pid
         let process_table = PROCESS_TABLE.read();
-        // unsafe {
-        //     print_process_table(&PROCESS_TABLE);
-        // }
+
         assert!(
             process_table.contains_key(&child_pid),
             "Child process not found in table"

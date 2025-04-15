@@ -1,4 +1,4 @@
-use core::{ptr, usize};
+use core::ptr;
 
 use alloc::sync::Arc;
 use log::debug;
@@ -19,10 +19,7 @@ use crate::{
     memory::{
         frame_allocator::alloc_frame,
         mm::{vma_to_page_flags, Mm, VmAreaFlags},
-        paging::{
-            create_mapping, create_mapping_to_frame, update_mapping,
-            update_permissions,
-        },
+        paging::{create_mapping, create_mapping_to_frame, update_mapping, update_permissions},
         HHDM_OFFSET, KERNEL_MAPPER,
     },
     processes::process::with_current_pcb,
@@ -146,7 +143,7 @@ pub fn determine_fault_cause(error_code: PageFaultErrorCode, vma: &VmArea) -> Fa
                 Some(FaultOutcome::SharedFileMapping {
                     page,
                     mapper,
-                    offset: file_mapping_offset as u64,
+                    offset: file_mapping_offset,
                     pt_flags,
                     fd: segment.fd,
                 })
@@ -154,7 +151,7 @@ pub fn determine_fault_cause(error_code: PageFaultErrorCode, vma: &VmArea) -> Fa
                 Some(FaultOutcome::PrivateFileMapping {
                     page,
                     mapper,
-                    offset: file_mapping_offset as u64,
+                    offset: file_mapping_offset,
                     pt_flags,
                     fd: segment.fd,
                 })

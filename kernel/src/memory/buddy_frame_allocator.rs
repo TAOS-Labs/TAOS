@@ -6,6 +6,7 @@
 //! - On allocation, gets the smallest free block and attempts to split it
 //! - On deallocation, attempts to coalesce blocks
 //! - Allows for O(log N) allocation / deallocation
+
 use core::sync::atomic::{AtomicU16, Ordering};
 
 use crate::{constants::memory::PAGE_SIZE, serial_println};
@@ -16,9 +17,12 @@ use x86_64::{
     PhysAddr,
 };
 
+/// Describes a Frame for the allocator
 #[derive(Debug)]
 pub struct FrameDescriptor {
+    /// How many active references of this frame there are
     ref_count: AtomicU16,
+    /// How many contiguous frames this block comprises of
     order: AtomicU16,
 }
 
@@ -31,12 +35,25 @@ impl FrameDescriptor {
     }
 }
 
+impl Default for FrameDescriptor {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Supporting metadata for the buddy frame allocator
 pub struct BuddyFrameAllocator {
+    /// Descriptors for every physical frame
     frames: Box<[FrameDescriptor]>,
+    /// List of free lists, where each list corresponds to a specific order
     free_lists: Vec<Vec<usize>>,
+    /// The total available physical farmes
     total_frames: usize,
+    /// Maximum supported order, log_2(total_frames)
     max_order: usize,
+    /// Current number of allocated frames
     allocated_count: usize,
+    /// Current number of free frames
     free_count: usize,
 }
 
@@ -92,11 +109,13 @@ impl BuddyFrameAllocator {
     ///
     /// # Arguments
     /// * `memory_map` - a memory map response from limine, used for
-    ///                  giving only usable memory
+    ///   giving only usable memory
     /// * `initial_frames` - the frames allocated by boot frame allocator
     ///
     /// # Returns
     /// Returns an initialized buddy frame allocator
+    /// # Safety
+    /// This method is unsafe because it directly interfaces with Limine's memory map response
     pub unsafe fn init(
         memory_map: &'static MemoryMapResponse,
         initial_frames: impl Iterator<Item = PhysFrame<Size4KiB>>,
@@ -122,8 +141,8 @@ impl BuddyFrameAllocator {
             let addr = (frame_index * PAGE_SIZE) as u64;
             for entry in memory_map.entries().iter() {
                 if entry.entry_type == EntryType::USABLE {
-                    let base = entry.base as u64;
-                    let length = entry.length as u64;
+                    let base = entry.base;
+                    let length = entry.length;
                     if addr >= base && addr < base + length {
                         return true;
                     }
@@ -198,6 +217,11 @@ impl BuddyFrameAllocator {
         self.frames[index].ref_count.store(1, Ordering::Relaxed);
     }
 
+    /// Allocate a block of memory
+    ///
+    ///
+    /// # Arguments
+    /// * `order` - The size of the block to allocate
     pub fn allocate_block(&mut self, order: u16) -> Vec<PhysFrame<Size4KiB>> {
         let mut found_order = None;
         for o in order..=self.max_order as u16 {
@@ -237,7 +261,12 @@ impl BuddyFrameAllocator {
         frames
     }
 
-    pub unsafe fn deallocate_block(&mut self, block: Vec<PhysFrame<Size4KiB>>, order: u16) {
+    /// Deallocate a block of memory
+    ///
+    ///
+    /// # Arguments
+    /// * `block` - The physical frames that can be deallocated
+    pub fn deallocate_block(&mut self, block: Vec<PhysFrame<Size4KiB>>, order: u16) {
         // given frames vec must be of 1 << order size
         assert_eq!(
             block.len(),
@@ -298,6 +327,8 @@ impl BuddyFrameAllocator {
     }
 
     /// Increments the reference count for the given physical frame.
+    ///
+    /// * `frame`: The frame to increment for
     pub fn inc_ref_count(&self, frame: PhysFrame<Size4KiB>) {
         let index = Self::frame_to_index(frame);
         self.frames[index].ref_count.fetch_add(1, Ordering::Relaxed);
@@ -305,21 +336,30 @@ impl BuddyFrameAllocator {
 
     /// Decrements the reference count for the given physical frame.
     /// Returns the new reference count.
+    ///
+    /// * `frame`: The frame to decrement for
     pub fn dec_ref_count(&self, frame: PhysFrame<Size4KiB>) -> u16 {
         let index = Self::frame_to_index(frame);
         self.frames[index].ref_count.fetch_sub(1, Ordering::Relaxed) - 1
     }
 
+    /// Returns the refcount for a frame
+    ///
+    /// * `frame`: The frame to get refcount for
     pub fn get_ref_count(&self, frame: PhysFrame<Size4KiB>) -> u16 {
         let index = Self::frame_to_index(frame);
         self.frames[index].ref_count.load(Ordering::Relaxed)
     }
 
+    /// Returns whether a frame is used or not
+    ///
+    /// * `frame`: the frame to check
     pub fn is_frame_used(&self, frame: PhysFrame<Size4KiB>) -> bool {
         let index = Self::frame_to_index(frame);
         self.frames[index].ref_count.load(Ordering::Relaxed) == 0
     }
 
+    /// Prints the available free frames
     pub fn print_free_frames(&self) {
         serial_println!("{} free frames", self.free_count);
     }
@@ -332,6 +372,10 @@ impl BuddyFrameAllocator {
         (core::mem::size_of::<usize>() * 8) - x.leading_zeros() as usize - 1
     }
 
+    /// todo
+    ///
+    /// * `index`:
+    /// * `order`:
     fn buddy_index(&self, index: usize, order: usize) -> usize {
         index ^ (1 << order)
     }
@@ -404,7 +448,7 @@ impl FrameDeallocator<Size4KiB> for BuddyFrameAllocator {
         let desc = &self.frames[index];
 
         // no reason to deallocate if there are still references
-        if desc.ref_count.fetch_sub(1, Ordering::Relaxed) <= 0 {
+        if desc.ref_count.fetch_sub(1, Ordering::Relaxed) == 0 {
             return;
         }
 
@@ -577,7 +621,7 @@ mod tests {
             let alloc_count_after = alloc.allocated_count;
             assert_eq!(alloc_count_before + 2, alloc_count_after);
 
-            unsafe { alloc.deallocate_block(frames, 1) };
+            alloc.deallocate_block(frames, 1);
 
             let alloc_count_final = alloc.allocated_count;
             assert_eq!(alloc_count_before, alloc_count_final);
@@ -597,7 +641,7 @@ mod tests {
                 assert_eq!(alloc.get_ref_count(frames[i]), 1);
             }
 
-            unsafe { alloc.deallocate_block(frames, 8) };
+            alloc.deallocate_block(frames, 8);
 
             let alloc_count_final = alloc.allocated_count;
             assert_eq!(alloc_count_before, alloc_count_final);

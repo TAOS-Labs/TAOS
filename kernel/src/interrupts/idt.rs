@@ -317,7 +317,7 @@ fn syscall_handler(rsp: u64) {
         p6 = *stack_ptr.add(7);
     }
     serial_println!("IN SYSCALL HANDLER");
-    match syscall_num as u32 {
+    match syscall_num {
         SYSCALL_EXIT => {
             serial_println!("ATTEMPTING EXIT");
             sys_exit(p1 as i64, &NonFlagRegisters::default());

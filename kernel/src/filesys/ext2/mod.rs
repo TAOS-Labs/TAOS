@@ -22,6 +22,7 @@ mod tests {
     };
 
     use crate::devices::sd_card::SD_CARD;
+    use crate::serial_println;
 
     use super::{
         filesystem::{Ext2, FilesystemError},
@@ -53,7 +54,9 @@ mod tests {
 
         fs.unmount().await.unwrap();
 
-        match fs.read_file("/test.txt").await {
+        let temp =  fs.read_file("/test.txt").await;
+        serial_println!("Temp is {:#?}", temp);
+        match temp {
             Err(FilesystemError::NotMounted) => {}
             _ => panic!("Expected NotMounted error"),
         }
@@ -182,9 +185,9 @@ mod tests {
         let mut data = vec![0u8; data_size];
 
         // Fill with pattern
-        for i in 0..data_size {
+        (0..data_size).for_each(|i| {
             data[i] = (i % 256) as u8;
-        }
+        });
 
         let bytes_written = fs.write_file(file_path, &data).await.unwrap();
         assert_eq!(bytes_written, data_size);
@@ -389,9 +392,9 @@ mod tests {
 
         assert_eq!(content.len(), offset as usize + end_data.len());
 
-        for i in start_data.len()..offset as usize {
+        (start_data.len()..offset as usize).for_each(|i| {
             assert_eq!(content[i], 0);
-        }
+        });
 
         fs.remove(file_path).await.unwrap();
     }
@@ -407,9 +410,9 @@ mod tests {
         let block_size = fs.stats().unwrap().block_size;
         let data_size = block_size as usize * 4;
         let mut data = vec![0u8; data_size];
-        for i in 0..data_size {
+        (0..data_size).for_each(|i| {
             data[i] = (i % 256) as u8;
-        }
+        });
 
         fs.write_file(file_path, &data).await.unwrap();
 

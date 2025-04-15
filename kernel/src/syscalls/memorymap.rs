@@ -210,7 +210,7 @@ pub fn sys_mmap(_addr: u64, len: u64, prot: u64, flags: u64, fd: i64, offset: u6
 /// * `prot` - the protection we want to updatge to; corresponds to VMA flags
 pub fn sys_mprotect(addr: u64, len: u64, prot: u64) -> u64 {
     // Round the end address up to a page boundary.
-    let end_addr = ((addr + len + PAGE_SIZE as u64 - 1) / PAGE_SIZE as u64) * PAGE_SIZE as u64;
+    let end_addr = (addr + len).div_ceil(PAGE_SIZE as u64) * PAGE_SIZE as u64;
 
     let event: EventInfo = current_running_event_info();
     let pid = event.pid;
@@ -263,7 +263,7 @@ pub fn sys_mprotect(addr: u64, len: u64, prot: u64) -> u64 {
                                 Page::containing_address(VirtAddr::new(l_start)),
                                 Page::containing_address(VirtAddr::new(l_end)),
                             ) {
-                                if !mapper.translate_page(page).is_err() {
+                                if mapper.translate_page(page).is_ok() {
                                     update_permissions(
                                         page,
                                         &mut mapper,
@@ -287,7 +287,7 @@ pub fn sys_mprotect(addr: u64, len: u64, prot: u64) -> u64 {
                                 Page::containing_address(VirtAddr::new(r_start)),
                                 Page::containing_address(VirtAddr::new(r_end)),
                             ) {
-                                if !mapper.translate_page(page).is_err() {
+                                if mapper.translate_page(page).is_ok() {
                                     update_permissions(
                                         page,
                                         &mut mapper,
@@ -312,7 +312,7 @@ pub fn sys_mprotect(addr: u64, len: u64, prot: u64) -> u64 {
                                 Page::containing_address(VirtAddr::new(m_start)),
                                 Page::containing_address(VirtAddr::new(m_end)),
                             ) {
-                                if !mapper.translate_page(page).is_err() {
+                                if mapper.translate_page(page).is_ok() {
                                     update_permissions(
                                         page,
                                         &mut mapper,
@@ -339,7 +339,7 @@ pub fn sys_mprotect(addr: u64, len: u64, prot: u64) -> u64 {
 
 pub fn sys_munmap(addr: u64, len: u64) -> u64 {
     // Round the end address up to a page boundary.
-    let end_addr = ((addr + len + PAGE_SIZE as u64 - 1) / PAGE_SIZE as u64) * PAGE_SIZE as u64;
+    let end_addr = (addr + len).div_ceil(PAGE_SIZE as u64) * PAGE_SIZE as u64;
 
     let event: EventInfo = current_running_event_info();
     let pid = event.pid;

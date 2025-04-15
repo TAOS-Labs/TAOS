@@ -451,7 +451,6 @@ unsafe fn call_process(
 }
 
 #[naked]
-#[allow(undefined_naked_function_abi)]
 #[no_mangle]
 unsafe fn return_process() {
     naked_asm!(
