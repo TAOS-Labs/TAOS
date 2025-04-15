@@ -4,7 +4,7 @@ mod sync_tests;
 
 use alloc::sync::Arc;
 use core::{
-    cell::UnsafeCell, future::Future, ops::{Deref, DerefMut}, pin::Pin, sync::atomic::{AtomicBool, AtomicUsize, Ordering}, task::{Context, Poll}
+    future::Future, ops::{Deref, DerefMut}, pin::Pin, sync::atomic::{AtomicBool, AtomicUsize, Ordering}, task::{Context, Poll}
 };
 
 use futures::task::ArcWake;
@@ -148,13 +148,20 @@ impl<T> BoundedBuffer<T> {
 
 pub struct BlockMutex<T> {
     unlocked: Arc<AtomicBool>,
-    data: UnsafeCell<T>
+    data: T
 }
 
 unsafe impl<T> Send for BlockMutex<T> {}
 unsafe impl<T> Sync for BlockMutex<T> {}
 
 impl<T> BlockMutex<T> {
+    pub fn new(data: T) -> BlockMutex<T> {
+        BlockMutex { 
+            unlocked: Arc::new(AtomicBool::new(true)), 
+            data
+        }
+    }
+
     pub async fn lock(&mut self) -> BlockMutexGuard<T> {
         let event = current_running_event().expect("Using BlockMutex outside event");
         Condition::new(self.unlocked.clone(), event).await;
@@ -179,13 +186,13 @@ impl<'a, T> Deref for BlockMutexGuard<'_, T> {
     type Target = T;
 
     fn deref(&self) -> &Self::Target {
-        unsafe { self.mutex.data.as_ref_unchecked() }
+        &self.mutex.data
     }
 }
 
 impl<'a, T> DerefMut for BlockMutexGuard<'_, T> {
     fn deref_mut(&mut self) -> &mut Self::Target {
-        self.mutex.data.get_mut()
+        &mut self.mutex.data
     }
 }
 

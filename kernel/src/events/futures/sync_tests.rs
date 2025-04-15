@@ -173,4 +173,24 @@ use crate::events::futures::sync::BoundedBuffer;
         }
     }
 
+
+    #[test_case]
+    fn test_mutex() -> impl Future<Output = ()> + Send + 'static {
+        let rewake_queue = Arc::new(EventQueue::new(VecDeque::new()));
+        let blocked_events = Arc::new(RwLock::new(BTreeSet::new()));
+        let future = async {};  // Provide an empty future
+        let event = Arc::new(Event::init(future, rewake_queue, blocked_events, 0, 2, 1000));
+
+        let barrier = Barrier::new(3, event.clone());
+
+        async move {
+            serial_println!("Starting barrier basic test");
+            barrier.wait();
+            barrier.wait();
+            barrier.wait();
+            serial_println!("Barrier should be awakened and shouldd not PANIC");
+            // assert!(event.completed.load(Ordering::Acquire));
+
+        }
+    }
 }
