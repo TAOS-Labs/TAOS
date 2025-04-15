@@ -2,21 +2,22 @@
 //!
 //! Currently does not support fancy stuff like key repeats
 use crate::{
-    events::schedule_kernel,
+    //events::schedule_kernel,
     interrupts::{idt::without_interrupts, x2apic},
-    serial_println,
+    //serial_println,
 };
 use core::{
     pin::Pin,
     sync::atomic::{AtomicBool, AtomicU64, Ordering},
     task::{Context, Poll, Waker},
 };
-use futures_util::stream::{Stream, StreamExt}; // StreamExt trait for .next() method
+use futures_util::stream::{Stream, StreamExt};
 use pc_keyboard::{
     layouts, DecodedKey, Error, HandleControl, KeyCode, KeyState, Keyboard, Modifiers, ScancodeSet1,
 };
 use spin::Mutex;
-use x86_64::{instructions::port::Port, structures::idt::InterruptStackFrame};
+use x86_64::structures::idt::InterruptStackFrame;
+//use x86_64::instructions::port::Port;
 
 /// Maximum number of keyboard events to store in the buffer
 const KEYBOARD_BUFFER_SIZE: usize = 32;
@@ -188,7 +189,7 @@ pub fn try_read_key() -> Option<BufferKeyEvent> {
 pub extern "x86-interrupt" fn keyboard_handler(_frame: InterruptStackFrame) {
     KEYBOARD_INTERRUPT_COUNT.fetch_add(1, Ordering::SeqCst);
 
-    let mut port = Port::new(0x60);
+    /*let mut port = Port::new(0x60);
     let scancode: u8 = unsafe { port.read() };
 
     schedule_kernel(
@@ -199,7 +200,7 @@ pub extern "x86-interrupt" fn keyboard_handler(_frame: InterruptStackFrame) {
             }
         },
         0,
-    );
+    );*/
 
     x2apic::send_eoi();
 }
