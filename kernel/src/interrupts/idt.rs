@@ -19,27 +19,20 @@ use crate::{
     constants::{
         idt::{KEYBOARD_VECTOR, MOUSE_VECTOR, SYSCALL_HANDLER, TIMER_VECTOR, TLB_SHOOTDOWN_VECTOR},
         syscalls::{SYSCALL_EXIT, SYSCALL_MMAP, SYSCALL_NANOSLEEP, SYSCALL_PRINT},
-    },
-    devices::{keyboard::keyboard_handler, mouse::mouse_handler},
-    events::inc_runner_clock,
-    interrupts::x2apic::{self, current_core_id, TLB_SHOOTDOWN_ADDR},
-    memory::{
+    }, devices::{keyboard::keyboard_handler, mouse::mouse_handler}, events::inc_runner_clock, interrupts::x2apic::{self, current_core_id, TLB_SHOOTDOWN_ADDR}, memory::{
         mm::Mm,
         page_fault::{
             determine_fault_cause, handle_cow_fault, handle_existing_mapping, handle_new_mapping,
             handle_private_file_mapping, handle_shared_file_mapping, handle_shared_page_fault,
             FaultOutcome,
         },
-    },
-    prelude::*,
-    processes::{
+    }, prelude::*, processes::{
         process::{preempt_process, with_current_pcb},
         registers::NonFlagRegisters,
-    },
-    syscalls::{
+    }, serial, syscalls::{
         memorymap::sys_mmap,
         syscall_handlers::{block_on, sys_exit, sys_nanosleep_32, sys_print},
-    },
+    }
 };
 
 lazy_static! {
@@ -174,6 +167,7 @@ extern "x86-interrupt" fn page_fault_handler(
             let mut vma = vma_arc.lock();
 
             let fault = determine_fault_cause(error_code, &vma);
+
             match fault {
                 FaultOutcome::SharedAnonMapping {
                     page,
@@ -181,6 +175,7 @@ extern "x86-interrupt" fn page_fault_handler(
                     chain,
                     pt_flags,
                 } => {
+                    serial_println!("1");
                     handle_existing_mapping(page, &mut mapper, chain, pt_flags);
                 }
                 FaultOutcome::NewAnonMapping {
@@ -189,7 +184,8 @@ extern "x86-interrupt" fn page_fault_handler(
                     backing,
                     pt_flags,
                 } => {
-                    handle_new_mapping(page, &mut mapper, &backing, pt_flags);
+                    serial_println!("2");
+                    handle_new_mapping(page, &mut mapper, &backing, pt_flags, &vma);
                 }
                 FaultOutcome::SharedFileMapping {
                     page,
@@ -198,6 +194,7 @@ extern "x86-interrupt" fn page_fault_handler(
                     pt_flags,
                     fd,
                 } => {
+                    serial_println!("3");
                     block_on(async {
                         handle_shared_file_mapping(page, &mut mapper, offset, pt_flags, fd).await
                     });
@@ -209,6 +206,7 @@ extern "x86-interrupt" fn page_fault_handler(
                     pt_flags,
                     fd,
                 } => {
+                    serial_println!("4");
                     block_on(async {
                         handle_private_file_mapping(
                             page,
@@ -226,6 +224,7 @@ extern "x86-interrupt" fn page_fault_handler(
                     mut mapper,
                     pt_flags,
                 } => {
+                    serial_println!("5");
                     handle_cow_fault(page, &mut mapper, pt_flags);
                 }
                 FaultOutcome::UnmappedSharedPage {
@@ -233,6 +232,7 @@ extern "x86-interrupt" fn page_fault_handler(
                     mut mapper,
                     pt_flags,
                 } => {
+                    serial_println!("6");
                     handle_shared_page_fault(page, &mut mapper, pt_flags);
                 }
                 FaultOutcome::Mapped => {
@@ -241,6 +241,8 @@ extern "x86-interrupt" fn page_fault_handler(
             }
         });
     });
+
+    serial_println!("got out of page fault handler.");
 }
 
 // TODO: Refactor this to follow the way 64 bit works

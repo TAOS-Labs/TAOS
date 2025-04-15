@@ -21,7 +21,7 @@ use crate::{
         paging::{create_mapping, create_mapping_to_frame, update_mapping, update_permissions},
         HHDM_OFFSET, KERNEL_MAPPER,
     },
-    processes::process::with_current_pcb,
+    processes::process::with_current_pcb, serial_println,
 };
 
 use super::mm::{VmArea, VmAreaBackings, VmaChain};
@@ -350,41 +350,33 @@ pub fn handle_new_mapping(
     mapper: &mut OffsetPageTable,
     backing: &Arc<VmAreaBackings>,
     pt_flags: PageTableFlags,
+    vma: &VmArea
 ) {
     let mut flags = pt_flags;
     flags.set(PageTableFlags::PRESENT, true);
     let frame = create_mapping(page, mapper, Some(flags));
-    with_current_pcb(|pcb| {
-        pcb.mm.with_vma_tree(|tree| {
-            // Find the VMA covering the faulting address.
-            let vma_arc =
-                Mm::find_vma(page.start_address().as_u64(), tree).expect("Vma not found?");
-            let vma = vma_arc.lock();
 
-            // Compute the fault's offset within the VMA.
-            let fault_offset = page.start_address().as_u64() - vma.start;
+    // Compute the fault's offset within the VMA.
+    let fault_offset = page.start_address().as_u64() - vma.start;
 
-            // Look up the segment covering this fault.
-            // We use a range query to find the segment with the greatest key <= fault_offset.
-            let segments = vma.segments.lock();
-            let seg_entry = segments
-                .range(..=fault_offset)
-                .next_back()
-                .expect("No segment found covering fault offset");
-            let seg_key = *seg_entry.0;
-            let segment = seg_entry.1;
-            if fault_offset >= segment.end {
-                panic!("Fault offset {} not covered by segment", fault_offset);
-            }
-            // Use the segment's backing.
-            let backing = Arc::clone(&segment.backing);
-            // Compute the mapping offset within the backing.
-            // (Assuming each segment's reverse mappings are keyed relative to its own start.)
-            let mapping_offset = fault_offset - seg_key + segment.start;
+    // Look up the segment covering this fault.
+    // We use a range query to find the segment with the greatest key <= fault_offset.
+    let segments = vma.segments.lock();
+    let seg_entry = segments
+        .range(..=fault_offset)
+        .next_back()
+        .expect("No segment found covering fault offset");
+    let seg_key = *seg_entry.0;
+    let segment = seg_entry.1;
 
-            backing.insert_mapping(Arc::new(VmaChain::new(mapping_offset, frame)));
-        });
-    });
+    if fault_offset >= segment.end {
+        panic!("Fault offset {} not covered by segment", fault_offset);
+    }
+    // Compute the mapping offset within the backing.
+    // (Assuming each segment's reverse mappings are keyed relative to its own start.)
+    let mapping_offset = fault_offset - seg_key + segment.start;
+
+    backing.insert_mapping(Arc::new(VmaChain::new(mapping_offset, frame)));
 }
 
 /// Handles a copy-on-write fault. Saves current data in a buffer
