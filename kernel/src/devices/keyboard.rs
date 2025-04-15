@@ -2,7 +2,6 @@
 //!
 //! Currently does not support fancy stuff like key repeats
 use crate::{
-    events::schedule_kernel,
     interrupts::{idt::without_interrupts, x2apic},
     serial_println,
 };
@@ -191,15 +190,10 @@ pub extern "x86-interrupt" fn keyboard_handler(_frame: InterruptStackFrame) {
     let mut port = Port::new(0x60);
     let scancode: u8 = unsafe { port.read() };
 
-    schedule_kernel(
-        async move {
-            let mut keyboard = KEYBOARD.lock();
-            if let Err(e) = keyboard.process_scancode(scancode) {
-                serial_println!("Error processing keyboard scancode: {:?}", e);
-            }
-        },
-        0,
-    );
+    let mut keyboard = KEYBOARD.lock();
+    if let Err(e) = keyboard.process_scancode(scancode) {
+        serial_println!("Error processing keyboard scancode: {:?}", e);
+    }
 
     x2apic::send_eoi();
 }
