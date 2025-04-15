@@ -229,6 +229,72 @@ impl Inode {
     pub fn size(&self) -> u64 {
         self.size_low as u64
     }
+
+    /// Getters to determine permissions for the specified user on this file
+    pub fn user_execute(&self) -> bool {
+        FileMode::from_bits_truncate(self.mode & 0x40) == FileMode::UEXEC
+    }
+    pub fn user_write(&self) -> bool {
+        FileMode::from_bits_truncate(self.mode & 0x80) == FileMode::UWRITE
+    }
+    pub fn user_read(&self) -> bool {
+        FileMode::from_bits_truncate(self.mode & 0x100) == FileMode::UREAD
+    }
+
+    /// Setters to alter permissions for the specified user on this file
+    pub fn set_user_exectute(&mut self, new_value: bool) {
+        self.mode = (self.mode & !0x40) | ((new_value as u16) << 6);
+    }
+    pub fn set_user_write(&mut self, new_value: bool) {
+        self.mode = (self.mode & !0x80) | ((new_value as u16) << 7);
+    }
+    pub fn set_user_read(&mut self, new_value: bool) {
+        self.mode =  (self.mode & !0x100) | ((new_value as u16) << 8);
+    }
+
+    /// Getters to determine permissions for the specified user group on this file
+    pub fn group_execute(&self) -> bool {
+        FileMode::from_bits_truncate(self.mode & 0x8) == FileMode::GEXEC
+    }
+    pub fn group_write(&self) -> bool {
+        FileMode::from_bits_truncate(self.mode & 0x10) == FileMode::GWRITE
+    }
+    pub fn group_read(&self) -> bool {
+        FileMode::from_bits_truncate(self.mode & 0x20) == FileMode::GREAD
+    }
+
+    /// Setters to alter permissions for the specified user group on this file
+    pub fn set_group_exectute(&mut self, new_value: bool) {
+        self.mode = (self.mode & !0x8) | ((new_value as u16) << 3);
+    }
+    pub fn set_group_write(&mut self, new_value: bool) {
+        self.mode = (self.mode & !0x10) | ((new_value as u16) << 4);
+    }
+    pub fn set_group_read(&mut self, new_value: bool) {
+        self.mode = (self.mode & !0x20) | ((new_value as u16) << 5);
+    }
+
+    /// Getters to determine permissions for the unspecified users on this file
+    pub fn other_exectute(&self) -> bool {
+        FileMode::from_bits_truncate(self.mode & 0x1) == FileMode::OEXEC
+    }
+    pub fn other_write(&self) -> bool {
+        FileMode::from_bits_truncate(self.mode & 0x2) == FileMode::OWRITE
+    }
+    pub fn other_read(&self) -> bool {
+        FileMode::from_bits_truncate(self.mode & 0x4) == FileMode::OREAD
+    }
+
+    /// Setters to alter permissions for unspecified users on this file
+    pub fn set_other_exectute(&mut self, new_value: bool) {
+        self.mode = (self.mode & !0x1) | new_value as u16;
+    }
+    pub fn set_other_write(&mut self, new_value: bool) {
+        self.mode = (self.mode & !0x2) | ((new_value as u16) << 1);
+    }
+    pub fn set_other_read(&mut self, new_value: bool) {
+        self.mode = (self.mode & !0x4) | ((new_value as u16) << 2);
+    }
 }
 
 /// Directory entry structure - variable length on disk
