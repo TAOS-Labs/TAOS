@@ -1,31 +1,95 @@
 name: Rust
 
 on:
-  push:
-    branches: [ "main" ]
-  pull_request:
-    branches: [ "main" ]
+    push:
+        branches: ["main"]
+    pull_request:
+        branches: ["main"]
+    workflow_dispatch:
+        inputs:
+            qemu_version:
+                description: "QEMU version to install"
+                required: false
+                default: "9.2.0"
+                type: string
 
 env:
-  CARGO_TERM_COLOR: always
+    CARGO_TERM_COLOR: always
+    QEMU_VERSION: ${{ github.event.inputs.qemu_version || '9.2.0' }}
 
 jobs:
-  build:
-    runs-on: ubuntu-latest
-    steps:
-    - uses: actions/checkout@v4
-    - name: Setup toolchain
-      uses: actions-rust-lang/setup-rust-toolchain@v1
-      with:
-        components: rustfmt, clippy
-        toolchain: nightly-x86_64-unknown-linux-gnu
-        rustflags: ""
-    - name: Add rust-src to toolchain
-      run:  rustup component add rust-src --toolchain nightly-x86_64-unknown-linux-gnu
-    - uses: Swatinem/rust-cache@v2
-      with:
-        workspaces: "kernel -> target"
-    - name: lint
-      run: make check
-    - name: Build (check for errors)
-      run: make build
+    lint:
+        runs-on: ubuntu-latest
+        steps:
+            - uses: actions/checkout@v4
+
+            - name: Setup toolchain
+              uses: actions-rust-lang/setup-rust-toolchain@v1
+              with:
+                  components: rustfmt, clippy
+                  toolchain: nightly-x86_64-unknown-linux-gnu
+                  rustflags: ""
+
+            - name: Add rust-src to toolchain
+              run: rustup component add rust-src --toolchain nightly-x86_64-unknown-linux-gnu
+
+            - name: Add x86_64 target
+              run: rustup target add x86_64-unknown-none
+
+            - uses: Swatinem/rust-cache@v2
+              with:
+                  workspaces: "kernel -> target"
+
+            - name: Run linting checks
+              run: make check
+
+    test:
+        runs-on: ubuntu-latest
+        steps:
+            - uses: actions/checkout@v4
+
+            - name: Install system dependencies
+              run: |
+                  sudo apt-get update
+                  sudo apt-get install -y xorriso e2fsprogs build-essential ninja-build pkg-config libglib2.0-dev libpixman-1-dev libslirp-dev
+
+            - name: Build and install QEMU
+              run: |
+                  echo "Building QEMU ${QEMU_VERSION}"
+                  sudo apt-get install -y python3 python3-pip git libcap-ng-dev libattr1-dev libzstd-dev
+                  # Install Python dependencies needed by QEMU
+                  sudo pip3 install tomli sphinx sphinx_rtd_theme
+
+                  wget https://download.qemu.org/qemu-${QEMU_VERSION}.tar.xz
+                  tar xvf qemu-${QEMU_VERSION}.tar.xz
+                  cd qemu-${QEMU_VERSION}
+                  ./configure --target-list=x86_64-softmmu --enable-slirp --enable-curses --enable-tools
+                  make -j$(nproc)
+                  sudo make install
+                  qemu-system-x86_64 --version
+
+            - name: Setup toolchain
+              uses: actions-rust-lang/setup-rust-toolchain@v1
+              with:
+                  components: rustfmt, clippy
+                  toolchain: nightly-x86_64-unknown-linux-gnu
+                  rustflags: ""
+
+            - name: Add rust-src to toolchain
+              run: rustup component add rust-src --toolchain nightly-x86_64-unknown-linux-gnu
+
+            - name: Add x86_64 target
+              run: rustup target add x86_64-unknown-none
+
+            - name: Install limage
+              run: cargo install --git https://github.com/TAOS-Labs/limage
+
+            - uses: Swatinem/rust-cache@v2
+              with:
+                  workspaces: "kernel -> target"
+
+            - name: Create blank drive
+              run: make blank_drive
+
+            - name: Run tests
+              run: make test
