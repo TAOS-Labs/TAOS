@@ -37,6 +37,7 @@ pub(crate) struct MMioConstPtr<T>(pub *const T);
 unsafe impl<T> Send for MMioConstPtr<T> {}
 
 impl<T> MMioConstPtr<T> {
+    #[allow(dead_code)]
     pub unsafe fn read(&self) -> T {
         core::ptr::read_volatile(self.0)
     }

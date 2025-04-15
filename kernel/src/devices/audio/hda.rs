@@ -1,8 +1,5 @@
 use crate::{
-    devices::{
-        mmio::MMioConstPtr,
-        pci::{read_config, walk_pci_bus, DeviceInfo},
-    }, events::{futures::devices::HWRegisterWrite, nanosleep_current_event}, interrupts::x2apic, memory::HHDM_OFFSET, serial_print, serial_println
+    devices::pci::{read_config, walk_pci_bus, DeviceInfo}, events::{futures::devices::HWRegisterWrite, nanosleep_current_event}, interrupts::x2apic, memory::HHDM_OFFSET, serial_print, serial_println
 };
 
 use crate::devices::{
@@ -13,6 +10,9 @@ use core::{mem::offset_of, ptr::{read_volatile, write_volatile}};
 use alloc::vec;
 use alloc::vec::Vec;
 use x86_64::structures::idt::InterruptStackFrame;
+use crate::devices::audio::command_buffer::{CommandBuffer, WidgetAddr};
+use crate::devices::audio::dma::DmaBuffer;
+
 
 use super::widget_info::WidgetInfo;
 
@@ -61,6 +61,7 @@ pub struct IntelHDA {
     pub vendor_id: u16,
     pub device_id: u16,
     pub regs: &'static mut HdaRegisters,
+    pub cmd_buf: Option<CommandBuffer>,
 }
 
 impl IntelHDA {
@@ -87,60 +88,80 @@ impl IntelHDA {
             regs,
             vendor_id: device.vendor_id,
             device_id: device.device_id,
+            cmd_buf: None,
         };
-
+    
+        // Allocate DMA buffers
+        serial_println!("Allocating CORB and RIRB buffers...");
+        let corb_buf = DmaBuffer::new(4096).expect("Failed to alloc CORB");
+        let rirb_buf = DmaBuffer::new(4096).expect("Failed to alloc RIRB");
+    
+        // Initialize CommandBuffer
+        serial_println!("Creating CommandBuffer...");
+        let mut cmd_buf = unsafe {
+            CommandBuffer::new(virt.as_u64() as usize, &corb_buf, &rirb_buf).await
+        };
+        unsafe {
+            cmd_buf.init(false).await; // Set true to use immediate commands
+        }
+        hda.cmd_buf = Some(cmd_buf);
+    
         serial_println!("BASE: 0x{:08X}", hda.base);
-
         hda.regs.gctl |= 1 << 8;
+    
         hda.reset().await;
+
+        let intctl = (hda.base + 0x20) as *mut u32;
+        unsafe {write_volatile(intctl, 0xFFFFFFFF)};
+        serial_println!("INTCTL: 0x{:08X}", unsafe {read_volatile(intctl)});
+
     
-        // Verb: 0xF81 = Set Power State + Init
-        hda.send_command(0, 0, 0xF81, 0x00);
-        let resp = hda.get_response().await;
+        // Send initial power-up verb to codec node 0
+        let resp = unsafe {
+            hda.cmd_buf.as_mut().unwrap().cmd12(WidgetAddr(0, 0), 0xF81, 0).await
+        };
         serial_println!("SigmaTel codec kickstart response: 0x{:X}", resp);
-
-        hda.send_command(0, 1, 0xF81, 0x00); // try node 1 (AFG)
-
     
-        // Set power state to D0 (0x00)
+        // Try node 1
+        unsafe { hda.cmd_buf.as_mut().unwrap().cmd12(WidgetAddr(0, 1), 0xF81, 0).await};
+    
+        // Set power state to D0 on node 0 and 3
         serial_println!("Setting power state to D0 on node 0 and 3");
-        hda.send_command(0, 0, 0x705, 0x00); // Set Power State for node 0
-        hda.get_response().await;
-        hda.send_command(0, 3, 0x705, 0x00); // Set Power State for node 3
-        hda.get_response().await;
-
-        nanosleep_current_event(DELAY_NS * 2000).unwrap().await;
-
+        unsafe { hda.cmd_buf.as_mut().unwrap().cmd12(WidgetAddr(0, 0), 0x705, 0).await};
+        unsafe {hda.cmd_buf.as_mut().unwrap().cmd12(WidgetAddr(0, 3), 0x705, 0).await};
     
-        // Enable unsolicited responses early (some codecs require this before widget probing?)
+        nanosleep_current_event(DELAY_NS * 2000).unwrap().await;
+    
+        // Unsolicited response enable
         hda.regs.gctl |= 1 << 8;
     
-        // Run full codec and widget discovery (may be empty if widget types still return 0)
         let widget_list = hda.probe_afg_and_widgets().await;
         serial_println!("Total widgets discovered: {}", widget_list.len());
-
-        // let widget_list = Self::force_known_widgets().await;
-        // serial_println!("(Forced) Using {} known widgets", widget_list.len());
     
-        hda.send_command(0, 0, 0xF00, 0);
-        let func_group_type = hda.get_response().await;
+        let func_group_type = unsafe {
+            hda.cmd_buf.as_mut().unwrap().cmd12(WidgetAddr(0, 0), 0xF00, 0).await
+        };
         serial_println!("Codec node 0 function group type: 0x{:X}", func_group_type);
     
         serial_println!("Probing all possible widget nodes manually...");
         for node in 1..=15 {
-            hda.send_command(0, node, 0xF00, 0);
-            let widget_type = hda.get_response().await;
-            serial_println!("Node {} widget type: 0x{:X} ({})", node, widget_type, IntelHDA::decode_widget_type(widget_type));
-
+            let widget_type = unsafe {
+                hda.cmd_buf.as_mut().unwrap().cmd12(WidgetAddr(0, node), 0xF00, 0).await
+            };
+            serial_println!(
+                "Node {} widget type: 0x{:X} ({})",
+                node,
+                widget_type,
+                IntelHDA::decode_widget_type(widget_type as u32)
+            );
+            
         }
     
         hda.enable_pin(3).await;
     
-        //Set pin 3's connection to DAC node 2 //doing this manually cause all the widgets arer 0
-        hda.send_command(0, 3, 0x701, 0x0); // Select connection index 0 (which points to DAC node 2)
+        unsafe { hda.cmd_buf.as_mut().unwrap().cmd12(WidgetAddr(0, 3), 0x701, 0x00).await};
         serial_println!("Pin widget connection select set to DAC node 2");
-
-        // Trace the full path from pin 3 to DAC (for verification/debug)
+    
         serial_println!("___________TRACE_____________");
         if let Some(path) = hda.trace_path_to_dac(3).await {
             serial_println!("Traced path from pin node 3 to DAC: {:?}", path);
@@ -148,19 +169,19 @@ impl IntelHDA {
             serial_println!("Failed to trace path from pin to DAC.");
         }
     
-        // Unmute and enable output on pin 3
-        hda.send_command(0, 3, 0xF07, 0); // Get pin control
-        let mut pin_ctrl = hda.get_response().await;
+        let mut pin_ctrl =  unsafe {
+            hda.cmd_buf.as_mut().unwrap().cmd12(WidgetAddr(0, 3), 0xF07, 0).await
+        };
         serial_println!("Raw pin control (before): 0x{:X}", pin_ctrl);
     
-        pin_ctrl |= 0xC0; // Bits 6+7: Output enable + headphone
-        pin_ctrl |= 0x20; // Bit 5: Unmute
-        hda.send_command(0, 3, 0x707, (pin_ctrl & 0xFF) as u8); // Set updated pin control
+        pin_ctrl |= 0xC0 | 0x20;
+        unsafe { hda.cmd_buf.as_mut().unwrap().cmd12(WidgetAddr(0, 3), 0x707, (pin_ctrl & 0xFF) as u8).await};
         serial_println!("Pin control (after enable+unmute): 0x{:X}", pin_ctrl);
-
-        hda.send_command(0, 3, 0x1C, 0); // Get default config
-        let config_default = hda.get_response().await;
-        let def_device = (config_default >> 20) & 0xF;
+    
+        let config_default = unsafe {
+            hda.cmd_buf.as_mut().unwrap().cmd12(WidgetAddr(0, 3), 0x1C, 0)
+        };
+        let def_device = (config_default.await >> 20) & 0xF;
         let def_device_name = match def_device {
             0x0 => "Line Out",
             0x1 => "Speaker",
@@ -168,85 +189,78 @@ impl IntelHDA {
             _ => "Other",
         };
         serial_println!("Pin node 3 default device: {} (0x{:X})", def_device_name, def_device);
-
     
-        nanosleep_current_event(DELAY_NS).unwrap().await; // Short wait (0.1 ms) after change
+        nanosleep_current_event(DELAY_NS).unwrap().await;
     
-        // Get Node ID range
-        hda.send_command(0, 0, 0xF02, 0); // 0xF02 = Subnode count & starting ID
-        let val = hda.get_response().await;
+        let val = unsafe {
+            hda.cmd_buf.as_mut().unwrap().cmd12(WidgetAddr(0, 0), 0xF02, 0).await
+        };
         let start_id = (val >> 0) & 0xFF;
         let total_nodes = (val >> 16) & 0xFF;
-        serial_println!(
-            "Codec node 0 has {} subnodes starting at {}",
-            total_nodes,
-            start_id
-        );
+        serial_println!("Codec node 0 has {} subnodes starting at {}", total_nodes, start_id);
     
         for node in start_id..(start_id + total_nodes) {
-            hda.send_command(0, node as u8, 0xF00, 0); // Widget Type
-            let response = hda.get_response().await;
-            serial_println!("Node {} widget type: 0x{:X}", node, response);
+            let response = unsafe {
+                hda.cmd_buf.as_mut().unwrap().cmd12(WidgetAddr(0, node as u8), 0xF00, 0)
+            };
+            serial_println!("Node {} widget type: 0x{:X}", node, response.await);
         }
     
-        hda.send_command(0, 3, 0xF02, 0); // Get connection list length
-        let conn_len = hda.get_response().await;
+        let conn_len = unsafe {
+            hda.cmd_buf.as_mut().unwrap().cmd12(WidgetAddr(0, 3), 0xF02, 0).await
+        };
         serial_println!("Node 3 connection list length: 0x{:X}", conn_len);
         for i in 0..(conn_len & 0x7F) {
-            hda.send_command(0, 3, 0xF02 | ((i as u16) << 8), 0); // Get connection entry i
-            let conn = hda.get_response().await;
-            serial_println!("Node 3 connection[{}]: 0x{:X}", i, conn);
+            let conn = unsafe {
+                hda.cmd_buf.as_mut().unwrap().cmd12(WidgetAddr(0, 3), 0xF02 | ((i as u32) << 8), 0)
+            };
+            serial_println!("Node 3 connection[{}]: 0x{:X}", i, conn.await);
         }
     
-        //trying with node 2 now
         serial_println!("Setting power state to D0 on DAC node 2");
-        hda.send_command(0, 2, 0x705, 0x00); // Power state D0
-        let resp = hda.get_response().await;
-        serial_println!("Power state response (node 2): 0x{:X}", resp);
-
-        hda.send_command(0, 2, 0xF05, 0); // Get power state
-        let state = hda.get_response().await;
+        unsafe { hda.cmd_buf.as_mut().unwrap().cmd12(WidgetAddr(0, 2), 0x705, 0).await};
+    
+        let state = unsafe {
+            hda.cmd_buf.as_mut().unwrap().cmd12(WidgetAddr(0, 2), 0xF05, 0).await
+        };
         serial_println!("DAC node 2 current power state: 0x{:X}", state);
-
     
-        hda.set_stream_channel(2, 0x00);    //Was 0x10
-
+        hda.set_stream_channel(2, 0x00).await;
     
-        /*
-        Sends extended verb 0x03 to node 2 with gain/mute configuration
-        0xB035 = 1011_0000_0011_0101
-        */
-        hda.set_amplifier_gain(2, 0xB035);
+        hda.set_amplifier_gain(2, 0xB035).await;
+        hda.set_converter_format(2, 0x4011).await;
     
-        // Sends extended verb 0x02 to node 2 with stream format
-        hda.set_converter_format(2, 0x4011);
-    
-        hda.regs.intctl = 1; // Enable global interrupts
-        hda.regs.stream_regs[4].ctl0 |= 1 << 2; // Enable stream interrupt
-        hda.regs.gctl |= 1 << 8; // Enable unsolicited responses
+        hda.regs.intctl = 1;
+        hda.regs.stream_regs[4].ctl0 |= 1 << 2;
+        hda.regs.gctl |= 1 << 8;
     
         serial_println!("HDA setup complete");
     
-        hda.send_command(0, 3, 0xF07, 0);
-        let mut pin_ctrl = hda.get_response().await;
-        pin_ctrl |= 0x40; // EAPD
-        hda.send_command(0, 3, 0x707, (pin_ctrl & 0xFF) as u8);
+        let mut pin_ctrl = unsafe {
+            hda.cmd_buf.as_mut().unwrap().cmd12(WidgetAddr(0, 3), 0xF07, 0).await
+        };
+        pin_ctrl |= 0x40;
+        let _ = unsafe {
+            hda.cmd_buf.as_mut().unwrap().cmd12(WidgetAddr(0, 3), 0x707, (pin_ctrl & 0xFF) as u8)
+        };
     
         nanosleep_current_event(DELAY_NS).unwrap().await;
     
         serial_println!("--- EAPD re-enable ---");
         serial_println!("Initial pin control read (node 3): 0x{:02X}", pin_ctrl);
     
-        hda.send_command(0, 3, 0xF07, 0);
-        let confirm_ctrl = hda.get_response().await;
+        let confirm_ctrl = unsafe {
+            hda.cmd_buf.as_mut().unwrap().cmd12(WidgetAddr(0, 3), 0xF07, 0)
+        };
         serial_println!(
             "After setting EAPD, pin control (node 3): 0x{:02X}",
-            confirm_ctrl
+            confirm_ctrl.await
         );
     
         hda.test_dma_transfer().await;
         Some(hda)
     }
+    
 
     fn decode_widget_type(val: u32) -> &'static str {
         match val & 0xF {
@@ -282,16 +296,17 @@ impl IntelHDA {
     pub async fn probe_afg_and_widgets(&mut self) -> Vec<WidgetInfo> {
         let mut widgets = Vec::new();
     
-        // Attempt to find AFG properly
-        self.send_command(0, 0, 0xF00, 4); // Get function group count
-        let fg_count_raw = self.get_response().await;
+        let fg_count_raw = unsafe {
+            self.cmd_buf.as_mut().unwrap().cmd12(WidgetAddr(0, 0), 0xF00, 4).await
+        };
         let fg_count = fg_count_raw & 0xFF;
         serial_println!("Function group count: {}", fg_count);
     
         let mut afg_nid = None;
         for i in 1..=fg_count {
-            self.send_command(0, i as u8, 0xF00, 5); // Check function group type
-            let group_type = self.get_response().await;
+            let group_type = unsafe {
+                self.cmd_buf.as_mut().unwrap().cmd12(WidgetAddr(0, i as u8), 0xF00, 5).await
+            };
             serial_println!("Func group node {} type: 0x{:X}", i, group_type);
     
             if (group_type & 0xF) == 0x01 {
@@ -309,9 +324,9 @@ impl IntelHDA {
         };
         serial_println!("AFG found at node {}", afg_node);
     
-        //Try to get subnode range (but may fail!)
-        self.send_command(0, afg_node, 0xF02, 0);
-        let val = self.get_response().await;
+        let val = unsafe {
+            self.cmd_buf.as_mut().unwrap().cmd12(WidgetAddr(0, afg_node), 0xF02, 0).await
+        };
         let start_id = (val >> 0) & 0xFF;
         let total_nodes = (val >> 16) & 0xFF;
     
@@ -326,40 +341,64 @@ impl IntelHDA {
             );
         }
     
-        //Brute-force check widget types for 1..=63 (safe upper bound)
         for node in 1..=63 {
-            self.send_command(0, node as u8, 0xF00, 0); // Widget type
-            let wtype = self.get_response().await;
+            let wtype = unsafe {
+                self.cmd_buf.as_mut().unwrap().cmd12(WidgetAddr(0, node), 0xF00, 0).await
+            };
     
             if wtype == 0 {
-                continue; // No widget here
+                continue;
             }
     
-            let mut w = WidgetInfo::new(node as u8);
-            w.widget_type = wtype;
+            let mut w = WidgetInfo::new(node);
+            w.widget_type = wtype.try_into().unwrap();
+
     
-            self.send_command(0, node as u8, 0x0C, 0); // Pin capabilities
-            w.pin_caps = self.get_response().await;
-    
-            self.send_command(0, node as u8, 0x0D, 0); // Input Amp
-            w.amp_in_caps = self.get_response().await;
-    
-            self.send_command(0, node as u8, 0x12, 0); // Output Amp
-            w.amp_out_caps = self.get_response().await;
-    
-            self.send_command(0, node as u8, 0x13, 0); // Volume knob
-            w.volume_knob = self.get_response().await;
-    
-            self.send_command(0, node as u8, 0x1C, 0); // Default config
-            w.config_default = self.get_response().await;
-    
-            self.send_command(0, node as u8, 0x0E, 0); // Conn list len
-            let conn_len = self.get_response().await & 0x7F;
+            use core::convert::TryInto; 
+
+            w.pin_caps = unsafe {
+                self.cmd_buf.as_mut().unwrap().cmd12(WidgetAddr(0, node), 0x0C, 0).await
+                    .try_into().unwrap()
+            };
+
+            w.amp_in_caps = unsafe {
+                self.cmd_buf.as_mut().unwrap().cmd12(WidgetAddr(0, node), 0x0D, 0).await
+                    .try_into().unwrap()
+            };
+
+            w.amp_out_caps = unsafe {
+                self.cmd_buf.as_mut().unwrap().cmd12(WidgetAddr(0, node), 0x12, 0).await
+                    .try_into().unwrap()
+            };
+
+            w.volume_knob = unsafe {
+                self.cmd_buf.as_mut().unwrap().cmd12(WidgetAddr(0, node), 0x13, 0).await
+                    .try_into().unwrap()
+            };
+
+            w.config_default = unsafe {
+                self.cmd_buf.as_mut().unwrap().cmd12(WidgetAddr(0, node), 0x1C, 0).await
+                    .try_into().unwrap()
+            };
+
+            let conn_len: u32 = unsafe {
+                self.cmd_buf
+                    .as_mut()
+                    .unwrap()
+                    .cmd12(WidgetAddr(0, node), 0x0E, 0)
+                    .await
+                    .try_into()
+                    .unwrap()
+            };
+            let conn_len = conn_len & 0x7F;
+            
+
     
             for i in 0..conn_len {
-                self.send_command(0, node as u8, 0xF02 | ((i as u16) << 8), 0);
-                let conn = self.get_response().await;
-                w.conn_list.push(conn as u8);
+                let conn = unsafe {
+                    self.cmd_buf.as_mut().unwrap().cmd12(WidgetAddr(0, node), 0xF02 | ((i as u32) << 8), 0)
+                };
+                w.conn_list.push(conn.await as u8);
             }
     
             serial_println!(
@@ -371,34 +410,36 @@ impl IntelHDA {
     
             widgets.push(w);
         }
+    
         let nonzero_widgets: Vec<_> = widgets.iter().filter(|w| w.widget_type != 0).collect();
         if nonzero_widgets.is_empty() {
             serial_println!("All widgets returned 0 — codec likely not present or not initialized correctly.");
         }
-
     
         widgets
     }
 
     pub async fn trace_path_to_dac(&mut self, start: u8) -> Option<Vec<u8>> {
-        use alloc::vec::Vec;
-        let mut stack: Vec<(u8, Vec<u8>)> = Vec::new();
-        stack.push((start, vec![start]));
+        let mut stack: Vec<(u8, Vec<u8>)> = vec![(start, vec![start])];
     
         while let Some((node, path)) = stack.pop() {
-            self.send_command(0, node, 0xF00, 0);
-            let widget_type = self.get_response().await;
+            let widget_type = unsafe {
+                self.cmd_buf.as_mut().unwrap().cmd12(WidgetAddr(0, node), 0xF00, 0)
+            };
     
-            if widget_type & 0xF == 0x0 {
+            if widget_type.await & 0xF == 0x0 {
                 return Some(path); // Found DAC
             }
     
-            self.send_command(0, node, 0xF02, 0); // Conn list len
-            let conn_len = self.get_response().await & 0x7F;
+            let conn_len = unsafe {
+                self.cmd_buf.as_mut().unwrap().cmd12(WidgetAddr(0, node), 0xF02, 0).await & 0x7F
+            };
     
             for i in 0..conn_len {
-                self.send_command(0, node, 0xF02 | ((i as u16) << 8), 0);
-                let conn_node = self.get_response().await as u8;
+                let conn_node = unsafe {
+                    self.cmd_buf.as_mut().unwrap().cmd12(WidgetAddr(0, node), 0xF02 | ((i as u32) << 8), 0).await
+                } as u8;
+    
                 let mut new_path = path.clone();
                 new_path.push(conn_node);
                 stack.push((conn_node, new_path));
@@ -407,6 +448,7 @@ impl IntelHDA {
     
         None
     }
+    
     
     
         
@@ -448,112 +490,49 @@ impl IntelHDA {
         }
     }
 
-    /// Sends a basic verb command using ICOI (Immediate Command Output Interface) /ICIS (Immediate Command Status)
-    /// Bits 31–28: Codec Address (4 bits)
-    /// Bits 27–20: Node ID (8 bits)
-    /// Bits 19–8 : Verb ID (12 bits)
-    /// Bits 7–0  : Payload/Data (8 bits)
-    pub fn send_command(&mut self, codec: u8, node: u8, command: u16, data: u8) -> bool {
-        let final_command = ((codec as u32 & 0xF) << 28)
-            | ((node as u32 & 0xFF) << 20)
-            | ((command as u32 & 0xFFF) << 8)
-            | (data as u32 & 0xFF);
-
-        let base = (*HHDM_OFFSET + self.base as u64).as_u64();
-        let icis = (base + offset_of!(HdaRegisters, icis) as u64) as *mut u32;  // TODO double check this calc?
-        let icoi = (base + offset_of!(HdaRegisters, icoi) as u64) as *mut u32;
-
-        // serial_println!("Base: 0x{:08X} Offset 0x{:08X}", self.base, offset_of!(HdaRegisters, icis));
-
-        // serial_println!("--- send_command ---");
-        // serial_println!("Command: 0x{:08X}", final_command);
-        // serial_println!("ICIS before: 0x{:08X}", unsafe { read_volatile(icis) });
-
-        unsafe {
-            write_volatile(icis, read_volatile(icis) & !0x1); // Clear ICB
-            write_volatile(icis, read_volatile(icis) & !0x2); // Clear IRV
-            write_volatile(icoi, final_command); // Write command
-            // serial_println!("ICOI written");
-            write_volatile(icis, read_volatile(icis) | 0x1); // Set ICB
-            // serial_println!("ICIS after setting ICB: 0x{:08X}", read_volatile(icis));
-        }
-
-        true
-    }
-
-    /// Sends an extended verb command to the codec.
-    /// Final 32-bit command format:
-    /// Bits 31–28: Codec adddress (usually 0)
-    /// Bits 27–20: Node ID (the target widget like DAC, pin, etc.)
-    /// Bits 19–16: Verbb command (e.g. 0x02, 0x03)
-    /// Bits 15–0 : Data (frmat info or gain settings)
-    pub fn send_command_extended(&mut self, codec: u8, node: u8, command: u8, data: u16) -> bool {
-        let final_command = ((codec as u32 & 0xF) << 28)
-            | ((node as u32 & 0xFF) << 20)
-            | ((command as u32 & 0xF) << 16)
-            | (data as u32 & 0xFFFF);
-
-        unsafe {
-            let icis_ptr = (self.regs as *const _ as *const u8).add(offset_of!(HdaRegisters, icis)) as *mut u32;
-            let icoi_ptr = (self.regs as *const _ as *const u8).add(offset_of!(HdaRegisters, icoi)) as *mut u32;
-
-            write_volatile(icis_ptr, read_volatile(icis_ptr) & !0x3);
-            write_volatile(icoi_ptr, final_command);
-            write_volatile(icis_ptr, read_volatile(icis_ptr) | 0x1);
-        }
-
-        true
-    }
-
-    /// Reads codec response from ICII
-    pub async fn get_response(&mut self) -> u32 {
-        let base = (*HHDM_OFFSET + self.base as u64).as_u64();
-
-        let icis = MMioPtr((base + offset_of!(HdaRegisters, icis) as u64) as *mut u32);
-        let icii = MMioConstPtr((base + offset_of!(HdaRegisters, icii) as u64) as *const u32);
-
-        // TODO timeout error type similar to SDCardError for HDA
-        // serial_println!("Waiting for ICIS IRV to be set");
-        HWRegisterWrite::new(icis.as_ptr(), 0x2, 2).await;
-        // serial_println!("ICIS IRV set!");
-
-
-        let val = unsafe { icii.read() };
-        // serial_println!("ICII (response): 0x{:08X}", val);
-
-        unsafe {
-            icis.write(icis.read() & !0x2);
-        }
-
-        val
-    }
-
     /// Enables pin widget output (sets EAPD bit in pin control)
     pub async fn enable_pin(&mut self, node: u8) {
-        self.send_command(0, node, 0xF07, 0);
-        let mut pin_cntl = self.get_response().await;
-        pin_cntl |= 0x40; // Set EAPD bit
-        self.send_command(0, node, 0x707, (pin_cntl & 0xFF) as u8);
+        let pin_cntl = unsafe {
+            self.cmd_buf.as_mut().unwrap().cmd12(WidgetAddr(0, node), 0xF07, 0).await
+        } | 0x40; // Set EAPD bit
+    
+        unsafe {
+            self.cmd_buf.as_mut().unwrap().cmd12(WidgetAddr(0, node), 0x707, (pin_cntl & 0xFF) as u8).await;
+        }
+    
         serial_println!("Pin widget control set for node {}", node);
     }
+    
 
     /// Sets stream/channel for node (verb 0x706)
-    pub fn set_stream_channel(&mut self, node: u8, channel: u8) {
-        self.send_command(0, node, 0x706, channel);
+    pub async fn set_stream_channel(&mut self, node: u8, channel: u8) {
+        unsafe {
+            self.cmd_buf.as_mut().unwrap().cmd12(WidgetAddr(0, node), 0x706, channel).await;
+        }
+    
         serial_println!("Stream channel set for node {}", node);
     }
+    
 
     /// Sets amplifier gain (extended verb 0x03)
-    pub fn set_amplifier_gain(&mut self, node: u8, value: u16) {
-        self.send_command_extended(0, node, 0x03, value);
+    pub async fn set_amplifier_gain(&mut self, node: u8, value: u16) {
+        unsafe {
+            self.cmd_buf.as_mut().unwrap().cmd4(WidgetAddr(0, node), 0x03, value).await;
+        }
+    
         serial_println!("Amplifier gain set for node {}", node);
     }
+    
 
     /// Sets converter format (extended verb 0x02)
-    pub fn set_converter_format(&mut self, node: u8, fmt: u16) {
-        self.send_command_extended(0, node, 0x02, fmt);
+    pub async fn set_converter_format(&mut self, node: u8, fmt: u16) {
+        unsafe {
+            self.cmd_buf.as_mut().unwrap().cmd4(WidgetAddr(0, node), 0x02, fmt).await;
+        }
+    
         serial_println!("Converter format set for node {}", node);
     }
+    
 
     /// Starts audio stream (sets RUN bit in SDxCTL)
     pub fn start_stream(&mut self, stream_idx: usize) {
@@ -638,16 +617,6 @@ impl IntelHDA {
         let bdlpl_ptr = unsafe { MMioPtr(stream_base.add(0x18) as *mut u32) }; 
         let bdlpu_ptr = unsafe { MMioPtr(stream_base.add(0x1C) as *mut u32) };
         let bdl_phys = bdl_buf.phys_addr.as_u64();
-
-        serial_println!("---------------------------------------------------------");
-        serial_println!("FMT pointer address: 0x{:X}", fmt_ptr.as_ptr() as usize);
-        let base = &self.regs.stream_regs[4] as *const _ as usize;
-        serial_println!("Stream 1 base address: 0x{:X}", base);
-        serial_println!("Expected FMT offset from base: 0x12");
-        serial_println!("→ Should be at: 0x{:X}", base + 0x12);
-        serial_println!("---------------------------------------------------------");
-
-
     
         // Reset stream
         unsafe {
@@ -786,7 +755,7 @@ impl IntelHDA {
     
 }
 
-/// Walk PCI bus to find device with Class 0x04, Subclass 0x03 (FOUND FROM OSDEV )
+/// Walk PCI bus to find device with Class 0x04, Subclass 0x03 (FOUND FROM OSDEV)
 fn find_hda_device() -> Option<DeviceInfo> {
     let devices = walk_pci_bus();
     for dev in devices {
