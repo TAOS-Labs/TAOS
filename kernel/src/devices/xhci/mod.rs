@@ -39,9 +39,9 @@ use super::{
 
 const MAX_USB_DEVICES: u8 = 8;
 
-/// See section 5.3 of the xHCI spec
 #[derive(Debug, Clone, Copy)]
 #[allow(dead_code)]
+/// See section 5.3 of the xHCI spec
 struct XHCICapabilities {
     /// Contains the offset to add to register base to find the beginning of the operational register space
     register_length: u8,
@@ -64,14 +64,19 @@ struct XHCICapabilities {
 }
 
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
+/// Contains info for the xHCI
 pub struct XHCIInfo {
-    base_address: u64,
+    /// The base address of the register space for the xHCI
+    base_address: VirtAddr,
+    /// The capabilities extracted from the capabilities register
     capablities: XHCICapabilities,
+    /// The base address of the operational registers
     operational_register_address: u64,
+    /// Stores the array of slot contexts
     base_address_array: VirtAddr,
-    command_ring_base: u64,
+    /// The command ring structure for the xHCI
     command_ring: Arc<Mutex<ProducerRingBuffer>>,
+    /// The primary event ring for the xHCI
     primary_event_ring: Arc<Mutex<ConsumerRingBuffer>>,
 }
 
@@ -97,6 +102,7 @@ pub struct USBDeviceDescriptor {
 
 #[derive(Debug, Clone, Copy)]
 #[repr(C)]
+/// A descriptor for a device configuration
 pub struct USBDeviceConfigurationDescriptor {
     b_length: u8,
     b_descriptor_type: u8,
@@ -110,6 +116,7 @@ pub struct USBDeviceConfigurationDescriptor {
 
 #[derive(Debug, Clone, Copy)]
 #[repr(C)]
+/// A descriptor for a device interface
 pub struct USBDeviceInterfaceDescriptor {
     b_length: u8,
     b_descriptor_type: u8,
@@ -124,6 +131,7 @@ pub struct USBDeviceInterfaceDescriptor {
 
 #[derive(Debug, Clone, Copy)]
 #[repr(C)]
+/// A descriptor for a device endpoint
 pub struct USBDeviceEndpointDescriptor {
     b_length: u8,
     b_descriptor_type: u8,
@@ -133,6 +141,7 @@ pub struct USBDeviceEndpointDescriptor {
     b_interval: u8,
 }
 
+/// Determine type and direction of control transfers (see section 4.11.2.2)
 #[allow(dead_code)]
 enum TransferType {
     NoDataStage = 0,
@@ -141,6 +150,7 @@ enum TransferType {
     InDataStage = 3,
 }
 
+/// A structure for USB Devices
 pub struct USBDeviceInfo {
     descriptor: USBDeviceDescriptor,
     command_ring: ProducerRingBuffer,
@@ -199,7 +209,7 @@ impl USBDeviceInfo {
                 .enqueue(status_trb)
                 .map_err(|_| XHCIError::TransferRingError)?;
         }
-        let doorbell_base: *mut u32 = (info.base_address
+        let doorbell_base: *mut u32 = (info.base_address.as_u64()
             + info.capablities.doorbell_offset as u64
             + (self.slot as u64) * 4) as *mut u32;
         unsafe { core::ptr::write_volatile(doorbell_base, 1) };
@@ -236,7 +246,7 @@ impl USBDeviceInfo {
                 .enqueue(status_trb)
                 .map_err(|_| XHCIError::TransferRingError)?;
         }
-        let doorbell_base: *mut u32 = (info.base_address
+        let doorbell_base: *mut u32 = (info.base_address.as_u64()
             + info.capablities.doorbell_offset as u64
             + (self.slot as u64) * 4) as *mut u32;
         unsafe { core::ptr::write_volatile(doorbell_base, 1) };
@@ -248,6 +258,7 @@ impl USBDeviceInfo {
 }
 
 #[derive(Debug)]
+/// Different types of errors that can occur in the xHCI
 pub enum XHCIError {
     MemoryAllocationFailure,
     NoFrameAllocator,
@@ -316,12 +327,13 @@ bitflags! {
 }
 
 #[allow(dead_code)]
+/// The link state of the port
+/// see Table 5.27 Port Status and Control Register Bit Definition
 enum PortLinkStateRead {
     U0 = 0,
     U1 = 1,
     U2 = 2,
-    /// U3 =  Device Suspended
-    U3 = 3,
+    DeviceSuspended = 3,
     Disabled = 4,
     RxDetect = 5,
     Inactive = 6,
@@ -521,10 +533,9 @@ fn reset_xchi_controller(operational_registers: u64) {
 fn initalize_xhci_info(full_bar: u64, mapper: &mut OffsetPageTable) -> Result<XHCIInfo, XHCIError> {
     let base_virtual_address =
         mmio::map_page_as_uncacheable(PhysAddr::new(full_bar), mapper).unwrap();
-    let address = base_virtual_address.as_u64();
-    let capablities = get_host_controller_cap_regs(address);
+    let capablities = get_host_controller_cap_regs(base_virtual_address.as_u64());
     let extended_reg_length: u64 = capablities.register_length.into();
-    let operational_start = address + extended_reg_length;
+    let operational_start = base_virtual_address.as_u64() + extended_reg_length;
     reset_xchi_controller(operational_start);
 
     // Program max device device slots
@@ -585,14 +596,13 @@ fn initalize_xhci_info(full_bar: u64, mapper: &mut OffsetPageTable) -> Result<XH
     .map_err(|_| XHCIError::MemoryAllocationFailure)?;
 
     let primary_event_ring =
-        create_device_event_ring_no_info(VirtAddr::new(address), capablities, mapper, 0).unwrap();
+        create_device_event_ring_no_info(base_virtual_address, capablities, mapper, 0).unwrap();
 
     Result::Ok(XHCIInfo {
-        base_address: address,
+        base_address: base_virtual_address,
         capablities,
         operational_register_address: operational_start,
         base_address_array: virtual_adddr,
-        command_ring_base: cmd_frame.start_address().as_u64(),
         command_ring: Arc::new(Mutex::new(command_ring)),
         primary_event_ring: Arc::new(Mutex::new(primary_event_ring)),
     })
@@ -694,7 +704,7 @@ fn boot_up_usb_port(
     };
 
     let doorbell_base: *mut u32 =
-        (info.base_address + info.capablities.doorbell_offset as u64) as *mut u32;
+        (info.base_address.as_u64() + info.capablities.doorbell_offset as u64) as *mut u32;
     unsafe { core::ptr::write_volatile(doorbell_base, 0) };
     drop(command_ring);
     drop(primary_event_ring);
@@ -794,7 +804,7 @@ fn address_device(
             .map_err(|_| XHCIError::CommandRingError)?
     };
     let doorbell_base: *mut u32 =
-        (info.base_address + info.capablities.doorbell_offset as u64) as *mut u32;
+        (info.base_address.as_u64() + info.capablities.doorbell_offset as u64) as *mut u32;
     unsafe { core::ptr::write_volatile(doorbell_base, 0) };
     drop(command_ring);
     wait_for_events_including_command_completion(info, mapper)?;
@@ -809,7 +819,7 @@ fn create_device_event_ring(
     mapper: &mut OffsetPageTable,
 ) -> Result<ConsumerRingBuffer, XHCIError> {
     create_device_event_ring_no_info(
-        VirtAddr::new(info.base_address),
+        VirtAddr::new(info.base_address.as_u64()),
         info.capablities,
         mapper,
         interrupter,
@@ -905,7 +915,7 @@ fn wait_for_events(
         + 0x38
         + (32 * interrupter as u64);
     unsafe {
-        update_deque_ptr(erdp_addr as *mut u64, event_ring, mapper);
+        update_deque_ptr(erdp_addr.as_mut_ptr(), event_ring, mapper);
     }
     Result::Ok(event)
 }
@@ -945,12 +955,12 @@ fn wait_for_events_including_command_completion(
     let event_ring_lock = info.primary_event_ring.clone();
     let event_ring = event_ring_lock.lock();
     unsafe {
-        update_deque_ptr(erdp_addr as *mut u64, &event_ring, mapper);
+        update_deque_ptr(erdp_addr.as_mut_ptr(), &event_ring, mapper);
     }
     Result::Ok(event)
 }
 
-/// Updates the deque pointer in deque pointer register to match the event ring
+/// Updates the dequeue pointer in dequeue pointer register to match the event ring
 ///
 /// # Safety
 ///
@@ -974,10 +984,10 @@ pub unsafe fn update_deque_ptr(
             unsafe { core::ptr::write_volatile(deque_pointer_register, deque_physical.as_u64()) };
         }
         TranslateResult::InvalidFrameAddress(_) => {
-            panic!("deque pointer should always point to valid memory")
+            panic!("dequeue pointer should always point to valid memory")
         }
         TranslateResult::NotMapped => {
-            panic!("deque pointer should always point to valid memory")
+            panic!("dequeue pointer should always point to valid memory")
         }
     }
 }

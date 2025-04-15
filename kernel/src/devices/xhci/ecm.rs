@@ -22,8 +22,8 @@ use super::{
     context::{EndpointContext, InputControlContext},
     ring_buffer::{ProducerRingBuffer, RingType, TransferRequestBlock, TrbTypes},
     update_deque_ptr, wait_for_events_including_command_completion,
-    USBDeviceConfigurationDescriptor, USBDeviceDescriptor, USBDeviceEndpointDescriptor,
-    USBDeviceInfo, USBDeviceInterfaceDescriptor, XHCI,
+    USBDeviceConfigurationDescriptor, USBDeviceEndpointDescriptor, USBDeviceInfo,
+    USBDeviceInterfaceDescriptor, XHCI,
 };
 use alloc::{slice, str, vec::Vec};
 use x86_64::{
@@ -46,6 +46,7 @@ bitflags! {
 
 #[repr(u8)]
 #[allow(dead_code)]
+/// Different type of USB descriptors
 enum USBDescriptorTypes {
     Device = 0x1,
     Configuration = 0x2,
@@ -61,6 +62,7 @@ enum USBDescriptorTypes {
 
 #[repr(u8)]
 #[allow(dead_code)]
+/// See Communications Class Subclass Codes (CDC1.2 Section 4.3)
 enum CDCSubTypes {
     Header = 0x00,
     Union = 0x06,
@@ -70,7 +72,7 @@ enum CDCSubTypes {
 
 #[derive(Debug, Clone, Copy)]
 #[repr(C)]
-#[allow(dead_code)]
+/// A descriptor for a device fonction
 struct DeviceFunctionalDescriptor {
     b_length: u8,
     b_descriptor_type: u8,
@@ -79,28 +81,7 @@ struct DeviceFunctionalDescriptor {
 
 #[derive(Debug, Clone, Copy)]
 #[repr(C)]
-#[allow(dead_code)]
-struct HeaderFunctionalDescriptor {
-    b_length: u8,
-    b_descriptor_type: u8,
-    b_descriptor_subtype: u8,
-    bcd_cdc: u16,
-}
-
-#[derive(Debug, Clone, Copy)]
-#[repr(C)]
-#[allow(dead_code)]
-// Note that the subordinate descriptors also exist, but are not included
-// in this struct
-struct UnionFunctionalDescriptor {
-    b_length: u8,
-    b_descriptor_type: u8,
-    b_descriptor_subtype: u8,
-    b_control_interface: u8,
-}
-
-#[derive(Debug, Clone, Copy)]
-#[repr(C)]
+/// A descriptor for an ethernet networking function
 struct EthernetNetworkingFunctionalDescriptor {
     b_function_length: u8,
     b_descriptor_type: u8,
@@ -113,26 +94,35 @@ struct EthernetNetworkingFunctionalDescriptor {
 }
 
 #[derive(Debug, Clone, Copy)]
-#[allow(dead_code)]
+/// All of the types of descriptors that an ECM device uses
 enum ECMDeviceDescriptors {
-    Device(USBDeviceDescriptor),
     Configuration(USBDeviceConfigurationDescriptor),
     Interface(USBDeviceInterfaceDescriptor),
     Endpoint(USBDeviceEndpointDescriptor),
-    Functional(DeviceFunctionalDescriptor),
     Ethernet(EthernetNetworkingFunctionalDescriptor),
 }
 
-#[allow(dead_code)]
+/// A structure for an ECM USB device
 pub struct ECMDevice {
+    /// The generic USB device struct
     standard_device: USBDeviceInfo,
+    /// A vector for the descriptors for this device
     descriptors: Vec<ECMDeviceDescriptors>,
-    in_data_addr: VirtAddr,
-    out_data_addr: VirtAddr,
-    in_data_trb: ProducerRingBuffer,
-    in_data_edpoint_id: u32,
-    out_data_trb: ProducerRingBuffer,
-    out_data_endpoint_id: u32,
+    /// The address of where recieved data is written to
+    recv_addr: VirtAddr,
+    /// The endpoint if of the recieve endpoint
+    recv_endpoint_id: u32,
+    /// The transfer ring buffer for recieves, tells Device that
+    /// we want to recieve data, and where to put it
+    recv_trb: ProducerRingBuffer,
+    /// The address of where transmitted data is read from
+    tx_addr: VirtAddr,
+    /// The transfer ring buffer for trannsmits, tells Device that
+    /// we want to transmit data, and where to get it
+    tx_trb: ProducerRingBuffer,
+    /// The endpoint id of the transit endpoint
+    tx_endpoint_id: u32,
+    /// If we are sending out data, and should not send out another packet
     sending_data_out: bool,
 }
 
@@ -187,7 +177,7 @@ impl phy::TxToken for ECMDeviceTxToken<'_> {
         drop(mapper);
         let info = XHCI.lock().clone().unwrap();
 
-        let doorbell_base: *mut u32 = (info.base_address
+        let doorbell_base: *mut u32 = (info.base_address.as_u64()
             + info.capablities.doorbell_offset as u64
             + (self.slot as u64) * 4) as *mut u32;
         unsafe { core::ptr::write_volatile(doorbell_base, self.endpoint_id) };
@@ -215,16 +205,16 @@ impl phy::Device for ECMDevice {
         let interrupter_target: u8 = self.standard_device.slot;
         let flags = TRBFlags::InterruptOnCompletion;
         let block = TransferRequestBlock {
-            parameters: self.in_data_addr.as_u64() - mapper.phys_offset().as_u64(),
+            parameters: self.recv_addr.as_u64() - mapper.phys_offset().as_u64(),
             status: (transfer_length as u32)
                 | ((transfer_size as u32) << 17)
                 | ((interrupter_target as u32) << 22),
             control: flags.bits() | ((TrbTypes::Normal as u32) << 10),
         };
-        unsafe { self.in_data_trb.enqueue(block).ok()? };
+        unsafe { self.recv_trb.enqueue(block).ok()? };
         let info = XHCI.lock().clone().unwrap();
 
-        let doorbell_base: *mut u32 = (info.base_address
+        let doorbell_base: *mut u32 = (info.base_address.as_u64()
             + info.capablities.doorbell_offset as u64
             + (self.standard_device.slot as u64) * 4)
             as *mut u32;
@@ -232,7 +222,6 @@ impl phy::Device for ECMDevice {
         drop(info);
         let mut event = self.dequeue_event(&mapper)?;
         let mut event_endpoint = (event.control >> 16) & 0xF;
-        // TODO: call function that etermines which event rings deque to update
         while event_endpoint & 1 != 1 {
             // Odd endpoint numbers are for the input
             // We got an out probally, so we can safely send more data out (probally)
@@ -243,13 +232,13 @@ impl phy::Device for ECMDevice {
         drop(mapper);
 
         let tx_token = ECMDeviceTxToken {
-            out_data_addr: self.out_data_addr,
+            out_data_addr: self.tx_addr,
             slot: self.standard_device.slot,
-            out_trb: &mut self.out_data_trb,
-            endpoint_id: self.out_data_endpoint_id,
+            out_trb: &mut self.tx_trb,
+            endpoint_id: self.tx_endpoint_id,
         };
         let rx_token = ECMDeviceRxToken {
-            in_data_addr: self.in_data_addr,
+            in_data_addr: self.recv_addr,
             _phantom: PhantomData,
         };
 
@@ -260,21 +249,21 @@ impl phy::Device for ECMDevice {
         let interrupter_target: u8 = self.standard_device.slot;
         let flags = TRBFlags::InterruptOnCompletion;
         let block = TransferRequestBlock {
-            parameters: self.in_data_addr.as_u64() - mapper.phys_offset().as_u64(),
+            parameters: self.recv_addr.as_u64() - mapper.phys_offset().as_u64(),
             status: (transfer_length as u32)
                 | ((transfer_size as u32) << 17)
                 | ((interrupter_target as u32) << 22),
             control: flags.bits() | ((TrbTypes::Normal as u32) << 10),
         };
-        let _ = unsafe { self.in_data_trb.enqueue(block).ok()? };
+        let _ = unsafe { self.recv_trb.enqueue(block).ok()? };
         drop(mapper);
         let info = XHCI.lock().clone().unwrap();
 
-        let doorbell_base: *mut u32 = (info.base_address
+        let doorbell_base: *mut u32 = (info.base_address.as_u64()
             + info.capablities.doorbell_offset as u64
             + (self.standard_device.slot as u64) * 4)
             as *mut u32;
-        unsafe { core::ptr::write_volatile(doorbell_base, self.out_data_endpoint_id) };
+        unsafe { core::ptr::write_volatile(doorbell_base, self.tx_endpoint_id) };
         drop(info);
         Some((rx_token, tx_token))
     }
@@ -285,10 +274,10 @@ impl phy::Device for ECMDevice {
         }
         self.sending_data_out = true;
         Some(ECMDeviceTxToken {
-            out_data_addr: self.out_data_addr,
+            out_data_addr: self.tx_addr,
             slot: self.standard_device.slot,
-            out_trb: &mut self.out_data_trb,
-            endpoint_id: self.out_data_endpoint_id,
+            out_trb: &mut self.tx_trb,
+            endpoint_id: self.tx_endpoint_id,
         })
     }
     fn capabilities(&self) -> DeviceCapabilities {
@@ -312,12 +301,12 @@ impl ECMDevice {
         let event = event_result.ok()?;
         let endpoint_id = (event.control >> 16) & 0x1F;
         let new_dequeue = event.parameters + mapper.phys_offset().as_u64() + 0x10;
-        if endpoint_id == self.in_data_edpoint_id {
-            self.in_data_trb
+        if endpoint_id == self.recv_endpoint_id {
+            self.recv_trb
                 .set_dequeue(new_dequeue)
                 .expect("Should not see this because addr is aligned");
-        } else if endpoint_id == self.out_data_endpoint_id {
-            self.out_data_trb
+        } else if endpoint_id == self.tx_endpoint_id {
+            self.tx_trb
                 .set_dequeue(new_dequeue)
                 .expect("Should not see this because addr is aligned");
         }
@@ -331,7 +320,7 @@ impl ECMDevice {
             + (32 * self.standard_device.slot as u64);
         unsafe {
             update_deque_ptr(
-                erdp_addr as *mut u64,
+                erdp_addr.as_mut_ptr(),
                 &self.standard_device.event_ring,
                 mapper,
             );
@@ -618,7 +607,7 @@ pub fn init_cdc_device(
     };
     drop(command_ring);
     let doorbell_base: *mut u32 =
-        (info.base_address + info.capablities.doorbell_offset as u64) as *mut u32;
+        (info.base_address.as_u64() + info.capablities.doorbell_offset as u64) as *mut u32;
     unsafe { core::ptr::write_volatile(doorbell_base, 0) };
     wait_for_events_including_command_completion(&mut info, &mapper)?;
 
@@ -638,12 +627,12 @@ pub fn init_cdc_device(
     let ecm_device = ECMDevice {
         standard_device: device,
         descriptors,
-        in_data_addr: in_buff_vaddr,
-        out_data_addr: out_buff_vaddr,
-        in_data_trb: in_trb,
-        in_data_edpoint_id: input_id,
-        out_data_trb: out_trb,
-        out_data_endpoint_id: output_id,
+        recv_addr: in_buff_vaddr,
+        tx_addr: out_buff_vaddr,
+        recv_trb: in_trb,
+        recv_endpoint_id: input_id,
+        tx_trb: out_trb,
+        tx_endpoint_id: output_id,
         sending_data_out: false,
     };
     Result::Ok(ecm_device)

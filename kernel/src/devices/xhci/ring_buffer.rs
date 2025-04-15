@@ -249,6 +249,10 @@ impl ProducerRingBuffer {
     ///
     /// # Arguments
     /// * `addr` - The address to set `enqueue` to
+    ///
+    /// # Returns
+    /// - `Ok(())` on success
+    /// - `Err(ProducerRingError::UnalignedAddress)` if `addr` is not aligned to 16
     pub fn set_enqueue(&mut self, addr: u64) -> Result<(), ProducerRingError> {
         if addr % 16 != 0 {
             return Err(ProducerRingError::UnalignedAddress);
@@ -263,6 +267,9 @@ impl ProducerRingBuffer {
     /// # Arguments
     /// * `addr` - The address to set `dequeue` to
     ///
+    /// # Returns
+    /// - `Ok(())` on success
+    /// - `Err(ProducerRingError::UnalignedAddress)` if `addr` is not aligned to 16
     pub fn set_dequeue(&mut self, addr: u64) -> Result<(), ProducerRingError> {
         if addr % 16 != 0 {
             return Err(ProducerRingError::UnalignedAddress);
@@ -459,19 +466,19 @@ impl EventRingSegmentTable {
         true
     }
 
-    unsafe fn print_table(&self) {
+    fn print_table(&self) {
         debug_println!("!!!!Printing ERST!!!!");
         debug_println!("size: {}", self.size);
         debug_println!("max size: {}", self.max_size);
         debug_println!("base: {:X}", self.base as u64);
         if self.size == 1 {
-            let entry = *self.base.offset(0);
+            let entry = unsafe { *self.base.offset(0) };
             let params = entry.parameters;
             let size = entry.status & 0xFFFF;
             debug_println!("index: 0\taddr: {:X}\tsize:{}", params, size);
         } else {
             for index in 0..self.size - 1 {
-                let entry = *self.base.offset(index);
+                let entry = unsafe { *self.base.offset(index) };
                 let params = entry.parameters;
                 let size = entry.status & 0xFFFF;
                 debug_println!("index: {}\taddr: {:X}\tsize:{}", index, params, size);
@@ -741,11 +748,8 @@ impl ConsumerRingBuffer {
         block.get_cycle() != self.ccs as u32
     }
 
-    /// Prints event rung
-    ///
-    /// # Safety
-    /// TODO
-    pub unsafe fn print_ring(&self) {
+    /// Prints event ring
+    pub fn print_ring(&self) {
         debug_println!("======PRINTING EVENT RING======");
         debug_println!("dequeue ptr: {:X}", self.dequeue as u64);
         debug_println!("ccs: {}", self.ccs);
@@ -775,7 +779,7 @@ mod test {
         },
         memory::{
             frame_allocator::{alloc_frame, dealloc_frame},
-            paging::{self, create_mapping, remove_mapped_frame},
+            paging::{create_mapping, remove_mapped_frame},
             MAPPER,
         },
     };
@@ -783,7 +787,7 @@ mod test {
     #[test_case]
     async fn producer_ring_buffer_init() {
         // first get a page and zero init it
-        let mut mapper = MAPPER.lock();
+        let mapper = MAPPER.lock();
         let frame = alloc_frame().unwrap();
         let frame_va =
             VirtAddr::new(mapper.phys_offset().as_u64() + frame.start_address().as_u64());
@@ -824,7 +828,7 @@ mod test {
     #[test_case]
     async fn producer_ring_buffer_enqueue() {
         // initialize a ring buffer we can enqueue onto
-        let mut mapper = MAPPER.lock();
+        let mapper = MAPPER.lock();
         let frame = alloc_frame().unwrap();
         let frame_va =
             VirtAddr::new(mapper.phys_offset().as_u64() + frame.start_address().as_u64());
@@ -878,7 +882,7 @@ mod test {
 
     #[test_case]
     async fn producer_ring_buffer_helpers() {
-        let mut mapper = MAPPER.lock();
+        let mapper = MAPPER.lock();
         let frame = alloc_frame().unwrap();
         let frame_va =
             VirtAddr::new(mapper.phys_offset().as_u64() + frame.start_address().as_u64());
@@ -943,7 +947,7 @@ mod test {
 
     #[test_case]
     async fn producer_ring_buffer_enqueue_accross_segment() {
-        let mut mapper = MAPPER.lock();
+        let mapper = MAPPER.lock();
 
         let frame = alloc_frame().unwrap();
         let frame_va =
