@@ -145,6 +145,8 @@ extern "x86-interrupt" fn double_fault_handler(
 /// 2. The page is loaded, but mapping does not exist yet
 /// 3. The page is loaded, but marked Copy-on-write
 /// 4. The page is mapped, and some other error happened
+/// 5. There is a shared file mapping
+/// 6. There is a private file mapping
 ///
 /// # Arguments
 /// * `stack_frame` - The interrupt stack frame made from the page fault happening
@@ -196,7 +198,6 @@ extern "x86-interrupt" fn page_fault_handler(
                     pt_flags,
                     fd,
                 } => {
-                    serial_println!("GOING TO HANDLE SHARED FILE MAPPING!");
                     block_on(async {
                         handle_shared_file_mapping(page, &mut mapper, offset, pt_flags, fd).await
                     });
@@ -208,7 +209,6 @@ extern "x86-interrupt" fn page_fault_handler(
                     pt_flags,
                     fd,
                 } => {
-                    serial_println!("GOING TO HANDLE PRIVATE FILE MAPPING!");
                     block_on(async {
                         handle_private_file_mapping(
                             page,

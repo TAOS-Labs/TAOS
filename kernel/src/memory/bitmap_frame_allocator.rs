@@ -16,7 +16,9 @@ use x86_64::{
 
 use alloc::{boxed::Box, vec, vec::Vec};
 
+/// Refcount for frames
 pub struct FrameRefCount {
+    /// Reference counts per frame
     counts: Box<[AtomicU16]>,
 }
 
@@ -57,6 +59,9 @@ impl FrameRefCount {
         self.counts[Self::frame_to_index(frame)].store(value, Ordering::Relaxed);
     }
 
+    /// Translate between frame and its index in the Bitmap
+    ///
+    /// * `frame`: the frame to translate
     fn frame_to_index(frame: PhysFrame) -> usize {
         frame.start_address().as_u64() as usize / PAGE_SIZE
     }

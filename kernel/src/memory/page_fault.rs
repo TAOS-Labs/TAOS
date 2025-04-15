@@ -31,6 +31,7 @@ use super::mm::{VmArea, VmAreaBackings, VmaChain};
 /// Fault outcome enum to route what to do in IDT
 #[derive(Debug)]
 pub enum FaultOutcome {
+    /// The mapping already exists
     ExistingMapping {
         page: Page<Size4KiB>,
         mapper: OffsetPageTable<'static>,
@@ -215,12 +216,7 @@ pub fn handle_existing_mapping(
 ) {
     let mut flags = pt_flags;
     flags.set(PageTableFlags::PRESENT, true);
-    create_mapping_to_frame(
-        page,
-        mapper,
-        Some(flags),
-        PhysFrame::containing_address(PhysAddr::new(chain.file_offset_or_frame)),
-    );
+    create_mapping_to_frame(page, mapper, Some(flags), chain.frame);
 }
 
 pub fn handle_existing_file_mapping(
@@ -378,11 +374,7 @@ pub fn handle_new_mapping(
             // (Assuming each segment's reverse mappings are keyed relative to its own start.)
             let mapping_offset = fault_offset - seg_key + segment.start;
 
-            backing.insert_mapping(Arc::new(VmaChain::new(
-                mapping_offset,
-                usize::MAX,
-                frame.start_address().as_u64(),
-            )));
+            backing.insert_mapping(Arc::new(VmaChain::new(mapping_offset, usize::MAX, frame)));
         });
     });
 

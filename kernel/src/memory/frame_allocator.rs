@@ -16,8 +16,11 @@ pub static FRAME_ALLOCATOR: Mutex<Option<GlobalFrameAllocator>> = Mutex::new(Non
 
 /// Enum of supported allocators
 pub enum GlobalFrameAllocator {
+    /// The first allocator that is not heap supported
     Boot(BootIntoFrameAllocator),
+    /// Bitmap frame allocator
     Bitmap(BitmapFrameAllocator),
+    /// Buddy frame allocator
     Buddy(BuddyFrameAllocator),
 }
 

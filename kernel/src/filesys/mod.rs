@@ -242,39 +242,7 @@ pub fn get_fd(filepath: &str) -> FilesystemResult<usize> {
 ///
 /// * `mode`: the ChmodMode to convert
 fn chmod_to_filemode(mode: ChmodMode) -> FileMode {
-    let mut out = FileMode::DIR; // directory type must be included
-
-    if mode.contains(ChmodMode::UREAD) {
-        out |= FileMode::UREAD;
-    }
-    if mode.contains(ChmodMode::UWRITE) {
-        out |= FileMode::UWRITE;
-    }
-    if mode.contains(ChmodMode::UEXEC) {
-        out |= FileMode::UEXEC;
-    }
-
-    if mode.contains(ChmodMode::GREAD) {
-        out |= FileMode::GREAD;
-    }
-    if mode.contains(ChmodMode::GWRITE) {
-        out |= FileMode::GWRITE;
-    }
-    if mode.contains(ChmodMode::GEXEC) {
-        out |= FileMode::GEXEC;
-    }
-
-    if mode.contains(ChmodMode::OREAD) {
-        out |= FileMode::OREAD;
-    }
-    if mode.contains(ChmodMode::OWRITE) {
-        out |= FileMode::OWRITE;
-    }
-    if mode.contains(ChmodMode::OEXEC) {
-        out |= FileMode::OEXEC;
-    }
-
-    out
+    FileMode::DIR | FileMode::from_bits_truncate(mode.bits())
 }
 
 /// Type for the filesystem layer's page cache
