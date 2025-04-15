@@ -372,18 +372,24 @@ impl BuddyFrameAllocator {
         (core::mem::size_of::<usize>() * 8) - x.leading_zeros() as usize - 1
     }
 
-    /// todo
+    /// Computes the buddy index with an index and order
     ///
-    /// * `index`:
-    /// * `order`:
+    /// * `index`: index to compute with
+    /// * `order`: order to compute with
     fn buddy_index(&self, index: usize, order: usize) -> usize {
         index ^ (1 << order)
     }
 
+    /// Translates a frame to its index
+    ///
+    /// * `frame`: The frame to translate over
     pub fn frame_to_index(frame: PhysFrame<Size4KiB>) -> usize {
         frame.start_address().as_u64() as usize / PAGE_SIZE
     }
 
+    /// Gets the relevant FrameDescriptor for a frame
+    ///
+    /// * `frame`: the frame to get the descriptor for
     pub fn get_frame_descriptor(&self, frame: PhysFrame<Size4KiB>) -> &FrameDescriptor {
         &self.frames[Self::frame_to_index(frame)]
     }
@@ -501,12 +507,14 @@ mod tests {
     use super::*;
 
     #[test_case]
+    /// Tests that we can allocate and deallocate a single frame
     async fn test_alloc_dealloc_frame() {
         let frame = alloc_frame().expect("Allocation failed");
         dealloc_frame(frame);
     }
 
     #[test_case]
+    /// Tests that we can allocate and deallocate 100 frames
     async fn test_multiple_alloc_dealloc() {
         let alloc_count_before = with_buddy_frame_allocator(|alloc| alloc.allocated_count);
 
@@ -515,9 +523,9 @@ mod tests {
             frames.push(alloc_frame().expect("Failed to allocate"));
         }
 
-        for i in 0..100 {
+        (0..100).for_each(|i| {
             dealloc_frame(frames[i]);
-        }
+        });
 
         let alloc_count_after = with_buddy_frame_allocator(|alloc| alloc.allocated_count);
 
@@ -525,6 +533,7 @@ mod tests {
     }
 
     #[test_case]
+    /// Tests that the count of allocated frames is correct after allocation
     async fn test_alloc_frame_count() {
         let alloc_count_before = with_buddy_frame_allocator(|alloc| alloc.allocated_count);
 
@@ -538,6 +547,7 @@ mod tests {
     }
 
     #[test_case]
+    /// Tests that the count of allocated frames is correct after deallocation
     async fn test_dealloc_frame_count() {
         let frame = alloc_frame().expect("Allocation failed");
         let alloc_count_before = with_buddy_frame_allocator(|alloc| alloc.allocated_count);
@@ -550,6 +560,7 @@ mod tests {
     }
 
     #[test_case]
+    /// Tests that the refcount count for a frame is correct
     async fn test_ref_count() {
         let frame = alloc_frame().expect("Allocation failed");
 
@@ -565,6 +576,7 @@ mod tests {
     }
 
     #[test_case]
+    /// Tests allocating a small block of memory
     async fn test_alloc_block_small() {
         let order = 1; // request 2 blocks of memory
         let (frames, alloc_count_before) = with_buddy_frame_allocator(|alloc| {
@@ -589,6 +601,7 @@ mod tests {
     }
 
     #[test_case]
+    /// Tests allocating a large block of memory
     async fn test_alloc_block_large() {
         let order = 8; // request 256 frames of memory
         let (frames, alloc_count_before) = with_buddy_frame_allocator(|alloc| {
@@ -613,6 +626,7 @@ mod tests {
     }
 
     #[test_case]
+    /// Tests allocating and deallocating block counts
     async fn test_alloc_dealloc_block() {
         let order = 1;
         with_buddy_frame_allocator(|alloc| {
@@ -629,6 +643,7 @@ mod tests {
     }
 
     #[test_case]
+    /// Tests allocating and deallocating big block counts
     async fn test_alloc_dealloc_block_large() {
         let order = 8;
         with_buddy_frame_allocator(|alloc| {
@@ -637,9 +652,9 @@ mod tests {
             let alloc_count_after = alloc.allocated_count;
             assert_eq!(alloc_count_before + 256, alloc_count_after);
 
-            for i in 0..(1 << order) {
+            (0..(1 << order)).for_each(|i| {
                 assert_eq!(alloc.get_ref_count(frames[i]), 1);
-            }
+            });
 
             alloc.deallocate_block(frames, 8);
 

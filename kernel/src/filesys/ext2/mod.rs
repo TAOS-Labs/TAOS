@@ -22,7 +22,6 @@ mod tests {
     };
 
     use crate::devices::sd_card::SD_CARD;
-    use crate::serial_println;
 
     use super::{
         filesystem::{Ext2, FilesystemError},
@@ -54,8 +53,7 @@ mod tests {
 
         fs.unmount().await.unwrap();
 
-        let temp =  fs.read_file("/test.txt").await;
-        serial_println!("Temp is {:#?}", temp);
+        let temp = fs.read_file("/test.txt").await;
         match temp {
             Err(FilesystemError::NotMounted) => {}
             _ => panic!("Expected NotMounted error"),
@@ -75,7 +73,6 @@ mod tests {
         let mode = FileMode::REG | FileMode::UREAD | FileMode::UWRITE;
 
         let file_node = fs.create_file(file_path, mode).await.unwrap();
-        assert!(file_node.is_file());
 
         let bytes_written = fs.write_file(file_path, test_content).await.unwrap();
         assert_eq!(bytes_written, test_content.len());

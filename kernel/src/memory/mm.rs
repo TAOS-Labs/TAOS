@@ -34,6 +34,13 @@ impl Clone for Mm {
     }
 }
 
+/// The three VmArea segments returned from a shrink call
+type ShrinkVma = (
+    Option<Arc<Mutex<VmArea>>>,
+    Option<Arc<Mutex<VmArea>>>,
+    Option<Arc<Mutex<VmArea>>>,
+);
+
 impl Mm {
     pub fn new(pml4_frame: PhysFrame<Size4KiB>) -> Self {
         Mm {
@@ -225,11 +232,7 @@ impl Mm {
         new_start: u64,
         new_end: u64,
         tree: &mut VmaTree,
-    ) -> (
-        Option<Arc<Mutex<VmArea>>>,
-        Option<Arc<Mutex<VmArea>>>,
-        Option<Arc<Mutex<VmArea>>>,
-    ) {
+    ) -> ShrinkVma {
         // Remove the original VMA from the tree.
         let vma = Mm::remove_vma(old_start, tree).unwrap().1;
         // Record the original end of the VMA.
@@ -721,7 +724,7 @@ mod tests {
     /// The VM Area can be correctly retrieved by its faulted address. - The
     /// backing pointer of the first segment matches the anonymous backing area.
     /// - The mapping in the anonymous area correctly returns the physical
-    /// frame.
+    ///   frame.
     #[test_case]
     async fn test_anon_vm_backing() {
         let pml4_frame = PhysFrame::containing_address(PhysAddr::new(0x1000));
@@ -938,9 +941,9 @@ mod tests {
     /// After coalescing, the merged VMA should maintain two segments:
     ///
     /// - A segment starting at offset `0` that, when queried at offset `0`,
-    /// returns the frame from `anon_area1` (`aa1_frame`). - A segment starting
-    /// at offset `0x1000` that, when queried at offset `0`, returns the frame
-    /// from `anon_area2` (`aa2_frame`).
+    ///   returns the frame from `anon_area1` (`aa1_frame`). - A segment starting
+    ///   at offset `0x1000` that, when queried at offset `0`, returns the frame
+    ///   from `anon_area2` (`aa2_frame`).
     ///
     /// This test verifies that the left coalescing routine correctly merges the
     /// two adjacent VM Areas and updates the segment mappings accordingly.
@@ -1681,7 +1684,7 @@ mod tests {
     /// The test asserts that:
     /// - The new VMA covers only the right two pages.
     /// - The reverse mappings have been updated so that the surviving mappings are shifted.
-    // #[test_case]
+    #[test_case]
     async fn test_shrink_vma_left() {
         let pml4_frame = PhysFrame::containing_address(PhysAddr::new(0x1000));
         let mm = Mm::new(pml4_frame);
@@ -1730,10 +1733,8 @@ mod tests {
 
         let new_start = old_start + PAGE_SIZE as u64;
         let new_end = old_end;
-        let (_, shrunk , _)= mm.with_vma_tree_mutable(|tree| {
-            let mut mapper = KERNEL_MAPPER.lock();
-            Mm::shrink_vma(old_start, new_start, new_end, tree)
-        });
+        let (_, shrunk, _) =
+            mm.with_vma_tree_mutable(|tree| Mm::shrink_vma(old_start, new_start, new_end, tree));
         assert!(shrunk.is_some());
         let vma = shrunk.unwrap();
         let locked = vma.lock();
@@ -1761,9 +1762,9 @@ mod tests {
     /// a triple: (Option<left_vma>, Option<middle_vma>, Option<right_vma>), where:
     /// - The left VMA spans [0x0, 0x1000) and should contain the left portion of Segment A.
     /// - The middle (surviving) VMA spans [0x1000, 0x4000) and should contain:
-    ///     • The right portion of Segment A ([0x1000, 0x2000)) with new key 0.
-    ///     • All of Segment B ([0x2000, 0x3000)) with new key 0x1000.
-    ///     • The left portion of Segment C ([0x3000, 0x4000)) with new key 0x2000.
+    ///   • The right portion of Segment A ([0x1000, 0x2000)) with new key 0.
+    ///   • All of Segment B ([0x2000, 0x3000)) with new key 0x1000.
+    ///   • The left portion of Segment C ([0x3000, 0x4000)) with new key 0x2000.
     /// - The right VMA spans [0x4000, 0x5000) and should contain the right portion of Segment C.
     #[test_case]
     async fn test_shrink_vma_split_both_multiple_segments() {
@@ -1886,7 +1887,7 @@ mod tests {
             assert_eq!(
                 seg_a_left
                     .backing
-                    .find_mapping(0 + seg_a_left.start)
+                    .find_mapping(seg_a_left.start)
                     .unwrap()
                     .file_offset_or_frame,
                 frame_a_a.start_address().as_u64()
@@ -1908,7 +1909,7 @@ mod tests {
             assert_eq!(
                 seg_a_right
                     .backing
-                    .find_mapping(0 + seg_a_right.start)
+                    .find_mapping(seg_a_right.start)
                     .unwrap()
                     .file_offset_or_frame,
                 frame_a_b.start_address().as_u64()
@@ -1920,7 +1921,7 @@ mod tests {
             assert_eq!(
                 seg_b
                     .backing
-                    .find_mapping(0 + seg_b.start)
+                    .find_mapping(seg_b.start)
                     .unwrap()
                     .file_offset_or_frame,
                 frame_b.start_address().as_u64()
@@ -1933,7 +1934,7 @@ mod tests {
             assert_eq!(
                 seg_c_left
                     .backing
-                    .find_mapping(0 + seg_c_left.start)
+                    .find_mapping(seg_c_left.start)
                     .unwrap()
                     .file_offset_or_frame,
                 frame_c_a.start_address().as_u64()
@@ -1954,7 +1955,7 @@ mod tests {
             assert_eq!(
                 seg_c_right
                     .backing
-                    .find_mapping(0 + seg_c_right.start)
+                    .find_mapping(seg_c_right.start)
                     .unwrap()
                     .file_offset_or_frame,
                 frame_c_b.start_address().as_u64()
@@ -1970,7 +1971,7 @@ mod tests {
     /// The test asserts that:
     /// - The new VMA boundaries are updated.
     /// - The reverse mappings are updated so that the surviving pages have their offsets shifted.
-    // #[test_case]
+    #[test_case]
     async fn test_shrink_vma_both() {
         let pml4_frame = PhysFrame::containing_address(PhysAddr::new(0x1000));
         let mm = Mm::new(pml4_frame);
@@ -2018,10 +2019,8 @@ mod tests {
         // Shrink both sides: remove the leftmost and rightmost pages.
         let new_start = old_start + PAGE_SIZE as u64;
         let new_end = old_end - PAGE_SIZE as u64;
-        let (_, shrunk_left, _) = mm.with_vma_tree_mutable(|tree| {
-            let mut mapper = KERNEL_MAPPER.lock();
-            Mm::shrink_vma(old_start, new_start, new_end, tree)
-        });
+        let (_, shrunk_left, _) =
+            mm.with_vma_tree_mutable(|tree| Mm::shrink_vma(old_start, new_start, new_end, tree));
         assert!(shrunk_left.is_some());
 
         let vma = shrunk_left.unwrap();
@@ -2055,7 +2054,7 @@ mod tests {
     /// reverse mappings for each page. We then shrink the VMA so that new_start
     /// equals new_end, meaning that the entire VMA is unmapped. This is similar
     /// to munmap().
-    // #[test_case]
+    #[test_case]
     async fn test_shrink_vma_whole() {
         let pml4_frame = PhysFrame::containing_address(PhysAddr::new(0x1000));
         let mm = Mm::new(pml4_frame);

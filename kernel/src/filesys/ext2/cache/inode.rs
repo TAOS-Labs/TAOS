@@ -323,6 +323,15 @@ mod tests {
     };
     use alloc::{sync::Arc, vec};
 
+    /// Type for a test cache for the functions
+    type TestCache = (
+        Arc<MockDevice>,
+        Arc<RwLock<Superblock>>,
+        Arc<RwLock<Vec<BlockGroupDescriptor>>>,
+        Arc<Mutex<Box<dyn Cache<u32, CachedBlock>>>>,
+        InodeCache,
+    );
+
     #[test_case]
     async fn test_cached_inode_basic() {
         let inode = Inode {
@@ -361,15 +370,7 @@ mod tests {
         assert_eq!(cached.ref_count(), 1);
     }
 
-    fn setup_test_cache(
-        capacity: usize,
-    ) -> (
-        Arc<MockDevice>,
-        Arc<RwLock<Superblock>>,
-        Arc<RwLock<Vec<BlockGroupDescriptor>>>,
-        Arc<Mutex<Box<dyn Cache<u32, CachedBlock>>>>,
-        InodeCache,
-    ) {
+    fn setup_test_cache(capacity: usize) -> TestCache {
         let device = Arc::new(MockDevice::new(1024, 1024 * 1024));
 
         let superblock = Arc::new(RwLock::new(Superblock {

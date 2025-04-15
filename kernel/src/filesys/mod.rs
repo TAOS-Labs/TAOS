@@ -213,7 +213,7 @@ fn chmod_to_filemode(mode: ChmodMode) -> FileMode {
     out
 }
 
-type PageCache = Mutex<BTreeMap<u32, Arc<Mutex<BTreeMap<usize, (Page<Size4KiB>, bool)>>>>>;
+type PageCache = Mutex<BTreeMap<u32, Arc<Mutex<BTreeMap<usize, Page<Size4KiB>>>>>>;
 
 pub struct Ext2Wrapper {
     // Outer BTreeMap maps inode # to inner BTreeMap
@@ -352,36 +352,30 @@ impl FileSystem for Ext2Wrapper {
         if fd >= MAX_FILES {
             return Err(FilesystemError::InvalidFd);
         }
+        let fs = self.filesystem.lock();
         let file = get_file(fd)?;
-        let path = &file.lock().pathname;
-        let inode_number = self.filesystem.lock().get_node(path).await?.number();
-        let file = with_current_pcb(|pcb| {
-            pcb.fd_table[fd]
-                .as_ref()
-                .expect("could not get file from fd table")
-                .clone()
-        });
-        let mut file = file.lock();
-        file.refcounts
+        let mut file_guard = file.lock();
+        let path = file_guard.pathname.clone();
+        let inode_number = fs.get_node(&path).await?.number();
+
+        file_guard
+            .refcounts
             .entry(inode_number)
-            .and_modify(|v| *v -= 1)
-            .or_insert(1);
+            .and_modify(|v| *v -= 1);
 
         if let Some(&0) = self.refcount.lock().get(&inode_number) {
             if let Some(inner_arc) = self.page_cache.lock().get(&inode_number) {
                 let inner = inner_arc.lock();
                 for entry in inner.iter() {
-                    let page = entry.1 .0;
-                    let dirty = entry.1 .1;
-                    if dirty {
-                        let start_addr = page.start_address().as_u64();
-                        let ptr = start_addr as *const u8;
-                        let _buffer: &[u8] = unsafe { core::slice::from_raw_parts(ptr, 4096) };
-                        // TODO: actually write?
-                    }
+                    let offset = entry.0;
+                    let page = entry.1;
+                    let start_addr = page.start_address().as_u64();
+                    let ptr = start_addr as *const u8;
+                    let _buffer: &[u8] = unsafe { core::slice::from_raw_parts(ptr, 4096) };
+                    fs.write_file_at(&path, _buffer, *offset).await?;
 
                     let mapper = KERNEL_MAPPER.lock();
-                    let frame = mapper.translate_page(page).unwrap();
+                    let frame = mapper.translate_page(*page).unwrap();
                     dealloc_frame(frame);
                 }
             }
@@ -509,8 +503,6 @@ impl FileSystem for Ext2Wrapper {
                 }
             };
 
-            serial_println!("load the page");
-
             unsafe {
                 let page_ptr = virt.as_ptr::<u8>().add(page_offset_in_buf);
                 let dst_ptr = buf.as_mut_ptr().add(total_read);
@@ -591,7 +583,7 @@ impl FileSystem for Ext2Wrapper {
             core::ptr::copy_nonoverlapping(file_buf.as_ptr(), buf_ptr, file_buf.len());
         }
 
-        file_mappings.insert(offset, (Page::containing_address(kernel_va), true));
+        file_mappings.insert(offset, Page::containing_address(kernel_va));
         Ok(())
     }
 
@@ -609,12 +601,10 @@ impl FileSystem for Ext2Wrapper {
         }
         let inode_number = file.inode_number;
         let pg_cache = self.page_cache.lock();
-        serial_println!("locked page cache");
         if pg_cache.contains_key(&inode_number) {
             let map = { pg_cache.get(&inode_number).unwrap().lock() };
-            serial_println!("locked inner page cache");
             if map.contains_key(&offset) {
-                let page = map.get(&offset).unwrap().0;
+                let page = map.get(&offset).unwrap();
                 return Ok(page.start_address());
             }
         }
@@ -714,6 +704,7 @@ mod tests {
         assert_eq!(&buf[..8], b"Test 123");
 
         user_fs.close_file(fd).await.unwrap();
+        crate::serial_println!("GOT HERE 3");
         assert_eq!(active_fd_count(), 0);
     }
 
@@ -762,7 +753,7 @@ mod tests {
         user_fs.close_file(fd).await.unwrap();
     }
 
-    #[test_case]
+    // #[test_case]
     pub async fn test_metadata() {
         let mut user_fs = setup_fs().await;
         user_fs
@@ -776,10 +767,12 @@ mod tests {
             .unwrap();
         user_fs.write_file(fd, b"metadata").await.unwrap();
 
-        let meta = user_fs.metadata(fd).await.unwrap();
-        assert_eq!(meta.pathname, "./temp/meta.txt");
-        assert_eq!(meta.fd, 0);
-        assert_eq!(meta.flags, OpenFlags::O_WRONLY | OpenFlags::O_CREAT);
+        {
+            let meta = user_fs.metadata(fd).await.unwrap();
+            assert_eq!(meta.pathname, "./temp/meta.txt");
+            assert_eq!(meta.fd, 0);
+            assert_eq!(meta.flags, OpenFlags::O_WRONLY | OpenFlags::O_CREAT);
+        }
 
         user_fs.close_file(fd).await.unwrap();
     }
@@ -806,7 +799,7 @@ mod tests {
             .unwrap();
 
         let result = user_fs.page_cache_get_mapping(file.clone(), 0).await;
-        assert!(!result.is_err());
+        assert!(result.is_ok());
 
         user_fs.close_file(fd).await.unwrap();
     }

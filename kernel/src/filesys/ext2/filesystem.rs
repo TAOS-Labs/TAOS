@@ -3,8 +3,6 @@ use core::sync::atomic::{AtomicBool, Ordering};
 use spin::{Mutex, RwLock};
 use zerocopy::FromBytes;
 
-use crate::serial_println;
-
 use super::{
     allocator::Allocator,
     block_io::{BlockError, BlockIO},
@@ -317,11 +315,7 @@ impl Ext2 {
 
     /// Read file contents from offset
     pub async fn read_file_at(&self, path: &str, pos: usize) -> FilesystemResult<Vec<u8>> {
-        let node: Result<Arc<Node>, FilesystemError> = self.get_node(path).await;
-        if let Err(err) = &node {
-            serial_println!("get_node error: {:?}", err);
-        }
-        let node = node.unwrap();
+        let node = self.get_node(path).await?;
         if !node.is_file() {
             return Err(FilesystemError::NodeError(NodeError::NotFile));
         }

@@ -376,9 +376,7 @@ mod tests {
 
         update_permissions(page, &mut *mapper, flags);
 
-        let flags = get_page_flags(page, &mut *mapper)
-            .ok()
-            .expect("Getting page table flags failed");
+        let flags = get_page_flags(page, &mut mapper).expect("Getting page table flags failed");
 
         assert!(flags.contains(PageTableFlags::PRESENT));
         assert!(!flags.contains(PageTableFlags::WRITABLE));

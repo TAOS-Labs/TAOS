@@ -13,14 +13,9 @@ use limine::{
 
 use crate::{
     debug,
-    devices::{
-        self,
-        sd_card::SD_CARD,
-    },
+    devices::{self, sd_card::SD_CARD},
     events::{register_event_runner, run_loop, schedule_kernel_on, spawn, yield_now},
-    filesys::{
-        self, ext2::filesystem::Ext2, ChmodMode, FileSystem, OpenFlags, FILESYSTEM,
-    },
+    filesys::{self, ext2::filesystem::Ext2, ChmodMode, FileSystem, OpenFlags, FILESYSTEM},
     interrupts::{self, idt},
     ipc::{
         messages::Message,
@@ -97,7 +92,7 @@ pub fn init() -> u32 {
                     .open_file("/temp/hello.txt", OpenFlags::O_WRONLY | OpenFlags::O_CREAT)
                     .await
                     .unwrap();
-                let mut buf = *b"Hello World!"; 
+                let mut buf = *b"Hello World!";
                 let buf: &mut [u8] = &mut buf;
                 let _ = user_fs.write_file(fd, buf).await;
                 fd
