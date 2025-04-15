@@ -132,7 +132,7 @@ pub struct ECMDevice {
     in_data_trb: ProducerRingBuffer,
     in_data_edpoint_id: u32,
     out_data_trb: ProducerRingBuffer,
-    out_data_edpoint_id: u32,
+    out_data_endpoint_id: u32,
     sending_data_out: bool,
 }
 
@@ -156,6 +156,7 @@ pub struct ECMDeviceTxToken<'a> {
     out_data_addr: VirtAddr,
     out_trb: &'a mut ProducerRingBuffer,
     slot: u8,
+    endpoint_id: u32,
 }
 
 impl phy::TxToken for ECMDeviceTxToken<'_> {
@@ -189,7 +190,7 @@ impl phy::TxToken for ECMDeviceTxToken<'_> {
         let doorbell_base: *mut u32 = (info.base_address
             + info.capablities.doorbell_offset as u64
             + (self.slot as u64) * 4) as *mut u32;
-        unsafe { core::ptr::write_volatile(doorbell_base, 4) };
+        unsafe { core::ptr::write_volatile(doorbell_base, self.endpoint_id) };
 
         result
     }
@@ -245,6 +246,7 @@ impl phy::Device for ECMDevice {
             out_data_addr: self.out_data_addr,
             slot: self.standard_device.slot,
             out_trb: &mut self.out_data_trb,
+            endpoint_id: self.out_data_endpoint_id,
         };
         let rx_token = ECMDeviceRxToken {
             in_data_addr: self.in_data_addr,
@@ -272,7 +274,7 @@ impl phy::Device for ECMDevice {
             + info.capablities.doorbell_offset as u64
             + (self.standard_device.slot as u64) * 4)
             as *mut u32;
-        unsafe { core::ptr::write_volatile(doorbell_base, 5) };
+        unsafe { core::ptr::write_volatile(doorbell_base, self.out_data_endpoint_id) };
         drop(info);
         Some((rx_token, tx_token))
     }
@@ -286,6 +288,7 @@ impl phy::Device for ECMDevice {
             out_data_addr: self.out_data_addr,
             slot: self.standard_device.slot,
             out_trb: &mut self.out_data_trb,
+            endpoint_id: self.out_data_endpoint_id
         })
     }
     fn capabilities(&self) -> DeviceCapabilities {
@@ -313,7 +316,7 @@ impl ECMDevice {
             self.in_data_trb
                 .set_dequeue(new_dequeue)
                 .expect("Should not see this because addr is aligned");
-        } else if endpoint_id == self.out_data_edpoint_id {
+        } else if endpoint_id == self.out_data_endpoint_id {
             self.out_data_trb
                 .set_dequeue(new_dequeue)
                 .expect("Should not see this because addr is aligned");
@@ -640,7 +643,7 @@ pub fn init_cdc_device(
         in_data_trb: in_trb,
         in_data_edpoint_id: input_id,
         out_data_trb: out_trb,
-        out_data_edpoint_id: output_id,
+        out_data_endpoint_id: output_id,
         sending_data_out: false,
     };
     Result::Ok(ecm_device)

@@ -378,7 +378,6 @@ pub fn initalize_xhci_hub(device: &Arc<Mutex<DeviceInfo>>) -> Result<(), XHCIErr
     for device in &mut devices {
         let mut mapper = MAPPER.lock();
         let data_frame = alloc_frame().ok_or(XHCIError::MemoryAllocationFailure)?;
-        debug_println!("Data phys_addr = {:X}", data_frame.start_address().as_u64());
         let data_addr = mmio::map_page_as_uncacheable(data_frame.start_address(), &mut mapper)
             .map_err(|_| XHCIError::MemoryAllocationFailure)?;
         drop(mapper);
