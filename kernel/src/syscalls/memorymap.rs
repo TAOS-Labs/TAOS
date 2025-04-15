@@ -445,36 +445,16 @@ pub fn sys_munmap(addr: u64, len: u64) -> u64 {
 // TODO: Mmap tests
 #[cfg(test)]
 mod tests {
-    use super::{MmapFlags, ProtFlags};
     use crate::{
-        constants::{
-            memory::PAGE_SIZE,
-            processes::{
-                MMAP_ANON_SIMPLE, TEST_MMAP_ANON_SHARED, TEST_MMAP_CHILD_WRITES,
-                TEST_MPROTECT_CHILD_WRITES,
-            },
+        constants::processes::{
+            TEST_MMAP_ANON_SHARED, TEST_MMAP_CHILD_WRITES, TEST_MPROTECT_CHILD_WRITES,
         },
-        devices::sd_card::SD_CARD,
-        events::{futures::sleep, schedule_kernel, schedule_kernel_on, schedule_process},
-        filesys::{FileSystem, FILESYSTEM},
-        processes::process::{create_process, get_current_pid, PCB, PROCESS_TABLE},
-        serial_println,
-        syscalls::{
-            memorymap::sys_mmap,
-            syscall_handlers::{sys_nanosleep_32, REGISTER_VALUES},
-        },
+        events::schedule_process,
+        processes::process::create_process,
+        syscalls::syscall_handlers::REGISTER_VALUES,
     };
-    use alloc::boxed::Box;
 
     use crate::events::{current_running_event, futures::await_on::AwaitProcess, get_runner_time};
-
-    // #[test_case]
-    async fn mmap_file_read_test() {
-        for i in 0..100_000_000u64 {}
-        serial_println!("finished for loop");
-
-        for i in 0..100_000_00u64 {}
-    }
 
     #[test_case]
     async fn mmap_anonymous_shared() {

@@ -3,8 +3,6 @@
 // Binaries used for tests
 pub const PRINT_EXIT: &[u8] = include_bytes!("../processes/test_binaries/print_exit");
 
-pub const MMAP_ANON_SIMPLE: &[u8] = include_bytes!("../processes/test_binaries/mmap_anon_simple");
-
 pub const FORK_SIMPLE: &[u8] = include_bytes!("../processes/test_binaries/fork_simple");
 
 pub const TEST_SIMPLE_PROCESS: &[u8] =
