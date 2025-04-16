@@ -165,6 +165,8 @@ impl CommandBuffer {
         write_volatile(self.rirb_addr_h, (self.rirb_phys >> 32) as u32);
         write_volatile(self.rirb_size, (read_volatile(self.rirb_size) & 0xF8) | 0x2);
         write_volatile(self.rirb_wp, RIRBWPRST);
+        serial_println!("RIRBWP after reset: 0x{:04X}", read_volatile(self.rirb_wp));
+
         self.rirb_rp_shadow = 0;
     
         // serial_println!("CORB base low:   0x{:08x}", read_volatile(self.corb_addr_l));
@@ -176,6 +178,13 @@ impl CommandBuffer {
     
         write_volatile(self.corb_ctl, CORBRUN);
         write_volatile(self.rirb_ctl, RIRBDMAEN | RINTCTL);
+        serial_println!("---------------------------------------------");
+        serial_println!("RIRB_CTL after enabling: 0x{:02X}", read_volatile(self.rirb_ctl));
+
+
+        let intctl_ptr = (self.base + 0x20) as *mut u32;
+        write_volatile(intctl_ptr, 0x80000000); // Enable global HDA interrupt (bit 31)
+        serial_println!("INTCTL enabled: 0x{:08X}", read_volatile(intctl_ptr));
     
         // serial_println!("RIRB CTL:        0x{:02X}", read_volatile(self.rirb_ctl));
         // serial_println!("RIRB base low:   0x{:08X}", read_volatile(self.rirb_addr_l));
@@ -205,10 +214,27 @@ impl CommandBuffer {
         serial_println!("CORBWP write pos: {}, value: 0x{:08X}", pos, cmd);
 
 
+        // while (read_volatile(self.rirb_wp) & 0xff) == (self.rirb_rp_shadow & 0xff) {
+        //     // serial_println!("RIRB_WP: 0x{:04X}", read_volatile(self.rirb_wp));
+        //     nanosleep_current_event(100_000_000).unwrap().await;
+        // }
+
         while (read_volatile(self.rirb_wp) & 0xff) == (self.rirb_rp_shadow & 0xff) {
-            // serial_println!("RIRB_WP: 0x{:04X}", read_volatile(self.rirb_wp));
+            let wp = read_volatile(self.rirb_wp);
+            serial_println!(
+                "Waiting... RIRBWP: 0x{:04X}, Shadow: 0x{:04X}",
+                wp,
+                self.rirb_rp_shadow
+            );
+
+            for i in 0..4 {
+                let val = read_volatile(self.rirb_virt.add(i));
+                serial_println!("RIRB[{}] = 0x{:016X}", i, val);
+            }
+
             nanosleep_current_event(100_000_000).unwrap().await;
         }
+        
         // serial_println!("")
         let idx = ((self.rirb_rp_shadow + 1) % self.rirb_count as u16) as usize;
         let val = read_volatile(self.rirb_virt.add(idx));
@@ -226,7 +252,6 @@ impl CommandBuffer {
         n |= ((addr.0 as u32 & 0xF) << 28) | ((addr.1 as u32 & 0xFF) << 20);
         n |= (verb & 0xFFF) << 8;
         n |= data as u32;
-        serial_println!("Sending verub: 0x{:08X}", n);
         self.send(n).await
     }
 

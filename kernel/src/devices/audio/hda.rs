@@ -101,9 +101,23 @@ impl IntelHDA {
         let mut cmd_buf = unsafe {
             CommandBuffer::new(virt.as_u64() as usize, &corb_buf, &rirb_buf).await
         };
+        // unsafe {
+        //     cmd_buf.init(false).await; // Set true to use immediate commands
+        // }
+
         unsafe {
-            cmd_buf.init(false).await; // Set true to use immediate commands
+            cmd_buf.set_use_immediate(true).await;
+            cmd_buf.init(true).await;
         }
+        
+        // TEMP: test immediate command mode. TODO Remmove this
+        let val = unsafe {
+            cmd_buf.cmd4(WidgetAddr(0, 0), 0xF, 0).await // GetParameter: Vendor ID
+        };
+        serial_println!("Immediate command result: 0x{:08X}", val as u32);
+
+        
+
         hda.cmd_buf = Some(cmd_buf);
     
         serial_println!("BASE: 0x{:08X}", hda.base);
