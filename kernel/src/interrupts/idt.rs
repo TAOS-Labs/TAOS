@@ -222,14 +222,14 @@ extern "x86-interrupt" fn page_fault_handler(
                         .await
                     });
                 }
-                FaultOutcome::UnmappedCopyOnWrite {
+                FaultOutcome::CopyOnWrite {
                     page,
                     mut mapper,
                     pt_flags,
                 } => {
                     handle_cow_fault(page, &mut mapper, pt_flags);
                 }
-                FaultOutcome::UnmappedSharedPage {
+                FaultOutcome::SharedPage {
                     page,
                     mut mapper,
                     pt_flags,

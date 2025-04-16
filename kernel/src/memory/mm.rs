@@ -51,7 +51,16 @@ impl Mm {
         }
     }
 
-    /// Insert a new VmArea into the VMA tree.
+    /// Insert a new VmArea into the VMA tree. Done when any contiguous region of virtual memory
+    /// becomes part of the address space for a process.
+    ///
+    /// * `tree`: data structure to represent all regions of virtual memory in a process
+    /// * `start`: starting address of region of memory being inserted
+    /// * `end`: ending address (NOT INCLUSIVE) of region of memory being inserted
+    /// * `initial_backing`: If anonymous, the backing which maps to a chain of frames for this memory
+    /// * `flags`: Permission flags for region
+    /// * `fd`: If backed by a file, the file descriptor of the open file backing this region
+    /// * `pg_offset`: If backed by a file, the offset into the file for backing this region
     pub fn insert_vma(
         tree: &mut VmaTree,
         start: u64,
@@ -74,11 +83,13 @@ impl Mm {
         Self::coalesce_vma_right(new_vma.clone(), tree)
     }
 
+    /// coalesce the candidate VMA
     pub fn coalesce_vma(candidate: Arc<Mutex<VmArea>>, tree: &mut VmaTree) -> Arc<Mutex<VmArea>> {
         let candidate = Self::coalesce_vma_left(candidate, tree);
         Self::coalesce_vma_left(candidate, tree)
     }
 
+    /// update permissions for the vma with the passed in flags
     pub fn update_vma_permissions(vma: &Arc<Mutex<VmArea>>, flags: VmAreaFlags) {
         let mut vma_locked = vma.lock();
         vma_locked.flags = flags;
@@ -228,7 +239,15 @@ impl Mm {
         tree.remove_entry(&(start as usize))
     }
 
-    // TODO: VERIFY NO OFF BY ONE ERRORS
+    /// Shrinks an existing VMA by a lower and upper bound and returns the three VMAs,
+    /// split based off those bounds.
+    ///
+    /// * `old_start`: Original starting address of VMA - key within the tree
+    /// * `new_start`: Lower bound of what VMA should be shrunk by. Also the split point
+    ///                between the left VMA and the middle VMA
+    /// * `new_end`: Upper bound of what VMA should be shrunk by. Also the split point
+    ///              between the middle VMA and the right VMA
+    /// * `tree`: VMA tree that stores all VMAs for this process
     pub fn shrink_vma(
         old_start: u64,
         new_start: u64,
@@ -444,6 +463,7 @@ impl Mm {
         }
     }
 
+    /// Helper to give scoped muutable access to the locked vma tree
     pub fn with_vma_tree_mutable<F, R>(&self, f: F) -> R
     where
         F: FnOnce(&mut VmaTree) -> R,
@@ -452,6 +472,7 @@ impl Mm {
         f(&mut tree)
     }
 
+    /// Helper to give scoped immutable access to the locked vma ree
     pub fn with_vma_tree<F, R>(&self, f: F) -> R
     where
         F: FnOnce(&VmaTree) -> R,
@@ -463,6 +484,7 @@ impl Mm {
 
 bitflags! {
     #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+    /// Permissions and behavior for a VmArea
     pub struct VmAreaFlags: u64 {
         const WRITABLE    = 1 << 0;
         const EXECUTE     = 1 << 1; // For code segments.
@@ -476,6 +498,7 @@ bitflags! {
     }
 }
 
+/// Converts between the given VmAreaFlags to PageTableFlags
 pub fn vma_to_page_flags(vma_flags: VmAreaFlags) -> PageTableFlags {
     let mut flags = PageTableFlags::USER_ACCESSIBLE;
 
@@ -492,10 +515,13 @@ pub fn vma_to_page_flags(vma_flags: VmAreaFlags) -> PageTableFlags {
 /// A VMA now stores multiple backing segments, each for a subrange.
 #[derive(Clone, Debug)]
 pub struct VmArea {
+    /// Startinng address for this VmArea
     pub start: u64,
+    /// Ending addss for this VmArea
     pub end: u64,
     /// Mapping from an offset (relative to `start`) to a segment.
     pub segments: Arc<Mutex<BTreeMap<u64, VmAreaSegment>>>,
+    /// Permission and behavior flags for this VmArea
     pub flags: VmAreaFlags,
 }
 
@@ -562,16 +588,18 @@ pub struct VmAreaSegment {
     pub end: u64,
     /// The backing for this segment.
     pub backing: Arc<VmAreaBackings>,
-    /// file descriptor backed by this segment
+    /// File descriptor backed by this segment
     pub fd: usize,
-    /// page offset
+    /// Offset into the file where we are
     pub pg_offset: u64,
 }
 
 /// Reverse mapping chain entry linking an offset to a physical page.
 #[derive(Debug)]
 pub struct VmaChain {
+    /// Offset into the backing that contains this VmaChain
     pub offset: u64,
+    /// The frame that this VmaChain maps to
     pub frame: PhysFrame,
 }
 
@@ -584,8 +612,9 @@ impl VmaChain {
 /// Anonymous VM area for managing reverse mappings for anonymous pages.
 #[derive(Debug)]
 pub struct VmAreaBackings {
-    /// Reverse mappings keyed by offset.
+    /// VMAs keyed by offset.
     pub mappings: Mutex<BTreeMap<u64, Arc<VmaChain>>>,
+    /// TODO: Used for reverse mappings
     pub vmas: Mutex<Vec<Arc<Mutex<VmArea>>>>,
 }
 
@@ -616,10 +645,12 @@ impl VmAreaBackings {
         }
     }
 
+    /// Inserts an entry into the vmas tree
     pub fn insert_vma(&mut self, vma: Arc<Mutex<VmArea>>) {
         self.vmas.lock().push(vma);
     }
 
+    /// Removes an entry from the vmas tree
     pub fn remove_vma(&mut self, index: usize) {
         self.vmas.lock().swap_remove(index);
     }

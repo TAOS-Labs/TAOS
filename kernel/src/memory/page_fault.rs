@@ -9,7 +9,7 @@ use x86_64::{
             PhysFrame, Size4KiB, Translate,
         },
     },
-    PhysAddr, VirtAddr,
+    VirtAddr,
 };
 
 use crate::{
@@ -31,6 +31,7 @@ use super::mm::{VmArea, VmAreaBackings, VmaChain};
 pub enum FaultOutcome {
     /// There is allocated frame created by a different process but it is not updated
     /// in this process' page table
+    /// MAP_ANONYMOUS | MAP_SHARED
     SharedAnonMapping {
         /// page containing faulting address
         page: Page<Size4KiB>,
@@ -38,11 +39,12 @@ pub enum FaultOutcome {
         mapper: OffsetPageTable<'static>,
         /// The backing of frames for the mmap'ed area that contains the faulting address
         chain: Arc<VmaChain>,
-        /// the page table flags for the page
+        /// the page table flags for the page containing the faulting address
         pt_flags: PageTableFlags,
     },
-    /// There is no allocated frame, so we need to allocate a new frame, since we are doing lazy
+    /// There is no allocated frame, so we need to allocate a new frame in the VmaChain, since we are doing lazy
     /// allocations
+    /// MAP ANONYMOUS | (MAP_SHARED or MAP_PRIVATE)
     NewAnonMapping {
         /// page containing faulting address
         page: Page<Size4KiB>,
@@ -50,38 +52,59 @@ pub enum FaultOutcome {
         mapper: OffsetPageTable<'static>,
         /// backings to use
         backing: Arc<VmAreaBackings>,
+        /// the page table flags for the page containing the faulting address
         pt_flags: PageTableFlags,
     },
     /// There is a file-backed mapping and it is shared between multiple processes
+    /// MAP_FILE | MAP_SHARED
     SharedFileMapping {
         /// page containing faulting address
         page: Page<Size4KiB>,
         /// this process' page table mapper
         mapper: OffsetPageTable<'static>,
+        /// the offset within the file that we had a page fault at
         offset: u64,
+        /// the page table flags for the page containing the faulting address
         pt_flags: PageTableFlags,
+        /// the file descriptor for the file that we had a page fault at
         fd: usize,
     },
     /// There is a file-backed mapping but it is private and copy on write (COW)
+    /// MAP_FILE | MAP_PRIVATE
     PrivateFileMapping {
+        /// page containing faulting address
         page: Page<Size4KiB>,
+        /// this process' page table mapper
         mapper: OffsetPageTable<'static>,
+        /// the offset within the file that we had a page fault at
         offset: u64,
+        /// the page table flags for the page containing the faulting address
         pt_flags: PageTableFlags,
+        /// the file descriptor for the file that we had a page fault at
         fd: usize,
     },
-    /// The VMA is marked as COW and is not mapped
-    UnmappedCopyOnWrite {
+    /// The VMA is marked as COW and is mapped, but with COW permissions
+    /// A new frame needs to be allocated with same contents as current mapped frame
+    /// with updated permissions
+    CopyOnWrite {
+        /// page containing faulting address
         page: Page<Size4KiB>,
+        /// this process' page table mapper
         mapper: OffsetPageTable<'static>,
+        /// the page table flags for the page containing the faulting address
         pt_flags: PageTableFlags,
     },
-    /// The VMA is not marked as COW and is not mapped
-    UnmappedSharedPage {
+    /// The VMA is not marked as COW in the VMA and is mapped
+    /// The PTE permissions need to be updated to give write permissions to the faulting process
+    SharedPage {
+        /// page containing faulting address
         page: Page<Size4KiB>,
+        /// this process' page table mapper
         mapper: OffsetPageTable<'static>,
+        /// the page table flags for the page containing the faulting address
         pt_flags: PageTableFlags,
     },
+    // Address is already mapped - probably an error
     Mapped,
 }
 
@@ -192,13 +215,13 @@ pub fn determine_fault_cause(error_code: PageFaultErrorCode, vma: &VmArea) -> Fa
             !vma.flags.contains(VmAreaFlags::SHARED) && vma.flags.contains(VmAreaFlags::WRITABLE);
         let caused_by_write = error_code.contains(PageFaultErrorCode::CAUSED_BY_WRITE);
         if cow && caused_by_write {
-            Some(FaultOutcome::UnmappedCopyOnWrite {
+            Some(FaultOutcome::CopyOnWrite {
                 page,
                 mapper,
                 pt_flags,
             })
         } else if !cow && caused_by_write {
-            Some(FaultOutcome::UnmappedSharedPage {
+            Some(FaultOutcome::SharedPage {
                 page,
                 mapper,
                 pt_flags,
@@ -213,7 +236,7 @@ pub fn determine_fault_cause(error_code: PageFaultErrorCode, vma: &VmArea) -> Fa
     outcome.unwrap()
 }
 
-/// Handles a fault by using an existing anonymous VMA chain mapping.
+/// Handles a page fault by using an existing anonymous VMA chain mapping.
 ///
 /// # Arguments
 /// * `page` - the page corresponding to the faulting address
@@ -231,26 +254,16 @@ pub fn handle_existing_mapping(
     create_mapping_to_frame(page, mapper, Some(flags), chain.frame);
 }
 
+/// Handles the page fault for a file-backed page that should be shared
+/// with other processes. References the page cache to either find
+/// frame mapped to a file at a specific offset or adds this mapping.
 ///
-///
-/// * `page`:
-/// * `mapper`:
-/// * `offset`:
-/// * `pt_flags`:
-pub fn handle_existing_file_mapping(
-    page: Page<Size4KiB>,
-    mapper: &mut OffsetPageTable,
-    offset: u64,
-    pt_flags: PageTableFlags,
-) {
-    create_mapping_to_frame(
-        page,
-        mapper,
-        Some(pt_flags),
-        PhysFrame::containing_address(PhysAddr::new(offset)),
-    );
-}
-
+/// # Arguments:
+/// * `page`: page of user's faulting address
+/// * `mapper`: process's mapper for editing page table
+/// * `offset`: offset into the file that backs the page
+/// * `pt_flags`: page table flags to update to based off VMA flags
+/// * `fd`: file descriptor of opened file that backs page
 pub async fn handle_shared_file_mapping(
     page: Page<Size4KiB>,
     mapper: &mut OffsetPageTable<'_>,
@@ -291,6 +304,17 @@ pub async fn handle_shared_file_mapping(
     create_mapping_to_frame(page, mapper, Some(flags), frame);
 }
 
+/// Handles a page fault for a file that should not be shared by adding an entry into the page
+/// cache for that file at the faulting offset and creating a mapping for the frame
+/// corresponding to the page containing the faulting address
+///
+/// # Arguments:
+/// * `page`: page of user's faulting address
+/// * `mapper`: process's mapper for editing page table
+/// * `offset`: offset into the file that backs the page
+/// * `pt_flags`: page table flags to update to based off VMA flags
+/// * `fd`: file descriptor of opened file that backs page
+/// * `vma`: VMA to update permissions for
 pub async fn handle_private_file_mapping(
     page: Page<Size4KiB>,
     mapper: &mut OffsetPageTable<'_>,
@@ -410,6 +434,14 @@ pub fn handle_cow_fault(
     }
 }
 
+/// Handles a shared page fault where a parent or child process
+/// sees a specific PTE as copy-on-write but the VMA permissions are
+/// of a shared page. Gives write permissions to this frame so it can
+/// be shared between processes.
+///
+/// * `page`: the page corresponding to the faulting address
+/// * `mapper`: page faulting process's page table
+/// * `pt_flags`: page table flags to update to, based on VMA flags
 pub fn handle_shared_page_fault(
     page: Page<Size4KiB>,
     mapper: &mut OffsetPageTable,

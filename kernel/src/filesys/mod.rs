@@ -389,7 +389,7 @@ impl FileSystem for Ext2Wrapper {
                     let page = entry.1;
                     let start_addr = page.start_address().as_u64();
                     let ptr = start_addr as *const u8;
-                    let _buffer: &[u8] = unsafe { core::slice::from_raw_parts(ptr, 4096) };
+                    let _buffer: &[u8] = unsafe { core::slice::from_raw_parts(ptr, PAGE_SIZE) };
                     fs.write_file_at(&path, _buffer, *offset).await?;
 
                     let mapper = KERNEL_MAPPER.lock();
