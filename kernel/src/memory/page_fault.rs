@@ -17,11 +17,11 @@ use crate::{
     filesys::{FileSystem, FILESYSTEM},
     memory::{
         frame_allocator::alloc_frame,
-        mm::{vma_to_page_flags, Mm, VmAreaFlags},
+        mm::{vma_to_page_flags, VmAreaFlags},
         paging::{create_mapping, create_mapping_to_frame, update_mapping, update_permissions},
         HHDM_OFFSET, KERNEL_MAPPER,
     },
-    processes::process::with_current_pcb, serial_println,
+    processes::process::with_current_pcb,
 };
 
 use super::mm::{VmArea, VmAreaBackings, VmaChain};

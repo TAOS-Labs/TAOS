@@ -434,13 +434,13 @@ mod tests {
     /// It then schedules a read of that page on an alternate core (to load it into that core’s TLB cache).
     /// After that, the mapping is updated to a new frame with new contents and the new value is written.
     /// Finally, the test re-schedules a read on the alternate core and verifies that the new value is observed.
-    // #[test_case]
+    #[test_case]
     async fn test_tlb_shootdowns_cross_core() {
         const AP: u32 = 1;
         const PRIORITY: usize = 3;
 
         // Create mapping and set a value on the current core.
-        let page: Page = Page::containing_address(VirtAddr::new(0x400010000));
+        let page: Page = Page::containing_address(VirtAddr::new(0x500000000));
 
         {
             let mut mapper = KERNEL_MAPPER.lock();

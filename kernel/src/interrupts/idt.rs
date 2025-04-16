@@ -29,7 +29,7 @@ use crate::{
     }, prelude::*, processes::{
         process::{preempt_process, with_current_pcb},
         registers::NonFlagRegisters,
-    }, serial, syscalls::{
+    }, syscalls::{
         memorymap::sys_mmap,
         syscall_handlers::{block_on, sys_exit, sys_nanosleep_32, sys_print},
     }
