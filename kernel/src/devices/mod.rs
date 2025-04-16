@@ -6,8 +6,6 @@
 //! - Future device support will be added here
 
 use crate::{memory::KERNEL_MAPPER, serial_println};
-#[allow(unused_imports)]
-use limine::request::FramebufferRequest;
 use pci::walk_pci_bus;
 use sd_card::{find_sd_card, initalize_sd_card};
 pub mod graphics;

@@ -85,18 +85,20 @@ bitflags! {
 }
 
 bitflags::bitflags! {
-    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
     /// Flags for file permissions
     pub struct ChmodMode: u16 {
-        const UREAD  = 0o400;
-        const UWRITE = 0o200;
-        const UEXEC  = 0o100;
-        const GREAD  = 0o040;
-        const GWRITE = 0o020;
-        const GEXEC  = 0o010;
-        const OREAD  = 0o004;
-        const OWRITE = 0o002;
-        const OEXEC  = 0o001;
+        const UREAD   = 1 << 8;  // 0x100
+        const UWRITE  = 1 << 7;  // 0x080
+        const UEXEC   = 1 << 6;  // 0x040
+
+        const GREAD   = 1 << 5;  // 0x020
+        const GWRITE  = 1 << 4;  // 0x010
+        const GEXEC   = 1 << 3;  // 0x008
+
+        const OREAD   = 1 << 2;  // 0x004
+        const OWRITE  = 1 << 1;  // 0x002
+        const OEXEC   = 1 << 0;  // 0x001
     }
 }
 
@@ -111,6 +113,7 @@ pub struct File {
     position: usize,
     #[allow(unused)]
     /// Flags used to open/create file
+    /// TODO: Use these flags in enforcment of file operations
     flags: OpenFlags,
     /// The inode number associated with this file
     pub inode_number: u32,

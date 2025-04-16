@@ -16,7 +16,15 @@ use crate::{
     },
 };
 
-/// Creates a new child process, Copy-on-write
+/// Create an exact clone of a process to create a child process.
+///
+/// # Arguments
+/// * `reg_vals' - Register values of parent process at time of
+///                parent process calling 'syscall' - r11 stores
+///                rflags and rcx stores next rip.
+///
+/// # Return
+/// Returns child pid
 pub fn sys_fork(reg_vals: &ForkingRegisters) -> u64 {
     let child_pid = NEXT_PID.fetch_add(1, Ordering::SeqCst);
     let parent_pid = current_running_event_info().pid;
@@ -32,6 +40,8 @@ pub fn sys_fork(reg_vals: &ForkingRegisters) -> u64 {
 
     let parent_pcb = process.pcb.get();
 
+    // Use the register values captured at syscall to populate register values of child PCB.
+    // This follows 64-bit syscall conventions of where values are stored and which reg vals are maintained.
     let child_pcb = Arc::new(UnsafePCB::new(unsafe { (*parent_pcb).clone() }));
     unsafe {
         (*child_pcb.pcb.get()).registers.rax = 0;
@@ -56,6 +66,7 @@ pub fn sys_fork(reg_vals: &ForkingRegisters) -> u64 {
         (*child_pcb.pcb.get()).state = ProcessState::Ready;
     }
 
+    // duplicate page table for child - intermediate layers are real clones, final-level frames are COW
     let child_pml4_frame =
         duplicate_page_table_recursive(unsafe { (*parent_pcb).mm.pml4_frame }, 4);
 

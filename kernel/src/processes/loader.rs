@@ -65,18 +65,6 @@ pub fn load_elf(
         // For each page in [start_page..end_page], create user mapping,
         // then do a kernel alias to copy data in
         for page in Page::range_inclusive(start_page, end_page) {
-            mm.with_vma_tree_mutable(|tree| {
-                Mm::insert_vma(
-                    tree,
-                    page.start_address().as_u64(),
-                    page.start_address().as_u64() + PAGE_SIZE as u64,
-                    anon_vma_code_and_data.clone(),
-                    VmAreaFlags::WRITABLE | VmAreaFlags::EXECUTE,
-                    usize::MAX,
-                    0,
-                );
-            });
-
             let frame = create_mapping(page, user_mapper, Some(default_flags));
             let kernel_alias = map_kernel_frame(kernel_mapper, frame, default_flags);
             // now `kernel_alias` is a kernel virtual address of that same frame
@@ -109,12 +97,30 @@ pub fn load_elf(
                 }
             }
 
+            let mut vma_flags = VmAreaFlags::empty();
             if (ph.p_flags & PF_W) != 0 {
                 flags |= PageTableFlags::WRITABLE;
+                vma_flags |= VmAreaFlags::WRITABLE;
             }
             if (ph.p_flags & PF_X) == 0 {
                 flags |= PageTableFlags::NO_EXECUTE;
             }
+            else {
+                vma_flags |=  VmAreaFlags::EXECUTE
+            }
+
+            mm.with_vma_tree_mutable(|tree| {
+                Mm::insert_vma(
+                    tree,
+                    page.start_address().as_u64(),
+                    page.start_address().as_u64() + PAGE_SIZE as u64,
+                    anon_vma_code_and_data.clone(),
+                    vma_flags,
+                    usize::MAX,
+                    0,
+                );
+            });
+            
             update_permissions(page, user_mapper, flags);
 
             let unmap_page: Page<Size4KiB> = Page::containing_address(kernel_alias);
