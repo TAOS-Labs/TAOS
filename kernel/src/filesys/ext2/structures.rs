@@ -232,13 +232,13 @@ impl Inode {
 
     /// Getters to determine permissions for the specified user on this file
     pub fn user_execute(&self) -> bool {
-        FileMode::from_bits_truncate(self.mode & 0x40) == FileMode::UEXEC
+        FileMode::from_bits_retain(self.mode).contains(FileMode::UEXEC)
     }
     pub fn user_write(&self) -> bool {
-        FileMode::from_bits_truncate(self.mode & 0x80) == FileMode::UWRITE
+        FileMode::from_bits_retain(self.mode).contains(FileMode::UWRITE)
     }
     pub fn user_read(&self) -> bool {
-        FileMode::from_bits_truncate(self.mode & 0x100) == FileMode::UREAD
+        FileMode::from_bits_retain(self.mode).contains(FileMode::UREAD)
     }
 
     /// Setters to alter permissions for the specified user on this file
@@ -254,13 +254,13 @@ impl Inode {
 
     /// Getters to determine permissions for the specified user group on this file
     pub fn group_execute(&self) -> bool {
-        FileMode::from_bits_truncate(self.mode & 0x8) == FileMode::GEXEC
+        FileMode::from_bits_retain(self.mode).contains(FileMode::GEXEC)
     }
     pub fn group_write(&self) -> bool {
-        FileMode::from_bits_truncate(self.mode & 0x10) == FileMode::GWRITE
+        FileMode::from_bits_retain(self.mode).contains(FileMode::GWRITE)
     }
     pub fn group_read(&self) -> bool {
-        FileMode::from_bits_truncate(self.mode & 0x20) == FileMode::GREAD
+        FileMode::from_bits_retain(self.mode).contains(FileMode::GREAD)
     }
 
     /// Setters to alter permissions for the specified user group on this file
@@ -276,13 +276,13 @@ impl Inode {
 
     /// Getters to determine permissions for the unspecified users on this file
     pub fn other_exectute(&self) -> bool {
-        FileMode::from_bits_truncate(self.mode & 0x1) == FileMode::OEXEC
+        FileMode::from_bits_retain(self.mode).contains(FileMode::OEXEC)
     }
     pub fn other_write(&self) -> bool {
-        FileMode::from_bits_truncate(self.mode & 0x2) == FileMode::OWRITE
+        FileMode::from_bits_retain(self.mode).contains(FileMode::OWRITE)
     }
     pub fn other_read(&self) -> bool {
-        FileMode::from_bits_truncate(self.mode & 0x4) == FileMode::OREAD
+        FileMode::from_bits_retain(self.mode).contains(FileMode::OREAD)
     }
 
     /// Setters to alter permissions for unspecified users on this file
