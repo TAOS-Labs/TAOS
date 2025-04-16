@@ -19,20 +19,27 @@ use crate::{
     constants::{
         idt::{KEYBOARD_VECTOR, MOUSE_VECTOR, SYSCALL_HANDLER, TIMER_VECTOR, TLB_SHOOTDOWN_VECTOR},
         syscalls::{SYSCALL_EXIT, SYSCALL_MMAP, SYSCALL_NANOSLEEP, SYSCALL_PRINT},
-    }, devices::{keyboard::keyboard_handler, mouse::mouse_handler}, events::inc_runner_clock, interrupts::x2apic::{self, current_core_id, TLB_SHOOTDOWN_ADDR}, memory::{
+    },
+    devices::{keyboard::keyboard_handler, mouse::mouse_handler},
+    events::inc_runner_clock,
+    interrupts::x2apic::{self, current_core_id, TLB_SHOOTDOWN_ADDR},
+    memory::{
         mm::Mm,
         page_fault::{
             determine_fault_cause, handle_cow_fault, handle_existing_mapping, handle_new_mapping,
             handle_private_file_mapping, handle_shared_file_mapping, handle_shared_page_fault,
             FaultOutcome,
         },
-    }, prelude::*, processes::{
+    },
+    prelude::*,
+    processes::{
         process::{preempt_process, with_current_pcb},
         registers::NonFlagRegisters,
-    }, syscalls::{
+    },
+    syscalls::{
         memorymap::sys_mmap,
         syscall_handlers::{block_on, sys_exit, sys_nanosleep_32, sys_print},
-    }
+    },
 };
 
 lazy_static! {

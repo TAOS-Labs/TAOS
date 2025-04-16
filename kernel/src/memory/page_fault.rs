@@ -350,7 +350,7 @@ pub fn handle_new_mapping(
     mapper: &mut OffsetPageTable,
     backing: &Arc<VmAreaBackings>,
     pt_flags: PageTableFlags,
-    vma: &VmArea
+    vma: &VmArea,
 ) {
     let mut flags = pt_flags;
     flags.set(PageTableFlags::PRESENT, true);

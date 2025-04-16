@@ -357,7 +357,10 @@ impl Mm {
                     if right_part_length > 0 {
                         let right_seg = VmAreaSegment {
                             start: seg.start + left_part_length + middle_part_length,
-                            end: seg.start + left_part_length + middle_part_length + right_part_length,
+                            end: seg.start
+                                + left_part_length
+                                + middle_part_length
+                                + right_part_length,
                             backing: seg.backing.clone(),
                             pg_offset: seg.pg_offset,
                             fd: seg.fd,
@@ -376,7 +379,7 @@ impl Mm {
             vma_guard.start = new_start;
             vma_guard.end = new_end;
             // Replace the old segments with the new left_segments.
-            if !middle_segments.is_empty()  {
+            if !middle_segments.is_empty() {
                 vma_guard.segments = Arc::new(Mutex::new(middle_segments));
                 vma_empty = false;
             }
@@ -1911,7 +1914,12 @@ mod tests {
         // Shrink both sides: remove the leftmost and rightmost pages.
         let new_start = old_start + PAGE_SIZE as u64;
         let new_end = old_end - PAGE_SIZE as u64;
-        serial_println!("new start and new end are {:X} and {:X}", new_start, new_end);        let shrunk = mm
+        serial_println!(
+            "new start and new end are {:X} and {:X}",
+            new_start,
+            new_end
+        );
+        let shrunk = mm
             .with_vma_tree_mutable(|tree| Mm::shrink_vma(old_start, new_start, new_end, tree))
             .1;
         assert!(shrunk.is_some());
