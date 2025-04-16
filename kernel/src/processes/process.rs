@@ -325,7 +325,7 @@ unsafe fn free_page_table(frame: PhysFrame, level: u8, hhdm_offset: u64) {
 use core::arch::asm;
 use x86_64::registers::control::{Cr3, Cr3Flags};
 
-use super::registers::NonFlagRegisters;
+use super::registers::ForkingRegisters;
 
 /// run a process in ring 3
 /// # Safety
@@ -647,7 +647,7 @@ pub fn sleep_process_int(nanos: u64, rsp: u64) {
     }
 }
 
-pub fn sleep_process_syscall(nanos: u64, reg_vals: &NonFlagRegisters) {
+pub fn sleep_process_syscall(nanos: u64, reg_vals: &ForkingRegisters) {
     let event: EventInfo = current_running_event_info();
     if event.pid == 0 {
         return;

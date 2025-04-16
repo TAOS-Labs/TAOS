@@ -34,7 +34,7 @@ use crate::{
     prelude::*,
     processes::{
         process::{preempt_process, with_current_pcb},
-        registers::NonFlagRegisters,
+        registers::ForkingRegisters,
     },
     syscalls::{
         memorymap::sys_mmap,
@@ -318,7 +318,7 @@ fn syscall_handler(rsp: u64) {
     }
     match syscall_num {
         SYSCALL_EXIT => {
-            sys_exit(p1 as i64, &NonFlagRegisters::default());
+            sys_exit(p1 as i64, &ForkingRegisters::default());
         }
         SYSCALL_PRINT => {
             let success = sys_print(p1 as *const u8);
@@ -334,7 +334,7 @@ fn syscall_handler(rsp: u64) {
     x2apic::send_eoi();
 
     if syscall_num == SYSCALL_EXIT {
-        sys_exit(p1 as i64, &NonFlagRegisters::default());
+        sys_exit(p1 as i64, &ForkingRegisters::default());
     } else if syscall_num == SYSCALL_MMAP {
         let val = sys_mmap(p1, p2, p3, p4, p5 as i64, p6);
         unsafe {

@@ -12,13 +12,12 @@ use crate::{
     },
     processes::{
         process::{ProcessState, UnsafePCB, NEXT_PID, PROCESS_TABLE},
-        registers::NonFlagRegisters,
+        registers::ForkingRegisters,
     },
-    serial_println,
 };
 
 /// Creates a new child process, Copy-on-write
-pub fn sys_fork(reg_vals: &NonFlagRegisters) -> u64 {
+pub fn sys_fork(reg_vals: &ForkingRegisters) -> u64 {
     let child_pid = NEXT_PID.fetch_add(1, Ordering::SeqCst);
     let parent_pid = current_running_event_info().pid;
 
@@ -173,7 +172,7 @@ mod tests {
             schedule_process,
         },
         memory::HHDM_OFFSET,
-        processes::{process::create_process, registers::NonFlagRegisters},
+        processes::{process::create_process, registers::ForkingRegisters},
         syscalls::syscall_handlers::{EXIT_CODES, PML4_FRAMES, REGISTER_VALUES},
     };
 
@@ -277,16 +276,16 @@ mod tests {
             let parent = registers
                 .get(&parent_pid)
                 .expect("Could not find parent pid.")
-                as *const NonFlagRegisters;
+                as *const ForkingRegisters;
             let child = registers
                 .get(&child_pid)
                 .expect("Could not find child pid.")
-                as *const NonFlagRegisters;
+                as *const ForkingRegisters;
             (parent, child)
         };
 
-        let parent_regs: &mut NonFlagRegisters = unsafe { &mut *(parent_regs_ptr as *mut _) };
-        let child_regs: &mut NonFlagRegisters = unsafe { &mut *(child_regs_ptr as *mut _) };
+        let parent_regs: &mut ForkingRegisters = unsafe { &mut *(parent_regs_ptr as *mut _) };
+        let child_regs: &mut ForkingRegisters = unsafe { &mut *(child_regs_ptr as *mut _) };
 
         let frames = PML4_FRAMES.lock();
         let parent_pml4 = frames.get(&parent_pid).expect("Could not find parent pid.");

@@ -244,9 +244,9 @@ impl Mm {
     ///
     /// * `old_start`: Original starting address of VMA - key within the tree
     /// * `new_start`: Lower bound of what VMA should be shrunk by. Also the split point
-    ///                between the left VMA and the middle VMA
+    ///   between the left VMA and the middle VMA
     /// * `new_end`: Upper bound of what VMA should be shrunk by. Also the split point
-    ///              between the middle VMA and the right VMA
+    ///   between the middle VMA and the right VMA
     /// * `tree`: VMA tree that stores all VMAs for this process
     pub fn shrink_vma(
         old_start: u64,

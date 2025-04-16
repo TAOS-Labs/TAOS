@@ -21,7 +21,7 @@ use crate::{
     memory::frame_allocator::with_buddy_frame_allocator,
     processes::{
         process::{sleep_process_int, sleep_process_syscall, ProcessState, PROCESS_TABLE},
-        registers::NonFlagRegisters,
+        registers::ForkingRegisters,
     },
     serial_println,
     syscalls::{fork::sys_fork, memorymap::sys_mmap},
@@ -33,7 +33,7 @@ use super::memorymap::{sys_mprotect, sys_munmap};
 
 lazy_static! {
     pub static ref EXIT_CODES: Mutex<BTreeMap<u32, i64>> = Mutex::new(BTreeMap::new());
-    pub static ref REGISTER_VALUES: Mutex<BTreeMap<u32, NonFlagRegisters>> =
+    pub static ref REGISTER_VALUES: Mutex<BTreeMap<u32, ForkingRegisters>> =
         Mutex::new(BTreeMap::new());
     pub static ref PML4_FRAMES: Mutex<BTreeMap<u32, PhysFrame<Size4KiB>>> =
         Mutex::new(BTreeMap::new());
@@ -152,7 +152,7 @@ pub unsafe extern "C" fn syscall_handler_64_naked() -> ! {
 #[no_mangle]
 pub unsafe extern "C" fn syscall_handler_impl(
     syscall: *const SyscallRegisters,
-    reg_vals: *const NonFlagRegisters,
+    reg_vals: *const ForkingRegisters,
 ) -> u64 {
     let syscall = unsafe { &*syscall };
     let reg_vals = unsafe { &*reg_vals };
@@ -182,7 +182,7 @@ pub unsafe extern "C" fn syscall_handler_impl(
     }
 }
 
-pub fn sys_exit(code: i64, reg_vals: &NonFlagRegisters) -> Option<u64> {
+pub fn sys_exit(code: i64, reg_vals: &ForkingRegisters) -> Option<u64> {
     // TODO handle hierarchy (parent processes), resources, threads, etc.
 
     // Used for testing
@@ -266,7 +266,7 @@ pub fn sys_nanosleep_32(nanos: u64, rsp: u64) -> u64 {
 
 /// Handle a nanosleep system call entered via syscall
 /// Uses manually-created NonFlagRegisters struct to restore state
-pub fn sys_nanosleep_64(nanos: u64, reg_vals: &NonFlagRegisters) -> u64 {
+pub fn sys_nanosleep_64(nanos: u64, reg_vals: &ForkingRegisters) -> u64 {
     sleep_process_syscall(nanos, reg_vals);
 
     0
