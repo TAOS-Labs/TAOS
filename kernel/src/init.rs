@@ -11,8 +11,10 @@ use limine::{
 };
 
 use crate::{
-    debug, devices,
+    debug,
+    devices::{self},
     events::{register_event_runner, run_loop, spawn, yield_now},
+    filesys::{self},
     interrupts::{self, idt},
     ipc::{
         messages::Message,
@@ -23,9 +25,9 @@ use crate::{
     },
     logging,
     memory::{self},
+    processes::{self},
     serial_println, trace,
 };
-
 extern crate alloc;
 
 /// Limine base revision request
@@ -56,15 +58,16 @@ pub fn init() -> u32 {
 
     register_event_runner();
     devices::init(0);
+    filesys::init(0);
     // Should be kept after devices in case logging gets complicated
     // Right now log writes to serial, but if it were to switch to VGA, this would be important
     logging::init(0);
+    processes::init(0);
 
     debug!("Waking cores");
     let bsp_id = wake_cores();
 
     idt::enable();
-
     bsp_id
 }
 
@@ -84,6 +87,7 @@ unsafe extern "C" fn secondary_cpu_main(cpu: &Cpu) -> ! {
     interrupts::init(cpu.id);
     memory::init(cpu.id);
     logging::init(cpu.id);
+    processes::init(cpu.id);
 
     debug!("AP {} initialized", cpu.id);
 
@@ -122,7 +126,6 @@ fn wake_cores() -> u32 {
     while CPU_COUNT.load(Ordering::SeqCst) < cpu_count - 1 {
         core::hint::spin_loop();
     }
-    register_event_runner();
 
     BOOT_COMPLETE.store(true, Ordering::SeqCst);
 

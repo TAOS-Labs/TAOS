@@ -168,13 +168,16 @@ mod tests {
     // Mock cacheable item for testing base cache functionality
     #[derive(Clone, Debug)]
     struct MockItem {
-        data: Vec<u8>,
+        _data: Vec<u8>,
         dirty: bool,
     }
 
     impl MockItem {
         fn new(data: Vec<u8>) -> Self {
-            Self { data, dirty: false }
+            Self {
+                _data: data,
+                dirty: false,
+            }
         }
     }
 

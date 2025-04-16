@@ -2,10 +2,18 @@ pub mod loader;
 pub mod process;
 pub mod registers;
 
+use process::create_placeholder_process;
+
+pub fn init(cpu_id: u32) {
+    if cpu_id == 0 {
+        create_placeholder_process();
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use crate::{
-        constants::processes::SYSCALL_EXIT_TEST,
+        constants::processes::TEST_SIMPLE_PROCESS,
         events::{
             current_running_event, futures::await_on::AwaitProcess, get_runner_time,
             schedule_process,
@@ -15,7 +23,7 @@ mod tests {
 
     #[test_case]
     async fn test_simple_process() {
-        let pid = create_process(SYSCALL_EXIT_TEST);
+        let pid = create_process(TEST_SIMPLE_PROCESS);
         schedule_process(pid);
         let waiter = AwaitProcess::new(
             pid,
@@ -23,7 +31,6 @@ mod tests {
             current_running_event().unwrap(),
         ) // TODO how to get event corresponding to testcase?
         .await;
-
         assert!(waiter.is_ok());
     }
 }

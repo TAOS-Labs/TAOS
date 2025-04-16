@@ -5,7 +5,7 @@
 //! - Frame buffer for screen output
 //! - Future device support will be added here
 
-use crate::{memory::MAPPER, serial_println};
+use crate::{memory::KERNEL_MAPPER, serial_println};
 use pci::walk_pci_bus;
 use sd_card::{find_sd_card, initalize_sd_card};
 pub mod graphics;
@@ -62,7 +62,7 @@ pub fn init(cpu_id: u32) {
         let devices = walk_pci_bus();
         let sd_card_device =
             find_sd_card(&devices).expect("Build system currently sets up an sd-card");
-        let mut mapper = MAPPER.lock();
+        let mut mapper = KERNEL_MAPPER.lock();
         initalize_sd_card(&sd_card_device, &mut mapper).unwrap();
         serial_println!("Sd card initialized");
 

@@ -11,25 +11,35 @@ use core::arch::naked_asm;
 use lazy_static::lazy_static;
 use x86_64::{
     instructions::interrupts,
-    structures::{
-        idt::{InterruptDescriptorTable, InterruptStackFrame, PageFaultErrorCode},
-        paging::{OffsetPageTable, Page, PageTable},
-    },
-    VirtAddr,
+    registers::control::Cr2,
+    structures::idt::{InterruptDescriptorTable, InterruptStackFrame, PageFaultErrorCode},
 };
 
 use crate::{
     constants::{
         idt::{KEYBOARD_VECTOR, MOUSE_VECTOR, SYSCALL_HANDLER, TIMER_VECTOR, TLB_SHOOTDOWN_VECTOR},
-        syscalls::{SYSCALL_EXIT, SYSCALL_NANOSLEEP, SYSCALL_PRINT},
+        syscalls::{SYSCALL_EXIT, SYSCALL_MMAP, SYSCALL_NANOSLEEP, SYSCALL_PRINT},
     },
     devices::{keyboard::keyboard_handler, mouse::mouse_handler},
     events::inc_runner_clock,
     interrupts::x2apic::{self, current_core_id, TLB_SHOOTDOWN_ADDR},
-    memory::{paging::create_mapping, HHDM_OFFSET},
+    memory::{
+        mm::Mm,
+        page_fault::{
+            determine_fault_cause, handle_cow_fault, handle_existing_mapping, handle_new_mapping,
+            handle_private_file_mapping, handle_shared_file_mapping, handle_shared_page_fault,
+            FaultOutcome,
+        },
+    },
     prelude::*,
-    processes::process::preempt_process,
-    syscalls::syscall_handlers::{sys_exit, sys_nanosleep_32, sys_print},
+    processes::{
+        process::{preempt_process, with_current_pcb},
+        registers::ForkingRegisters,
+    },
+    syscalls::{
+        memorymap::sys_mmap,
+        syscall_handlers::{block_on, sys_exit, sys_nanosleep_32, sys_print},
+    },
 };
 
 lazy_static! {
@@ -129,41 +139,114 @@ extern "x86-interrupt" fn double_fault_handler(
     panic!("EXCEPTION: DOUBLE FAULT\n{:#?}", stack_frame);
 }
 
-/// Handles page fault exceptions by printing fault information.
+/// Handles a page fault
+/// There are several possible cases that are handled here:
+/// 1. The page is lazy loaded, and not mapped yet
+/// 2. The page is loaded, but mapping does not exist yet
+/// 3. The page is loaded, but marked Copy-on-write
+/// 4. The page is mapped, and some other error happened
+/// 5. There is a shared file mapping
+/// 6. There is a private file mapping
+///
+/// # Arguments
+/// * `stack_frame` - The interrupt stack frame made from the page fault happening
+/// * `error_code` - A page fault error code that gives information such as prot, write fault, etc.
+///
+/// Returns
+/// This function does not return normally, uses x86-interrupt ABI
 extern "x86-interrupt" fn page_fault_handler(
     stack_frame: InterruptStackFrame,
     error_code: PageFaultErrorCode,
 ) {
-    use x86_64::registers::control::{Cr2, Cr3};
-
     let faulting_address = Cr2::read().expect("Cannot read faulting address").as_u64();
-    let pml4 = Cr3::read().0;
-    let new_pml4_phys = pml4.start_address();
-    let new_pml4_virt = VirtAddr::new((*HHDM_OFFSET).as_u64()) + new_pml4_phys.as_u64();
-    let new_pml4_ptr: *mut PageTable = new_pml4_virt.as_mut_ptr();
-
-    let mut mapper =
-        unsafe { OffsetPageTable::new(&mut *new_pml4_ptr, VirtAddr::new((*HHDM_OFFSET).as_u64())) };
-
-    let stack_pointer = stack_frame.stack_pointer.as_u64();
-
+    serial_println!("Page fault");
+    serial_println!("Stack pointer: 0x{:X}", stack_frame.stack_pointer);
     serial_println!(
-        "EXCEPTION: PAGE FAULT\nFaulting Address: {:?}\nError Code: {:X}\n{:#?}",
-        faulting_address,
-        error_code,
-        stack_frame
+        "Instruction pointer: 0x{:X}",
+        stack_frame.instruction_pointer
     );
+    serial_println!("Error code: {:#?}", error_code);
 
-    let page = Page::containing_address(VirtAddr::new(faulting_address));
+    with_current_pcb(|pcb| {
+        pcb.mm.with_vma_tree(|tree| {
+            // Find the VMA covering the faulting address.
+            let vma_arc = Mm::find_vma(faulting_address, tree).expect("Vma not found?");
+            let mut vma = vma_arc.lock();
 
-    // check for stack growth
-    if stack_pointer - 64 <= faulting_address && faulting_address < (*HHDM_OFFSET).as_u64() {
-        create_mapping(page, &mut mapper, None);
-    }
+            let fault = determine_fault_cause(error_code, &vma);
 
-    panic!("PAGE FAULT!");
+            match fault {
+                FaultOutcome::SharedAnonMapping {
+                    page,
+                    mut mapper,
+                    chain,
+                    pt_flags,
+                } => {
+                    handle_existing_mapping(page, &mut mapper, chain, pt_flags);
+                }
+                FaultOutcome::NewAnonMapping {
+                    page,
+                    mut mapper,
+                    backing,
+                    pt_flags,
+                } => {
+                    handle_new_mapping(page, &mut mapper, &backing, pt_flags, &vma);
+                }
+                FaultOutcome::SharedFileMapping {
+                    page,
+                    mut mapper,
+                    offset,
+                    pt_flags,
+                    fd,
+                } => {
+                    block_on(async {
+                        handle_shared_file_mapping(page, &mut mapper, offset, pt_flags, fd).await
+                    });
+                }
+                FaultOutcome::PrivateFileMapping {
+                    page,
+                    mut mapper,
+                    offset,
+                    pt_flags,
+                    fd,
+                } => {
+                    block_on(async {
+                        handle_private_file_mapping(
+                            page,
+                            &mut mapper,
+                            offset,
+                            pt_flags,
+                            fd,
+                            &mut vma,
+                        )
+                        .await
+                    });
+                }
+                FaultOutcome::CopyOnWrite {
+                    page,
+                    mut mapper,
+                    pt_flags,
+                } => {
+                    handle_cow_fault(page, &mut mapper, pt_flags);
+                }
+                FaultOutcome::SharedPage {
+                    page,
+                    mut mapper,
+                    pt_flags,
+                } => {
+                    handle_shared_page_fault(page, &mut mapper, pt_flags);
+                }
+                FaultOutcome::Mapped => {
+                    panic!();
+                }
+            }
+        });
+    });
+
+    serial_println!("got out of page fault handler.");
 }
 
+// TODO: Refactor this to follow the way 64 bit works
 #[no_mangle]
 #[naked]
 pub extern "x86-interrupt" fn naked_syscall_handler(_: InterruptStackFrame) {
@@ -213,11 +296,10 @@ pub extern "x86-interrupt" fn naked_syscall_handler(_: InterruptStackFrame) {
     }
 }
 
-// This is the actual syscall handler function that reads the registers from the stack
 #[no_mangle]
 #[allow(unused_variables, unused_assignments)] // disable until args p2-6 are used
 fn syscall_handler(rsp: u64) {
-    let syscall_num: u64;
+    let syscall_num: u32;
     let p1: u64;
     let p2: u64;
     let p3: u64;
@@ -226,7 +308,7 @@ fn syscall_handler(rsp: u64) {
     let p6: u64;
     let stack_ptr: *const u64 = rsp as *const u64;
     unsafe {
-        syscall_num = *stack_ptr.add(0);
+        syscall_num = *stack_ptr.add(0) as u32;
         p1 = *stack_ptr.add(5);
         p2 = *stack_ptr.add(4);
         p3 = *stack_ptr.add(3);
@@ -234,10 +316,9 @@ fn syscall_handler(rsp: u64) {
         p5 = *stack_ptr.add(6);
         p6 = *stack_ptr.add(7);
     }
-
-    match syscall_num as u32 {
+    match syscall_num {
         SYSCALL_EXIT => {
-            sys_exit(p1 as i64);
+            sys_exit(p1 as i64, &ForkingRegisters::default());
         }
         SYSCALL_PRINT => {
             let success = sys_print(p1 as *const u8);
@@ -251,6 +332,35 @@ fn syscall_handler(rsp: u64) {
     }
 
     x2apic::send_eoi();
+
+    if syscall_num == SYSCALL_EXIT {
+        sys_exit(p1 as i64, &ForkingRegisters::default());
+    } else if syscall_num == SYSCALL_MMAP {
+        let val = sys_mmap(p1, p2, p3, p4, p5 as i64, p6);
+        unsafe {
+            core::arch::asm!(
+                "mov rax, {0}",
+                in (reg) val,
+            )
+        }
+    } else if syscall_num == SYSCALL_PRINT {
+        let val = sys_print(p1 as *const u8);
+        unsafe {
+            core::arch::asm!(
+                "mov rax, {0}",
+                in (reg) val,
+            )
+        }
+    }
+    // } else if syscall_num == SYSCALL_FORK {
+    //     let val = sys_fork();
+    //     unsafe {
+    //         core::arch::asm!(
+    //             "mov rax, {0}",
+    //             in (reg) val,
+    //         )
+    //     }
+    // }
 }
 
 #[naked]

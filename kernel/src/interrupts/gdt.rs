@@ -24,12 +24,9 @@ use x86_64::{
     PrivilegeLevel, VirtAddr,
 };
 
-use crate::{
-    constants::{
-        gdt::{DOUBLE_FAULT_IST_INDEX, IST_STACK_SIZE, RING0_STACK_SIZE},
-        MAX_CORES,
-    },
-    serial_println,
+use crate::constants::{
+    gdt::{DOUBLE_FAULT_IST_INDEX, IST_STACK_SIZE, RING0_STACK_SIZE},
+    MAX_CORES,
 };
 
 /// Number of base GDT entries: null descriptor + kernel code/data + user code/data
@@ -60,7 +57,6 @@ lazy_static! {
                 let priv_stack_end = VirtAddr::new((priv_stack_start + RING0_STACK_SIZE as u64).as_u64() & !15);
 
                 tss.interrupt_stack_table[DOUBLE_FAULT_IST_INDEX as usize] = stack_end;
-                serial_println!("Stack end for cpu_id {} is {:#x}", i, priv_stack_end);
                 tss.privilege_stack_table[0] = priv_stack_end;
             }
         }
@@ -84,7 +80,8 @@ lazy_static! {
         let mut tss_selectors = [SegmentSelector::new(0, PrivilegeLevel::Ring0); MAX_CORES];
 
         for i in 0..MAX_CORES {
-            tss_selectors[i] = gdt.append(Descriptor::tss_segment(&TSSS[i]));
+            let value = gdt.append(Descriptor::tss_segment(&TSSS[i]));
+            tss_selectors[i] = value;
         }
 
         (gdt, Selectors {
