@@ -88,8 +88,6 @@ pub fn sys_fork(reg_vals: &NonFlagRegisters) -> u64 {
 
     schedule_process_on(1, child_pid);
 
-    serial_println!("Got out of fork");
-
     child_pid as u64
 }
 

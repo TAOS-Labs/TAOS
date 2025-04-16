@@ -182,7 +182,6 @@ extern "x86-interrupt" fn page_fault_handler(
                     chain,
                     pt_flags,
                 } => {
-                    serial_println!("1");
                     handle_existing_mapping(page, &mut mapper, chain, pt_flags);
                 }
                 FaultOutcome::NewAnonMapping {
@@ -191,7 +190,6 @@ extern "x86-interrupt" fn page_fault_handler(
                     backing,
                     pt_flags,
                 } => {
-                    serial_println!("2");
                     handle_new_mapping(page, &mut mapper, &backing, pt_flags, &vma);
                 }
                 FaultOutcome::SharedFileMapping {
@@ -201,7 +199,6 @@ extern "x86-interrupt" fn page_fault_handler(
                     pt_flags,
                     fd,
                 } => {
-                    serial_println!("3");
                     block_on(async {
                         handle_shared_file_mapping(page, &mut mapper, offset, pt_flags, fd).await
                     });
@@ -213,7 +210,6 @@ extern "x86-interrupt" fn page_fault_handler(
                     pt_flags,
                     fd,
                 } => {
-                    serial_println!("4");
                     block_on(async {
                         handle_private_file_mapping(
                             page,
@@ -231,7 +227,6 @@ extern "x86-interrupt" fn page_fault_handler(
                     mut mapper,
                     pt_flags,
                 } => {
-                    serial_println!("5");
                     handle_cow_fault(page, &mut mapper, pt_flags);
                 }
                 FaultOutcome::UnmappedSharedPage {
@@ -239,7 +234,6 @@ extern "x86-interrupt" fn page_fault_handler(
                     mut mapper,
                     pt_flags,
                 } => {
-                    serial_println!("6");
                     handle_shared_page_fault(page, &mut mapper, pt_flags);
                 }
                 FaultOutcome::Mapped => {

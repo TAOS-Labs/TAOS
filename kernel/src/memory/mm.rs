@@ -1788,7 +1788,6 @@ mod tests {
             // Expect the left part of Segment A: originally [0x0, 0x2000) becomes left portion [0x0, 0x1000).
             let seg_a_left = left_locked.find_segment(0);
             assert_eq!(seg_a_left.end - seg_a_left.start, 0x1000);
-            serial_println!("Seg_A left: {:#?}", seg_a_left);
             assert_eq!(
                 seg_a_left
                     .backing
@@ -1908,17 +1907,11 @@ mod tests {
                     mappings.insert(offset, Arc::new(VmaChain { offset, frame }));
                 }
             }
-            serial_println!("All segments are {:#?}", vma);
         });
 
         // Shrink both sides: remove the leftmost and rightmost pages.
         let new_start = old_start + PAGE_SIZE as u64;
         let new_end = old_end - PAGE_SIZE as u64;
-        serial_println!(
-            "new start and new end are {:X} and {:X}",
-            new_start,
-            new_end
-        );
         let shrunk = mm
             .with_vma_tree_mutable(|tree| Mm::shrink_vma(old_start, new_start, new_end, tree))
             .1;
@@ -1930,7 +1923,6 @@ mod tests {
         assert_eq!(locked.end, new_end);
 
         let segments = locked.segments.lock();
-        serial_println!("Segments are {:#?}", segments);
         let seg = segments.get(&0).expect("Segment missing");
         let mappings = seg.backing.mappings.lock();
         // After shrink, expect two mappings.
