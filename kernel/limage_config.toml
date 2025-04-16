@@ -16,10 +16,8 @@ base_args = [
     "-device", "virtio-net-pci,netdev=net0",
 
     # Audio
-        # Audio
-    "-audiodev", "coreaudio,id=snd0",
     "-device", "intel-hda",
-    "-device", "hda-duplex,audiodev=snd0",
+    "-device", "hda-duplex",
 
     # General Storage
     "-drive", "id=mysdcard,file=storage_test.img,if=none,format=raw",
