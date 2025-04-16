@@ -147,7 +147,7 @@ pub unsafe extern "C" fn syscall_handler_64_naked() -> ! {
 /// # Arguments
 /// * `syscall` - A pointer to a strut containing syscall_num, arg1...arg6 as u64
 /// * `reg_vals` - A pointer to a struct with all register values on call to 'syscall'.
-///                RIP stored in RCX, RFLAGS stored in R11. This is used for fork().
+///   RIP stored in RCX, RFLAGS stored in R11. This is used for fork().
 ///
 /// # Safety
 /// This function is unsafe as it must dereference `syscall` to get args

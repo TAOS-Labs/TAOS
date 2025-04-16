@@ -20,8 +20,8 @@ use crate::{
 ///
 /// # Arguments
 /// * `reg_vals' - Register values of parent process at time of
-///                parent process calling 'syscall' - r11 stores
-///                rflags and rcx stores next rip.
+///   parent process calling 'syscall' - r11 stores
+///   rflags and rcx stores next rip.
 ///
 /// # Return
 /// Returns child pid

@@ -104,9 +104,8 @@ pub fn load_elf(
             }
             if (ph.p_flags & PF_X) == 0 {
                 flags |= PageTableFlags::NO_EXECUTE;
-            }
-            else {
-                vma_flags |=  VmAreaFlags::EXECUTE
+            } else {
+                vma_flags |= VmAreaFlags::EXECUTE;
             }
 
             mm.with_vma_tree_mutable(|tree| {
@@ -120,7 +119,7 @@ pub fn load_elf(
                     0,
                 );
             });
-            
+
             update_permissions(page, user_mapper, flags);
 
             let unmap_page: Page<Size4KiB> = Page::containing_address(kernel_alias);
