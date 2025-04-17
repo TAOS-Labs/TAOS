@@ -26,6 +26,7 @@ pub mod interrupts;
 pub mod ipc;
 pub mod logging;
 pub mod memory;
+pub mod net;
 pub mod processes;
 pub mod syscalls;
 
@@ -143,11 +144,4 @@ pub extern "C" fn _start() -> ! {
 #[panic_handler]
 fn panic(info: &core::panic::PanicInfo) -> ! {
     test_panic_handler(info)
-}
-
-#[test_case]
-fn trivial_test() -> impl Future<Output = ()> + Send + 'static {
-    async {
-        assert_eq!(1, 1);
-    }
 }

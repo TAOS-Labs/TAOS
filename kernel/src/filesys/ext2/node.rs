@@ -991,7 +991,7 @@ mod tests {
     };
 
     struct TestSetup {
-        device: Arc<MockDevice>,
+        _device: Arc<MockDevice>,
         block_cache: Arc<Mutex<Box<dyn Cache<u32, CachedBlock>>>>,
         allocator: Arc<Mutex<Allocator>>,
     }
@@ -1033,7 +1033,7 @@ mod tests {
             }
 
             Self {
-                device,
+                _device: device,
                 block_cache,
                 allocator,
             }

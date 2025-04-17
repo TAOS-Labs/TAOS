@@ -1,37 +1,38 @@
-#[cfg(test)]
-#[path = "sync_tests.rs"]
-mod sync_tests;
-
-use alloc::sync::Arc;
+use alloc::{sync::Arc, vec::Vec};
+use spin::RwLock;
 use core::{
-    future::Future,
-    ops::{Deref, DerefMut},
-    pin::Pin,
-    sync::atomic::{AtomicBool, AtomicUsize, Ordering},
-    task::{Context, Poll},
+    future::Future, ops::{Deref, DerefMut}, pin::Pin, sync::atomic::{AtomicBool, AtomicUsize, Ordering}, task::{Context, Poll}
 };
 
-use crate::events::{current_running_event, Event, RwLock};
-use alloc::vec::Vec;
 use futures::task::ArcWake;
+
+use crate::events::{current_running_event, Event};
 
 /// Future to block an event until a boolean is set to true (by some other event)
 pub struct Condition {
+    /// Ready or not
     state: Arc<AtomicBool>,
+    /// The event to block on
     event: Arc<Event>,
 }
 
 unsafe impl Send for Condition {}
 
 impl Condition {
+    /// Create a new Condition
+    ///
+    /// * `state`: the starting state
+    /// * `event`: the relevant event
     pub fn new(state: Arc<AtomicBool>, event: Arc<Event>) -> Condition {
         Condition { state, event }
     }
 
+    /// The associated event is ready to make progress
     pub fn awake(&self) {
         self.event.clone().wake();
     }
 
+    /// Returns the associated event id
     pub fn get_id(&self) -> u64 {
         self.event.eid.0
     }

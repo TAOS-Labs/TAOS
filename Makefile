@@ -12,7 +12,7 @@ endif
 check:
 	@cd kernel && \
 	echo "Checking clippy" && \
-	cargo clippy -- -D warnings && \
+	cargo clippy --all-targets -- -D warnings && \
 	echo "Checking formatting" && \
 	cargo fmt --check
 

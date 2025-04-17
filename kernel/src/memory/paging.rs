@@ -1,10 +1,7 @@
-// This is only there because of get_page_table_entry() function being used in testcases,
-// however it could be used in a plethora of places later so I am keeping it for now
-#![allow(dead_code)]
-
 use x86_64::{
     structures::paging::{
-        Mapper, OffsetPageTable, Page, PageTable, PageTableFlags, PhysFrame, Size4KiB,
+        mapper::{MappedFrame, TranslateResult},
+        Mapper, OffsetPageTable, Page, PageTable, PageTableFlags, PhysFrame, Size4KiB, Translate,
     },
     VirtAddr,
 };
@@ -17,9 +14,15 @@ use crate::{
     },
 };
 
-use super::HHDM_OFFSET;
+use super::{frame_allocator::with_buddy_frame_allocator, HHDM_OFFSET};
 
 static mut NEXT_EPH_OFFSET: u64 = 0;
+
+#[derive(Debug)]
+/// Represents errors that can occur during SD card operation or initalization
+pub enum PagingError {
+    PageNotMappedErr,
+}
 
 /// initializes vmem system. activates pml4 and sets up page tables
 ///
@@ -65,6 +68,7 @@ pub fn create_mapping(
     mapper: &mut impl Mapper<Size4KiB>,
     flags: Option<PageTableFlags>,
 ) -> PhysFrame {
+    // TODO: Add proper failure handling (ref count increased but page not mapped)
     let frame = alloc_frame().expect("no more frames");
 
     let _ = unsafe {
@@ -84,6 +88,48 @@ pub fn create_mapping(
             )
             .expect("Mapping failed")
     };
+
+    tlb_shootdown(page.start_address());
+
+    frame
+}
+
+/// Creates a mapping to a designated physical frame
+/// Default flags: PRESENT | WRITABLE
+///
+/// # Arguments
+/// * `page` - a Page that we want to map
+/// * `mapper` - anything that implements a the Mapper trait
+/// * `flags` - Optional flags, can be None
+///
+/// # Returns
+/// Returns the frame that was allocated and mapped to this page
+pub fn create_mapping_to_frame(
+    page: Page,
+    mapper: &mut impl Mapper<Size4KiB>,
+    flags: Option<PageTableFlags>,
+    frame: PhysFrame,
+) -> PhysFrame {
+    let _ = unsafe {
+        mapper
+            .map_to(
+                page,
+                frame,
+                flags.unwrap_or(
+                    PageTableFlags::PRESENT
+                        | PageTableFlags::WRITABLE
+                        | PageTableFlags::USER_ACCESSIBLE,
+                ),
+                FRAME_ALLOCATOR
+                    .lock()
+                    .as_mut()
+                    .expect("Global allocator not initialized"),
+            )
+            .expect("Mapping failed")
+    };
+
+    tlb_shootdown(page.start_address());
+
     frame
 }
 
@@ -95,8 +141,18 @@ pub fn create_mapping(
 /// * `page` - a Page that we want to map, must already be mapped
 /// * `mapper` - anything that implements a the Mapper trait
 /// * `frame` - the PhysFrame<Size4KiB> to map to
-pub fn update_mapping(page: Page, mapper: &mut impl Mapper<Size4KiB>, frame: PhysFrame<Size4KiB>) {
-    let flags = PageTableFlags::PRESENT | PageTableFlags::WRITABLE;
+pub fn update_mapping(
+    page: Page,
+    mapper: &mut impl Mapper<Size4KiB>,
+    frame: PhysFrame<Size4KiB>,
+    flags: Option<PageTableFlags>,
+) {
+    let mut flags = flags.unwrap_or(PageTableFlags::WRITABLE);
+    flags.set(PageTableFlags::PRESENT, true);
+
+    let frame_is_used = with_buddy_frame_allocator(|alloc| alloc.get_ref_count(frame) > 0);
+
+    update_permissions(page, mapper, flags);
 
     let (old_frame, _) = mapper
         .unmap(page)
@@ -114,6 +170,15 @@ pub fn update_mapping(page: Page, mapper: &mut impl Mapper<Size4KiB>, frame: Phy
                     .expect("Global allocator not initialized"),
             )
         };
+
+        with_buddy_frame_allocator(|alloc| {
+            if alloc.get_ref_count(old_frame) > 0 {
+                alloc.dec_ref_count(frame);
+            }
+            if frame_is_used {
+                alloc.inc_ref_count(frame);
+            }
+        });
 
         tlb_shootdown(page.start_address());
     }
@@ -146,6 +211,20 @@ pub fn remove_mapped_frame(page: Page, mapper: &mut impl Mapper<Size4KiB>) {
     let (frame, _) = mapper.unmap(page).expect("map_to failed");
     dealloc_frame(frame);
     tlb_shootdown(page.start_address());
+}
+
+pub fn get_page_flags(
+    page: Page,
+    mapper: &mut OffsetPageTable,
+) -> Result<PageTableFlags, PagingError> {
+    match mapper.translate(page.start_address()) {
+        TranslateResult::Mapped {
+            frame: MappedFrame::Size4KiB(_),
+            flags,
+            ..
+        } => Ok(flags),
+        _ => Err(PagingError::PageNotMappedErr),
+    }
 }
 
 /// Mappes a frame to kernel pages
@@ -209,76 +288,54 @@ pub fn update_permissions(page: Page, mapper: &mut impl Mapper<Size4KiB>, flags:
     tlb_shootdown(page.start_address());
 }
 
-/// Returns a reference to the page table entry for the given page.
-/// Needed because x86_64 crate does not expose a method to get PageTableEntry
-///
-/// # Safety
-///
-/// The caller must ensure that the provided `mapper` (an OffsetPageTable)
-/// was initialized with the correct physical memory offset.
-unsafe fn get_page_table_entry<'a>(
-    page: Page<Size4KiB>,
-    mapper: &OffsetPageTable<'a>,
-) -> Option<&'a x86_64::structures::paging::page_table::PageTableEntry> {
-    // Calculate indices for the four levels.
-    let p4_index = page.p4_index();
-    let p3_index = page.p3_index();
-    let p2_index = page.p2_index();
-    let p1_index = page.p1_index();
-
-    // Get a reference to the level 4 table.
-    let level_4_table = mapper.level_4_table();
-
-    // Walk down the page table hierarchy:
-    let p4_entry = &level_4_table[p4_index];
-    let p3_frame = p4_entry.frame().expect("Entry failed");
-    let p3_table_ptr = (*HHDM_OFFSET + p3_frame.start_address().as_u64()).as_ptr::<PageTable>();
-    let p3_table = &*p3_table_ptr;
-
-    let p3_entry = &p3_table[p3_index];
-    let p2_frame = p3_entry.frame().expect("Entry failed");
-    let p2_table_ptr = (*HHDM_OFFSET + p2_frame.start_address().as_u64()).as_ptr::<PageTable>();
-    let p2_table = &*p2_table_ptr;
-
-    let p2_entry = &p2_table[p2_index];
-    let p1_frame = p2_entry.frame().expect("Entry failed");
-    let p1_table_ptr = (*HHDM_OFFSET + p1_frame.start_address().as_u64()).as_ptr::<PageTable>();
-    let p1_table = &*p1_table_ptr;
-
-    let pte = &p1_table[p1_index];
-    Some(pte)
-}
-
 #[cfg(test)]
 mod tests {
+    use super::*;
+
+    use alloc::{sync::Arc, vec::Vec};
     use core::{
         ptr::{read_volatile, write_volatile},
         sync::atomic::{AtomicU64, Ordering},
     };
+    use x86_64::{
+        structures::paging::{mapper::TranslateError, Page, PageTableFlags, PhysFrame},
+        VirtAddr,
+    };
 
-    use super::*;
-    use crate::{constants::memory::PAGE_SIZE, events::schedule_kernel_on, memory::MAPPER};
-    use alloc::vec::Vec;
-    use x86_64::structures::paging::mapper::TranslateError;
+    // Import functions from the kernel memory module.
+    use crate::{
+        constants::memory::PAGE_SIZE,
+        events::schedule_kernel_on,
+        memory::{
+            mm::{Mm, VmAreaBackings, VmAreaFlags},
+            KERNEL_MAPPER,
+        },
+        processes::process::{get_current_pid, with_current_pcb, PROCESS_TABLE},
+    };
 
-    // used for tlb shootdown testcases
+    // Used for TLB shootdown testcases.
     static PRE_READ: AtomicU64 = AtomicU64::new(0);
     static POST_READ: AtomicU64 = AtomicU64::new(0);
 
+    /// Asynchronously reads a u64 value from the start address of the given page and stores it in PRE_READ.
     async fn pre_read(page: Page) {
         let value = unsafe { page.start_address().as_ptr::<u64>().read_volatile() };
         PRE_READ.store(value, Ordering::SeqCst);
     }
 
+    /// Asynchronously reads a u64 value from the start address of the given page and stores it in POST_READ.
     async fn post_read(page: Page) {
         let value = unsafe { page.start_address().as_ptr::<u64>().read_volatile() };
         POST_READ.store(value, Ordering::SeqCst);
     }
 
-    // Test basic remove, as removing and then translating should fail
+    /// Tests that after a mapping is removed the page translation fails.
+    ///
+    /// This test creates a mapping for a given virtual page, removes it, and then verifies that
+    /// translating the page results in a `PageNotMapped` error.
     #[test_case]
     async fn test_remove_mapped_frame() {
-        let mut mapper = MAPPER.lock();
+        let mut mapper = KERNEL_MAPPER.lock();
         let page: Page = Page::containing_address(VirtAddr::new(0x500000000));
         let _ = create_mapping(page, &mut *mapper, None);
 
@@ -292,13 +349,16 @@ mod tests {
         ));
     }
 
-    // Test basic translation after map returns correct frame
+    /// Tests that mapping a page returns the correct physical frame.
+    ///
+    /// A mapping is created for a test virtual page and its returned physical frame is then
+    /// verified by translating the page. Finally, the mapping is removed.
     #[test_case]
     async fn test_basic_map_and_translate() {
-        let mut mapper = MAPPER.lock();
+        let mut mapper = KERNEL_MAPPER.lock();
 
-        // random test virtual page
-        let page: Page = Page::containing_address(VirtAddr::new(0x500000000));
+        // Use a test virtual page.
+        let page: Page = Page::containing_address(VirtAddr::new(0x400001000));
         let frame: PhysFrame = create_mapping(page, &mut *mapper, None);
 
         let translate_frame = mapper.translate_page(page).expect("Translation failed");
@@ -308,33 +368,41 @@ mod tests {
         remove_mapped_frame(page, &mut *mapper);
     }
 
-    // Test that permissions are updated correctly
+    /// Tests that updating page permissions works as expected.
+    ///
+    /// A mapping is created for a given page and then its permissions are updated (e.g. to make it
+    /// read-only by removing the WRITABLE flag). The test then retrieves the page table entry (PTE)
+    /// and asserts that it contains the expected flags.
     #[test_case]
     async fn test_update_permissions() {
-        let mut mapper = MAPPER.lock();
+        let mut mapper = KERNEL_MAPPER.lock();
 
-        let page: Page = Page::containing_address(VirtAddr::new(0x500000000));
+        let page: Page = Page::containing_address(VirtAddr::new(0x400002000));
         let _ = create_mapping(page, &mut *mapper, None);
 
-        let flags = PageTableFlags::PRESENT;
+        let flags = PageTableFlags::PRESENT; // Only present (read-only).
 
         update_permissions(page, &mut *mapper, flags);
 
-        let pte = unsafe { get_page_table_entry(page, &mapper) }.expect("Getting PTE Failed");
+        let flags = get_page_flags(page, &mut mapper).expect("Getting page table flags failed");
 
-        assert!(pte.flags().contains(PageTableFlags::PRESENT));
-        assert!(!pte.flags().contains(PageTableFlags::WRITABLE));
+        assert!(flags.contains(PageTableFlags::PRESENT));
+        assert!(!flags.contains(PageTableFlags::WRITABLE));
 
         remove_mapped_frame(page, &mut *mapper);
     }
 
-    // Test that contiguous mappings work correctly. Allocates 8 pages in a row.
-    #[test_case]
+    /// Tests that contiguous mappings spanning multiple pages work correctly.
+    ///
+    /// This test allocates mappings for a contiguous region of 8 pages. Each page is mapped with
+    /// writable permissions, a distinct value is written to each page, and then the value is read
+    /// back to verify correctness. Finally, all mappings are removed.
+    #[test_case] // Uncomment to run this test.
     async fn test_contiguous_mapping() {
-        let mut mapper = MAPPER.lock();
+        let mut mapper = KERNEL_MAPPER.lock();
 
         // Define a contiguous region spanning 8 pages.
-        let start_page: Page = Page::containing_address(VirtAddr::new(0x500000000));
+        let start_page: Page = Page::containing_address(VirtAddr::new(0x400004000));
         let num_pages = 8;
         let flags = PageTableFlags::PRESENT | PageTableFlags::WRITABLE;
 
@@ -351,7 +419,7 @@ mod tests {
             let ptr = page.start_address().as_mut_ptr::<u64>();
             unsafe { write_volatile(ptr, i as u64) };
             let val = unsafe { read_volatile(ptr) };
-            assert_eq!(val, i as u64,);
+            assert_eq!(val, i as u64);
         }
 
         // Cleanup: Unmap all pages.
@@ -360,21 +428,22 @@ mod tests {
         }
     }
 
-    // Goal: Create a mapping and access it on some core such that it is cached.
-    // Then, change the mapping to map to a different frame such that a TLB Shootdown
-    // is necessary.
-    // Finally, check the mapping on another core.
+    /// Tests that TLB shootdowns work correctly across cores.
+    ///
+    /// This test creates a mapping for a given page and writes a value to cache it on the current core.
+    /// It then schedules a read of that page on an alternate core (to load it into that core’s TLB cache).
+    /// After that, the mapping is updated to a new frame with new contents and the new value is written.
+    /// Finally, the test re-schedules a read on the alternate core and verifies that the new value is observed.
     #[test_case]
     async fn test_tlb_shootdowns_cross_core() {
         const AP: u32 = 1;
         const PRIORITY: usize = 3;
-        const PID: u32 = 0;
 
-        // create mapping and set value on current core to cache page
+        // Create mapping and set a value on the current core.
         let page: Page = Page::containing_address(VirtAddr::new(0x500000000));
 
         {
-            let mut mapper = MAPPER.lock();
+            let mut mapper = KERNEL_MAPPER.lock();
             let _ = create_mapping(page, &mut *mapper, None);
             unsafe {
                 page.start_address()
@@ -383,9 +452,9 @@ mod tests {
             }
         }
 
-        // mapping exists now and is cached for first core
+        // Mapping exists now and is cached for the first core.
 
-        // tell core 1 to read the value (to TLB cache) and wait until it's done
+        // Schedule a read on core 1 to load the page into its TLB cache.
         schedule_kernel_on(AP, async move { pre_read(page).await }, PRIORITY);
 
         while PRE_READ.load(Ordering::SeqCst) == 0 {
@@ -393,11 +462,17 @@ mod tests {
         }
 
         {
-            let mut mapper = MAPPER.lock();
+            let mut mapper = KERNEL_MAPPER.lock();
+
             let new_frame = alloc_frame().expect("Could not find a new frame");
 
-            // could say page already mapped, which would be really dumb
-            update_mapping(page, &mut *mapper, new_frame);
+            // Update the mapping so that a TLB shootdown is necessary.
+            update_mapping(
+                page,
+                &mut *mapper,
+                new_frame,
+                Some(PageTableFlags::PRESENT | PageTableFlags::WRITABLE),
+            );
 
             unsafe {
                 page.start_address()
@@ -406,7 +481,7 @@ mod tests {
             }
         }
 
-        // back on core 1, read the value and see if it has changed
+        // Schedule another read on core 1 to verify that the new value is visible.
         schedule_kernel_on(AP, async move { post_read(page).await }, PRIORITY);
 
         while POST_READ.load(Ordering::SeqCst) == 0 {
@@ -415,7 +490,164 @@ mod tests {
 
         assert_eq!(POST_READ.load(Ordering::SeqCst), 0x42);
 
-        let mut mapper = MAPPER.lock();
+        let mut mapper = KERNEL_MAPPER.lock();
+        remove_mapped_frame(page, &mut *mapper);
+    }
+
+    // Tests the copy-on-write (COW) mechanism for a mapped page.
+    //
+    // In a COW scenario, the page is initially mapped as read-only. A write to the page should
+    // trigger a fault that results in a new physical frame being allocated and mapped for that page.
+    // In this test, we simulate this behavior by:
+    // 1. Creating a mapping with read-only permissions.
+    // 2. Writing to the page which, triggers a page fault
+    // 3. Handling the page fault in our page fault handler
+    // 4. Verifying that the new frame is different from the initial one and that the written value is present.
+    #[test_case]
+    async fn test_copy_on_write() {
+        let mut mapper = KERNEL_MAPPER.lock();
+        // Create a dummy PML4 frame.
+        // Locate the current process.
+
+        const TEST_VALUE: u64 = 0x42;
+
+        let page = Page::containing_address(VirtAddr::new(0x400003000));
+
+        let anon_area = Arc::new(VmAreaBackings::new());
+
+        with_current_pcb(|pcb| {
+            pcb.mm.with_vma_tree_mutable(|tree| {
+                let _vma1 = Mm::insert_vma(
+                    tree,
+                    page.start_address().as_u64(),
+                    page.start_address().as_u64() + PAGE_SIZE as u64,
+                    anon_area.clone(),
+                    VmAreaFlags::WRITABLE,
+                    0,
+                    0,
+                );
+            });
+        });
+
+        // Create mapping with read-only permission to simulate a COW mapping.
+        let init_frame = create_mapping(page, &mut *mapper, Some(PageTableFlags::PRESENT));
+
+        // Write to the page.
+        // Triggers page fault
+        unsafe {
+            page.start_address()
+                .as_mut_ptr::<u64>()
+                .write_volatile(TEST_VALUE);
+        }
+
+        // Now, translating the page should return the new frame.
+        let frame = mapper
+            .translate_page(page)
+            .expect("Translation after COW failed");
+
+        // The new frame should be different from the original frame.
+        assert_ne!(init_frame, frame);
+
+        let read_value = unsafe { page.start_address().as_ptr::<u64>().read_volatile() };
+
+        assert_eq!(read_value, TEST_VALUE);
+
+        // should not trigger a page fault, we should be able to write now
+        unsafe {
+            page.start_address()
+                .as_mut_ptr::<u64>()
+                .write_volatile(0x20);
+        }
+
+        let new_frame = mapper
+            .translate_page(page)
+            .expect("Translation after COW failed");
+
+        // We already made this our own, no need to have done COW
+        assert_eq!(frame, new_frame);
+
+        let read_value2 = unsafe { page.start_address().as_ptr::<u64>().read_volatile() };
+
+        assert_eq!(read_value2, 0x20);
+
+        remove_mapped_frame(page, &mut *mapper);
+    }
+
+    /// Tests the copy-on-write (COW) mechanism for a mapped page.
+    ///
+    /// In a COW scenario, the page is initially mapped as writable, and a full buffer is written
+    /// Then, the page is marked read only and the first byte in the buffer is written to.
+    /// This should trigger a page fault that does COW, but it should maintain the rest
+    /// of the values in the buffer.
+    #[test_case]
+    async fn test_copy_on_write_full() {
+        let mut mapper = KERNEL_MAPPER.lock();
+        // Create a dummy PML4 frame.
+        // Locate the current process.
+        let pid = get_current_pid();
+        let process = {
+            let process_table = PROCESS_TABLE.read();
+            process_table
+                .get(&pid)
+                .expect("can't find pcb in process table")
+                .clone()
+        };
+        const TEST_VALUE: u8 = 0x2;
+        let page = Page::containing_address(VirtAddr::new(0x400003000));
+        let anon_area = Arc::new(VmAreaBackings::new());
+
+        unsafe {
+            (*process.pcb.get()).mm.with_vma_tree_mutable(|tree| {
+                let _vma1 = Mm::insert_vma(
+                    tree,
+                    page.start_address().as_u64(),
+                    page.start_address().as_u64() + PAGE_SIZE as u64,
+                    anon_area.clone(),
+                    VmAreaFlags::WRITABLE,
+                    0,
+                    0,
+                );
+            });
+        }
+
+        // Create mapping with read-only permission to simulate a COW mapping.
+        let _ = create_mapping(
+            page,
+            &mut *mapper,
+            Some(PageTableFlags::PRESENT | PageTableFlags::WRITABLE),
+        );
+
+        // Write 1s to the entire buffer
+        unsafe {
+            let buf_ptr = page.start_address().as_mut_ptr::<u8>();
+            core::ptr::write_bytes(buf_ptr, 1, PAGE_SIZE);
+        }
+
+        // Make it so we page fault on write
+        update_permissions(page, &mut *mapper, PageTableFlags::PRESENT);
+
+        // Write to the page.
+        // In a real system, this would trigger a page fault to handle copy-on-write.
+        unsafe {
+            page.start_address()
+                .as_mut_ptr::<u8>()
+                .write_volatile(TEST_VALUE);
+        }
+
+        // the cow should not have messed with any data in the buffer besides what
+        // we just wrote to
+        let read_value = unsafe { page.start_address().as_ptr::<u8>().read_volatile() };
+
+        assert_eq!(read_value, TEST_VALUE);
+
+        unsafe {
+            let buf_ptr = page.start_address().as_ptr::<u8>();
+            for i in 1..PAGE_SIZE {
+                let val = *buf_ptr.add(i);
+                assert_eq!(val, 1, "Byte at offset {} is not 1 (found {})", i, val);
+            }
+        }
+
         remove_mapped_frame(page, &mut *mapper);
     }
 }
