@@ -144,10 +144,3 @@ pub extern "C" fn _start() -> ! {
 fn panic(info: &core::panic::PanicInfo) -> ! {
     test_panic_handler(info)
 }
-
-#[test_case]
-fn trivial_test() -> impl Future<Output = ()> + Send + 'static {
-    async {
-        assert_eq!(1, 1);
-    }
-}

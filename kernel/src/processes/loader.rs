@@ -5,9 +5,11 @@ use crate::{
     },
     memory::{
         frame_allocator::with_generic_allocator,
+        mm::{Mm, VmAreaBackings, VmAreaFlags},
         paging::{create_mapping, update_permissions},
     },
 };
+use alloc::sync::Arc;
 use core::ptr::{copy_nonoverlapping, write_bytes};
 use goblin::{
     elf::Elf,
@@ -29,6 +31,7 @@ use crate::memory::paging::map_kernel_frame;
 /// * 'elf_bytes' - byte stream of ELF executable to parse
 /// * 'user_mapper' - Page table for user that maps VAs from section headers to frames
 /// * 'kernel mapper' - kernel page table for mapping VAs to frames for writing ELF metadata to frames
+/// * 'mm' - The process' mm struct for access to the VMAs
 ///
 /// # Returns:
 /// Virtual address of the top of user stack and entry point for process
@@ -36,6 +39,7 @@ pub fn load_elf(
     elf_bytes: &[u8],
     user_mapper: &mut impl Mapper<Size4KiB>,
     kernel_mapper: &mut OffsetPageTable<'static>,
+    mm: &mut Mm,
 ) -> (VirtAddr, u64) {
     let elf = Elf::parse(elf_bytes).expect("Parsing ELF failed");
     for ph in elf.program_headers.iter() {
@@ -55,6 +59,8 @@ pub fn load_elf(
         let default_flags =
             PageTableFlags::PRESENT | PageTableFlags::USER_ACCESSIBLE | PageTableFlags::WRITABLE;
         let mut flags = PageTableFlags::PRESENT | PageTableFlags::USER_ACCESSIBLE;
+
+        let anon_vma_code_and_data = Arc::new(VmAreaBackings::new());
 
         // For each page in [start_page..end_page], create user mapping,
         // then do a kernel alias to copy data in
@@ -91,12 +97,29 @@ pub fn load_elf(
                 }
             }
 
+            let mut vma_flags = VmAreaFlags::empty();
             if (ph.p_flags & PF_W) != 0 {
                 flags |= PageTableFlags::WRITABLE;
+                vma_flags |= VmAreaFlags::WRITABLE;
             }
             if (ph.p_flags & PF_X) == 0 {
                 flags |= PageTableFlags::NO_EXECUTE;
+            } else {
+                vma_flags |= VmAreaFlags::EXECUTE;
             }
+
+            mm.with_vma_tree_mutable(|tree| {
+                Mm::insert_vma(
+                    tree,
+                    page.start_address().as_u64(),
+                    page.start_address().as_u64() + PAGE_SIZE as u64,
+                    anon_vma_code_and_data.clone(),
+                    vma_flags,
+                    usize::MAX,
+                    0,
+                );
+            });
+
             update_permissions(page, user_mapper, flags);
 
             let unmap_page: Page<Size4KiB> = Page::containing_address(kernel_alias);
@@ -116,15 +139,23 @@ pub fn load_elf(
     // Map user stack
     let stack_start = VirtAddr::new(STACK_START);
     let stack_end = VirtAddr::new(STACK_START + STACK_SIZE as u64);
-    let start_page = Page::containing_address(stack_start);
-    let end_page = Page::containing_address(stack_end);
+    let _start_page: Page<Size4KiB> = Page::containing_address(stack_start);
+    let _end_page: Page<Size4KiB> = Page::containing_address(stack_end);
 
-    let stack_flags =
-        PageTableFlags::PRESENT | PageTableFlags::WRITABLE | PageTableFlags::USER_ACCESSIBLE;
+    // new anon_vma that corresponds to this stack
+    let anon_vma_stack = Arc::new(VmAreaBackings::new());
 
-    for page in Page::range_inclusive(start_page, end_page) {
-        create_mapping(page, user_mapper, Some(stack_flags));
-    }
+    mm.with_vma_tree_mutable(|tree| {
+        Mm::insert_vma(
+            tree,
+            STACK_START,
+            STACK_START + STACK_SIZE as u64,
+            anon_vma_stack,
+            VmAreaFlags::WRITABLE | VmAreaFlags::GROWS_DOWN,
+            usize::MAX,
+            0,
+        );
+    });
 
     (stack_end, elf.header.e_entry)
 }
