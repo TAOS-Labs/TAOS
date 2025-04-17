@@ -1,18 +1,13 @@
 use core::{ffi::CStr, sync::atomic::AtomicI64};
 
 use crate::{
-    constants::syscalls::*,
-    events::{current_running_event_info, EventInfo},
-    interrupts::x2apic,
-    memory::frame_allocator::with_bitmap_frame_allocator,
-    processes::{
+    constants::syscalls::*, events::{current_running_event_info, EventInfo}, filesys::syscalls::{sys_creat, sys_open}, interrupts::x2apic, memory::frame_allocator::with_bitmap_frame_allocator, processes::{
         process::{
             clear_process_frames, sleep_process_int, sleep_process_syscall, ProcessState,
             PROCESS_TABLE,
         },
         registers::NonFlagRegisters,
-    },
-    serial_println,
+    }, serial_println
 };
 
 use core::arch::naked_asm;
@@ -143,6 +138,17 @@ pub unsafe extern "C" fn syscall_handler_impl(
         }
         SYSCALL_PRINT => sys_print(syscall.arg1 as *const u8),
         SYSCALL_NANOSLEEP => sys_nanosleep_64(syscall.arg1, _reg_vals),
+        
+        // Filesystem syscalls
+        SYSCALL_OPEN => sys_open(
+            syscall.arg1 as *const u8, 
+            syscall.arg2 as u32, 
+            syscall.arg3 as u16
+        ),
+        SYSCALL_CREAT => sys_creat(
+            syscall.arg1 as *const u8,
+            syscall.arg3 as u16
+        ),
         _ => {
             panic!("Unknown syscall, {}", syscall.number);
         }

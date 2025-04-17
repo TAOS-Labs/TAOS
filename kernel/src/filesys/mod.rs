@@ -2,6 +2,7 @@ use alloc::{boxed::Box, string::String, vec::Vec};
 use core::result::Result;
 
 pub mod ext2;
+pub mod syscalls;
 
 use async_trait::async_trait;
 

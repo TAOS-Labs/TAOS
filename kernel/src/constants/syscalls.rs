@@ -2,4 +2,20 @@
 
 pub const SYSCALL_EXIT: u32 = 60;
 pub const SYSCALL_NANOSLEEP: u32 = 35;
-pub const SYSCALL_PRINT: u32 = 3;
+
+// TODO refactor old binaries
+pub const SYSCALL_PRINT: u32 = 1003;
+
+pub const SYSCALL_READ: u32 = 0;
+pub const SYSCALL_WRITE: u32 = 1;
+pub const SYSCALL_OPEN: u32 = 2;
+pub const SYSCALL_CLOSE: u32 = 3;
+
+pub const SYSCALL_ACCESS: u32 = 21;
+
+pub const SYSCALL_CREAT: u32 = 85;
+
+pub const SYSCALL_FUTEX: u32 = 202;
+pub const SYSCALL_OPENAT: u32 = 257;
+
+pub const SYSCALL_GETRANDOM: u32 = 318;

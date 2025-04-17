@@ -53,8 +53,9 @@ pub struct PCB {
     pub kernel_rip: u64,
     pub next_preemption_time: u64,
     pub registers: Registers,
-    pub pml4_frame: PhysFrame<Size4KiB>, // this process' page table,
+    pub pml4_frame: PhysFrame<Size4KiB>, // this process' page table
     pub namespace: Namespace,
+    pub fdtable: BTreeMap<u32, >
 }
 
 pub struct UnsafePCB {
