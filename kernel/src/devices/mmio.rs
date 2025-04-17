@@ -105,12 +105,12 @@ mod tests {
     use super::*;
     use crate::{
         constants::memory::PAGE_SIZE,
-        memory::{frame_allocator::FRAME_ALLOCATOR, MAPPER},
+        memory::{frame_allocator::FRAME_ALLOCATOR, KERNEL_MAPPER},
     };
 
     #[test_case]
     async fn test_zero_out_page_4kib() {
-        let mut mapper = MAPPER.lock();
+        let mut mapper = KERNEL_MAPPER.lock();
         let mut allocator_tmp = FRAME_ALLOCATOR.lock();
         let mut frames: [Option<PhysFrame>; 3] = [Option::None; 3];
         match *allocator_tmp {
@@ -131,9 +131,9 @@ mod tests {
         let page: [u8; PAGE_SIZE] = [255; PAGE_SIZE];
         let page_actual = Page::containing_address(VirtAddr::new(addr_2.as_u64()));
 
-        let addr_1_ptr: *mut u8 = addr_1.as_mut_ptr::<u8>() as *mut u8;
-        let addr_2_ptr: *mut u8 = addr_2.as_mut_ptr::<u8>() as *mut u8;
-        let addr_3_ptr: *mut u8 = addr_3.as_mut_ptr::<u8>() as *mut u8;
+        let addr_1_ptr: *mut u8 = addr_1.as_mut_ptr::<u8>();
+        let addr_2_ptr: *mut u8 = addr_2.as_mut_ptr::<u8>();
+        let addr_3_ptr: *mut u8 = addr_3.as_mut_ptr::<u8>();
 
         unsafe { copy_nonoverlapping(page.as_ptr(), addr_1_ptr, PAGE_SIZE) };
         unsafe { copy_nonoverlapping(page.as_ptr(), addr_2_ptr, PAGE_SIZE) };

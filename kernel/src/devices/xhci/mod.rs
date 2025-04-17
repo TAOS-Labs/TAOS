@@ -15,7 +15,7 @@ use crate::{
     devices::mmio::zero_out_page,
     memory::{
         frame_allocator::{alloc_frame, dealloc_frame},
-        MAPPER,
+        KERNEL_MAPPER,
     },
     net::set_interface,
 };
@@ -213,7 +213,7 @@ impl USBDeviceInfo {
             + info.capablities.doorbell_offset as u64
             + (self.slot as u64) * 4) as *mut u32;
         unsafe { core::ptr::write_volatile(doorbell_base, 1) };
-        let mapper = &mut MAPPER.lock();
+        let mapper = &mut KERNEL_MAPPER.lock();
         wait_for_events(&info, &mut self.event_ring, self.slot.into(), mapper)?;
         Ok(())
     }
@@ -250,7 +250,7 @@ impl USBDeviceInfo {
             + info.capablities.doorbell_offset as u64
             + (self.slot as u64) * 4) as *mut u32;
         unsafe { core::ptr::write_volatile(doorbell_base, 1) };
-        let mapper = &mut MAPPER.lock();
+        let mapper = &mut KERNEL_MAPPER.lock();
         wait_for_events(&info, &mut self.event_ring, self.slot.into(), mapper)?;
 
         Ok(())
@@ -370,7 +370,7 @@ pub fn find_xhci_inferface(
 
 /// Initalizes an xhci_hub
 pub fn initalize_xhci_hub(device: &Arc<Mutex<DeviceInfo>>) -> Result<(), XHCIError> {
-    let mut mapper = MAPPER.lock();
+    let mut mapper = KERNEL_MAPPER.lock();
     let device_lock = device.clone();
     let xhci_device = device_lock.lock();
     let bar_0: u64 =
@@ -388,7 +388,7 @@ pub fn initalize_xhci_hub(device: &Arc<Mutex<DeviceInfo>>) -> Result<(), XHCIErr
     drop(val);
     drop(mapper);
     for device in &mut devices {
-        let mut mapper = MAPPER.lock();
+        let mut mapper = KERNEL_MAPPER.lock();
         let data_frame = alloc_frame().ok_or(XHCIError::MemoryAllocationFailure)?;
         let data_addr = mmio::map_page_as_uncacheable(data_frame.start_address(), &mut mapper)
             .map_err(|_| XHCIError::MemoryAllocationFailure)?;

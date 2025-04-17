@@ -15,7 +15,7 @@ use crate::{
         },
         BlockDevice,
     },
-    memory::MAPPER,
+    memory::KERNEL_MAPPER,
 };
 use bitflags::bitflags;
 
@@ -329,7 +329,7 @@ pub fn initalize_sd_card(sd_arc: &Arc<Mutex<DeviceInfo>>) -> Result<(), SDCardEr
     // Lets assume 1 slot, and it uses BAR 1
 
     // Disable Commands from being sent over the Memory Space
-    let mut mapper = MAPPER.lock();
+    let mut mapper = KERNEL_MAPPER.lock();
     let sd_lock = sd_arc.clone();
     let sd_card = sd_lock.lock();
     let command = sd_card.command & !PCICommand::MEMORY_SPACE;

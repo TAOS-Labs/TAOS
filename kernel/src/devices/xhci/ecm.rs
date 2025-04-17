@@ -8,7 +8,7 @@ use crate::{
     },
     memory::{
         frame_allocator::{alloc_frame, dealloc_frame},
-        MAPPER,
+        KERNEL_MAPPER,
     },
 };
 use bitflags::bitflags;
@@ -158,7 +158,7 @@ impl phy::TxToken for ECMDeviceTxToken<'_> {
         let out_buf = unsafe { slice::from_raw_parts_mut(out_ptr, len) };
         let result = f(out_buf);
 
-        let mapper = MAPPER.lock();
+        let mapper = KERNEL_MAPPER.lock();
 
         let transfer_length: u16 = len.try_into().unwrap();
         let transfer_size: u8 = 1;
@@ -198,7 +198,7 @@ impl phy::Device for ECMDevice {
     fn receive(&mut self, _timestamp: Instant) -> Option<(Self::RxToken<'_>, Self::TxToken<'_>)> {
         // Check if there is any data
 
-        let mapper = MAPPER.lock();
+        let mapper = KERNEL_MAPPER.lock();
 
         let transfer_length: u16 = 4096;
         let transfer_size: u8 = 1;
@@ -242,7 +242,7 @@ impl phy::Device for ECMDevice {
             _phantom: PhantomData,
         };
 
-        let mapper = MAPPER.lock();
+        let mapper = KERNEL_MAPPER.lock();
 
         let transfer_length: u16 = 4096;
         let transfer_size: u8 = 1;
@@ -336,7 +336,7 @@ impl ECMDevice {
             .get_ethernet_descriptor()
             .ok_or(XHCIError::NoDescriptor)?;
         let data_frame = alloc_frame().ok_or(XHCIError::MemoryAllocationFailure)?;
-        let mut mapper = MAPPER.lock();
+        let mut mapper = KERNEL_MAPPER.lock();
         let data_addr = mmio::map_page_as_uncacheable(data_frame.start_address(), &mut mapper)
             .map_err(|_| XHCIError::MemoryAllocationFailure)?;
         drop(mapper);
@@ -548,7 +548,7 @@ pub fn init_cdc_device(
     // Set up TRB
 
     let input_trb_buffer = alloc_frame().ok_or(XHCIError::MemoryAllocationFailure)?;
-    let mut mapper = MAPPER.lock();
+    let mut mapper = KERNEL_MAPPER.lock();
     let input_trb_address = map_page_as_uncacheable(input_trb_buffer.start_address(), &mut mapper)
         .map_err(|_| XHCIError::MemoryAllocationFailure)?;
     zero_out_page(Page::containing_address(input_trb_address));
@@ -593,7 +593,7 @@ pub fn init_cdc_device(
 
     let big_device: u32 = device.slot.into();
     let block = TransferRequestBlock {
-        parameters: (device.input_context_vaddr - mapper.phys_offset()),
+        parameters: (device.input_context_vaddr.as_u64() - mapper.phys_offset().as_u64()),
         status: 0,
         control: ((big_device << 24) | ((TrbTypes::ConfigEpCmd as u32) << 10)),
     };
@@ -615,7 +615,7 @@ pub fn init_cdc_device(
 
     // Setup data buffers for input and output
     let in_frame = alloc_frame().ok_or(XHCIError::MemoryAllocationFailure)?;
-    let mut mapper = MAPPER.lock();
+    let mut mapper = KERNEL_MAPPER.lock();
     let in_buff_vaddr = mmio::map_page_as_uncacheable(in_frame.start_address(), &mut mapper)
         .map_err(|_| XHCIError::MemoryAllocationFailure)?;
     mmio::zero_out_page(Page::containing_address(in_buff_vaddr));
@@ -644,7 +644,7 @@ fn get_class_descriptors_for_configuration(
     configuration: u8,
 ) -> Result<Vec<ECMDeviceDescriptors>, XHCIError> {
     let data_frame = alloc_frame().ok_or(XHCIError::MemoryAllocationFailure)?;
-    let mut mapper = MAPPER.lock();
+    let mut mapper = KERNEL_MAPPER.lock();
     let data_addr = mmio::map_page_as_uncacheable(data_frame.start_address(), &mut mapper)
         .map_err(|_| XHCIError::MemoryAllocationFailure)?;
     drop(mapper);

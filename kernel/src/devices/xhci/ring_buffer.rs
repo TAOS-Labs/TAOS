@@ -763,7 +763,6 @@ impl ConsumerRingBuffer {
 
 #[cfg(test)]
 mod test {
-    use alloc::format;
     use x86_64::{
         addr::VirtAddr,
         structures::paging::{Mapper, OffsetPageTable, Page},
@@ -780,14 +779,14 @@ mod test {
         memory::{
             frame_allocator::{alloc_frame, dealloc_frame},
             paging::{create_mapping, remove_mapped_frame},
-            MAPPER,
+            KERNEL_MAPPER,
         },
     };
 
     #[test_case]
     async fn producer_ring_buffer_init() {
         // first get a page and zero init it
-        let mapper = MAPPER.lock();
+        let mapper = KERNEL_MAPPER.lock();
         let frame = alloc_frame().unwrap();
         let frame_va =
             VirtAddr::new(mapper.phys_offset().as_u64() + frame.start_address().as_u64());
@@ -828,7 +827,7 @@ mod test {
     #[test_case]
     async fn producer_ring_buffer_enqueue() {
         // initialize a ring buffer we can enqueue onto
-        let mapper = MAPPER.lock();
+        let mapper = KERNEL_MAPPER.lock();
         let frame = alloc_frame().unwrap();
         let frame_va =
             VirtAddr::new(mapper.phys_offset().as_u64() + frame.start_address().as_u64());
@@ -882,7 +881,7 @@ mod test {
 
     #[test_case]
     async fn producer_ring_buffer_helpers() {
-        let mapper = MAPPER.lock();
+        let mapper = KERNEL_MAPPER.lock();
         let frame = alloc_frame().unwrap();
         let frame_va =
             VirtAddr::new(mapper.phys_offset().as_u64() + frame.start_address().as_u64());
@@ -903,13 +902,13 @@ mod test {
 
         // test is empty and is full funcs
         let mut result = cmd_ring.is_ring_empty();
-        assert_eq!(result, true);
+        assert!(result);
 
         unsafe {
             result = cmd_ring.is_ring_full();
         }
 
-        assert_eq!(result, false);
+        assert!(!result);
 
         // create a no-op cmd to queue a couple of times
         let mut cmd = Trb {
@@ -925,29 +924,29 @@ mod test {
 
         // both empty and true should be false
         result = cmd_ring.is_ring_empty();
-        assert_eq!(result, false);
+        assert!(!result);
 
         unsafe {
             result = cmd_ring.is_ring_full();
-            assert_eq!(result, false);
+            assert!(!result);
             cmd_ring.enqueue(cmd).expect("enqueue error");
         }
 
         // empty should be false and full should be true
         result = cmd_ring.is_ring_empty();
-        assert_eq!(result, false);
+        assert!(!result);
 
         unsafe {
             result = cmd_ring.is_ring_full();
         }
-        assert_eq!(result, true);
+        assert!(result);
 
         dealloc_frame(frame);
     }
 
     #[test_case]
     async fn producer_ring_buffer_enqueue_accross_segment() {
-        let mapper = MAPPER.lock();
+        let mapper = KERNEL_MAPPER.lock();
 
         let frame = alloc_frame().unwrap();
         let frame_va =
@@ -1023,7 +1022,7 @@ mod test {
     #[test_case]
     async fn consumer_ring_buffer_init() {
         // first get pages for the ERST and first segment
-        let mapper: spin::MutexGuard<'_, OffsetPageTable<'_>> = MAPPER.lock();
+        let mapper: spin::MutexGuard<'_, OffsetPageTable<'_>> = KERNEL_MAPPER.lock();
         let erst_frame = alloc_frame().unwrap();
         let erst_page: Page =
             Page::containing_address(mapper.phys_offset() + erst_frame.start_address().as_u64());
@@ -1034,7 +1033,7 @@ mod test {
         let fake_device_frame = alloc_frame().unwrap();
         let segment_frame_addr = segment_frame.start_address();
 
-        let erst_entry_size = 16 as isize;
+        let erst_entry_size: isize = 16;
 
         mmio::zero_out_page(erst_page);
         mmio::zero_out_page(segment_page);
@@ -1053,7 +1052,7 @@ mod test {
 
         // Ensure the RingBuffer thinks that it is empty
         unsafe {
-            assert_eq!(true, event_ring.is_empty());
+            assert!(event_ring.is_empty());
         }
 
         // verify that the ERST was properly initialized
@@ -1127,7 +1126,7 @@ mod test {
         const ERST_ENTRY_SIZE: isize = 16;
 
         // get pages for the ERST and data segment
-        let mut mapper: spin::MutexGuard<'_, OffsetPageTable<'_>> = MAPPER.lock();
+        let mut mapper: spin::MutexGuard<'_, OffsetPageTable<'_>> = KERNEL_MAPPER.lock();
 
         let erst_page: Page = Page::containing_address(VirtAddr::new(0x500000000));
         let segment_page: Page = Page::containing_address(VirtAddr::new(0x600000000));
@@ -1250,7 +1249,7 @@ mod test {
         const ERST_ENTRY_SIZE: isize = 16;
 
         // get pages for the ERST and data segment
-        let mut mapper: spin::MutexGuard<'_, OffsetPageTable<'_>> = MAPPER.lock();
+        let mut mapper: spin::MutexGuard<'_, OffsetPageTable<'_>> = KERNEL_MAPPER.lock();
 
         let erst_page: Page = Page::containing_address(VirtAddr::new(0x500000000));
         let first_segment_page: Page = Page::containing_address(VirtAddr::new(0x600000000));
@@ -1310,7 +1309,7 @@ mod test {
         let mut control = trb.control;
 
         assert_eq!(parameters, first_segment_paddr.as_u64() & !0x3F);
-        assert_eq!(status, SEGMENT_ENTRIES as u32 & 0xFFFF);
+        assert_eq!(status, SEGMENT_ENTRIES & 0xFFFF);
         assert_eq!(control, 0);
 
         unsafe {
@@ -1323,7 +1322,7 @@ mod test {
         control = trb.control;
 
         assert_eq!(parameters, second_segment_paddr.as_u64() & !0x3F);
-        assert_eq!(status, SEGMENT_ENTRIES as u32 & 0xFFFF);
+        assert_eq!(status, SEGMENT_ENTRIES & 0xFFFF);
         assert_eq!(control, 0);
 
         // check that the rest of the TRB's worth of the ERST is still zeroed
@@ -1354,7 +1353,7 @@ mod test {
         const ERST_ENTRY_SIZE: isize = 16;
 
         // get pages for the ERST and data segment
-        let mut mapper: spin::MutexGuard<'_, OffsetPageTable<'_>> = MAPPER.lock();
+        let mut mapper: spin::MutexGuard<'_, OffsetPageTable<'_>> = KERNEL_MAPPER.lock();
 
         let erst_page: Page = Page::containing_address(VirtAddr::new(0x500000000));
         let first_segment_page: Page = Page::containing_address(VirtAddr::new(0x600000000));
@@ -1434,7 +1433,7 @@ mod test {
                 assert_eq!(
                     event_ring
                         .dequeue()
-                        .expect(&format!("dequeue error for TRB {i}")),
+                        .unwrap_or_else(|_| panic!("dequeue error for TRB {i}")),
                     cmd
                 );
             }
@@ -1473,7 +1472,7 @@ mod test {
                 assert_eq!(
                     event_ring
                         .dequeue()
-                        .expect(&format!("dequeue error for TRB {i}")),
+                        .unwrap_or_else(|_| panic!("dequeue error for TRB {i}")),
                     cmd
                 );
             }
@@ -1511,7 +1510,7 @@ mod test {
                 assert_eq!(
                     event_ring
                         .dequeue()
-                        .expect(&format!("dequeue error for TRB {i}")),
+                        .unwrap_or_else(|_| panic!("dequeue error for TRB {i}")),
                     cmd
                 );
             }
@@ -1535,7 +1534,7 @@ mod test {
                 assert_eq!(
                     event_ring
                         .dequeue()
-                        .expect(&format!("dequeue error for TRB {i}")),
+                        .unwrap_or_else(|_| panic!("dequeue error for TRB {i}")),
                     cmd
                 );
             }
@@ -1571,7 +1570,7 @@ mod test {
         const ERST_ENTRY_SIZE: isize = 16;
 
         // get pages for the ERST and data segment
-        let mut mapper: spin::MutexGuard<'_, OffsetPageTable<'_>> = MAPPER.lock();
+        let mut mapper: spin::MutexGuard<'_, OffsetPageTable<'_>> = KERNEL_MAPPER.lock();
 
         let erst_page: Page = Page::containing_address(VirtAddr::new(0x500000000));
         let first_segment_page: Page = Page::containing_address(VirtAddr::new(0x600000000));
@@ -1650,7 +1649,7 @@ mod test {
                 assert_eq!(
                     event_ring
                         .dequeue()
-                        .expect(&format!("dequeue error for TRB {i}")),
+                        .unwrap_or_else(|_| panic!("dequeue error for TRB {i}")),
                     cmd
                 );
             }
@@ -1690,7 +1689,7 @@ mod test {
                 assert_eq!(
                     event_ring
                         .dequeue()
-                        .expect(&format!("dequeue error for TRB {i}")),
+                        .unwrap_or_else(|_| panic!("dequeue error for TRB {i}")),
                     cmd
                 );
             }
