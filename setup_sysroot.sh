@@ -23,12 +23,15 @@ echo "Using build directory: ${BUILD_DIR}"
 echo "Downloading and extracting musl ${MUSL_VERSION}..."
 curl -LO "${MUSL_URL}"
 tar -xf "${MUSL_TAR}" -C "${BUILD_DIR}"
-cd "${BUILD_DIR}/musl-${MUSL_VERSION}"
+
+pushd "${BUILD_DIR}/musl-${MUSL_VERSION}" >/dev/null
 
 # configure for static linking
 echo "Configuring musl..."
 ./configure --prefix=/usr --sysroot=~/linux_sysroot --disable-shared
 make && make install DESTDIR=~/linux_sysroot
+
+popd >/dev/null
 
 # Update musl-gcc wrapper to point to the correct specs file
 echo "Updating musl-gcc wrapper..."
