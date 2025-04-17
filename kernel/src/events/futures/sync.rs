@@ -49,14 +49,17 @@ impl Future for Condition {
     }
 }
 
+#[deprecated(note = "Needs updating to event system")]
 pub struct Barrier {
     count: Arc<AtomicUsize>,
     threshold: usize,
     event: Arc<Event>,
 }
 
+#[allow(deprecated)]
 unsafe impl Send for Barrier {}
 
+#[allow(deprecated)]
 impl Barrier {
     pub fn new(threshold: usize, event: Arc<Event>) -> Barrier {
         Barrier {
@@ -74,6 +77,7 @@ impl Barrier {
     }
 }
 
+#[allow(deprecated)]
 impl Future for Barrier {
     type Output = ();
 
