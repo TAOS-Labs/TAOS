@@ -21,7 +21,7 @@ use alloc::{
     sync::Arc,
     vec::Vec,
 };
-use core::sync::atomic::{AtomicBool, Ordering};
+use core::{cmp, sync::atomic::{AtomicBool, Ordering}};
 use ext2::{
     filesystem::{Ext2, FilesystemError, FilesystemResult},
     node::{DirEntry, NodeError},
@@ -596,7 +596,7 @@ impl FileSystem for Ext2Wrapper {
         // Do raw pointer write *after* .await to avoid Send violation
         unsafe {
             let buf_ptr = kernel_va.as_mut_ptr();
-            core::ptr::copy_nonoverlapping(file_buf.as_ptr(), buf_ptr, file_buf.len());
+            core::ptr::copy_nonoverlapping(file_buf.as_ptr(), buf_ptr, cmp::min(PAGE_SIZE, file_buf.len()));
         }
 
         file_mappings.insert(offset, Page::containing_address(kernel_va));
