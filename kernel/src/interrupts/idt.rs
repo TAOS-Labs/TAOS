@@ -162,6 +162,12 @@ extern "x86-interrupt" fn page_fault_handler(
     serial_println!("Page fault");
     serial_println!("Stack pointer: 0x{:X}", stack_frame.stack_pointer);
     serial_println!(
+        "EXCEPTION: PAGE FAULT\nFaulting Address: 0x{:X}\nError Code: {:X}\n{:#?}",
+        faulting_address,
+        error_code,
+        stack_frame
+    );
+    serial_println!(
         "Instruction pointer: 0x{:X}",
         stack_frame.instruction_pointer
     );
