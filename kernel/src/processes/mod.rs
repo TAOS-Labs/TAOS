@@ -22,6 +22,7 @@ mod tests {
         },
         filesys::{FileSystem, OpenFlags, FILESYSTEM},
         processes::process::create_process,
+        syscalls::memorymap::{sys_mmap, MmapFlags, ProtFlags},
     };
 
     #[test_case]
@@ -49,6 +50,14 @@ mod tests {
                 .await
                 .expect("Could not open file")
         };
+        sys_mmap(
+            0x9000,
+            0x1000,
+            ProtFlags::PROT_EXEC.bits(),
+            MmapFlags::MAP_FILE.bits(),
+            fd as i64,
+            0,
+        );
 
         let mut buffer = vec![0u8; 4096];
         let bytes_read = {
