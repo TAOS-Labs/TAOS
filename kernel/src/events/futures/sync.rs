@@ -1,8 +1,12 @@
 use alloc::{sync::Arc, vec::Vec};
-use spin::RwLock;
 use core::{
-    future::Future, ops::{Deref, DerefMut}, pin::Pin, sync::atomic::{AtomicBool, AtomicUsize, Ordering}, task::{Context, Poll}
+    future::Future,
+    ops::{Deref, DerefMut},
+    pin::Pin,
+    sync::atomic::{AtomicBool, AtomicUsize, Ordering},
+    task::{Context, Poll},
 };
+use spin::RwLock;
 
 use futures::task::ArcWake;
 
