@@ -50,6 +50,7 @@ bitflags! {
 #[derive(Debug)]
 /// A generic representation of a single funcion pci
 /// device. To note
+#[derive(Clone)]
 pub struct DeviceInfo {
     /// The bus that this device is on
     pub bus: u8,
