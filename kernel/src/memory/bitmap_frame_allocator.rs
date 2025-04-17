@@ -2,8 +2,10 @@
 //!
 //! - Another allocator kernel switches into once kernel heap is initialized
 //! - Represents each frame in physical memory as a bit and stores metadata to check against memory leaks
+use core::sync::atomic::{AtomicU16, Ordering};
+
 use crate::{
-    constants::memory::{BITMAP_ENTRY_SIZE, FRAME_SIZE, FULL_BITMAP_ENTRY},
+    constants::memory::{BITMAP_ENTRY_SIZE, FRAME_SIZE, FULL_BITMAP_ENTRY, PAGE_SIZE},
     serial_println,
 };
 use limine::{memory_map::EntryType, response::MemoryMapResponse};
@@ -14,7 +16,58 @@ use x86_64::{
 
 use alloc::{boxed::Box, vec, vec::Vec};
 
-// Holds bitmapand metadata for allocator
+/// Refcount for frames
+pub struct FrameRefCount {
+    /// Reference counts per frame
+    counts: Box<[AtomicU16]>,
+}
+
+impl FrameRefCount {
+    /// Create a new table with total_frames counters (all initially zero).
+    pub fn new(total_frames: usize) -> Self {
+        let mut vec = Vec::with_capacity(total_frames);
+        for _ in 0..total_frames {
+            vec.push(AtomicU16::new(0));
+        }
+        Self {
+            counts: vec.into_boxed_slice(),
+        }
+    }
+
+    /// Increment the counter for a given frame index.
+    #[inline]
+    pub fn inc(&self, frame: PhysFrame) {
+        self.counts[Self::frame_to_index(frame)].fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Decrement the counter for a given frame index.
+    /// Returns the new count.
+    #[inline]
+    pub fn dec(&self, frame: PhysFrame) -> u16 {
+        self.counts[Self::frame_to_index(frame)].fetch_sub(1, Ordering::Relaxed) - 1
+    }
+
+    /// Get the current counter value for a given frame index.
+    #[inline]
+    pub fn get(&self, frame: PhysFrame) -> u16 {
+        self.counts[Self::frame_to_index(frame)].load(Ordering::Relaxed)
+    }
+
+    /// Set the counter for a given frame index.
+    #[inline]
+    pub fn set(&self, frame: PhysFrame, value: u16) {
+        self.counts[Self::frame_to_index(frame)].store(value, Ordering::Relaxed);
+    }
+
+    /// Translate between frame and its index in the Bitmap
+    ///
+    /// * `frame`: the frame to translate
+    fn frame_to_index(frame: PhysFrame) -> usize {
+        frame.start_address().as_u64() as usize / PAGE_SIZE
+    }
+}
+
+// Holds bitmap and metadata for allocator
 pub struct BitmapFrameAllocator {
     // Total frames usable in physical memory
     total_frames: usize,
@@ -28,6 +81,8 @@ pub struct BitmapFrameAllocator {
     allocate_count: usize,
     // Counter for total amount of frees done by allocator
     free_count: usize,
+    // Reference count for each frame
+    pub frame_ref_count: FrameRefCount,
 }
 
 impl BitmapFrameAllocator {
@@ -60,6 +115,7 @@ impl BitmapFrameAllocator {
         let bitmap_size = total_frames.div_ceil(BITMAP_ENTRY_SIZE);
         serial_println!("The bitmap size in bytes is: {}", { bitmap_size });
         let bitmap = vec![FULL_BITMAP_ENTRY; bitmap_size].into_boxed_slice();
+        let frame_ref_count = FrameRefCount::new(total_frames);
         let mut allocator = Self {
             total_frames,
             free_frames: 0,
@@ -67,12 +123,12 @@ impl BitmapFrameAllocator {
             bitmap,
             allocate_count: 0,
             free_count: 0,
+            frame_ref_count,
         };
 
         for entry in memory_map.entries().iter() {
             if entry.entry_type == EntryType::USABLE {
                 allocator.free_region(entry.base as usize, entry.length as usize);
-                allocator.free_frames += (entry.length as usize).div_ceil(FRAME_SIZE);
             }
         }
         for frame in initial_frames_vec {
@@ -90,6 +146,7 @@ impl BitmapFrameAllocator {
         let start_frame = base / FRAME_SIZE;
         let end_frame = (base + length) / FRAME_SIZE;
         for frame_index in start_frame..end_frame {
+            self.free_frames += 1;
             self.clear_bit_init(frame_index); // set to 0 = free
         }
     }
@@ -205,12 +262,12 @@ impl BitmapFrameAllocator {
         serial_println!("Bitmap: {:?}", self.bitmap);
     }
 
-    /// Prints the total number of allocations
+    /// Returns the total number of allocations
     pub fn get_allocate_count(&self) -> usize {
         self.allocate_count
     }
 
-    /// Prints the total number of frees
+    /// Returns the total number of frees
     pub fn get_free_count(&self) -> usize {
         self.free_count
     }
@@ -232,6 +289,8 @@ unsafe impl FrameAllocator<Size4KiB> for BitmapFrameAllocator {
                 let addr = self.to_allocate * FRAME_SIZE;
                 self.to_allocate = (self.to_allocate + 1) % self.total_frames;
                 self.allocate_count += 1;
+                self.frame_ref_count
+                    .inc(PhysFrame::containing_address(PhysAddr::new(addr as u64)));
                 return Some(PhysFrame::containing_address(PhysAddr::new(addr as u64)));
             }
 
@@ -250,6 +309,9 @@ impl FrameDeallocator<Size4KiB> for BitmapFrameAllocator {
     /// Deallocating memory must be an unsafe operation
     unsafe fn deallocate_frame(&mut self, frame: PhysFrame<Size4KiB>) {
         self.free_count += 1;
-        self.mark_frame_free(frame);
+        self.frame_ref_count.dec(frame);
+        if self.frame_ref_count.get(frame) == 0 {
+            self.mark_frame_free(frame);
+        }
     }
 }

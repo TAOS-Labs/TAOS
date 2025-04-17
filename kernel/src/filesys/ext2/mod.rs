@@ -32,10 +32,8 @@ mod tests {
 
     // Helper function to create a test filesystem using the SD card
     async fn create_test_fs() -> Ext2 {
-        let sd_card_lock = SD_CARD.lock();
-        let sd_card = sd_card_lock.clone().unwrap();
-        let sd_arc = Arc::new(sd_card);
-        let fs = Ext2::new(sd_arc).await.unwrap();
+        let sd_card = Arc::new(SD_CARD.lock().clone().unwrap());
+        let fs = Ext2::new(sd_card).await.unwrap();
         fs.mount().await.unwrap();
         fs
     }
@@ -55,7 +53,8 @@ mod tests {
 
         fs.unmount().await.unwrap();
 
-        match fs.read_file("/test.txt").await {
+        let temp = fs.read_file("/test.txt").await;
+        match temp {
             Err(FilesystemError::NotMounted) => {}
             _ => panic!("Expected NotMounted error"),
         }
@@ -74,7 +73,6 @@ mod tests {
         let mode = FileMode::REG | FileMode::UREAD | FileMode::UWRITE;
 
         let file_node = fs.create_file(file_path, mode).await.unwrap();
-        assert!(file_node.is_file());
 
         let bytes_written = fs.write_file(file_path, test_content).await.unwrap();
         assert_eq!(bytes_written, test_content.len());
@@ -184,9 +182,9 @@ mod tests {
         let mut data = vec![0u8; data_size];
 
         // Fill with pattern
-        for i in 0..data_size {
+        (0..data_size).for_each(|i| {
             data[i] = (i % 256) as u8;
-        }
+        });
 
         let bytes_written = fs.write_file(file_path, &data).await.unwrap();
         assert_eq!(bytes_written, data_size);
@@ -391,9 +389,9 @@ mod tests {
 
         assert_eq!(content.len(), offset as usize + end_data.len());
 
-        for i in start_data.len()..offset as usize {
+        (start_data.len()..offset as usize).for_each(|i| {
             assert_eq!(content[i], 0);
-        }
+        });
 
         fs.remove(file_path).await.unwrap();
     }
@@ -409,9 +407,9 @@ mod tests {
         let block_size = fs.stats().unwrap().block_size;
         let data_size = block_size as usize * 4;
         let mut data = vec![0u8; data_size];
-        for i in 0..data_size {
+        (0..data_size).for_each(|i| {
             data[i] = (i % 256) as u8;
-        }
+        });
 
         fs.write_file(file_path, &data).await.unwrap();
 

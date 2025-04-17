@@ -11,8 +11,10 @@ use limine::{
 };
 
 use crate::{
-    debug, devices,
+    debug,
+    devices::{self},
     events::{register_event_runner, run_loop, spawn, yield_now},
+    filesys::{self},
     interrupts::{self, idt},
     ipc::{
         messages::Message,
@@ -23,9 +25,10 @@ use crate::{
     },
     logging,
     memory::{self},
+    net::get_ip_addr,
+    processes::{self},
     serial_println, trace,
 };
-
 extern crate alloc;
 
 /// Limine base revision request
@@ -51,21 +54,22 @@ static CPU_COUNT: AtomicU64 = AtomicU64::new(0);
 /// * `u32` - The BSP's LAPIC ID
 pub fn init() -> u32 {
     assert!(BASE_REVISION.is_supported());
-    interrupts::init(0);
-
     memory::init(0);
+    interrupts::init(0);
 
     register_event_runner();
     devices::init(0);
+    filesys::init(0);
     // Should be kept after devices in case logging gets complicated
     // Right now log writes to serial, but if it were to switch to VGA, this would be important
     logging::init(0);
+    get_ip_addr().unwrap();
+    processes::init(0);
 
     debug!("Waking cores");
     let bsp_id = wake_cores();
 
     idt::enable();
-
     bsp_id
 }
 
@@ -85,6 +89,7 @@ unsafe extern "C" fn secondary_cpu_main(cpu: &Cpu) -> ! {
     interrupts::init(cpu.id);
     memory::init(cpu.id);
     logging::init(cpu.id);
+    processes::init(cpu.id);
 
     debug!("AP {} initialized", cpu.id);
 
@@ -123,7 +128,6 @@ fn wake_cores() -> u32 {
     while CPU_COUNT.load(Ordering::SeqCst) < cpu_count - 1 {
         core::hint::spin_loop();
     }
-    register_event_runner();
 
     BOOT_COMPLETE.store(true, Ordering::SeqCst);
 

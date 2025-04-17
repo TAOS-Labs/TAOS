@@ -19,3 +19,12 @@ pub const SYSCALL_FUTEX: u32 = 202;
 pub const SYSCALL_OPENAT: u32 = 257;
 
 pub const SYSCALL_GETRANDOM: u32 = 318;
+
+pub const SYSCALL_MMAP: u32 = 4;
+pub const SYSCALL_MPROTECT: u32 = 10;
+pub const SYSCALL_MUNMAP: u32 = 11;
+pub const SYSCALL_FORK: u32 = 5;
+pub const SYSCALL_WAIT: u32 = 6;
+
+// Mmap
+pub const START_MMAP_ADDRESS: u64 = 0x0900_0000_0000;

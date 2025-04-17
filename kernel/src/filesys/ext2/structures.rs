@@ -329,11 +329,13 @@ mod tests {
 
     #[test_case]
     async fn test_block_group_count() {
-        let mut sb = Superblock::default();
-        sb.num_blocks = 1000;
-        sb.blocks_per_group = 100;
-        sb.num_inodes = 250;
-        sb.inodes_per_group = 25;
+        let sb = Superblock {
+            num_blocks: 1000,
+            blocks_per_group: 100,
+            num_inodes: 250,
+            inodes_per_group: 25,
+            ..Default::default()
+        };
         assert_eq!(sb.block_group_count(), 10);
     }
 
