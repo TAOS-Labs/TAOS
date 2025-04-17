@@ -478,9 +478,9 @@ mod tests {
             let count = rx.try_recv_batch(&mut buf).unwrap();
             assert_eq!(count, 32);
 
-            for i in 0..32 {
+            (0..32).for_each(|i| {
                 assert_eq!(buf[i], i);
-            }
+            });
 
             for i in 32..50 {
                 assert_eq!(rx.recv().await.unwrap(), i);
@@ -537,7 +537,7 @@ mod tests {
 
         async move {
             tx.send(()).await.unwrap();
-            assert_eq!(rx.recv().await.unwrap(), ());
+            rx.recv().await.unwrap();
         }
     }
 

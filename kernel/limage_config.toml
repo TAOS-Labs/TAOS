@@ -5,15 +5,18 @@ image_path = "target/kernel.iso"
 binary = "qemu-system-x86_64"
 base_args = [
     # Memory
-    "-m", "4G",
+    "-m", "2G",
 
     # SMP settings
-    "-smp", "2", 
+    "-smp", "2",
     "-cpu", "Conroe-v1,+x2apic,+invtsc",
+
+    # USB
+    "-device", "qemu-xhci",
 
     # Network
     "-netdev", "user,id=net0",
-    "-device", "virtio-net-pci,netdev=net0",
+    "-device", "usb-net,netdev=net0",
 
     # Audio
     "-device", "intel-hda",
@@ -22,10 +25,16 @@ base_args = [
     # General Storage
     "-drive", "id=mysdcard,file=storage_test.img,if=none,format=raw",
     "-device", "sdhci-pci",
-    "-device", "sd-card,drive=mysdcard", 
+    "-device", "sd-card,drive=mysdcard",
 
     # Graphics
     "-vga", "std",
+
+    # Debugging traces
+    # USB
+    # "-trace", "usb*",
+    # SD card
+    # "-trace", "sd*",
 
     # Boot media and UEFI settings
     "-cdrom", "{image}",
@@ -40,7 +49,7 @@ gdb-terminal = { args = ["-nographic", "-s", "-S"] }
 gdb-gui = { args = ["-s", "-S"] }
 
 [test]
-timeout_secs = 20
+timeout_secs = 30
 success_exit_code = 33
 no_reboot = true
 extra_args = [

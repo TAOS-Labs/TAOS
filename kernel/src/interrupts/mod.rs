@@ -6,7 +6,7 @@
 //! - Advanced Programmable Interrupt Controller (x2APIC)
 //! - Exception handlers and interrupt handling
 
-use crate::{constants::x2apic::CPU_FREQUENCY, memory::MAPPER};
+use crate::{constants::x2apic::CPU_FREQUENCY, memory::KERNEL_MAPPER};
 
 pub mod gdt;
 pub mod idt;
@@ -31,7 +31,7 @@ pub fn init(cpu_id: u32) {
         x2apic::init_bsp(CPU_FREQUENCY).expect("Failed to configure x2APIC");
 
         {
-            let mut mapper = MAPPER.lock();
+            let mut mapper = KERNEL_MAPPER.lock();
             io_apic::init(&mut *mapper).expect("Failed to initialize I/O APIC");
         }
     } else {

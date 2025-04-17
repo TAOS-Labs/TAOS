@@ -5,9 +5,10 @@
 //! - Frame buffer for screen output
 //! - Future device support will be added here
 
-use crate::{events::schedule_kernel, memory::MAPPER, serial_println};
+use crate::{events::schedule_kernel, serial_println};
 use pci::walk_pci_bus;
 use sd_card::{find_sd_card, initalize_sd_card};
+use xhci::{find_xhci_inferface, initalize_xhci_hub};
 pub mod graphics;
 use graphics::framebuffer::{self, colors};
 pub mod audio;
@@ -17,6 +18,7 @@ pub mod mouse;
 pub mod pci;
 pub mod sd_card;
 pub mod serial;
+pub mod xhci;
 
 /// Initialize hardware devices.
 ///
@@ -62,11 +64,16 @@ pub fn init(cpu_id: u32) {
         serial_println!("Text drawn");
 
         let devices = walk_pci_bus();
+
         let sd_card_device =
             find_sd_card(&devices).expect("Build system currently sets up an sd-card");
-        let mut mapper = MAPPER.lock();
-        initalize_sd_card(&sd_card_device, &mut mapper).unwrap();
+
+        initalize_sd_card(&sd_card_device).unwrap();
         serial_println!("Sd card initialized");
+
+        let xhci_device =
+            find_xhci_inferface(&devices).expect("Build system currently sets up xhci device");
+        initalize_xhci_hub(&xhci_device).unwrap();
 
         keyboard::init().expect("Failed to initialize keyboard");
         mouse::init().expect("Failed to initialize mouse");

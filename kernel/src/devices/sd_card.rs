@@ -1,26 +1,28 @@
 use alloc::{boxed::Box, sync::Arc, vec::Vec};
 use async_trait::async_trait;
 use spin::Mutex;
-use x86_64::{
-    structures::paging::{
-        mapper::{MappedFrame, TranslateResult},
-        Mapper, OffsetPageTable, Page, PageTableFlags, PhysFrame, Size1GiB, Size2MiB, Size4KiB,
-        Translate,
-    },
-    PhysAddr, VirtAddr,
-};
+use x86_64::PhysAddr;
 
 use crate::{
     constants::devices::SD_REQ_TIMEOUT_NANOS,
     debug_println,
     devices::pci::write_pci_command,
     events::{current_running_event, futures::devices::SDCardReq, get_runner_time},
-    filesys::{BlockDevice, FsError},
-    memory::paging,
+    filesys::{
+        ext2::{
+            block_io::{BlockError, BlockIO, BlockResult},
+            filesystem::{FilesystemError, FilesystemResult},
+        },
+        BlockDevice,
+    },
+    memory::KERNEL_MAPPER,
 };
 use bitflags::bitflags;
 
-use super::pci::{read_config, DeviceInfo, PCICommand};
+use super::{
+    mmio::map_page_as_uncacheable,
+    pci::{read_config, DeviceInfo, PCICommand},
+};
 /// Used to get access to the sd card in the system. Multiple SD cards
 /// are NOT supported
 pub static SD_CARD: Mutex<Option<SDCardInfo>> = Mutex::new(Option::None);
@@ -41,7 +43,7 @@ struct SDCardInfoInternal {
 #[derive(Debug, Clone)]
 #[allow(dead_code)]
 /// Represents an SD Card. Is used by all functions that interface with
-/// an sd card, and is returned by initalize_sd_card  
+/// an sd card, and is returned by initalize_sd_card
 pub struct SDCardInfo {
     /// Stores data that can be determined without needing to fully initalize
     /// the card, most importantly the base address register
@@ -49,7 +51,7 @@ pub struct SDCardInfo {
     /// Stores the block size of this sd card
     block_size: usize,
     /// Stores total blocks of  this sd card
-    total_blocks: u64,
+    total_sectors: u64,
     /// Stores the relative card address. This is used as an argument in some
     /// sd commands
     reletave_card_address: u32,
@@ -120,6 +122,7 @@ bitflags! {
         const ReadToCard = 1 << 4;
         const BlockCountEnable = 1 << 1;
         const DMAEnable = 1;
+        const _ = !0;
     }
 }
 
@@ -195,13 +198,13 @@ const SD_SUB_CLASS: u8 = 0x5;
 const SD_NO_DMA_INTERFACE: u8 = 0x0;
 const SD_DMA_INTERFACE: u8 = 0x1;
 const MAX_ITERATIONS: usize = 1_000;
-const SD_BLOCK_SIZE: u32 = 512;
+const SD_SECTOR_SIZE: u32 = 512;
 
 #[async_trait]
 impl BlockDevice for SDCardInfo {
-    async fn read_block(&self, block_num: u64, buf: &mut [u8]) -> Result<(), FsError> {
-        if block_num > self.total_blocks {
-            return Result::Err(FsError::IOError);
+    async fn read_block(&self, block_num: u64, buf: &mut [u8]) -> FilesystemResult<u8> {
+        if block_num > self.total_sectors {
+            return Result::Err(FilesystemError::DeviceError(BlockError::InvalidBlock));
         }
         let data = read_sd_card(
             self,
@@ -210,15 +213,16 @@ impl BlockDevice for SDCardInfo {
                 .expect("Maxumum block number should not be greater than 32 bits"),
         )
         .await
-        .map_err(|_| FsError::IOError)?;
+        .map_err(|_| FilesystemError::DeviceError(BlockError::DeviceError))?;
+
         buf.copy_from_slice(&data);
 
-        Result::Ok(())
+        Result::Ok(0)
     }
 
-    async fn write_block(&mut self, block_num: u64, buf: &[u8]) -> Result<(), FsError> {
-        if block_num > self.total_blocks {
-            return Result::Err(FsError::IOError);
+    async fn write_block(&mut self, block_num: u64, buf: &[u8]) -> FilesystemResult<u8> {
+        if block_num > self.total_sectors {
+            return Result::Err(FilesystemError::DeviceError(BlockError::InvalidBlock));
         }
         let mut data: [u8; 512] = [0; 512];
         data.copy_from_slice(buf);
@@ -230,16 +234,71 @@ impl BlockDevice for SDCardInfo {
             data,
         )
         .await
-        .map_err(|_| FsError::IOError)?;
-        Result::Ok(())
+        .map_err(|_| FilesystemError::DeviceError(BlockError::DeviceError))?;
+        Result::Ok(0)
     }
 
     fn block_size(&self) -> usize {
-        SD_BLOCK_SIZE.try_into().expect("To be on 64 bit system")
+        SD_SECTOR_SIZE.try_into().expect("To be on 64 bit system")
     }
 
     fn total_blocks(&self) -> u64 {
-        self.total_blocks
+        self.total_sectors
+    }
+}
+
+const SECTORS_PER_BLOCK: u32 = 2;
+const SD_BLOCK_IO_SIZE: u32 = SD_SECTOR_SIZE * SECTORS_PER_BLOCK;
+
+#[async_trait]
+impl BlockIO for SDCardInfo {
+    async fn read_block(&self, block_num: u64, buf: &mut [u8]) -> BlockResult<()> {
+        if (block_num + 1) * SECTORS_PER_BLOCK as u64 > self.total_sectors {
+            return BlockResult::Err(BlockError::InvalidBlock);
+        }
+        for start_block in 0..SECTORS_PER_BLOCK {
+            let block_num_32: u32 = block_num
+                .try_into()
+                .expect("Total blocks is less than 32 bits long");
+            let data = read_sd_card(self, block_num_32 * SECTORS_PER_BLOCK + start_block)
+                .await
+                .map_err(|_| BlockError::DeviceError)?;
+            let start_block_size: usize = (start_block * SD_SECTOR_SIZE).try_into().unwrap();
+            // Copy the data from buff to data (Blame clippy for this abomination)
+            buf[start_block_size..(SD_SECTOR_SIZE as usize + start_block_size)]
+                .copy_from_slice(&data[..(SD_SECTOR_SIZE as usize)]);
+        }
+
+        Result::Ok(())
+    }
+
+    async fn write_block(&self, block_num: u64, buf: &[u8]) -> BlockResult<()> {
+        if (block_num + 1) * SECTORS_PER_BLOCK as u64 > self.total_sectors {
+            return BlockResult::Err(BlockError::InvalidBlock);
+        }
+        let mut data: [u8; 512] = [0; 512];
+        for start_block in 0..SECTORS_PER_BLOCK {
+            let start_block_size: usize = (start_block * SD_SECTOR_SIZE).try_into().unwrap();
+            // Copy the data from data to buff (Blame clippy for this abomination)
+            data[..(SD_SECTOR_SIZE as usize)].copy_from_slice(
+                &buf[start_block_size..(SD_SECTOR_SIZE as usize + start_block_size)],
+            );
+            let block_num_32: u32 = block_num
+                .try_into()
+                .expect("Total blocks is less than 32 bits long");
+            write_sd_card(self, block_num_32 * SECTORS_PER_BLOCK + start_block, data)
+                .await
+                .map_err(|_| BlockError::DeviceError)?;
+        }
+        Result::Ok(())
+    }
+
+    fn block_size(&self) -> u64 {
+        SD_BLOCK_IO_SIZE as u64 //.try_into().expect("To be on 64 bit system")
+    }
+
+    fn size_in_bytes(&self) -> u64 {
+        self.total_sectors * SD_SECTOR_SIZE as u64
     }
 }
 
@@ -265,14 +324,12 @@ pub fn find_sd_card(devices: &Vec<Arc<Mutex<DeviceInfo>>>) -> Option<Arc<Mutex<D
 /// Sets up an sd card, returning an SDCardInfo that can be used for further
 /// accesses to the sd card
 /// THIS ASSUMES A VERSION 2 SDCARD as of writing
-pub fn initalize_sd_card(
-    sd_arc: &Arc<Mutex<DeviceInfo>>,
-    mapper: &mut OffsetPageTable,
-) -> Result<(), SDCardError> {
+pub fn initalize_sd_card(sd_arc: &Arc<Mutex<DeviceInfo>>) -> Result<(), SDCardError> {
     // Assume sd_card is a device info for an SD Crd
     // Lets assume 1 slot, and it uses BAR 1
 
     // Disable Commands from being sent over the Memory Space
+    let mut mapper = KERNEL_MAPPER.lock();
     let sd_lock = sd_arc.clone();
     let sd_card = sd_lock.lock();
     let command = sd_card.command & !PCICommand::MEMORY_SPACE;
@@ -281,66 +338,9 @@ pub fn initalize_sd_card(
     // Determine the Base Address, and setup a mapping
     let base_address_register = read_config(sd_card.bus, sd_card.device, 0, 0x10);
     let bar_address: u64 = (base_address_register & 0xFFFFFF00).into();
-    let offset = mapper.phys_offset().as_u64();
-    let mut offset_bar = bar_address + offset;
-    let translate_result = mapper.translate(VirtAddr::new(offset_bar));
-    match translate_result {
-        TranslateResult::Mapped {
-            frame,
-            offset: _,
-            flags,
-        } => match frame {
-            MappedFrame::Size4KiB(_) => {
-                let page: Page<Size4KiB> = Page::containing_address(VirtAddr::new(offset_bar));
-                unsafe {
-                    mapper
-                        .update_flags(
-                            page,
-                            flags | PageTableFlags::NO_CACHE | PageTableFlags::WRITABLE,
-                        )
-                        .map_err(|_| SDCardError::GenericSDError)?
-                        .flush();
-                }
-            }
-            MappedFrame::Size2MiB(_) => {
-                let page: Page<Size2MiB> = Page::containing_address(VirtAddr::new(offset_bar));
-                unsafe {
-                    mapper
-                        .update_flags(
-                            page,
-                            flags | PageTableFlags::NO_CACHE | PageTableFlags::WRITABLE,
-                        )
-                        .map_err(|_| SDCardError::GenericSDError)?
-                        .flush();
-                }
-            }
-            MappedFrame::Size1GiB(_) => {
-                let page: Page<Size1GiB> = Page::containing_address(VirtAddr::new(offset_bar));
-                unsafe {
-                    mapper
-                        .update_flags(
-                            page,
-                            flags | PageTableFlags::NO_CACHE | PageTableFlags::WRITABLE,
-                        )
-                        .map_err(|_| SDCardError::GenericSDError)?
-                        .flush();
-                }
-            }
-        },
-        TranslateResult::InvalidFrameAddress(_) => {
-            panic!("Invalid physical address in SD BAR")
-        }
-        TranslateResult::NotMapped => {
-            let bar_frame: PhysFrame<Size4KiB> =
-                PhysFrame::containing_address(PhysAddr::new(bar_address));
-            let sd_va = paging::map_kernel_frame(
-                mapper,
-                bar_frame,
-                PageTableFlags::PRESENT | PageTableFlags::NO_CACHE | PageTableFlags::WRITABLE,
-            );
-            offset_bar = sd_va.as_u64();
-        }
-    }
+    let base_virtual_addr = map_page_as_uncacheable(PhysAddr::new(bar_address), &mut mapper)
+        .map_err(|_| SDCardError::GenericSDError)?;
+    let offset_bar = base_virtual_addr.as_u64();
     // Re-enable memory space commands
     write_pci_command(
         sd_card.bus,
@@ -549,7 +549,7 @@ fn get_full_sd_card_info(
     rca: u32,
     csd: u128,
 ) -> Result<SDCardInfo, SDCardError> {
-    // Currently only supports CSD Version 1.0
+    // Currently only supports CSD Version 2.0
     let csd_structre: u32 = (csd >> 126)
         .try_into()
         .expect("Higher bits to be masked out");
@@ -564,8 +564,8 @@ fn get_full_sd_card_info(
     let info = SDCardInfo {
         internal_info: sd_card.clone(),
         reletave_card_address: rca,
-        block_size: SD_BLOCK_SIZE.try_into().expect("To be on 64 bit system"),
-        total_blocks: (c_size + 1).into(),
+        block_size: SD_SECTOR_SIZE.try_into().expect("To be on 64 bit system"),
+        total_sectors: ((c_size + 1) * 1024).into(),
     };
 
     Result::Ok(info)
@@ -722,7 +722,7 @@ pub async fn read_sd_card(sd_card: &SDCardInfo, block: u32) -> Result<[u8; 512],
     unsafe { core::ptr::write_volatile(block_count_register_addr, 1) };
     sending_command_valid(internal_info)?;
     let argument_register_addr = (internal_info.base_address_register + 0x8) as *mut u32;
-    unsafe { core::ptr::write_volatile(argument_register_addr, block * SD_BLOCK_SIZE) };
+    unsafe { core::ptr::write_volatile(argument_register_addr, block) };
     let transfer_mode_register_adder = (internal_info.base_address_register + 0xC) as *mut u16;
     unsafe {
         core::ptr::write_volatile(
@@ -739,7 +739,6 @@ pub async fn read_sd_card(sd_card: &SDCardInfo, block: u32) -> Result<[u8; 512],
         CommandFlags::DataPresentSelect,
     )?;
 
-    // TODO SD Card lock for safety? (OR at least for this mem address)
     let present_state_register_addr = (internal_info.base_address_register + 0x24) as *const u32;
 
     let read_ready = SDCardReq::new(
@@ -778,7 +777,7 @@ pub async fn write_sd_card(
     unsafe { core::ptr::write_volatile(block_count_register_addr, 1) };
     sending_command_valid(internal_info)?;
     let argument_register_addr = (internal_info.base_address_register + 0x8) as *mut u32;
-    unsafe { core::ptr::write_volatile(argument_register_addr, block * SD_BLOCK_SIZE) };
+    unsafe { core::ptr::write_volatile(argument_register_addr, block) };
     let transfer_mode_register_adder = (internal_info.base_address_register + 0xC) as *mut u16;
     unsafe { core::ptr::write_volatile(transfer_mode_register_adder, 0) };
 

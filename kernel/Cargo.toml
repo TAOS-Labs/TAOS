@@ -18,13 +18,41 @@ spin = "0.9.8"
 uart_16550 = "0.3.2"
 x86_64 = "0.15.2"
 talc = "4.4.2"
-goblin = {version = "0.9.3", default-features = false, features = ["alloc", "elf64", "elf32", "endian_fd"]}
+goblin = { version = "0.9.3", default-features = false, features = [
+    "alloc",
+    "elf64",
+    "elf32",
+    "endian_fd",
+] }
 rand = { version = "0.8.3", features = ["small_rng"], default-features = false }
-futures = { version = "0.3", default-features = false, features = ["alloc", "async-await"] }
-crossbeam-queue = { version = "0.3.12", default-features = false, features = ["alloc"] }
+futures = { version = "0.3", default-features = false, features = [
+    "alloc",
+    "async-await",
+] }
+crossbeam-queue = { version = "0.3.12", default-features = false, features = [
+    "alloc",
+] }
 arrayvec = { version = "0.7.6", default-features = false }
 log = { version = "0.4.25", default-features = false }
 async-trait = "0.1.86"
-fontdue = { version = "0.9.3", default-features = false, features = ["hashbrown"] }
+smoltcp = { version = "0.10.0", default-features = false, features = [
+    "alloc",
+    "proto-ipv4",
+    "medium-ethernet",
+    "socket-raw",
+    "socket-dhcpv4",
+    "socket-icmp",
+    "socket-dns",
+    "socket-udp",
+] }
+fontdue = { version = "0.9.3", default-features = false, features = [
+    "hashbrown",
+] }
+zerocopy = { version = "0.8", features = ["derive"] }
 pc-keyboard = "0.8.0"
-futures-util = { version = "0.3.31", default-features = false, features = ["alloc", "async-await", "async-await-macro", "futures-macro"] }
+futures-util = { version = "0.3.31", default-features = false, features = [
+    "alloc",
+    "async-await",
+    "async-await-macro",
+    "futures-macro",
+] }
