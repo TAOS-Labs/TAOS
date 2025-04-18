@@ -7,6 +7,7 @@
 #![feature(custom_test_frameworks)]
 #![test_runner(crate::test_runner)]
 #![reexport_test_harness_main = "test_main"]
+#![feature(unsafe_cell_access)]
 
 //! The TAOS operating system
 extern crate alloc;
