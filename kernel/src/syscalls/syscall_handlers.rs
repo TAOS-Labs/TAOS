@@ -16,7 +16,7 @@ use crate::{
         current_running_event, current_running_event_info, futures::await_on::AwaitProcess,
         get_runner_time, yield_now, EventInfo,
     }, filesys::syscalls::{sys_creat, sys_open}, interrupts::x2apic, memory::frame_allocator::with_buddy_frame_allocator, processes::{
-        process::{sleep_process_int, sleep_process_syscall, ProcessState, PROCESS_TABLE},
+        process::{pawait, sleep_process_int, sleep_process_syscall, ProcessState, PROCESS_TABLE},
         registers::ForkingRegisters,
     }, serial_println, syscalls::{fork::sys_fork, memorymap::sys_mmap}
 };
@@ -43,6 +43,22 @@ pub struct SyscallRegisters {
     pub arg4: u64,   // originally in r10
     pub arg5: u64,   // originally in r8
     pub arg6: u64,   // originally in r9
+}
+
+pub struct ConstUserPtr<T>(pub *const T);
+unsafe impl<T> Send for ConstUserPtr<T> {}
+impl<T> From<u64> for ConstUserPtr<T> {
+    fn from(value: u64) -> Self {
+        ConstUserPtr(value as *const T)
+    }
+}
+
+pub struct MutUserPtr<T>(pub *mut T);
+unsafe impl<T> Send for MutUserPtr<T> {}
+impl<T> From<u64> for MutUserPtr<T> {
+    fn from(value: u64) -> Self {
+        MutUserPtr(value as *mut T)
+    }
 }
 
 /// Naked syscall handler that switches to a valid kernel stack (saving
@@ -162,15 +178,15 @@ pub unsafe extern "C" fn syscall_handler_impl(
         SYSCALL_NANOSLEEP => sys_nanosleep_64(syscall.arg1, reg_vals),
         
         // Filesystem syscalls
-        SYSCALL_OPEN => sys_open(
-            syscall.arg1 as *const i8, 
+        SYSCALL_OPEN => block_ons(sys_open(
+            ConstUserPtr::from(syscall.arg1), 
             syscall.arg2 as u32, 
             syscall.arg3 as u16
-        ),
-        SYSCALL_CREAT => sys_creat(
-            syscall.arg1 as *const i8,
+        )),
+        SYSCALL_CREAT => block_on(sys_creat(
+            ConstUserPtr::from(syscall.arg1),
             syscall.arg3 as u16
-        ),
+        )),
         SYSCALL_FORK => sys_fork(reg_vals),
         SYSCALL_MMAP => sys_mmap(
             syscall.arg1,

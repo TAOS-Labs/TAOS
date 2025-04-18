@@ -5,7 +5,7 @@
 
 use crate::{
     constants::{memory::PAGE_SIZE, processes::MAX_FILES},
-    events::{current_running_event, futures::sync::Condition, schedule_kernel_on},
+    events::{current_running_event, futures::sync::{BlockMutex, Condition}, schedule_kernel_on},
     filesys::ext2::structures::FileMode,
     memory::{
         frame_allocator::{alloc_frame, dealloc_frame},
@@ -46,7 +46,7 @@ lazy_static! {
     static ref FS_INIT_COMPLETE: Arc<AtomicBool> = Arc::new(AtomicBool::new(false));
 
     /// Global filesystem instance
-    pub static ref FILESYSTEM: Once<Mutex<Ext2Wrapper>> = Once::new();
+    pub static ref FILESYSTEM: Once<BlockMutex<Ext2Wrapper>> = Once::new();
 }
 
 bitflags! {

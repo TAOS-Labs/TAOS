@@ -7,8 +7,7 @@ use crate::{
     },
     debug,
     events::{
-        current_running_event_info, nanosleep_current_process, runner_timestamp, schedule_process,
-        EventInfo,
+        current_running_event_info, nanosleep_current_process, runner_timestamp, schedule_kernel, schedule_process, schedule_sysret_process, EventInfo
     },
     filesys::File,
     interrupts::{
@@ -26,7 +25,7 @@ use crate::{
 };
 use alloc::{collections::BTreeMap, sync::Arc};
 use core::{
-    arch::naked_asm, borrow::BorrowMut, cell::UnsafeCell, future::Future, sync::atomic::{AtomicU32, Ordering}
+    arch::naked_asm, borrow::BorrowMut, cell::UnsafeCell, future::Future, sync::atomic::{AtomicU32, Ordering}, u64
 };
 use spin::{rwlock::RwLock, Mutex};
 use x86_64::{
@@ -703,6 +702,177 @@ pub fn sleep_process_syscall(nanos: u64, reg_vals: &ForkingRegisters) {
     }
 }
 
-pub fn pawait<R>(fut: impl Future<Output = R> + 'static + Send) {
-    
+pub fn pawait(fut: impl Future<Output = u64> + Send + 'static, reg_vals: &ForkingRegisters) -> u64 {
+    let event: EventInfo = current_running_event_info();
+    if event.pid == 0 {
+        return u64::MAX;
+    }
+
+    // Get PCB from PID
+    let preemption_info = unsafe {
+        let mut process_table = PROCESS_TABLE.write();
+        let process = process_table
+            .get_mut(&event.pid)
+            .expect("Process not found");
+
+        let pcb = process.pcb.get();
+
+        // save registers to the PCB
+
+        (*pcb).registers.rax = 0; // nanosleep return value (when not interrupted)
+        (*pcb).registers.rbx = reg_vals.rbx;
+        (*pcb).registers.rcx = reg_vals.rcx;
+        (*pcb).registers.rdx = reg_vals.rdx;
+        (*pcb).registers.rsi = reg_vals.rsi;
+        (*pcb).registers.rdi = reg_vals.rdi;
+        (*pcb).registers.r8 = reg_vals.r8;
+        (*pcb).registers.r9 = reg_vals.r9;
+        (*pcb).registers.r10 = reg_vals.r10;
+        (*pcb).registers.r11 = reg_vals.r11;
+        (*pcb).registers.r12 = reg_vals.r12;
+        (*pcb).registers.r13 = reg_vals.r13;
+        (*pcb).registers.r14 = reg_vals.r14;
+        (*pcb).registers.r15 = reg_vals.r15;
+        (*pcb).registers.rbp = reg_vals.rbp;
+        // saved from interrupt stack frame
+        (*pcb).registers.rsp = reg_vals.rsp;
+        (*pcb).registers.rip = reg_vals.rcx; // SYSCALL rcx stores RIP
+        (*pcb).registers.rflags = reg_vals.r11; // SYSCALL r11 stores RFLAGS
+
+        (*pcb).state = ProcessState::Blocked;
+
+        ((*pcb).kernel_rsp, (*pcb).kernel_rip)
+    };
+    unsafe {
+        schedule_kernel(async move {
+            let res = fut.await;
+            schedule_sysret_process(event.pid, res);
+        }, 0);
+
+        // Restore kernel RSP + PC -> RIP from where it was stored in run/resume process
+        core::arch::asm!(
+            "mov rsp, {0}",
+            "push {1}",
+            in(reg) preemption_info.0,
+            in(reg) preemption_info.1
+        );
+
+        x2apic::send_eoi();
+
+        core::arch::asm!("swapgs", "ret");
+    }
+
+    return u64::MAX
+}
+
+/// run a process in ring 3
+/// # Safety
+///
+/// This process is unsafe because it directly modifies registers
+#[no_mangle]
+pub async unsafe fn sysret_process_ring3(pid: u32, retval: u64) {
+    interrupts::disable();
+    let process = {
+        let process_table = PROCESS_TABLE.read();
+        let process = process_table
+            .get(&pid)
+            .expect("Could not find process from process table");
+        process.clone()
+    };
+
+    // Do not lock lowest common denominator
+    // Once kernel threads are in, will need lock around PCB
+    // But not TCB
+    let process = process.pcb.get();
+
+    (*process).next_preemption_time = runner_timestamp() + nanos_to_ticks(PROCESS_NANOS);
+
+    Cr3::write((*process).mm.pml4_frame, Cr3Flags::empty());
+
+    let user_cs = gdt::GDT.1.user_code_selector.0;
+    let user_ds = gdt::GDT.1.user_data_selector.0;
+
+    let registers = &(*process).registers.clone();
+
+    (*process).kernel_rip = return_process as usize as u64;
+    (*process).next_preemption_time = runner_timestamp() + nanos_to_ticks(PROCESS_TIMESLICE);
+
+    // Stack layout to move into user mode
+    unsafe {
+        asm!(
+            "push rax",
+            "push rcx",
+            "push rdx",
+            "call sysret_process",
+            "pop rdx",
+            "pop rcx",
+            "pop rax",
+            in("rdi") registers as *const Registers,
+            in("rsi") user_ds,
+            in("rdx") user_cs,
+            in("rcx") &(*process).kernel_rsp,
+            in("r8")  &(*process).state,
+            in("r9")  retval
+        );
+    }
+}
+
+#[naked]
+#[no_mangle]
+unsafe fn sysret_process(
+    registers: *const Registers,
+    user_ds: u16,
+    user_cs: u16,
+    kernel_rsp: *const u64,
+    process_state: *const u8,
+    retval: u64
+) {
+    naked_asm!(
+        //save callee-saved registers
+        "
+        push rbp
+        push r15
+        push r14
+        push r13
+        push r12
+        push r11
+        push r10
+        push r9
+        push r8
+        push rdi
+        push rsi
+        push rbx
+        ",
+        "mov r11, rsp",   // Move RSP to R11
+        "mov [rcx], r11", // store RSP (from R11)
+        // Needed for cross-privilege iretq
+        "push rsi", //ss
+        "mov rax, [rdi + 120]",
+        "push rax", //userrsp
+        "mov rax, [rdi + 136]",
+        "push rax", //rflags
+        "push rdx", //cs
+        "mov rax, [rdi + 128]",
+        "push rax",             //rip
+        "mov byte ptr [r8], 2", //set state to ProcessState::Running
+        // Restore all registers before entering process
+        "mov rax, [rdi]",
+        "mov rbx, [rdi+8]",
+        "mov rcx, [rdi+16]",
+        "mov rdx, [rdi+24]",
+        "mov rsi, [rdi+32]",
+        "mov r8,  [rdi+48]",
+        "mov r9,  [rdi+56]",
+        "mov r10, [rdi+64]",
+        "mov r11, [rdi+72]",
+        "mov r12, [rdi+80]",
+        "mov r13, [rdi+88]",
+        "mov r14, [rdi+96]",
+        "mov r15, [rdi+104]",
+        "mov rbp, [rdi+112]",
+        "mov rdi, [rdi+40]",
+        "mov rax, r9",
+        "sti",   //enable interrupts
+        "iretq", // call process
+    );
 }

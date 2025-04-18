@@ -4,7 +4,7 @@ pub const SYSCALL_EXIT: u32 = 60;
 pub const SYSCALL_NANOSLEEP: u32 = 35;
 
 // TODO refactor old binaries
-pub const SYSCALL_PRINT: u32 = 1003;
+pub const SYSCALL_PRINT: u32 = 3; //1003;
 
 pub const SYSCALL_READ: u32 = 0;
 pub const SYSCALL_WRITE: u32 = 1;

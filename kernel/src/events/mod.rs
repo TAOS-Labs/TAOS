@@ -18,7 +18,7 @@ use core::{
 use crate::{
     constants::events::NUM_EVENT_PRIORITIES,
     interrupts::x2apic::{self, nanos_to_ticks},
-    processes::process::run_process_ring3,
+    processes::process::{run_process_ring3, sysret_process_ring3},
 };
 
 mod event;
@@ -128,6 +128,22 @@ pub fn schedule_process_on(cpuid: u32, pid: u32) -> Arc<Event> {
 pub fn schedule_process(pid: u32) -> Arc<Event> {
     let cpuid = x2apic::current_core_id() as u32;
     schedule_process_on(cpuid, pid)
+}
+
+/// Schedules a user process on a specific CPU core
+pub fn schedule_sysret_on(cpuid: u32, pid: u32, retval: u64) -> Arc<Event> {
+    without_interrupts(|| {
+        let runners = EVENT_RUNNERS.read();
+        let mut runner = runners.get(&cpuid).expect("No runner found").write();
+
+        unsafe { runner.schedule(sysret_process_ring3(pid, retval), NUM_EVENT_PRIORITIES - 1, pid) }
+    })
+}
+
+/// Wrapper that schedules a user process on the current CPU core
+pub fn schedule_sysret_process(pid: u32, retval: u64) -> Arc<Event> {
+    let cpuid = x2apic::current_core_id() as u32;
+    schedule_sysret_on(cpuid, pid, retval)
 }
 
 /// Notifies runner of a user process,
