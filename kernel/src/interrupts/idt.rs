@@ -61,7 +61,7 @@ lazy_static! {
             .set_handler_fn(naked_syscall_handler)
             .set_privilege_level(x86_64::PrivilegeLevel::Ring3);
         idt[TLB_SHOOTDOWN_VECTOR].set_handler_fn(tlb_shootdown_handler);
-        idt[KEYBOARD_VECTOR].set_handler_fn(keyboard_handler);
+        //idt[KEYBOARD_VECTOR].set_handler_fn(keyboard_handler);
         idt[MOUSE_VECTOR].set_handler_fn(mouse_handler);
         idt
     };
