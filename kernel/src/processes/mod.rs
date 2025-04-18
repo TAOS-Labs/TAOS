@@ -18,7 +18,7 @@ mod tests {
             current_running_event, futures::await_on::AwaitProcess, get_runner_time,
             schedule_process,
         },
-        processes::process::create_process,
+        processes::process::create_process, serial_println,
     };
 
     #[test_case]
@@ -29,7 +29,7 @@ mod tests {
             pid,
             get_runner_time(3_000_000_000),
             current_running_event().unwrap(),
-        ) // TODO how to get event corresponding to testcase?
+        ) 
         .await;
         assert!(waiter.is_ok());
     }

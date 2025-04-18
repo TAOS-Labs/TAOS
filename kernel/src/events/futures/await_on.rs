@@ -8,9 +8,7 @@ use core::{
 use futures::task::ArcWake;
 
 use crate::{
-    events::{runner_timestamp, Event},
-    processes::process::PROCESS_TABLE,
-    serial_println,
+    events::{runner_timestamp, Event}, processes::process::PROCESS_TABLE, serial_println
 };
 
 /// Future to sleep an event until an event is completed

@@ -1,4 +1,4 @@
-use core::{ffi::CStr, u64};
+use core::ffi::CStr;
 
 use crate::syscalls::syscall_handlers::ConstUserPtr;
 

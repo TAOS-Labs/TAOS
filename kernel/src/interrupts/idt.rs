@@ -15,6 +15,7 @@ use x86_64::{
     structures::idt::{InterruptDescriptorTable, InterruptStackFrame, PageFaultErrorCode},
 };
 
+#[allow(deprecated)]
 use crate::{
     constants::{
         idt::{KEYBOARD_VECTOR, MOUSE_VECTOR, SYSCALL_HANDLER, TIMER_VECTOR, TLB_SHOOTDOWN_VECTOR},
@@ -303,7 +304,8 @@ pub extern "x86-interrupt" fn naked_syscall_handler(_: InterruptStackFrame) {
 }
 
 #[no_mangle]
-#[allow(unused_variables, unused_assignments)] // disable until args p2-6 are used
+#[allow(unused_variables, unused_assignments, deprecated)] // disable until args p2-6 are used
+#[deprecated]
 fn syscall_handler(rsp: u64) {
     let syscall_num: u32;
     let p1: u64;

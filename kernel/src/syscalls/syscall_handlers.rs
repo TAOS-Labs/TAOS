@@ -1,4 +1,4 @@
-use core::ffi::CStr;
+use core::{ffi::CStr, task::{RawWaker, RawWakerVTable, Waker}};
 
 use alloc::collections::btree_map::BTreeMap;
 use lazy_static::lazy_static;
@@ -8,15 +8,14 @@ use x86_64::structures::paging::{PhysFrame, Size4KiB};
 use core::{
     future::Future,
     pin::Pin,
-    task::{Context, Poll, RawWaker, RawWakerVTable, Waker},
+    task::{Context, Poll},
 };
 
 use crate::{
     constants::syscalls::*, events::{
-        current_running_event, current_running_event_info, futures::await_on::AwaitProcess,
-        get_runner_time, yield_now, EventInfo,
-    }, filesys::syscalls::{sys_creat, sys_open}, interrupts::x2apic, memory::frame_allocator::with_buddy_frame_allocator, processes::{
-        process::{pawait, sleep_process_int, sleep_process_syscall, ProcessState, PROCESS_TABLE},
+        current_running_event, current_running_event_info, futures::await_on::AwaitProcess, get_runner_time, nanosleep_current_event, yield_now, EventInfo
+    }, filesys::syscalls::{sys_creat, sys_open}, interrupts::x2apic, processes::{
+        process::{sleep_process_int, sleep_process_syscall, ProcessState, PROCESS_TABLE},
         registers::ForkingRegisters,
     }, serial_println, syscalls::{fork::sys_fork, memorymap::sys_mmap}
 };
@@ -176,9 +175,8 @@ pub unsafe extern "C" fn syscall_handler_impl(
         }
         SYSCALL_PRINT => sys_print(syscall.arg1 as *const u8),
         SYSCALL_NANOSLEEP => sys_nanosleep_64(syscall.arg1, reg_vals),
-        
         // Filesystem syscalls
-        SYSCALL_OPEN => block_ons(sys_open(
+        SYSCALL_OPEN => block_on(sys_open(
             ConstUserPtr::from(syscall.arg1), 
             syscall.arg2 as u32, 
             syscall.arg3 as u16
@@ -215,7 +213,6 @@ pub fn sys_exit(code: i64, reg_vals: &ForkingRegisters) -> Option<u64> {
 
     let event: EventInfo = current_running_event_info();
 
-    serial_println!("Process {} exited with code {}", event.pid, code);
     // This is for testing; this way, we can write binaries that conditionally fail tests
     if code == -1 {
         panic!("Unknown exit code, something went wrong")
@@ -237,9 +234,9 @@ pub fn sys_exit(code: i64, reg_vals: &ForkingRegisters) -> Option<u64> {
         (*pcb).state = ProcessState::Terminated;
 
         // clear_process_frames(&mut *pcb);
-        with_buddy_frame_allocator(|alloc| {
-            alloc.print_free_frames();
-        });
+        // with_buddy_frame_allocator(|alloc| {
+        //     alloc.print_free_frames();
+        // });
 
         EXIT_CODES.lock().insert(event.pid, code);
         REGISTER_VALUES.lock().insert(event.pid, reg_vals.clone());
@@ -295,6 +292,12 @@ pub fn sys_nanosleep_64(nanos: u64, reg_vals: &ForkingRegisters) -> u64 {
     0
 }
 
+pub async fn sys_nanosleep(nanos: u64) -> u64 {
+    nanosleep_current_event(nanos).unwrap().await;
+
+    0
+}
+
 /// Wait on a process to finish
 pub async fn sys_wait(pid: u32) -> u64 {
     let _waiter = AwaitProcess::new(
@@ -307,8 +310,6 @@ pub async fn sys_wait(pid: u32) -> u64 {
     return *(EXIT_CODES.lock().get(&pid).unwrap()) as u64;
 }
 
-/// Helper function for sys_wait, not sure if necessary
-/// TODO Ask Kiran if necessary
 fn anoop_raw_waker() -> RawWaker {
     fn clone(_: *const ()) -> RawWaker {
         anoop_raw_waker()
@@ -319,7 +320,9 @@ fn anoop_raw_waker() -> RawWaker {
     let vtable = &RawWakerVTable::new(clone, wake, wake_by_ref, drop);
     RawWaker::new(core::ptr::null(), vtable)
 }
+
 /// Helper function for sys_wait, not sure if necessary
+/// TODO make this into a real block (bring back pawait)
 pub fn block_on<F: Future>(mut future: F) -> F::Output {
     let waker = unsafe { Waker::from_raw(anoop_raw_waker()) };
     let mut cx = Context::from_waker(&waker);
@@ -329,6 +332,7 @@ pub fn block_on<F: Future>(mut future: F) -> F::Output {
         if let Poll::Ready(val) = future.as_mut().poll(&mut cx) {
             return val;
         }
+
         yield_now();
     }
 }
