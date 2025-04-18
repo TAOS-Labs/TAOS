@@ -163,15 +163,14 @@ pub unsafe extern "C" fn syscall_handler_impl(
         
         // Filesystem syscalls
         SYSCALL_OPEN => sys_open(
-            syscall.arg1 as *const u8, 
+            syscall.arg1 as *const i8, 
             syscall.arg2 as u32, 
             syscall.arg3 as u16
         ),
         SYSCALL_CREAT => sys_creat(
-            syscall.arg1 as *const u8,
+            syscall.arg1 as *const i8,
             syscall.arg3 as u16
         ),
-        SYSCALL_NANOSLEEP => sys_nanosleep_64(syscall.arg1, reg_vals),
         SYSCALL_FORK => sys_fork(reg_vals),
         SYSCALL_MMAP => sys_mmap(
             syscall.arg1,

@@ -26,10 +26,7 @@ use crate::{
 };
 use alloc::{collections::BTreeMap, sync::Arc};
 use core::{
-    arch::naked_asm,
-    borrow::BorrowMut,
-    cell::UnsafeCell,
-    sync::atomic::{AtomicU32, Ordering},
+    arch::naked_asm, borrow::BorrowMut, cell::UnsafeCell, future::Future, sync::atomic::{AtomicU32, Ordering}
 };
 use spin::{rwlock::RwLock, Mutex};
 use x86_64::{
@@ -704,4 +701,8 @@ pub fn sleep_process_syscall(nanos: u64, reg_vals: &ForkingRegisters) {
 
         core::arch::asm!("swapgs", "ret");
     }
+}
+
+pub fn pawait<R>(fut: impl Future<Output = R> + 'static + Send) {
+    
 }
