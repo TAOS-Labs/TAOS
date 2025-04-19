@@ -109,7 +109,7 @@ bitflags::bitflags! {
 /// A file object in the filesystem trait
 pub struct File {
     /// The pathname in the filesystem
-    pathname: String,
+    pub pathname: String,
     /// File descriptor
     pub fd: usize,
     /// Position we are seeking from in the file
@@ -272,7 +272,7 @@ pub struct Ext2Wrapper {
     pub page_cache: PageCache,
 
     // Wrapper for Ext2 Filesystem
-    filesystem: Mutex<Ext2>,
+    pub filesystem: Mutex<Ext2>,
 
     // Maps inode number to number of processes
     refcount: Mutex<BTreeMap<u32, usize>>,
