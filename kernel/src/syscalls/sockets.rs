@@ -77,10 +77,21 @@ pub enum SocketError {
     NoInterface,
 }
 
+/// Implementation of the socket system call.
+/// Wraps everything up into a u64 (but keep in mind that failures will return
+/// usize::MAX ) which should have a equvilent equivilent to -1i64.
+/// If kernel code wants to use sockets, they should use socket_impl
+/// which has a much more sane error reporting syntax
+pub fn sys_socket(domain: u64, socket_type: u64, protocol: u64) -> u64 {
+    let stuff = socket_impl(domain, socket_type, protocol).unwrap_or(usize::MAX);
+    let return_64: u64 = stuff.try_into().unwrap();
+    return_64
+}
+
 /// Implementation of the socket system call. Returns the sockets file descriptor
 /// or SocketError if the call failed. Invalid arguments will NOT raise
 /// assertion errors as this is designed to be called by users
-pub fn sys_socket(domain: u64, socket_type: u64, protocol: u64) -> Result<usize, SocketError> {
+pub fn socket_impl(domain: u64, socket_type: u64, protocol: u64) -> Result<usize, SocketError> {
     let checked_domain = SocketDomain::from_u64(domain).ok_or(SocketError::UnsupportedProtocol)?;
 
     // Claim a file descriptor
