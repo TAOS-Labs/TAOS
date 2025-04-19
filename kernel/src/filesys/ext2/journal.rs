@@ -3,13 +3,6 @@
 /// This file implements the main journal functionality for the ext2 filesystem.
 /// The journal provides write-ahead logging to ensure filesystem integrity
 /// in case of crashes or unexpected shutdowns.
-///
-/// Key operations include:
-/// - Journal initialization and format
-/// - Starting, ending and aborting transactions
-/// - Recording changes to the journal
-/// - Recovering the filesystem state after a crash
-/// - Checkpointing (cleaning up) the journal
 use alloc::{boxed::Box, sync::Arc, vec, vec::Vec};
 use core::mem::size_of;
 use spin::{Mutex, RwLock};
@@ -94,31 +87,24 @@ impl Journal {
         // Acquire superblock lock
         let mut superblock = self.superblock.lock();
 
-        // Initialize superblock
         *superblock = JournalSuperblock::new(superblock.journal_blocks);
         superblock.update_checksum();
 
-        // Write superblock to disk
         let journal_block = self.map_journal_block(0);
         let mut buffer = vec![0u8; self.block_size as usize];
 
-        // Copy superblock to buffer
         unsafe {
             let src_ptr = &*superblock as *const JournalSuperblock as *const u8;
             let dst_ptr = buffer.as_mut_ptr();
             core::ptr::copy_nonoverlapping(src_ptr, dst_ptr, size_of::<JournalSuperblock>());
         }
 
-        // We can drop the superblock lock before doing I/O
         drop(superblock);
 
-        // Write to device
         self.device.write_block(journal_block, &buffer).await?;
 
-        // Clear the rest of the journal
         buffer.fill(0);
 
-        // Re-acquire superblock just to read journal_blocks
         let journal_blocks = self.superblock.lock().journal_blocks;
 
         for i in 1..journal_blocks {
@@ -135,7 +121,6 @@ impl Journal {
         let journal_block = self.map_journal_block(0);
         let mut buffer = vec![0u8; self.block_size as usize];
 
-        // Read journal superblock
         self.device.read_block(journal_block, &mut buffer).await?;
 
         let superblock = unsafe {
@@ -160,7 +145,6 @@ impl Journal {
             return Err(JournalError::ChecksumMismatch);
         }
 
-        // Extract values before moving the superblock
         let sequence = superblock.sequence;
         let max_transaction = superblock.max_transaction;
         let start_sequence = superblock.start_sequence;
@@ -177,7 +161,6 @@ impl Journal {
 
         self.max_transaction_blocks = max_transaction;
 
-        // Check if we need recovery
         let needs_recovery = start_sequence < sequence;
 
         Ok(needs_recovery)
@@ -194,7 +177,6 @@ impl Journal {
         *state = TransactionState::Running;
         drop(state);
 
-        // Clear any old transaction data
         let mut blocks = self.transaction_blocks.lock();
         blocks.clear();
 
@@ -235,7 +217,6 @@ impl Journal {
                 (superblock.first_transaction + block_offset) % superblock.journal_blocks;
             drop(superblock);
 
-            // Add to transaction list early so we can drop the lock during I/O
             blocks.push(JournalBlockInfo {
                 fs_block: block_number,
                 journal_block: journal_block_relative, // Store relative journal block number
@@ -285,7 +266,6 @@ impl Journal {
         for block_info in blocks_copy.iter() {
             let mut buffer = vec![0u8; self.block_size as usize];
 
-            // Read from journal
             self.device
                 .read_block(
                     self.map_journal_block(block_info.journal_block),
@@ -293,13 +273,11 @@ impl Journal {
                 )
                 .await?;
 
-            // Write to filesystem
             self.device
                 .write_block(block_info.fs_block as u64, &buffer)
                 .await?;
         }
 
-        // Step 5: Update transaction state and sequence
         let should_checkpoint = {
             let mut superblock = self.superblock.lock();
             superblock.sequence = sequence + 1;
@@ -342,7 +320,6 @@ impl Journal {
 
     /// Abort the current transaction
     pub async fn abort_transaction(&self) -> JournalResult<()> {
-        // Lock only what we need, in the right order
         let mut state = self.transaction_state.lock();
         if *state != TransactionState::Running {
             return Err(JournalError::NotInTransaction);
@@ -351,7 +328,6 @@ impl Journal {
         *state = TransactionState::None;
         drop(state);
 
-        // Clear transaction blocks
         let mut blocks = self.transaction_blocks.lock();
         blocks.clear();
 
@@ -360,26 +336,21 @@ impl Journal {
 
     /// Recover the journal after a crash
     pub async fn recover(&self) -> JournalResult<()> {
-        // Take checkpoint lock first to prevent concurrent checkpoints/recovery
         let _guard = self.checkpoint_lock.lock();
 
-        // Lock superblock to check state
         let (start_seq, end_seq) = {
             let superblock = self.superblock.lock();
             (superblock.start_sequence, superblock.sequence)
         };
 
         if start_seq >= end_seq {
-            // No recovery needed
             return Ok(());
         }
 
-        // Replay transactions from start_seq to end_seq - without holding locks
         for seq in start_seq..end_seq {
             self.replay_transaction(seq).await?;
         }
 
-        // Update superblock to mark recovery complete - with lock
         {
             let mut superblock = self.superblock.lock();
             superblock.start_sequence = end_seq;
@@ -465,14 +436,12 @@ impl Journal {
         let journal_block = self.map_journal_block(0);
         let mut buffer = vec![0u8; self.block_size as usize];
 
-        // Copy superblock to buffer
         unsafe {
             let src_ptr = superblock as *const JournalSuperblock as *const u8;
             let dst_ptr = buffer.as_mut_ptr();
             core::ptr::copy_nonoverlapping(src_ptr, dst_ptr, size_of::<JournalSuperblock>());
         }
 
-        // Write to device
         self.device.write_block(journal_block, &buffer).await?;
 
         Ok(())
@@ -487,10 +456,8 @@ impl Journal {
     ) -> JournalResult<()> {
         let mut buffer = vec![0u8; self.block_size as usize];
 
-        // Create descriptor block with header and entries
         let mut descriptor = JournalDescriptorBlock::new(sequence, blocks.len() as u32);
 
-        // Add entries
         for block_info in blocks {
             descriptor.entries.push(JournalBlockEntry {
                 block_number: block_info.fs_block,
@@ -498,10 +465,8 @@ impl Journal {
             });
         }
 
-        // Serialize to buffer
         descriptor.serialize(&mut buffer);
 
-        // Write to device
         self.device.write_block(journal_block, &buffer).await?;
 
         Ok(())
@@ -511,7 +476,6 @@ impl Journal {
     async fn write_commit_block(&self, journal_block: u64, sequence: u32) -> JournalResult<()> {
         let mut buffer = vec![0u8; self.block_size as usize];
 
-        // Create commit block
         let commit = JournalCommitBlock {
             magic: JOURNAL_MAGIC,
             block_type: JournalBlockType::Commit as u32,
@@ -519,14 +483,12 @@ impl Journal {
             checksum: 0, // TODO: Calculate checksum
         };
 
-        // Copy to buffer
         unsafe {
             let src_ptr = &commit as *const JournalCommitBlock as *const u8;
             let dst_ptr = buffer.as_mut_ptr();
             core::ptr::copy_nonoverlapping(src_ptr, dst_ptr, size_of::<JournalCommitBlock>());
         }
 
-        // Write to device
         self.device.write_block(journal_block, &buffer).await?;
 
         Ok(())
@@ -534,13 +496,11 @@ impl Journal {
 
     /// Replay a single transaction during recovery
     async fn replay_transaction(&self, sequence: u32) -> JournalResult<()> {
-        // Get journal state while holding superblock lock
         let (journal_blocks, first_transaction) = {
             let superblock = self.superblock.lock();
             (superblock.journal_blocks, superblock.first_transaction)
         };
 
-        // Scan journal for descriptor blocks with this sequence
         let mut current_block = first_transaction;
         let mut blocks_to_replay = Vec::new();
         let mut total_blocks_in_transaction = 0;
@@ -551,7 +511,6 @@ impl Journal {
 
             self.device.read_block(journal_block, &mut buffer).await?;
 
-            // Check block type using header fields (magic, type, sequence)
             let magic = u32::from_le_bytes([buffer[0], buffer[1], buffer[2], buffer[3]]);
             let block_type = u32::from_le_bytes([buffer[4], buffer[5], buffer[6], buffer[7]]);
             let block_sequence = u32::from_le_bytes([buffer[8], buffer[9], buffer[10], buffer[11]]);
@@ -559,11 +518,9 @@ impl Journal {
             if magic == JOURNAL_MAGIC && block_sequence == sequence {
                 match block_type {
                     desc_type if desc_type == JournalBlockType::Descriptor as u32 => {
-                        // Found a descriptor block for our sequence
                         match JournalDescriptorBlock::deserialize(&buffer) {
                             Ok(descriptor) => {
                                 total_blocks_in_transaction = descriptor.header.num_blocks;
-                                // Add blocks to replay list
                                 for (i, entry) in descriptor.entries.iter().enumerate() {
                                     blocks_to_replay.push(JournalBlockInfo {
                                         fs_block: entry.block_number,
@@ -581,7 +538,6 @@ impl Journal {
                         for block_info in &blocks_to_replay {
                             let mut block_data = vec![0u8; self.block_size as usize];
 
-                            // Read from journal
                             self.device
                                 .read_block(
                                     self.map_journal_block(block_info.journal_block),
@@ -589,13 +545,11 @@ impl Journal {
                                 )
                                 .await?;
 
-                            // Write to actual location
                             self.device
                                 .write_block(block_info.fs_block as u64, &block_data)
                                 .await?;
                         }
 
-                        // Update first_transaction after replay
                         {
                             let mut superblock = self.superblock.lock();
                             // +3 accounts for descriptor, blocks, and commit block
@@ -609,7 +563,6 @@ impl Journal {
                             }
                         }
 
-                        // Transaction replayed successfully
                         return Ok(());
                     }
                     _ => {}
@@ -812,12 +765,6 @@ mod tests {
                 .write_block(block_number, &buffer)
                 .await
                 .unwrap();
-        }
-
-        async fn blocks_equal(&self, block1: u64, block2: u64) -> bool {
-            let buffer1 = self.read_block(block1).await;
-            let buffer2 = self.read_block(block2).await;
-            buffer1 == buffer2
         }
 
         async fn backup_journal_area(&self) -> Vec<Vec<u8>> {
@@ -1186,7 +1133,6 @@ mod tests {
         // This is disgusting
         // Can we do better?
         {
-            // 1. Verify transaction is running without holding the lock
             {
                 let state = setup.journal.transaction_state.lock();
                 if *state != TransactionState::Running {
@@ -1194,7 +1140,6 @@ mod tests {
                 }
             } // State lock is dropped here
 
-            // 2. Get a copy of the blocks without holding the lock
             let blocks_copy;
             {
                 let blocks = setup.journal.transaction_blocks.lock();
@@ -1204,14 +1149,12 @@ mod tests {
                 blocks_copy = blocks.clone(); // Make a copy we can use without holding the lock
             } // Blocks lock is dropped here
 
-            // 3. Get the sequence number
             let sequence;
             {
                 let seq = setup.journal.current_sequence.lock();
                 sequence = *seq;
             } // Sequence lock is dropped here
 
-            // 4. Now perform operations without holding any locks
             let desc_journal_block = setup.journal.allocate_journal_block(0).unwrap();
             setup
                 .journal
@@ -1219,7 +1162,6 @@ mod tests {
                 .await
                 .unwrap();
 
-            // Write commit block
             let commit_journal_block = setup
                 .journal
                 .allocate_journal_block(blocks_copy.len() as u32 + 2)
@@ -1230,7 +1172,6 @@ mod tests {
                 .await
                 .unwrap();
 
-            // Update superblock
             {
                 let mut superblock = setup.journal.superblock.lock();
                 superblock.sequence = sequence + 1;
@@ -1238,8 +1179,6 @@ mod tests {
             } // Superblock lock is dropped here
 
             setup.journal.write_superblock().await.unwrap();
-
-            // But don't actually apply changes to filesystem blocks
         }
 
         let changed_data = b"Changed data that should be overwritten by recovery";
@@ -1318,7 +1257,7 @@ mod tests {
         let test_blocks = [
             setup.get_test_block(8),
             setup.get_test_block(9),
-            setup.get_test_block(0), // Reuse block 0
+            setup.get_test_block(0),
         ];
 
         let block_backups = [
@@ -1401,7 +1340,7 @@ mod tests {
         let setup = TestSetup::new(64).await;
 
         let journal_backup = setup.backup_journal_area().await;
-        let test_block = setup.get_test_block(0); // Reuse block 0
+        let test_block = setup.get_test_block(0);
         let block_backup = setup.backup_block(test_block).await;
 
         setup.init_journal().await.unwrap();
@@ -1442,7 +1381,7 @@ mod tests {
         let setup = TestSetup::new(64).await;
 
         let journal_backup = setup.backup_journal_area().await;
-        let test_block = setup.get_test_block(1); // Reuse block 1
+        let test_block = setup.get_test_block(1);
         let block_backup = setup.backup_block(test_block).await;
 
         setup.init_journal().await.unwrap();
@@ -1633,10 +1572,7 @@ mod tests {
         let setup = TestSetup::new(64).await;
 
         let journal_backup = setup.backup_journal_area().await;
-        let test_blocks = [
-            setup.get_test_block(2), // Reuse block 2
-            setup.get_test_block(3), // Reuse block 3
-        ];
+        let test_blocks = [setup.get_test_block(2), setup.get_test_block(3)];
 
         let block_backups = [
             setup.backup_block(test_blocks[0]).await,
@@ -1717,7 +1653,7 @@ mod tests {
 
     #[test_case]
     async fn test_large_transaction() {
-        let setup = TestSetup::new(128).await; // Larger journal
+        let setup = TestSetup::new(128).await;
 
         let journal_backup = setup.backup_journal_area().await;
 
@@ -1774,7 +1710,7 @@ mod tests {
 
     #[test_case]
     async fn test_journal_stress_test() {
-        let setup = TestSetup::new(512).await;
+        let setup = TestSetup::new(256).await;
 
         let journal_backup = setup.backup_journal_area().await;
 

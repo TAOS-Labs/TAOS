@@ -44,7 +44,7 @@ pub struct JournalSuperblock {
     pub features: u32,          // Feature flags
     pub checksum: u32,          // Superblock checksum
     pub uuid: [u8; 16],         // Filesystem UUID
-    pub padding: [u8; 464],     // Padding to fill a 1024-byte block
+    pub padding: [u8; 960],     // Padding to fill a 1024-byte block
 }
 
 impl JournalSuperblock {
@@ -64,7 +64,7 @@ impl JournalSuperblock {
             features: JournalFeatures::CHECKSUM.bits(),
             checksum: 0,
             uuid: [0; 16],
-            padding: [0; 464],
+            padding: [0; 960],
         }
     }
 
