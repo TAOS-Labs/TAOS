@@ -13,15 +13,17 @@ pub fn init(cpu_id: u32) {
 #[cfg(test)]
 mod tests {
     use alloc::vec;
+    use x86_64::align_up;
 
     use crate::{
-        constants::processes::TEST_SIMPLE_PROCESS,
+        constants::{memory::PAGE_SIZE, processes::TEST_SIMPLE_PROCESS},
         events::{
             current_running_event, futures::await_on::AwaitProcess, get_runner_time,
             schedule_process,
         },
-        filesys::{FileSystem, OpenFlags, FILESYSTEM},
+        filesys::{get_file, FileSystem, OpenFlags, FILESYSTEM},
         processes::process::create_process,
+        serial_println,
         syscalls::memorymap::{sys_mmap, MmapFlags, ProtFlags},
     };
 
@@ -50,16 +52,28 @@ mod tests {
                 .await
                 .expect("Could not open file")
         };
+        let file = get_file(fd).unwrap();
+        let file_len = {
+            fs.lock()
+                .filesystem
+                .lock()
+                .get_node(&file.lock().pathname)
+                .await
+                .unwrap()
+                .size()
+        };
         sys_mmap(
             0x9000,
-            0x1000,
+            align_up(file_len, PAGE_SIZE as u64),
             ProtFlags::PROT_EXEC.bits(),
             MmapFlags::MAP_FILE.bits(),
             fd as i64,
             0,
         );
 
-        let mut buffer = vec![0u8; 4096];
+        serial_println!("Reading file...");
+
+        let mut buffer = vec![0u8; file_len as usize];
         let bytes_read = {
             fs.lock()
                 .read_file(fd, &mut buffer)
@@ -68,6 +82,8 @@ mod tests {
         };
 
         let buf = &buffer[..bytes_read];
+
+        serial_println!("Bytes read: {:#?}", bytes_read);
 
         let pid = create_process(buf);
         schedule_process(pid);

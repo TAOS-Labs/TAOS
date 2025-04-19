@@ -6,7 +6,7 @@ use crate::{
     memory::{
         frame_allocator::with_generic_allocator,
         mm::{Mm, VmAreaBackings, VmAreaFlags},
-        paging::{create_mapping, update_permissions},
+        paging::{create_mapping, create_mapping_to_frame, update_permissions},
     },
 };
 use alloc::sync::Arc;
@@ -141,7 +141,17 @@ pub fn load_elf(
     let stack_end = VirtAddr::new(STACK_START + STACK_SIZE as u64);
     let _start_page: Page<Size4KiB> = Page::containing_address(stack_start);
     let _end_page: Page<Size4KiB> = Page::containing_address(stack_end);
-
+    let frame = create_mapping(
+        _end_page,
+        user_mapper,
+        Some(PageTableFlags::PRESENT | PageTableFlags::USER_ACCESSIBLE | PageTableFlags::WRITABLE),
+    );
+    create_mapping_to_frame(
+        _end_page,
+        kernel_mapper,
+        Some(PageTableFlags::PRESENT | PageTableFlags::USER_ACCESSIBLE | PageTableFlags::WRITABLE),
+        frame,
+    );
     // new anon_vma that corresponds to this stack
     let anon_vma_stack = Arc::new(VmAreaBackings::new());
 
@@ -157,5 +167,31 @@ pub fn load_elf(
         );
     });
 
-    (stack_end, elf.header.e_entry)
+    let stack_ptr = stack_end;
+    let mut write_ptr = stack_ptr;
+
+    write_ptr = VirtAddr::new((write_ptr.as_u64() + 0xF) & !0xF);
+
+    // argc
+    unsafe {
+        let ptr = write_ptr.as_mut_ptr::<u64>();
+        ptr.write(0);
+    }
+    write_ptr += core::mem::size_of::<u64>() as u64;
+
+    // argv
+    unsafe {
+        let ptr = write_ptr.as_mut_ptr::<u64>();
+        ptr.write(0);
+    }
+    write_ptr += core::mem::size_of::<u64>() as u64;
+
+    // envp (environment variables)
+    unsafe {
+        let ptr = write_ptr.as_mut_ptr::<u64>();
+        ptr.write(0);
+    }
+    write_ptr += core::mem::size_of::<u64>() as u64;
+
+    (stack_ptr, elf.header.e_entry)
 }
