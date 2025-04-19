@@ -11,10 +11,9 @@ use sd_card::{find_sd_card, initalize_sd_card};
 use xhci::{find_xhci_inferface, initalize_xhci_hub};
 pub mod graphics;
 use graphics::framebuffer::{self, colors};
-pub mod keyboard;
 pub mod mmio;
-pub mod mouse;
 pub mod pci;
+pub mod ps2_dev;
 pub mod sd_card;
 pub mod serial;
 pub mod xhci;
@@ -74,7 +73,6 @@ pub fn init(cpu_id: u32) {
             find_xhci_inferface(&devices).expect("Build system currently sets up xhci device");
         initalize_xhci_hub(&xhci_device).unwrap();
 
-        keyboard::init().expect("Failed to initialize keyboard");
-        mouse::init().expect("Failed to initialize mouse");
+        ps2_dev::init();
     }
 }
