@@ -20,10 +20,10 @@ pub enum NetError {
     Deconfigured,
 }
 
-pub struct DeviceInterface<'a> {
+pub struct DeviceInterface {
     device: ECMDevice,
     interface: Interface,
-    sockets: SocketSet<'a>,
+    pub sockets: SocketSet<'static>,
     dhcp_handle: Option<SocketHandle>,
 }
 
@@ -31,15 +31,37 @@ pub fn set_interface(mut device: ECMDevice, hardware_address: EthernetAddress) {
     let config =
         smoltcp::iface::Config::new(smoltcp::wire::HardwareAddress::Ethernet(hardware_address));
     let interface = smoltcp::iface::Interface::new(config, &mut device, Instant::ZERO);
+    // Can use 'static because we are using owned buffers for sockets
+    // see https://docs.rs/smoltcp/latest/smoltcp/iface/struct.SocketSet.html
+    let sockets: SocketSet<'static> = SocketSet::new(vec![]);
     let new_interface = DeviceInterface {
         device,
         interface,
-        sockets: SocketSet::new(vec![]),
+        sockets,
         dhcp_handle: Option::None,
     };
 
     let mut old_interface = INTERFACE.lock();
     *old_interface = Option::Some(new_interface);
+}
+
+/// Get a reference to the global network interface
+pub fn get() -> Option<spin::MutexGuard<'static, Option<DeviceInterface>>> {
+    let guard = INTERFACE.lock();
+    if guard.is_some() {
+        Some(guard)
+    } else {
+        None
+    }
+}
+
+pub fn with_interface<F, R>(f: F) -> Option<R>
+where
+    F: FnOnce(&mut DeviceInterface) -> R,
+{
+    let mut guard = get()?;
+    let interface = guard.as_mut()?;
+    Some(f(interface))
 }
 
 /// Sends a dhcp request for an ip address.
