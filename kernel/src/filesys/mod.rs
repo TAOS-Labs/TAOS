@@ -12,7 +12,7 @@ use crate::{
         paging::map_kernel_frame,
         KERNEL_MAPPER,
     },
-    processes::process::with_current_pcb,
+    processes::process::{with_current_pcb, FakeFile},
 };
 use alloc::{
     boxed::Box,
@@ -21,7 +21,10 @@ use alloc::{
     sync::Arc,
     vec::Vec,
 };
-use core::{cmp, sync::atomic::{AtomicBool, Ordering}};
+use core::{
+    cmp,
+    sync::atomic::{AtomicBool, Ordering},
+};
 use ext2::{
     filesystem::{Ext2, FilesystemError, FilesystemResult},
     node::{DirEntry, NodeError},
@@ -221,7 +224,17 @@ pub fn get_file(fd: usize) -> FilesystemResult<Arc<Mutex<File>>> {
     if file.is_none() {
         return Err(FilesystemError::InvalidFd);
     }
-    Ok(file.unwrap())
+    let file = file.unwrap().clone();
+
+    // let file_guard = file.lock();
+    if let FakeFile::File(f) = file {
+        return Ok(f);
+    }
+    // match file_guard {
+    //     FakeFile::File(f) => {return Ok(Arc::new(Mutex::new(f)))}
+    //     _ => Err(FilesystemError::InvalidFd)
+    // }
+    Err(FilesystemError::InvalidFd)
 }
 
 /// Gets the file descriptor from the file path
@@ -231,9 +244,11 @@ pub fn get_fd(filepath: &str) -> FilesystemResult<usize> {
     with_current_pcb(|pcb| {
         for (fd, file_opt) in pcb.fd_table.iter().enumerate() {
             if let Some(file_arc) = file_opt {
-                let file = file_arc.lock();
-                if file.pathname == filepath {
-                    return Ok(fd);
+                if let FakeFile::File(f) = file_arc.clone() {
+                    let file_guard = f.lock();
+                    if file_guard.pathname == filepath {
+                        return Ok(fd);
+                    }
                 }
             }
         }
@@ -326,7 +341,7 @@ impl FileSystem for Ext2Wrapper {
             *next_fd_guard += 1;
 
             let file = File::new(path.to_string(), fd, 0, flags, inode_number);
-            pcb.fd_table[fd] = Some(Arc::new(Mutex::new(file)));
+            pcb.fd_table[fd] = Some(FakeFile::File(Arc::new(Mutex::new(file))));
 
             fd
         });
@@ -498,7 +513,6 @@ impl FileSystem for Ext2Wrapper {
         let mut remaining = buf.len();
         let mut total_read = 0;
         let mut file_pos = locked_file.position;
-
         while remaining > 0 {
             let page_offset = file_pos & !(PAGE_SIZE - 1);
             let page_offset_in_buf = file_pos % PAGE_SIZE;
@@ -596,7 +610,11 @@ impl FileSystem for Ext2Wrapper {
         // Do raw pointer write *after* .await to avoid Send violation
         unsafe {
             let buf_ptr = kernel_va.as_mut_ptr();
-            core::ptr::copy_nonoverlapping(file_buf.as_ptr(), buf_ptr, cmp::min(PAGE_SIZE, file_buf.len()));
+            core::ptr::copy_nonoverlapping(
+                file_buf.as_ptr(),
+                buf_ptr,
+                cmp::min(PAGE_SIZE, file_buf.len()),
+            );
         }
 
         file_mappings.insert(offset, Page::containing_address(kernel_va));

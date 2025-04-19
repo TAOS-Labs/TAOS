@@ -16,6 +16,7 @@ mod tests {
 
     use crate::{
         constants::processes::TEST_SIMPLE_PROCESS,
+        debug,
         events::{
             current_running_event, futures::await_on::AwaitProcess, get_runner_time,
             schedule_process,
@@ -66,6 +67,7 @@ mod tests {
                 .await
                 .expect("Failed to read file")
         };
+        debug!("bytes_read = {bytes_read}");
 
         let buf = &buffer[..bytes_read];
 

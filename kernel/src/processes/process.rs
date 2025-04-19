@@ -23,6 +23,7 @@ use crate::{
     },
     processes::{loader::load_elf, registers::Registers},
     serial_println,
+    syscalls::sockets::Socket,
 };
 use alloc::{collections::BTreeMap, sync::Arc};
 use core::{
@@ -51,6 +52,13 @@ pub enum ProcessState {
     Kernel,
 }
 
+/// Represents everything that is given a file descriptor
+#[derive(Debug, Clone)]
+pub enum FakeFile {
+    File(Arc<Mutex<File>>),
+    Socket(Arc<Mutex<Socket>>),
+}
+
 #[derive(Debug, Clone)]
 /// TODO:Put locks around all of this for supporting multithreadings
 pub struct PCB {
@@ -61,7 +69,7 @@ pub struct PCB {
     pub next_preemption_time: u64,
     pub registers: Registers,
     pub mmap_address: u64,
-    pub fd_table: [Option<Arc<Mutex<File>>>; MAX_FILES],
+    pub fd_table: [Option<FakeFile>; MAX_FILES],
     pub next_fd: Arc<Mutex<usize>>,
     pub mm: Mm,
     pub namespace: Namespace,
