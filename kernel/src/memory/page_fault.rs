@@ -21,7 +21,7 @@ use crate::{
         paging::{create_mapping, create_mapping_to_frame, update_mapping, update_permissions},
         HHDM_OFFSET, KERNEL_MAPPER,
     },
-    processes::process::with_current_pcb,
+    processes::process::{with_current_pcb, FakeFile},
 };
 
 use super::mm::{VmArea, VmAreaBackings, VmaChain};
@@ -282,26 +282,31 @@ pub async fn handle_shared_file_mapping(
             .expect("could not get fd from fd table")
     });
 
-    let file_guard = { file.lock() };
-    let absent_in_page_cache = fs
-        .page_cache_get_mapping(file_guard.clone(), offset as usize)
-        .await
-        .is_err();
-    if absent_in_page_cache {
-        fs.add_entry_to_page_cache(file_guard.clone(), offset as usize)
+    if let FakeFile::File(file_arc) = file {
+        let file_guard = file_arc.lock();
+        let absent_in_page_cache = fs
+            .page_cache_get_mapping(file_guard.clone(), offset as usize)
             .await
-            .expect("failed to add entry to page cache");
-    }
+            .is_err();
+        if absent_in_page_cache {
+            fs.add_entry_to_page_cache(file_guard.clone(), offset as usize)
+                .await
+                .expect("failed to add entry to page cache");
+        }
 
-    let kernel_va = fs
-        .page_cache_get_mapping(file_guard.clone(), offset as usize)
-        .await
-        .unwrap();
-    let kernel_mapper = { KERNEL_MAPPER.lock() };
-    let frame: PhysFrame<Size4KiB> = kernel_mapper
-        .translate_page(Page::containing_address(kernel_va))
-        .expect("Could not translate kernel VA.");
-    create_mapping_to_frame(page, mapper, Some(flags), frame);
+        let kernel_va = fs
+            .page_cache_get_mapping(file_guard.clone(), offset as usize)
+            .await
+            .unwrap();
+        let kernel_mapper = { KERNEL_MAPPER.lock() };
+        let frame: PhysFrame<Size4KiB> = kernel_mapper
+            .translate_page(Page::containing_address(kernel_va))
+            .expect("Could not translate kernel VA.");
+        create_mapping_to_frame(page, mapper, Some(flags), frame);
+    } else {
+        // TODO: fix this to return a error to the user (probally just kill it)
+        panic!("Tried to mmap a socket!")
+    }
 }
 
 /// Handles a page fault for a file that should not be shared by adding an entry into the page
@@ -340,26 +345,28 @@ pub async fn handle_private_file_mapping(
             .expect("could not get fd from fd table")
     });
 
-    let file_guard = { file.lock() };
-    let absent_in_page_cache = fs
-        .page_cache_get_mapping(file_guard.clone(), offset as usize)
-        .await
-        .is_err();
-    if absent_in_page_cache {
-        fs.add_entry_to_page_cache(file_guard.clone(), offset as usize)
+    if let FakeFile::File(file_arc) = file {
+        let file_guard = file_arc.lock();
+        let absent_in_page_cache = fs
+            .page_cache_get_mapping(file_guard.clone(), offset as usize)
             .await
-            .expect("failed to add entry to page cache");
-    }
+            .is_err();
+        if absent_in_page_cache {
+            fs.add_entry_to_page_cache(file_guard.clone(), offset as usize)
+                .await
+                .expect("failed to add entry to page cache");
+        }
 
-    let kernel_va = fs
-        .page_cache_get_mapping(file_guard.clone(), offset as usize)
-        .await
-        .unwrap();
-    let kernel_mapper = { KERNEL_MAPPER.lock() };
-    let frame: PhysFrame<Size4KiB> = kernel_mapper
-        .translate_page(Page::containing_address(kernel_va))
-        .expect("Could not translate kernel VA.");
-    create_mapping_to_frame(page, mapper, Some(flags), frame);
+        let kernel_va = fs
+            .page_cache_get_mapping(file_guard.clone(), offset as usize)
+            .await
+            .unwrap();
+        let kernel_mapper = { KERNEL_MAPPER.lock() };
+        let frame: PhysFrame<Size4KiB> = kernel_mapper
+            .translate_page(Page::containing_address(kernel_va))
+            .expect("Could not translate kernel VA.");
+        create_mapping_to_frame(page, mapper, Some(flags), frame);
+    }
 }
 
 /// Handles a fault by creating a new mapping and inserting it into the backing.

@@ -1,5 +1,6 @@
 pub mod fork;
 pub mod memorymap;
+pub mod sockets;
 pub mod syscall_handlers;
 
 #[cfg(test)]
