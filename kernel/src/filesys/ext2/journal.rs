@@ -4,7 +4,10 @@
 /// The journal provides write-ahead logging to ensure filesystem integrity
 /// in case of crashes or unexpected shutdowns.
 use alloc::{boxed::Box, sync::Arc, vec, vec::Vec};
-use core::mem::size_of;
+use core::{
+    mem::size_of,
+    sync::atomic::{AtomicU32, Ordering},
+};
 use spin::{Mutex, RwLock};
 
 use super::{
@@ -31,8 +34,8 @@ pub struct Journal {
     block_cache: Arc<Mutex<Box<dyn Cache<u32, CachedBlock>>>>,
     /// Current transaction state
     transaction_state: Mutex<TransactionState>,
-    /// Current transaction sequence number
-    current_sequence: Mutex<u32>,
+    /// Current transaction sequence number (atomic)
+    current_sequence: AtomicU32,
     /// Current transaction blocks
     transaction_blocks: Mutex<Vec<JournalBlockInfo>>,
     /// Journal location (first block)
@@ -47,10 +50,12 @@ pub struct Journal {
     fs_block_count: u32,
     /// Allocator reference for recovery
     allocator: Arc<Mutex<Allocator>>,
+    /// Transaction-level lock
+    transaction_lock: RwLock<()>,
 }
 
 impl Journal {
-    /// Create a new journal manager
+    /// Create a new journal
     pub fn new(
         device: Arc<dyn BlockIO>,
         fs_superblock: Arc<RwLock<Superblock>>,
@@ -62,7 +67,6 @@ impl Journal {
         let block_size = fs_superblock.read().block_size();
         let fs_block_count = fs_superblock.read().num_blocks;
 
-        // Create a default journal superblock
         let superblock = JournalSuperblock::new(journal_size_blocks);
 
         Self {
@@ -71,7 +75,7 @@ impl Journal {
             fs_superblock,
             block_cache,
             transaction_state: Mutex::new(TransactionState::None),
-            current_sequence: Mutex::new(1),
+            current_sequence: AtomicU32::new(1),
             transaction_blocks: Mutex::new(Vec::new()),
             journal_start_block,
             max_transaction_blocks: 1024, // Default, will be updated from superblock
@@ -79,12 +83,14 @@ impl Journal {
             block_size,
             fs_block_count,
             allocator,
+            transaction_lock: RwLock::new(()),
         }
     }
 
     // Creates a new journal on disk
     pub async fn format(&self) -> JournalResult<()> {
-        // Acquire superblock lock
+        let _transaction_guard = self.transaction_lock.write();
+
         let mut superblock = self.superblock.lock();
 
         *superblock = JournalSuperblock::new(superblock.journal_blocks);
@@ -99,13 +105,12 @@ impl Journal {
             core::ptr::copy_nonoverlapping(src_ptr, dst_ptr, size_of::<JournalSuperblock>());
         }
 
-        drop(superblock);
-
+        let journal_blocks = superblock.journal_blocks;
         self.device.write_block(journal_block, &buffer).await?;
 
-        buffer.fill(0);
+        drop(superblock);
 
-        let journal_blocks = self.superblock.lock().journal_blocks;
+        buffer.fill(0);
 
         for i in 1..journal_blocks {
             self.device
@@ -118,6 +123,8 @@ impl Journal {
 
     /// Load the journal from disk, checking for consistency
     pub async fn load(&mut self) -> JournalResult<bool> {
+        let _transaction_guard = self.transaction_lock.write();
+
         let journal_block = self.map_journal_block(0);
         let mut buffer = vec![0u8; self.block_size as usize];
 
@@ -125,7 +132,7 @@ impl Journal {
 
         let superblock = unsafe {
             let src_ptr = buffer.as_ptr();
-            let mut sb = JournalSuperblock::new(0); // Temporary
+            let mut sb = JournalSuperblock::new(0);
             let dst_ptr = &mut sb as *mut JournalSuperblock as *mut u8;
             core::ptr::copy_nonoverlapping(src_ptr, dst_ptr, size_of::<JournalSuperblock>());
             sb
@@ -154,11 +161,7 @@ impl Journal {
             *sb_lock = superblock;
         }
 
-        {
-            let mut seq = self.current_sequence.lock();
-            *seq = sequence;
-        }
-
+        self.current_sequence.store(sequence, Ordering::SeqCst);
         self.max_transaction_blocks = max_transaction;
 
         let needs_recovery = start_sequence < sequence;
@@ -168,6 +171,8 @@ impl Journal {
 
     /// Start a new transaction
     pub async fn start_transaction(&self) -> JournalResult<()> {
+        let _transaction_guard = self.transaction_lock.write();
+
         let mut state = self.transaction_state.lock();
 
         if *state != TransactionState::None {
@@ -175,7 +180,6 @@ impl Journal {
         }
 
         *state = TransactionState::Running;
-        drop(state);
 
         let mut blocks = self.transaction_blocks.lock();
         blocks.clear();
@@ -185,16 +189,17 @@ impl Journal {
 
     /// Add a block to the current transaction
     pub async fn journal_block(&self, block_number: u32, data: &[u8]) -> JournalResult<()> {
+        let _transaction_guard = self.transaction_lock.read();
+
         if block_number >= self.fs_block_count {
             return Err(JournalError::InvalidBlock);
         }
 
-        {
-            let state = self.transaction_state.lock();
-            if *state != TransactionState::Running {
-                return Err(JournalError::NotInTransaction);
-            }
+        let state = self.transaction_state.lock();
+        if *state != TransactionState::Running {
+            return Err(JournalError::NotInTransaction);
         }
+        drop(state);
 
         let journal_block_device;
         let journal_block_relative;
@@ -219,7 +224,7 @@ impl Journal {
 
             blocks.push(JournalBlockInfo {
                 fs_block: block_number,
-                journal_block: journal_block_relative, // Store relative journal block number
+                journal_block: journal_block_relative,
                 flags: JournalBlockFlags::empty(),
             });
         }
@@ -231,29 +236,27 @@ impl Journal {
 
     /// Commit the current transaction
     pub async fn commit_transaction(&self) -> JournalResult<()> {
-        let (sequence, blocks_copy, is_empty) = {
-            let mut state = self.transaction_state.lock();
-            if *state != TransactionState::Running {
-                return Err(JournalError::NotInTransaction);
-            }
+        let _transaction_guard = self.transaction_lock.write();
 
-            *state = TransactionState::Committing;
-            drop(state);
+        let mut state = self.transaction_state.lock();
+        if *state != TransactionState::Running {
+            return Err(JournalError::NotInTransaction);
+        }
 
-            let sequence = *self.current_sequence.lock();
+        *state = TransactionState::Committing;
 
-            let blocks = self.transaction_blocks.lock();
-            let is_empty = blocks.is_empty();
-            let blocks_copy = blocks.clone(); // Clone to avoid holding lock during I/O
+        let sequence = self.current_sequence.load(Ordering::SeqCst);
 
-            (sequence, blocks_copy, is_empty)
-        };
+        let blocks = self.transaction_blocks.lock();
+        let is_empty = blocks.is_empty();
 
         if is_empty {
-            let mut state = self.transaction_state.lock();
             *state = TransactionState::None;
             return Ok(());
         }
+
+        let blocks_copy = blocks.clone();
+        drop(blocks);
 
         let desc_journal_block = self.allocate_journal_block(0)?;
         self.write_descriptor_block(desc_journal_block, &blocks_copy, sequence)
@@ -278,40 +281,28 @@ impl Journal {
                 .await?;
         }
 
-        let should_checkpoint = {
-            let mut superblock = self.superblock.lock();
-            superblock.sequence = sequence + 1;
+        let mut superblock = self.superblock.lock();
+        superblock.sequence = sequence + 1;
 
-            // Update first_transaction to point to the next free block
-            // We add 3 for: descriptor block + blocks themselves + commit block
-            let used_blocks = blocks_copy.len() as u32 + 3;
-            superblock.first_transaction =
-                (superblock.first_transaction + used_blocks) % superblock.journal_blocks;
+        let used_blocks = blocks_copy.len() as u32 + 3;
+        superblock.first_transaction =
+            (superblock.first_transaction + used_blocks) % superblock.journal_blocks;
 
-            superblock.update_checksum();
+        superblock.update_checksum();
 
-            let need_checkpoint = blocks_copy.len() > (superblock.journal_blocks as usize / 2);
+        let need_checkpoint = blocks_copy.len() > (superblock.journal_blocks as usize / 2);
 
-            let sb_result = self.write_superblock_with_lock(&superblock).await;
+        self.write_superblock_with_lock(&superblock).await?;
+        drop(superblock);
 
-            drop(superblock);
+        self.current_sequence.fetch_add(1, Ordering::SeqCst);
 
-            sb_result?;
+        *state = TransactionState::None;
+        drop(state);
 
-            {
-                let mut seq = self.current_sequence.lock();
-                *seq += 1;
-            }
+        drop(_transaction_guard);
 
-            {
-                let mut state = self.transaction_state.lock();
-                *state = TransactionState::None;
-            }
-
-            need_checkpoint
-        };
-
-        if should_checkpoint {
+        if need_checkpoint {
             self.checkpoint().await?;
         }
 
@@ -320,13 +311,14 @@ impl Journal {
 
     /// Abort the current transaction
     pub async fn abort_transaction(&self) -> JournalResult<()> {
+        let _transaction_guard = self.transaction_lock.write();
+
         let mut state = self.transaction_state.lock();
         if *state != TransactionState::Running {
             return Err(JournalError::NotInTransaction);
         }
 
         *state = TransactionState::None;
-        drop(state);
 
         let mut blocks = self.transaction_blocks.lock();
         blocks.clear();
@@ -336,6 +328,8 @@ impl Journal {
 
     /// Recover the journal after a crash
     pub async fn recover(&self) -> JournalResult<()> {
+        let _transaction_guard = self.transaction_lock.write();
+
         let _guard = self.checkpoint_lock.lock();
 
         let (start_seq, end_seq) = {
@@ -363,6 +357,8 @@ impl Journal {
 
     /// Clean up the journal by removing completed transactions
     pub async fn checkpoint(&self) -> JournalResult<()> {
+        let _transaction_guard = self.transaction_lock.read();
+
         let _guard = self.checkpoint_lock.lock();
 
         let needs_update = {
@@ -391,21 +387,16 @@ impl Journal {
         let journal_blocks = superblock.journal_blocks;
         let first_transaction = superblock.first_transaction;
 
-        let sequence = *self.current_sequence.lock();
+        let sequence = self.current_sequence.load(Ordering::SeqCst);
 
         // Calculate the actual block number in the journal
         let journal_block_num = (first_transaction + block_offset) % journal_blocks;
 
-        // Check if the journal is full
-        // We need to ensure we don't overwrite blocks from transactions that haven't been checkpointed
         if superblock.start_sequence < sequence {
             // Calculate the "tail" of the journal (oldest block we can't overwrite)
             let tail_block = first_transaction;
 
             // Check if our allocation would wrap around and catch up with the tail
-            // For a circular buffer, we have two cases:
-            // 1. Normal case: first_transaction <= tail_block
-            // 2. Wrap-around case: first_transaction > tail_block
             let would_overwrite = if first_transaction <= tail_block {
                 // Regular case
                 journal_block_num >= tail_block && journal_block_num < first_transaction
@@ -554,7 +545,6 @@ impl Journal {
                             let mut superblock = self.superblock.lock();
                             // +3 accounts for descriptor, blocks, and commit block
                             let used_blocks = total_blocks_in_transaction + 3;
-                            // Only update first_transaction if this was the earliest transaction
                             if sequence == superblock.start_sequence {
                                 superblock.first_transaction =
                                     (first_transaction + used_blocks) % journal_blocks;
@@ -844,7 +834,7 @@ mod tests {
         );
 
         assert_eq!(
-            *new_journal.current_sequence.lock(),
+            new_journal.current_sequence.load(Ordering::SeqCst),
             1,
             "Sequence number should be loaded"
         );
@@ -1138,7 +1128,7 @@ mod tests {
                 if *state != TransactionState::Running {
                     panic!("Transaction should be running");
                 }
-            } // State lock is dropped here
+            }
 
             let blocks_copy;
             {
@@ -1146,14 +1136,10 @@ mod tests {
                 if blocks.is_empty() {
                     panic!("Transaction should have blocks");
                 }
-                blocks_copy = blocks.clone(); // Make a copy we can use without holding the lock
-            } // Blocks lock is dropped here
+                blocks_copy = blocks.clone();
+            }
 
-            let sequence;
-            {
-                let seq = setup.journal.current_sequence.lock();
-                sequence = *seq;
-            } // Sequence lock is dropped here
+            let sequence = setup.journal.current_sequence.load(Ordering::SeqCst);
 
             let desc_journal_block = setup.journal.allocate_journal_block(0).unwrap();
             setup
@@ -1176,7 +1162,7 @@ mod tests {
                 let mut superblock = setup.journal.superblock.lock();
                 superblock.sequence = sequence + 1;
                 superblock.update_checksum();
-            } // Superblock lock is dropped here
+            }
 
             setup.journal.write_superblock().await.unwrap();
         }
@@ -1345,7 +1331,7 @@ mod tests {
 
         setup.init_journal().await.unwrap();
 
-        let initial_sequence = *setup.journal.current_sequence.lock();
+        let initial_sequence = setup.journal.current_sequence.load(Ordering::SeqCst);
 
         let test_data = b"Sequence test data";
         setup.write_block(test_block as u64, test_data).await;
@@ -1359,7 +1345,7 @@ mod tests {
             .unwrap();
         setup.journal.commit_transaction().await.unwrap();
 
-        let new_sequence = *setup.journal.current_sequence.lock();
+        let new_sequence = setup.journal.current_sequence.load(Ordering::SeqCst);
         assert_eq!(
             new_sequence,
             initial_sequence + 1,
@@ -1399,7 +1385,7 @@ mod tests {
             .unwrap();
 
         let blocks = setup.journal.transaction_blocks.lock().clone();
-        let sequence = *setup.journal.current_sequence.lock();
+        let sequence = setup.journal.current_sequence.load(Ordering::SeqCst);
 
         let desc_journal_block = setup.journal.allocate_journal_block(0).unwrap();
 
@@ -1640,7 +1626,7 @@ mod tests {
             "Block 1 should be restored after second transaction"
         );
 
-        let final_sequence = *setup.journal.current_sequence.lock();
+        let final_sequence = setup.journal.current_sequence.load(Ordering::SeqCst);
         assert_eq!(
             final_sequence, 3,
             "Sequence number should be 3 after two transactions"
