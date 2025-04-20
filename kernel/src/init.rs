@@ -84,6 +84,7 @@ pub fn init() -> u32 {
             let fs = FILESYSTEM.get().unwrap();
             let fd = {
                 fs.lock()
+                    .await
                     .open_file(
                         "/executables/ret",
                         OpenFlags::O_RDONLY | OpenFlags::O_WRONLY,
@@ -94,6 +95,7 @@ pub fn init() -> u32 {
             let file = get_file(fd).unwrap();
             let file_len = {
                 fs.lock()
+                    .await
                     .filesystem
                     .lock()
                     .get_node(&file.lock().pathname)
@@ -115,6 +117,7 @@ pub fn init() -> u32 {
             let mut buffer = vec![0u8; file_len as usize];
             let bytes_read = {
                 fs.lock()
+                    .await
                     .read_file(fd, &mut buffer)
                     .await
                     .expect("Failed to read file")
