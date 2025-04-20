@@ -95,12 +95,7 @@ pub fn socket_impl(domain: u64, socket_type: u64, protocol: u64) -> Result<usize
     let checked_domain = SocketDomain::from_u64(domain).ok_or(SocketError::UnsupportedProtocol)?;
 
     // Claim a file descriptor
-    let fd = with_current_pcb(|pcb| {
-        let mut next_fd_guard = pcb.next_fd.lock();
-        let fd = *next_fd_guard;
-        *next_fd_guard += 1;
-        fd
-    });
+    let fd = with_current_pcb(|pcb| pcb.find_next_fd()).ok_or(SocketError::NoFreeFileDescriptor)?;
 
     // Send off to the apppropate domain
     match checked_domain {

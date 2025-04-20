@@ -335,22 +335,24 @@ impl FileSystem for Ext2Wrapper {
             self.filesystem.lock().get_node(path).await?.number()
         };
 
-        let fd = with_current_pcb(|pcb| {
-            let mut next_fd_guard = pcb.next_fd.lock();
-            let fd = *next_fd_guard;
-            *next_fd_guard += 1;
-
+        let fd: Option<usize> = with_current_pcb(|pcb| {
+            let fd = pcb.find_next_fd()?;
             let file = File::new(path.to_string(), fd, 0, flags, inode_number);
             pcb.fd_table[fd] = Some(FakeFile::File(Arc::new(Mutex::new(file))));
 
-            fd
+            Option::Some(fd)
         });
-        self.refcount
-            .lock()
-            .entry(inode_number)
-            .and_modify(|v| *v += 1)
-            .or_insert(1);
-        Ok(fd)
+        match fd {
+            Option::None => Err(FilesystemError::NoFd),
+            Option::Some(file) => {
+                self.refcount
+                    .lock()
+                    .entry(inode_number)
+                    .and_modify(|v| *v += 1)
+                    .or_insert(1);
+                Ok(file)
+            }
+        }
     }
 
     async fn remove(&mut self, fd: usize) -> FilesystemResult<()> {
@@ -722,7 +724,7 @@ mod tests {
             .open_file("./temp/test.txt", OpenFlags::O_WRONLY | OpenFlags::O_CREAT)
             .await
             .unwrap();
-        assert!(active_fd_count() > 0);
+        assert!(active_fd_count() == 4);
 
         user_fs.write_file(fd, b"Test 123").await.unwrap();
         user_fs.seek_file(fd, 0).await.unwrap();
@@ -733,7 +735,7 @@ mod tests {
         assert_eq!(&buf[..8], b"Test 123");
 
         user_fs.close_file(fd).await.unwrap();
-        assert_eq!(active_fd_count(), 0);
+        assert_eq!(active_fd_count(), 3);
     }
 
     #[test_case]
@@ -798,7 +800,7 @@ mod tests {
         {
             let meta = user_fs.metadata(fd).await.unwrap();
             assert_eq!(meta.pathname, "./temp/meta.txt");
-            assert_eq!(meta.fd, 0);
+            assert_eq!(meta.fd, 3);
             assert_eq!(meta.flags, OpenFlags::O_WRONLY | OpenFlags::O_CREAT);
         }
 
