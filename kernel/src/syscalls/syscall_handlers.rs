@@ -1,9 +1,15 @@
-use core::{ffi::CStr, task::{RawWaker, RawWakerVTable, Waker}};
+use core::{
+    ffi::CStr,
+    task::{RawWaker, RawWakerVTable, Waker},
+};
 
 use alloc::collections::btree_map::BTreeMap;
 use lazy_static::lazy_static;
 use spin::Mutex;
-use x86_64::structures::paging::{PhysFrame, Size4KiB};
+use x86_64::{
+    registers::model_specific::Msr,
+    structures::paging::{PhysFrame, Size4KiB},
+};
 
 use core::{
     future::Future,
@@ -12,12 +18,19 @@ use core::{
 };
 
 use crate::{
-    constants::syscalls::*, events::{
-        current_running_event, current_running_event_info, futures::await_on::AwaitProcess, get_runner_time, nanosleep_current_event, EventInfo
-    }, filesys::syscalls::{sys_creat, sys_open}, interrupts::x2apic, processes::{
-        process::{clear_process_frames, sleep_process_int, sleep_process_syscall, ProcessState, PROCESS_TABLE},
+    constants::syscalls::*,
+    events::{
+        current_running_event, current_running_event_info, futures::await_on::AwaitProcess,
+        get_runner_time, nanosleep_current_event, EventInfo,
+    },
+    filesys::syscalls::{sys_creat, sys_open},
+    interrupts::x2apic::{send_eoi, X2APIC_IA32_FS_BASE, X2APIC_IA32_GSBASE},
+    processes::{
+        process::{sleep_process_int, sleep_process_syscall, ProcessState, PROCESS_TABLE},
         registers::ForkingRegisters,
-    }, serial_println, syscalls::{fork::sys_fork, memorymap::sys_mmap}
+    },
+    serial_println,
+    syscalls::{fork::sys_fork, memorymap::sys_mmap},
 };
 
 use core::arch::naked_asm;
@@ -177,13 +190,13 @@ pub unsafe extern "C" fn syscall_handler_impl(
         SYSCALL_NANOSLEEP => sys_nanosleep_64(syscall.arg1, reg_vals),
         // Filesystem syscalls
         SYSCALL_OPEN => block_on(sys_open(
-            ConstUserPtr::from(syscall.arg1), 
-            syscall.arg2 as u32, 
-            syscall.arg3 as u16
+            ConstUserPtr::from(syscall.arg1),
+            syscall.arg2 as u32,
+            syscall.arg3 as u16,
         )),
         SYSCALL_CREAT => block_on(sys_creat(
             ConstUserPtr::from(syscall.arg1),
-            syscall.arg3 as u16
+            syscall.arg3 as u16,
         )),
         SYSCALL_FORK => sys_fork(reg_vals),
         SYSCALL_MMAP => sys_mmap(
@@ -197,6 +210,11 @@ pub unsafe extern "C" fn syscall_handler_impl(
         SYSCALL_WAIT => block_on(sys_wait(syscall.arg1 as u32)),
         SYSCALL_MUNMAP => sys_munmap(syscall.arg1, syscall.arg2),
         SYSCALL_MPROTECT => sys_mprotect(syscall.arg1, syscall.arg2, syscall.arg3),
+        SYSCALL_GETEUID => sys_geteuid(),
+        SYSCALL_GETUID => sys_getuid(),
+        SYSCALL_GETEGID => sys_getegid(),
+        SYSCALL_GETGID => sys_getgid(),
+        SYSCALL_ARCH_PRCTL => sys_arch_prctl(syscall.arg1 as i32, syscall.arg2),
         _ => {
             panic!("Unknown syscall, {}", syscall.number);
         }
@@ -233,7 +251,7 @@ pub fn sys_exit(code: i64, reg_vals: &ForkingRegisters) -> Option<u64> {
 
         (*pcb).state = ProcessState::Terminated;
 
-        clear_process_frames(&mut *pcb);
+        // clear_process_frames(&mut *pcb);
 
         EXIT_CODES.lock().insert(event.pid, code);
         REGISTER_VALUES.lock().insert(event.pid, reg_vals.clone());
@@ -271,7 +289,7 @@ pub fn sys_print(buffer: *const u8) -> u64 {
 /// Uses interrupt stack to restore state
 pub fn sys_nanosleep_32(nanos: u64, rsp: u64) -> u64 {
     sleep_process_int(nanos, rsp);
-    x2apic::send_eoi();
+    send_eoi();
 
     0
 }
@@ -367,6 +385,61 @@ fn block_on<F: Future>(mut future: F) -> F::Output {
                 in("rcx") preemption_info.2,
                 out("r11") _
             );
+        }
+    }
+}
+
+pub fn sys_geteuid() -> u64 {
+    0
+}
+
+pub fn sys_getuid() -> u64 {
+    0
+}
+
+pub fn sys_getegid() -> u64 {
+    0
+}
+
+pub fn sys_getgid() -> u64 {
+    0
+}
+
+const ARCH_SET_GS: i32 = 0x1001;
+const ARCH_SET_FS: i32 = 0x1002;
+const ARCH_GET_GS: i32 = 0x1003;
+const ARCH_GET_FS: i32 = 0x1004;
+
+/// Emulate arch_prctl(2)
+pub fn sys_arch_prctl(code: i32, addr: u64) -> u64 {
+    match code {
+        ARCH_SET_FS => {
+            // point %fs at user‐space TLS block
+            unsafe { Msr::new(X2APIC_IA32_FS_BASE).write(addr) };
+            0
+        }
+        ARCH_SET_GS => {
+            // point %gs at user‐space TLS block (if used)
+            unsafe { Msr::new(X2APIC_IA32_FS_BASE).write(addr) };
+            0
+        }
+        ARCH_GET_FS => {
+            // read current fs_base
+            let fs = unsafe { Msr::new(X2APIC_IA32_FS_BASE).read() };
+            // write it back into the user buffer
+            let ptr = addr as *mut u64;
+            unsafe { ptr.write_volatile(fs) };
+            0
+        }
+        ARCH_GET_GS => {
+            let gs = unsafe { Msr::new(X2APIC_IA32_GSBASE).read() };
+            let ptr = addr as *mut u64;
+            unsafe { ptr.write_volatile(gs) };
+            0
+        }
+        _ => {
+            // unknown code
+            0
         }
     }
 }

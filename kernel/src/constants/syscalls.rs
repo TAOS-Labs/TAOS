@@ -26,5 +26,11 @@ pub const SYSCALL_MUNMAP: u32 = 11;
 pub const SYSCALL_FORK: u32 = 5;
 pub const SYSCALL_WAIT: u32 = 6;
 
+pub const SYSCALL_GETUID: u32 = 102;
+pub const SYSCALL_GETEUID: u32 = 107;
+pub const SYSCALL_GETGID: u32 = 104;
+pub const SYSCALL_GETEGID: u32 = 108;
+pub const SYSCALL_ARCH_PRCTL: u32 = 158;
+
 // Mmap
 pub const START_MMAP_ADDRESS: u64 = 0x0900_0000_0000;
