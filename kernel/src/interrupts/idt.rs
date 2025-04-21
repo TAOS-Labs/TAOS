@@ -248,7 +248,7 @@ extern "x86-interrupt" fn page_fault_handler(
             }
         });
     });
-
+    let x = 0;
     serial_println!("got out of page fault handler.");
 }
 

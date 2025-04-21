@@ -1,6 +1,7 @@
 pub mod loader;
 pub mod process;
 pub mod registers;
+pub mod signal;
 
 use process::create_placeholder_process;
 

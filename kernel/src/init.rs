@@ -11,23 +11,13 @@ use limine::{
 };
 
 use crate::{
-    debug,
-    devices::{self},
-    events::{register_event_runner, run_loop, spawn, yield_now},
-    filesys::{self},
-    interrupts::{self, idt},
-    ipc::{
+    constants::processes::TEST_FORK_COW, debug, devices::{self}, events::{register_event_runner, run_loop, schedule_process, spawn, yield_now}, filesys::{self}, interrupts::{self, idt}, ipc::{
         messages::Message,
         mnt_manager,
         namespace::Namespace,
         responses::Rattach,
         spsc::{Receiver, Sender},
-    },
-    logging,
-    memory::{self},
-    net::get_ip_addr,
-    processes::{self},
-    serial_println, trace,
+    }, logging, memory::{self}, net::get_ip_addr, processes::{self, process::create_process}, serial_println, trace
 };
 extern crate alloc;
 
@@ -70,6 +60,12 @@ pub fn init() -> u32 {
     let bsp_id = wake_cores();
 
     idt::enable();
+
+
+
+    let pid = create_process(TEST_FORK_COW);
+    schedule_process(pid);
+    
     bsp_id
 }
 

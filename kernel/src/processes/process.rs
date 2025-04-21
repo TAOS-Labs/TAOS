@@ -21,7 +21,7 @@ use crate::{
         mm::Mm,
         HHDM_OFFSET, KERNEL_MAPPER,
     },
-    processes::{loader::load_elf, registers::Registers},
+    processes::{loader::load_elf, registers::Registers, signal},
     serial_println,
 };
 use alloc::{collections::BTreeMap, sync::Arc};
