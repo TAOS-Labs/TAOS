@@ -13,9 +13,9 @@ use core::{
 
 use crate::{
     constants::syscalls::*, events::{
-        current_running_event, current_running_event_info, futures::await_on::AwaitProcess, get_runner_time, nanosleep_current_event, yield_now, EventInfo
+        current_running_event, current_running_event_info, futures::await_on::AwaitProcess, get_runner_time, nanosleep_current_event, EventInfo
     }, filesys::syscalls::{sys_creat, sys_open}, interrupts::x2apic, processes::{
-        process::{sleep_process_int, sleep_process_syscall, ProcessState, PROCESS_TABLE},
+        process::{clear_process_frames, sleep_process_int, sleep_process_syscall, ProcessState, PROCESS_TABLE},
         registers::ForkingRegisters,
     }, serial_println, syscalls::{fork::sys_fork, memorymap::sys_mmap}
 };
@@ -233,10 +233,7 @@ pub fn sys_exit(code: i64, reg_vals: &ForkingRegisters) -> Option<u64> {
 
         (*pcb).state = ProcessState::Terminated;
 
-        // clear_process_frames(&mut *pcb);
-        // with_buddy_frame_allocator(|alloc| {
-        //     alloc.print_free_frames();
-        // });
+        clear_process_frames(&mut *pcb);
 
         EXIT_CODES.lock().insert(event.pid, code);
         REGISTER_VALUES.lock().insert(event.pid, reg_vals.clone());
@@ -251,16 +248,11 @@ pub fn sys_exit(code: i64, reg_vals: &ForkingRegisters) -> Option<u64> {
         core::arch::asm!(
             "mov rsp, {0}",
             "push {1}",
-            "stc",          // Use carry flag as sentinel to run_process that we're exiting
-            // "ret",
+            "swapgs",
+            "ret",
             in(reg) preemption_info.0,
             in(reg) preemption_info.1
         );
-    }
-
-    unsafe {
-        core::arch::asm!("swapgs");
-        core::arch::asm!("ret");
     }
 
     Some(code as u64)
@@ -323,7 +315,19 @@ fn anoop_raw_waker() -> RawWaker {
 
 /// Helper function for sys_wait, not sure if necessary
 /// TODO make this into a real block (bring back pawait)
-pub fn block_on<F: Future>(mut future: F) -> F::Output {
+pub fn spin_on<F: Future>(mut future: F) -> F::Output {
+    let waker = unsafe { Waker::from_raw(anoop_raw_waker()) };
+    let mut cx = Context::from_waker(&waker);
+    // Safety: we’re not moving the future while polling.
+    let mut future = unsafe { Pin::new_unchecked(&mut future) };
+    loop {
+        if let Poll::Ready(val) = future.as_mut().poll(&mut cx) {
+            return val;
+        }
+    }
+}
+
+fn block_on<F: Future>(mut future: F) -> F::Output {
     let waker = unsafe { Waker::from_raw(anoop_raw_waker()) };
     let mut cx = Context::from_waker(&waker);
     // Safety: we’re not moving the future while polling.
@@ -333,6 +337,36 @@ pub fn block_on<F: Future>(mut future: F) -> F::Output {
             return val;
         }
 
-        yield_now();
+        let preemption_info: (u64, u64, u64) = unsafe { 
+            let pid = current_running_event_info().pid;
+            let mut process_table = PROCESS_TABLE.write();
+            let process = process_table
+                .get_mut(&pid)
+                .expect("Process not found");
+    
+            let pcb = process.pcb.get();
+
+            (*pcb).state = ProcessState::Ready;
+            // TODO could also set state to Blocked (and invoke block_process??)
+            // For now just poll from scheduler (and thus allow other things to poll in-between)
+
+            ((*pcb).kernel_rsp, (*pcb).kernel_rip, &(*pcb).reentry_rsp as *const u64 as u64)
+        };
+        
+        unsafe {
+            // Restore kernel RSP + PC -> RIP from where it was stored in run/resume process
+            core::arch::asm!(
+                "mov r11, rsp",   // Move RSP to R11
+                "mov [rcx], r11", // store RSP (from R11)"
+                "mov rsp, {0}",
+                "push {1}",
+                "swapgs",
+                "ret",
+                in(reg) preemption_info.0,
+                in(reg) preemption_info.1,
+                in("rcx") preemption_info.2,
+                out("r11") _
+            );
+        }
     }
 }

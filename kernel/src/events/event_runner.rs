@@ -305,6 +305,15 @@ impl EventRunner {
         }
     }
 
+    /// Blocks the current event until awoken
+    ///
+    /// # Returns
+    /// * `Option<Block>` - A Block future that can be awaited on (if there is an event to block)
+    #[allow(dead_code)]
+    pub fn block_current_event(&mut self) -> Option<Sleep> {
+        todo!();
+    }
+
     /// # Returns
     /// * `bool` - true if there are blocked events on this runner
     fn have_blocked_events(&self) -> bool {

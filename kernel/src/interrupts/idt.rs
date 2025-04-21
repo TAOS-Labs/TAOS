@@ -39,7 +39,7 @@ use crate::{
     },
     syscalls::{
         memorymap::sys_mmap,
-        syscall_handlers::{block_on, sys_exit, sys_nanosleep_32, sys_print},
+        syscall_handlers::{spin_on, sys_exit, sys_nanosleep_32, sys_print},
     },
 };
 
@@ -206,7 +206,7 @@ extern "x86-interrupt" fn page_fault_handler(
                     pt_flags,
                     fd,
                 } => {
-                    block_on(async {
+                    spin_on(async {
                         handle_shared_file_mapping(page, &mut mapper, offset, pt_flags, fd).await
                     });
                 }
@@ -217,7 +217,7 @@ extern "x86-interrupt" fn page_fault_handler(
                     pt_flags,
                     fd,
                 } => {
-                    block_on(async {
+                    spin_on(async {
                         handle_private_file_mapping(
                             page,
                             &mut mapper,
