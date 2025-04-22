@@ -1,6 +1,5 @@
 #![feature(naked_functions_rustic_abi)]
 #![feature(abi_x86_interrupt)]
-#![feature(naked_functions)]
 #![cfg_attr(feature = "strict", deny(warnings))]
 #![no_std]
 #![cfg_attr(test, no_main)]

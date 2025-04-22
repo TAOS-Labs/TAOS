@@ -365,11 +365,21 @@ dependencies = [
 
 [[package]]
 name = "proc-macro2"
-version = "1.0.94"
+version = "1.0.95"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a31971752e70b8b2686d7e46ec17fb38dad4051d94024c88df49b667caea9c84"
+checksum = "02b3e5e68a3a1a02aad3ec490a98007cbc13c37cbe84a3cd7b8e406d76e7f778"
 dependencies = [
  "unicode-ident",
+]
+
+[[package]]
+name = "ps2"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "dfef03bb1362e6a23a211efe8c72e2eeb6888f51fb329cdfa07bb470986ea7d0"
+dependencies = [
+ "bitflags 1.3.2",
+ "x86_64 0.14.13",
 ]
 
 [[package]]
@@ -527,13 +537,14 @@ dependencies = [
  "limine",
  "log",
  "pc-keyboard",
+ "ps2",
  "rand",
  "raw-cpuid 11.5.0",
  "smoltcp",
  "spin",
  "talc",
  "uart_16550",
- "x86_64",
+ "x86_64 0.15.2",
  "zerocopy",
 ]
 
@@ -595,6 +606,18 @@ dependencies = [
  "bit_field",
  "bitflags 1.3.2",
  "raw-cpuid 10.7.0",
+]
+
+[[package]]
+name = "x86_64"
+version = "0.14.13"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c101112411baafbb4bf8d33e4c4a80ab5b02d74d2612331c61e8192fc9710491"
+dependencies = [
+ "bit_field",
+ "bitflags 2.9.0",
+ "rustversion",
+ "volatile",
 ]
 
 [[package]]

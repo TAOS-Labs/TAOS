@@ -237,8 +237,8 @@ impl IoApicManager {
                 vector: KEYBOARD_VECTOR,
                 destination: 0, // BSP
                 masked: false,  // Enable immediately
-                trigger_mode: TriggerMode::Edge,
-                polarity: Polarity::HighActive,
+                trigger_mode: TriggerMode::Level,
+                polarity: Polarity::LowActive,
                 dest_mode: DestinationMode::Physical,
                 delivery_mode: DeliveryMode::Fixed,
             },
@@ -251,8 +251,8 @@ impl IoApicManager {
                 vector: MOUSE_VECTOR,
                 destination: 0, // BSP
                 masked: false,  // Enable immediately
-                trigger_mode: TriggerMode::Edge,
-                polarity: Polarity::HighActive,
+                trigger_mode: TriggerMode::Level,
+                polarity: Polarity::LowActive,
                 dest_mode: DestinationMode::Physical,
                 delivery_mode: DeliveryMode::Fixed,
             },
