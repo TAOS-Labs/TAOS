@@ -182,7 +182,8 @@ pub fn create_placeholder_process() -> u32 {
         },
         mmap_address: START_MMAP_ADDRESS,
         fd_table: [const { None }; MAX_FILES],
-        next_fd: Arc::new(Mutex::new(0)),
+        // 0 and 1 are stdin, stdout
+        next_fd: Arc::new(Mutex::new(2)),
         next_preemption_time: 0,
         mm,
         namespace: Namespace::new(),
@@ -240,7 +241,8 @@ pub fn create_process(elf_bytes: &[u8]) -> u32 {
         },
         mmap_address: START_MMAP_ADDRESS,
         fd_table: [const { None }; MAX_FILES],
-        next_fd: Arc::new(Mutex::new(0)),
+        // 0 and 1 are stdin, stdout
+        next_fd: Arc::new(Mutex::new(2)),
         mm,
         namespace: Namespace::new(),
     }));
