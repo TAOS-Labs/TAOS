@@ -29,7 +29,7 @@ base_args = [
 
     # Graphics
     "-vga", "std",
-
+"-serial", "stdio",
     # Debugging traces
     # USB
     # "-trace", "usb*",
@@ -44,7 +44,7 @@ base_args = [
 
 [modes]
 terminal = { args = ["-nographic"] }
-gui = { args = [] }
+gui = { args = ["-serial", "stdio"] }
 gdb-terminal = { args = ["-nographic", "-s", "-S"] }
 gdb-gui = { args = ["-s", "-S"] }
 
