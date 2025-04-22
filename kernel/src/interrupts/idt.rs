@@ -12,7 +12,7 @@ use lazy_static::lazy_static;
 use x86_64::{
     instructions::interrupts,
     registers::control::Cr2,
-    structures::idt::{InterruptDescriptorTable, InterruptStackFrame, PageFaultErrorCode},
+    structures::idt::{InterruptDescriptorTable, InterruptStackFrame, PageFaultErrorCode}, VirtAddr,
 };
 
 use crate::{
@@ -34,7 +34,7 @@ use crate::{
     prelude::*,
     processes::{
         process::{preempt_process, with_current_pcb},
-        registers::ForkingRegisters,
+        registers::ForkingRegisters, signal::{SigFields, SignalCode, SourceCode},
     },
     syscalls::{
         memorymap::sys_mmap,
@@ -176,7 +176,14 @@ extern "x86-interrupt" fn page_fault_handler(
     with_current_pcb(|pcb| {
         pcb.mm.with_vma_tree(|tree| {
             // Find the VMA covering the faulting address.
-            let vma_arc = Mm::find_vma(faulting_address, tree).expect("Vma not found?");
+            let vma_arc = Mm::find_vma(faulting_address, tree);
+            if vma_arc.is_none() {
+                serial_println!("Faulting address is not part of process's virtual address space.");
+                pcb.signal_descriptor.send_signal(SignalCode::SIGSEGV, 0, SourceCode::SI_KERNEL, SigFields {fault_addr: VirtAddr::new(faulting_address)});
+                pcb.signal_descriptor.handle_signal();
+                return;
+            }
+            let vma_arc = vma_arc.unwrap();
             let mut vma = vma_arc.lock();
 
             let fault = determine_fault_cause(error_code, &vma);

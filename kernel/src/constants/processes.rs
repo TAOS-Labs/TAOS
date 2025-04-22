@@ -16,6 +16,8 @@ pub const TEST_WAIT: &[u8] = include_bytes!("../processes/test_binaries/test_wai
 
 pub const TEST_FORK_COW: &[u8] = include_bytes!("../processes/test_binaries/test_fork_cow");
 
+pub const TEST_SIGSEGV: &[u8] = include_bytes!("../processes/test_binaries/test_sigsegv");
+
 pub const TEST_MMAP_ANON_SHARED: &[u8] =
     include_bytes!("../processes/test_binaries/test_mmap_anon_shared");
 

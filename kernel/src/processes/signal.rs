@@ -4,7 +4,9 @@ use alloc::{collections::vec_deque::{self, VecDeque}, sync::Arc};
 use spin::Mutex;
 use x86_64::VirtAddr;
 
-use crate::constants::processes::NUM_SIGNALS;
+use crate::{constants::processes::NUM_SIGNALS, serial_println, syscalls::syscall_handlers::sys_exit};
+
+use super::registers::ForkingRegisters;
 
 #[repr(u8)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -80,12 +82,26 @@ pub struct KillFields {
 }
 
 #[repr(C)]
+#[derive(Clone, Copy)]
 pub union SigFields {
     pub kill_source: KillFields,
     pub fault_addr: VirtAddr,
 }
 
+impl core::fmt::Debug for SigFields {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        unsafe {
+            write!(
+                f,
+                "SigFields {{ kill_source: {:#?}, fault_addr: {:#?} }}",
+                self.kill_source, self.fault_addr
+            )
+        }
+    }
+}
+
 #[repr(C)]
+#[derive(Debug, Clone)]
 pub struct SignalEntry {
     signal_code: SignalCode,
     error_code: i32,
@@ -109,12 +125,18 @@ pub enum SignalHandler {
 }
 
 
+#[derive(Debug, Clone)]
 pub struct SignalDescriptor {
     pending_signals: VecDeque<SignalEntry>, // queue for pending signals sent to process
     blocked_signals: u32, // a bitmap for the 32 different signals Linux handles
     sas_ss_sp: VirtAddr, // TODO: support a separate stack for some signal handling
     sas_ss_size: u64,
     signal_handlers: [Arc<Mutex<SignalHandler>>; NUM_SIGNALS],
+}
+
+pub fn default_handle_sigsegv() {
+    serial_println!("Segmentation fault.");
+    sys_exit(-1, &ForkingRegisters::default());
 }
 
 impl SignalDescriptor {
@@ -152,5 +174,46 @@ impl SignalDescriptor {
             signal_fields: signal_fields,
         };
         self.pending_signals.push_back(signal_entry);
+    }
+
+    pub fn handle_signal(&mut self) {
+        let mut found = false;
+        let mut signal: Option<SignalEntry> = None;
+        while !found {
+            if self.pending_signals.is_empty() {
+                found = true;
+            }
+            else {
+                let temp_signal = self.pending_signals.pop_front().unwrap();
+                let signal_code_idx = temp_signal.signal_code as usize - 1;
+                let is_blocked = (self.blocked_signals >> signal_code_idx) & 1;
+                if is_blocked == 0 {
+                    found = true;
+                    signal = Some(temp_signal);
+                }
+            }
+        }
+
+        if signal.is_none() {
+            return;
+        }
+
+        let signal = signal.unwrap();
+        let handler = self.signal_handlers[signal.signal_code as usize - 1].lock().clone();
+        match signal.signal_code {
+            SignalCode::SIGSEGV => {
+                if let SignalHandler::Default = handler {
+                    default_handle_sigsegv();
+                }
+            }
+
+            _ => {
+                return;
+            }
+            
+        }
+
+
+
     }
 }
