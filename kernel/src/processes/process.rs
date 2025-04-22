@@ -336,6 +336,7 @@ use super::registers::ForkingRegisters;
 #[no_mangle]
 pub async unsafe fn run_process_ring3(pid: u32) {
     interrupts::disable();
+    serial_println!("RUNNING PROCESS");
     let process = {
         let process_table = PROCESS_TABLE.read();
         let process = process_table

@@ -8,7 +8,11 @@
 #![reexport_test_harness_main = "test_main"]
 
 use limine::request::{RequestsEndMarker, RequestsStartMarker};
-use taos::{debug, events::run_loop, shell};
+use taos::{
+    debug,
+    events::{run_loop, schedule_kernel},
+    shell,
+};
 
 extern crate alloc;
 
@@ -38,7 +42,11 @@ extern "C" fn _start() -> ! {
 
     debug!("BSP entering event loop");
 
-    unsafe { shell::init() }
+    schedule_kernel(unsafe { shell::init() }, 0);
+
+    unsafe {
+        run_loop(bsp_id);
+    }
 }
 
 /// Production panic handler.
