@@ -255,49 +255,52 @@ extern "x86-interrupt" fn page_fault_handler(
 // TODO: Refactor this to follow the way 64 bit works
 #[no_mangle]
 #[unsafe(naked)]
+#[allow(unused_unsafe)]
 pub extern "x86-interrupt" fn naked_syscall_handler(_: InterruptStackFrame) {
-    naked_asm!(
-        // Push registers for potential yielding
-        "
-        push rbp
-        push r15
-        push r14
-        push r13
-        push r12
-        push r11
-        push r10
-        push r9
-        push r8
-        push rdi
-        push rsi
-        push rdx
-        push rcx
-        push rbx
-        push rax
-        ",
-        "mov  rdi, rsp",
-        // Call the syscall_handler
-        "call syscall_handler",
-        // Restore registers
-        "
-        pop rax
-        pop rbx
-        pop rcx
-        pop rdx
-        pop rsi
-        pop rdi
-        pop r8
-        pop r9
-        pop r10
-        pop r11
-        pop r12
-        pop r13
-        pop r14
-        pop r15
-        pop rbp
-        iretq
-        "
-    );
+    unsafe {
+        naked_asm!(
+            // Push registers for potential yielding
+            "
+            push rbp
+            push r15
+            push r14
+            push r13
+            push r12
+            push r11
+            push r10
+            push r9
+            push r8
+            push rdi
+            push rsi
+            push rdx
+            push rcx
+            push rbx
+            push rax
+            ",
+            "mov  rdi, rsp",
+            // Call the syscall_handler
+            "call syscall_handler",
+            // Restore registers
+            "
+            pop rax
+            pop rbx
+            pop rcx
+            pop rdx
+            pop rsi
+            pop rdi
+            pop r8
+            pop r9
+            pop r10
+            pop r11
+            pop r12
+            pop r13
+            pop r14
+            pop r15
+            pop rbp
+            iretq
+            "
+        );
+    }
 }
 
 #[no_mangle]
@@ -368,47 +371,50 @@ fn syscall_handler(rsp: u64) {
 }
 
 #[unsafe(naked)]
+#[allow(unused_unsafe)]
 extern "x86-interrupt" fn naked_timer_handler(_: InterruptStackFrame) {
-    core::arch::naked_asm!(
+    unsafe {
+        core::arch::naked_asm!(
+            "
+            push rbp
+            push r15
+            push r14
+            push r13
+            push r12
+            push r11
+            push r10
+            push r9
+            push r8
+            push rdi
+            push rsi
+            push rdx
+            push rcx
+            push rbx
+            push rax
+    
+            cld
+            mov	rdi, rsp
+            call timer_handler
+    
+            pop rax
+            pop rbx
+            pop rcx
+            pop rdx
+            pop rsi
+            pop rdi
+            pop r8
+            pop r9
+            pop r10
+            pop r11
+            pop r12
+            pop r13
+            pop r14
+            pop r15
+            pop rbp
+            iretq
         "
-        push rbp
-        push r15
-        push r14
-        push r13
-        push r12
-        push r11
-        push r10
-        push r9
-        push r8
-        push rdi
-        push rsi
-        push rdx
-        push rcx
-        push rbx
-        push rax
-
-        cld
-        mov	rdi, rsp
-        call timer_handler
-
-        pop rax
-        pop rbx
-        pop rcx
-        pop rdx
-        pop rsi
-        pop rdi
-        pop r8
-        pop r9
-        pop r10
-        pop r11
-        pop r12
-        pop r13
-        pop r14
-        pop r15
-        pop rbp
-        iretq
-    "
-    );
+        );
+    }
 }
 
 #[no_mangle]
