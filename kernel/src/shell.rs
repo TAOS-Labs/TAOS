@@ -2,6 +2,7 @@ use alloc::fmt::format;
 
 use crate::{
     devices::ps2_dev::keyboard,
+    events::yield_now,
     serial_println,
     syscalls::syscall_handlers::{sys_read, sys_write},
 };
@@ -20,7 +21,7 @@ impl Shell {
         }
     }
 
-    pub fn run(&mut self) -> ! {
+    pub async fn run(&mut self) {
         serial_println!("SHELL RUNNING");
         self.print_prompt(); // Initial prompt
 
@@ -36,6 +37,7 @@ impl Shell {
                 0x08 => self.handle_backspace(),
                 _ => self.handle_char(c),
             }
+            yield_now().await;
         }
     }
 
@@ -114,8 +116,8 @@ impl Default for Shell {
 
 /// # Safety
 /// TODO
-pub unsafe fn init() -> ! {
+pub async unsafe fn init() {
     keyboard::flush_buffer();
     let mut shell = Shell::new();
-    shell.run();
+    shell.run().await;
 }
