@@ -4,7 +4,9 @@
 //! and provides both synchronous and asynchronous interfaces for keyboard events.
 
 use crate::{
-    devices::ps2_dev::controller, events::schedule_kernel, interrupts::idt::without_interrupts,
+    devices::ps2_dev::controller,
+    events::{futures::sync::BlockMutex, schedule_kernel},
+    interrupts::idt::without_interrupts,
     serial_println,
 };
 use core::{
@@ -13,6 +15,7 @@ use core::{
     task::{Context, Poll, Waker},
 };
 use futures_util::stream::{Stream, StreamExt};
+use lazy_static::lazy_static;
 use pc_keyboard::{
     layouts, DecodedKey, Error, HandleControl, KeyCode, KeyState, Keyboard, Modifiers, ScancodeSet2,
 };
@@ -21,8 +24,10 @@ use spin::Mutex;
 /// Maximum number of keyboard events to store in the buffer
 const KEYBOARD_BUFFER_SIZE: usize = 32;
 
-/// The global keyboard state
-pub static KEYBOARD: Mutex<KeyboardState> = Mutex::new(KeyboardState::new());
+lazy_static! {
+    /// The global keyboard state
+    pub static ref KEYBOARD: BlockMutex<KeyboardState> = BlockMutex::new(KeyboardState::new());
+}
 
 /// The number of keyboard interrupts received
 static KEYBOARD_INTERRUPT_COUNT: AtomicU64 = AtomicU64::new(0);
@@ -206,8 +211,11 @@ pub async fn next_event() -> KeyboardEvent {
 }
 
 /// Try to read a keyboard event without waiting
-pub fn try_read_event() -> Option<KeyboardEvent> {
-    without_interrupts(|| KEYBOARD.lock().read_event())
+pub async fn try_read_event() -> Option<KeyboardEvent> {
+    without_interrupts(|| match KEYBOARD.try_lock() {
+        Ok(mut keyboard) => keyboard.read_event(),
+        Err(_) => None,
+    })
 }
 
 /// Get keyboard interrupt count
@@ -232,7 +240,7 @@ pub fn keyboard_handler() {
                 Ok(scancode) => {
                     schedule_kernel(
                         async move {
-                            let mut keyboard = KEYBOARD.lock();
+                            let mut keyboard = KEYBOARD.lock().await;
                             if let Err(e) = keyboard.process_scancode(scancode) {
                                 serial_println!("Error processing keyboard scancode: {:?}", e);
                             }
@@ -254,7 +262,12 @@ impl Stream for KeyboardStream {
     type Item = KeyboardEvent;
 
     fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-        let mut keyboard = KEYBOARD.lock();
+        let mut keyboard = match KEYBOARD.try_lock() {
+            Ok(keyboard) => keyboard,
+            Err(_) => {
+                return Poll::Pending;
+            }
+        };
 
         if let Some(event) = keyboard.read_event() {
             return Poll::Ready(Some(event));

@@ -160,6 +160,10 @@ pub struct BlockMutex<T> {
 unsafe impl<T> Send for BlockMutex<T> {}
 unsafe impl<T> Sync for BlockMutex<T> {}
 
+pub enum BlockMutexError {
+    WouldBlock,
+}
+
 impl<T> BlockMutex<T> {
     pub fn new(data: T) -> BlockMutex<T> {
         BlockMutex {
@@ -169,10 +173,40 @@ impl<T> BlockMutex<T> {
     }
 
     pub async fn lock(&self) -> BlockMutexGuard<T> {
-        let event = current_running_event().expect("Using BlockMutex outside event");
-        Condition::new(self.unlocked.clone(), event).await;
+        while self
+            .unlocked
+            .compare_exchange(true, false, Ordering::Relaxed, Ordering::Relaxed)
+            .is_err()
+        {
+            let event = current_running_event().expect("Using BlockMutex outside event");
+            Condition::new(self.unlocked.clone(), event).await;
+        }
 
-        self.unlocked.store(false, Ordering::Relaxed);
+        BlockMutexGuard {
+            mutex: self,
+            data: self.data.get(),
+        }
+    }
+
+    pub fn try_lock(&self) -> Result<BlockMutexGuard<T>, BlockMutexError> {
+        match self
+            .unlocked
+            .compare_exchange(true, false, Ordering::Relaxed, Ordering::Relaxed)
+        {
+            Ok(_) => Ok(BlockMutexGuard {
+                mutex: self,
+                data: self.data.get(),
+            }),
+            Err(_) => Err(BlockMutexError::WouldBlock),
+        }
+    }
+
+    pub fn spin(&self) -> BlockMutexGuard<T> {
+        while self
+            .unlocked
+            .compare_exchange(true, false, Ordering::Relaxed, Ordering::Relaxed)
+            .is_err()
+        {}
 
         BlockMutexGuard {
             mutex: self,

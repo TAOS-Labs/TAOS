@@ -4,7 +4,9 @@
 //! and provides both synchronous and asynchronous interfaces for mouse events.
 
 use crate::{
-    devices::ps2_dev::controller, events::schedule_kernel, interrupts::idt::without_interrupts,
+    devices::ps2_dev::controller,
+    events::{futures::sync::BlockMutex, schedule_kernel},
+    interrupts::idt::without_interrupts,
     serial_println,
 };
 use core::{
@@ -14,14 +16,17 @@ use core::{
     task::{Context, Poll, Waker},
 };
 use futures_util::stream::{Stream, StreamExt};
+use lazy_static::lazy_static;
 use ps2::flags::MouseMovementFlags;
 use spin::Mutex;
 
 /// Maximum number of mouse events to store in the buffer
 const MOUSE_BUFFER_SIZE: usize = 32;
 
-/// The global mouse state
-pub static MOUSE: Mutex<MouseState> = Mutex::new(MouseState::new());
+lazy_static! {
+    /// The global mouse state
+    pub static ref MOUSE: BlockMutex<MouseState> = BlockMutex::new(MouseState::new());
+}
 
 /// The number of mouse interrupts received
 static MOUSE_INTERRUPT_COUNT: AtomicU64 = AtomicU64::new(0);
@@ -313,29 +318,32 @@ pub async fn next_event() -> MouseEvent {
 
 /// Try to read a mouse event without waiting
 pub fn try_read_event() -> Option<MouseEvent> {
-    without_interrupts(|| MOUSE.lock().read_event())
+    without_interrupts(|| match MOUSE.try_lock() {
+        Ok(mut mouse) => mouse.read_event(),
+        Err(_) => None,
+    })
 }
 
 /// Get current mouse position
-pub fn get_position() -> (i16, i16) {
+pub async fn get_position() -> (i16, i16) {
     without_interrupts(|| {
-        let mouse = MOUSE.lock();
+        let mouse = MOUSE.spin();
         mouse.get_position()
     })
 }
 
 /// Set mouse position
-pub fn set_position(x: i16, y: i16) {
+pub async fn set_position(x: i16, y: i16) {
     without_interrupts(|| {
-        let mut mouse = MOUSE.lock();
+        let mut mouse = MOUSE.spin();
         mouse.set_position(x, y);
     })
 }
 
 /// Set screen boundaries for mouse movement
-pub fn set_bounds(width: i16, height: i16) {
+pub async fn set_bounds(width: i16, height: i16) {
     without_interrupts(|| {
-        let mut mouse = MOUSE.lock();
+        let mut mouse = MOUSE.spin();
         mouse.set_bounds(width, height);
     })
 }
@@ -363,7 +371,7 @@ pub fn mouse_handler() {
                 Ok((flags, dx, dy)) => {
                     schedule_kernel(
                         async move {
-                            let mut mouse = MOUSE.lock();
+                            let mut mouse = MOUSE.lock().await;
                             if let Err(e) = mouse.process_packet(flags, dx, dy) {
                                 serial_println!("Error processing mouse packet: {:?}", e);
                             }
@@ -384,7 +392,12 @@ impl Stream for MouseStream {
     type Item = MouseEvent;
 
     fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-        let mut mouse = MOUSE.lock();
+        let mut mouse = match MOUSE.try_lock() {
+            Ok(mouse) => mouse,
+            Err(_) => {
+                return Poll::Pending;
+            }
+        };
 
         if let Some(event) = mouse.read_event() {
             return Poll::Ready(Some(event));
