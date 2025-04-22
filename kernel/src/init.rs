@@ -2,6 +2,7 @@
 //!
 //! Handles the initialization of kernel subsystems and CPU cores.
 
+use alloc::vec;
 use bytes::Bytes;
 use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use limine::{
@@ -9,15 +10,17 @@ use limine::{
     smp::{Cpu, RequestFlags},
     BaseRevision,
 };
+use x86_64::align_up;
 
 use crate::{
-    constants::processes::{TEST_MPROTECT_CHILD_WRITES, TEST_PRINT_EXIT},
+    constants::memory::PAGE_SIZE,
     debug,
     devices::{self},
     events::{
+        current_running_event, futures::await_on::AwaitProcess, get_runner_time,
         register_event_runner, run_loop, schedule_kernel, schedule_process, spawn, yield_now,
     },
-    filesys::{self},
+    filesys::{self, get_file, FileSystem, OpenFlags, FILESYSTEM},
     interrupts::{self, idt},
     ipc::{
         messages::Message,
@@ -30,7 +33,9 @@ use crate::{
     memory::{self},
     net::get_ip_addr,
     processes::{self, process::create_process},
-    serial_println, trace,
+    serial_println,
+    syscalls::memorymap::{sys_mmap, MmapFlags, ProtFlags},
+    trace,
 };
 extern crate alloc;
 
@@ -76,32 +81,57 @@ pub fn init() -> u32 {
 
     schedule_kernel(
         async {
-            for _ in 0..100000000 {}
-            serial_println!("FINISHED LOOPING");
-        },
-        3,
-    );
+            let fs = FILESYSTEM.get().unwrap();
+            let fd = {
+                fs.lock()
+                    .open_file(
+                        "/executables/ret",
+                        OpenFlags::O_RDONLY | OpenFlags::O_WRONLY,
+                    )
+                    .await
+                    .expect("Could not open file")
+            };
+            let file = get_file(fd).unwrap();
+            let file_len = {
+                fs.lock()
+                    .filesystem
+                    .lock()
+                    .get_node(&file.lock().pathname)
+                    .await
+                    .unwrap()
+                    .size()
+            };
+            sys_mmap(
+                0x9000,
+                align_up(file_len, PAGE_SIZE as u64),
+                ProtFlags::PROT_EXEC.bits(),
+                MmapFlags::MAP_FILE.bits(),
+                fd as i64,
+                0,
+            );
 
-    schedule_kernel(
-        async {
-            for _ in 0..100000000 {}
-            serial_println!("FINISHED LOOPING");
-        },
-        3,
-    );
+            serial_println!("Reading file...");
 
-    schedule_kernel(
-        async {
-            for _ in 0..100000000 {}
-            serial_println!("FINISHED LOOPING");
-        },
-        3,
-    );
+            let mut buffer = vec![0u8; file_len as usize];
+            let bytes_read = {
+                fs.lock()
+                    .read_file(fd, &mut buffer)
+                    .await
+                    .expect("Failed to read file")
+            };
 
-    schedule_kernel(
-        async {
-            for _ in 0..100000000 {}
-            serial_println!("FINISHED LOOPING");
+            let buf = &buffer[..bytes_read];
+
+            serial_println!("Bytes read: {:#?}", bytes_read);
+
+            let pid = create_process(buf);
+            schedule_process(pid);
+            let _waiter = AwaitProcess::new(
+                pid,
+                get_runner_time(3_000_000_000),
+                current_running_event().unwrap(),
+            )
+            .await;
         },
         3,
     );
