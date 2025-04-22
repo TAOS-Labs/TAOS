@@ -13,6 +13,7 @@ use futures_util::stream::{Stream, StreamExt};
 use pc_keyboard::{
     layouts, DecodedKey, Error, HandleControl, KeyCode, KeyState, Keyboard, Modifiers, ScancodeSet2,
 };
+use ps2::flags::ControllerStatusFlags;
 use spin::Mutex;
 
 /// Maximum number of keyboard events to store in the buffer
@@ -240,6 +241,18 @@ pub fn keyboard_handler() {
             }
         }
     });
+}
+pub fn flush_buffer() {
+    let mut state = KEYBOARD.lock();
+    state.clear_buffer();
+    // controller::with_controller(|ctrl| {
+    //     while ctrl
+    //         .read_status()
+    //         .contains(ControllerStatusFlags::OUTPUT_FULL)
+    //     {
+    //         let _ = ctrl.read_data(); // Discard any pending scancodes
+    //     }
+    // });
 }
 
 impl Stream for KeyboardStream {

@@ -2,7 +2,7 @@ use core::ffi::CStr;
 
 use alloc::collections::btree_map::BTreeMap;
 use lazy_static::lazy_static;
-use pc_keyboard::{DecodedKey, KeyCode};
+use pc_keyboard::{DecodedKey, KeyCode, KeyState};
 use spin::Mutex;
 use x86_64::structures::paging::{PhysFrame, Size4KiB};
 
@@ -234,15 +234,16 @@ pub fn sys_write(fd: u32, buf: *const u8, count: usize) -> u64 {
 }
 
 // Helper to convert keyboard events to ASCII
-fn event_to_ascii(event: &keyboard::KeyboardEvent) -> Option<u8> {
+pub fn event_to_ascii(event: &keyboard::KeyboardEvent) -> Option<u8> {
+    if event.state != KeyState::Down {
+        return None;
+    }
+
     match event.decoded {
-        Some(DecodedKey::Unicode(c)) => Some(c as u8),
-        _ => match event.key_code {
-            KeyCode::Return => Some(b'\n'),
-            KeyCode::Backspace => Some(0x08),
-            KeyCode::Spacebar => Some(b' '),
-            _ => None,
-        },
+        Some(DecodedKey::Unicode(c)) if c.is_ascii() => Some(c as u8),
+        Some(DecodedKey::RawKey(KeyCode::Return)) => Some(b'\n'),
+        Some(DecodedKey::RawKey(KeyCode::Backspace)) => Some(0x08),
+        _ => None,
     }
 }
 
