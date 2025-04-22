@@ -27,7 +27,7 @@ use crate::{
     memory::{self},
     net::get_ip_addr,
     processes::{self},
-    serial_println, shell, trace,
+    serial_println, trace,
 };
 extern crate alloc;
 
@@ -103,8 +103,6 @@ unsafe extern "C" fn secondary_cpu_main(cpu: &Cpu) -> ! {
     idt::enable();
 
     debug!("AP {} entering event loop", cpu.id);
-
-    shell::init();
 
     run_loop(cpu.id)
 }

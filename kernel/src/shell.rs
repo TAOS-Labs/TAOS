@@ -1,6 +1,9 @@
 use alloc::fmt::format;
 
-use crate::syscalls::syscall_handlers::{sys_read, sys_write};
+use crate::{
+    serial_println,
+    syscalls::syscall_handlers::{sys_read, sys_write},
+};
 
 // src/shell.rs
 pub struct Shell {
@@ -17,6 +20,7 @@ impl Shell {
     }
 
     pub fn run(&mut self) -> ! {
+        serial_println!("SHELL RUNNING");
         self.print_prompt();
 
         loop {
@@ -78,6 +82,7 @@ impl Shell {
     }
 
     fn print_prompt(&self) {
+        self.print("Ready to input commands\n");
         self.print("> ");
     }
 }
@@ -88,7 +93,9 @@ impl Default for Shell {
     }
 }
 
-pub fn init() {
+/// # Safety
+/// TODO
+pub unsafe fn init() -> ! {
     let mut shell = Shell::new();
     shell.run();
 }
