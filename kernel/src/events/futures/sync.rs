@@ -1,6 +1,11 @@
 use alloc::{sync::Arc, vec::Vec};
 use core::{
-    cell::UnsafeCell, future::Future, ops::{Deref, DerefMut}, pin::Pin, sync::atomic::{AtomicBool, AtomicUsize, Ordering}, task::{Context, Poll}
+    cell::UnsafeCell,
+    future::Future,
+    ops::{Deref, DerefMut},
+    pin::Pin,
+    sync::atomic::{AtomicBool, AtomicUsize, Ordering},
+    task::{Context, Poll},
 };
 use spin::RwLock;
 
@@ -155,6 +160,10 @@ pub struct BlockMutex<T> {
 unsafe impl<T> Send for BlockMutex<T> {}
 unsafe impl<T> Sync for BlockMutex<T> {}
 
+pub enum BlockMutexError {
+    WouldBlock,
+}
+
 impl<T> BlockMutex<T> {
     pub fn new(data: T) -> BlockMutex<T> {
         BlockMutex {
@@ -164,12 +173,45 @@ impl<T> BlockMutex<T> {
     }
 
     pub async fn lock(&self) -> BlockMutexGuard<T> {
-        let event = current_running_event().expect("Using BlockMutex outside event");
-        Condition::new(self.unlocked.clone(), event).await;
+        while self
+            .unlocked
+            .compare_exchange(true, false, Ordering::Relaxed, Ordering::Relaxed)
+            .is_err()
+        {
+            let event = current_running_event().expect("Using BlockMutex outside event");
+            Condition::new(self.unlocked.clone(), event).await;
+        }
 
-        self.unlocked.store(false, Ordering::Relaxed);
+        BlockMutexGuard {
+            mutex: self,
+            data: self.data.get(),
+        }
+    }
 
-        BlockMutexGuard { mutex: self, data: self.data.get() }
+    pub fn try_lock(&self) -> Result<BlockMutexGuard<T>, BlockMutexError> {
+        match self
+            .unlocked
+            .compare_exchange(true, false, Ordering::Relaxed, Ordering::Relaxed)
+        {
+            Ok(_) => Ok(BlockMutexGuard {
+                mutex: self,
+                data: self.data.get(),
+            }),
+            Err(_) => Err(BlockMutexError::WouldBlock),
+        }
+    }
+
+    pub fn spin(&self) -> BlockMutexGuard<T> {
+        while self
+            .unlocked
+            .compare_exchange(true, false, Ordering::Relaxed, Ordering::Relaxed)
+            .is_err()
+        {}
+
+        BlockMutexGuard {
+            mutex: self,
+            data: self.data.get(),
+        }
     }
 
     fn unlock(&self) {
@@ -177,7 +219,7 @@ impl<T> BlockMutex<T> {
     }
 }
 
-impl<T> From<T> for BlockMutex<T>{
+impl<T> From<T> for BlockMutex<T> {
     fn from(data: T) -> Self {
         BlockMutex::new(data)
     }
@@ -185,7 +227,7 @@ impl<T> From<T> for BlockMutex<T>{
 
 pub struct BlockMutexGuard<'a, T> {
     mutex: &'a BlockMutex<T>,
-    data: *mut T
+    data: *mut T,
 }
 
 unsafe impl<T> Send for BlockMutexGuard<'_, T> {}
@@ -201,9 +243,7 @@ impl<T> Deref for BlockMutexGuard<'_, T> {
 
 impl<T> DerefMut for BlockMutexGuard<'_, T> {
     fn deref_mut(&mut self) -> &mut Self::Target {
-        unsafe {
-            &mut *self.data
-        }
+        unsafe { &mut *self.data }
     }
 }
 

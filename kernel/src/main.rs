@@ -3,7 +3,6 @@
 #![no_std]
 #![no_main]
 #![feature(custom_test_frameworks)]
-#![feature(naked_functions)]
 #![test_runner(taos::test_runner)]
 #![reexport_test_harness_main = "test_main"]
 
