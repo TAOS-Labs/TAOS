@@ -199,24 +199,23 @@ pub unsafe extern "C" fn syscall_handler_impl(
 
 pub fn sys_read(fd: u32, buf: *mut u8, count: usize) -> u64 {
     if fd == 0 {
-        // STDIN
         let mut i = 0;
         while i < count {
             unsafe {
-                if let Some(event) = keyboard::try_read_event() {
-                    if let Some(c) = event_to_ascii(&event) {
-                        *buf.add(i) = c;
-                        i += 1;
+                match keyboard::try_read_event() {
+                    Some(event) => {
+                        if let Some(c) = event_to_ascii(&event) {
+                            *buf.add(i) = c;
+                            i += 1;
+                        }
                     }
-                } else {
-                    // Block until we get input
-                    core::hint::spin_loop();
+                    None => break, // Exit early
                 }
             }
         }
         i as u64
     } else {
-        u64::MAX // Error
+        u64::MAX
     }
 }
 
