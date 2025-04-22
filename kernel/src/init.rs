@@ -27,7 +27,7 @@ use crate::{
     memory::{self},
     net::get_ip_addr,
     processes::{self},
-    serial_println, trace,
+    serial_println, shell, trace,
 };
 extern crate alloc;
 
@@ -70,6 +70,7 @@ pub fn init() -> u32 {
     let bsp_id = wake_cores();
 
     idt::enable();
+
     bsp_id
 }
 
@@ -102,6 +103,8 @@ unsafe extern "C" fn secondary_cpu_main(cpu: &Cpu) -> ! {
     idt::enable();
 
     debug!("AP {} entering event loop", cpu.id);
+
+    shell::init();
 
     run_loop(cpu.id)
 }

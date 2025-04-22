@@ -2,6 +2,7 @@ use core::ffi::CStr;
 
 use alloc::collections::btree_map::BTreeMap;
 use lazy_static::lazy_static;
+use pc_keyboard::{DecodedKey, KeyCode};
 use spin::Mutex;
 use x86_64::structures::paging::{PhysFrame, Size4KiB};
 
@@ -13,6 +14,7 @@ use core::{
 
 use crate::{
     constants::syscalls::*,
+    devices::ps2_dev::keyboard,
     events::{
         current_running_event, current_running_event_info, futures::await_on::AwaitProcess,
         get_runner_time, yield_now, EventInfo,
@@ -178,9 +180,71 @@ pub unsafe extern "C" fn syscall_handler_impl(
         SYSCALL_WAIT => block_on(sys_wait(syscall.arg1 as u32)),
         SYSCALL_MUNMAP => sys_munmap(syscall.arg1, syscall.arg2),
         SYSCALL_MPROTECT => sys_mprotect(syscall.arg1, syscall.arg2, syscall.arg3),
+        SYSCALL_READ => sys_read(
+            syscall.arg1 as u32,
+            syscall.arg2 as *mut u8,
+            syscall.arg3 as usize,
+        ),
+        SYSCALL_WRITE => sys_write(
+            syscall.arg1 as u32,
+            syscall.arg2 as *mut u8,
+            syscall.arg3 as usize,
+        ),
+
         _ => {
             panic!("Unknown syscall, {}", syscall.number);
         }
+    }
+}
+
+pub fn sys_read(fd: u32, buf: *mut u8, count: usize) -> u64 {
+    if fd == 0 {
+        serial_println!("BUF: {:#?}", buf);
+        // STDIN
+        let mut i = 0;
+        while i < count {
+            unsafe {
+                if let Some(event) = keyboard::try_read_event() {
+                    if let Some(c) = event_to_ascii(&event) {
+                        *buf.add(i) = c;
+                        i += 1;
+                    }
+                } else {
+                    // Block until we get input
+                    core::hint::spin_loop();
+                }
+            }
+        }
+        i as u64
+    } else {
+        u64::MAX // Error
+    }
+}
+
+pub fn sys_write(fd: u32, buf: *const u8, count: usize) -> u64 {
+    if fd == 1 {
+        // STDOUT
+        unsafe {
+            serial_println!("BUF {:#?}", buf);
+            let slice = core::slice::from_raw_parts(buf, count);
+            serial_println!("{}", core::str::from_utf8_unchecked(slice));
+        }
+        count as u64
+    } else {
+        u64::MAX // Error
+    }
+}
+
+// Helper to convert keyboard events to ASCII
+fn event_to_ascii(event: &keyboard::KeyboardEvent) -> Option<u8> {
+    match event.decoded {
+        Some(DecodedKey::Unicode(c)) => Some(c as u8),
+        _ => match event.key_code {
+            KeyCode::Return => Some(b'\n'),
+            KeyCode::Backspace => Some(0x08),
+            KeyCode::Spacebar => Some(b' '),
+            _ => None,
+        },
     }
 }
 
