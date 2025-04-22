@@ -14,7 +14,9 @@ use crate::{
     constants::processes::{TEST_MPROTECT_CHILD_WRITES, TEST_PRINT_EXIT},
     debug,
     devices::{self},
-    events::{register_event_runner, run_loop, schedule_process, spawn, yield_now},
+    events::{
+        register_event_runner, run_loop, schedule_kernel, schedule_process, spawn, yield_now,
+    },
     filesys::{self},
     interrupts::{self, idt},
     ipc::{
@@ -72,23 +74,38 @@ pub fn init() -> u32 {
 
     idt::enable();
 
-    let pid = create_process(TEST_MPROTECT_CHILD_WRITES);
-    schedule_process(pid);
+    schedule_kernel(
+        async {
+            for _ in 0..100000000 {}
+            serial_println!("FINISHED LOOPING");
+        },
+        3,
+    );
 
-    let pid = create_process(TEST_MPROTECT_CHILD_WRITES);
-    schedule_process(pid);
+    schedule_kernel(
+        async {
+            for _ in 0..100000000 {}
+            serial_println!("FINISHED LOOPING");
+        },
+        3,
+    );
 
-    let pid = create_process(TEST_MPROTECT_CHILD_WRITES);
-    schedule_process(pid);
+    schedule_kernel(
+        async {
+            for _ in 0..100000000 {}
+            serial_println!("FINISHED LOOPING");
+        },
+        3,
+    );
 
-    let pid = create_process(TEST_MPROTECT_CHILD_WRITES);
-    schedule_process(pid);
+    schedule_kernel(
+        async {
+            for _ in 0..100000000 {}
+            serial_println!("FINISHED LOOPING");
+        },
+        3,
+    );
 
-    let pid = create_process(TEST_MPROTECT_CHILD_WRITES);
-    schedule_process(pid);
-
-    let pid = create_process(TEST_MPROTECT_CHILD_WRITES);
-    schedule_process(pid);
     bsp_id
 }
 
