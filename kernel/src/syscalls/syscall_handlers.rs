@@ -60,7 +60,7 @@ pub struct SyscallRegisters {
 ///
 /// # Safety
 /// This function is unsafe as it manually saves state and switches stacks
-#[naked]
+#[unsafe(naked)]
 #[no_mangle]
 pub unsafe extern "C" fn syscall_handler_64_naked() -> ! {
     naked_asm!(
