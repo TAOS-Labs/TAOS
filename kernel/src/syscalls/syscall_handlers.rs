@@ -25,7 +25,7 @@ use crate::{
         process::{sleep_process_int, sleep_process_syscall, ProcessState, PROCESS_TABLE},
         registers::ForkingRegisters,
     },
-    serial_println,
+    serial_print, serial_println,
     syscalls::{fork::sys_fork, memorymap::sys_mmap},
 };
 
@@ -199,7 +199,6 @@ pub unsafe extern "C" fn syscall_handler_impl(
 
 pub fn sys_read(fd: u32, buf: *mut u8, count: usize) -> u64 {
     if fd == 0 {
-        serial_println!("BUF: {:#?}", buf);
         // STDIN
         let mut i = 0;
         while i < count {
@@ -225,9 +224,8 @@ pub fn sys_write(fd: u32, buf: *const u8, count: usize) -> u64 {
     if fd == 1 {
         // STDOUT
         unsafe {
-            serial_println!("BUF {:#?}", buf);
             let slice = core::slice::from_raw_parts(buf, count);
-            serial_println!("{}", core::str::from_utf8_unchecked(slice));
+            serial_print!("{}", core::str::from_utf8_unchecked(slice));
         }
         count as u64
     } else {
