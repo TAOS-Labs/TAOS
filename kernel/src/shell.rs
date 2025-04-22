@@ -1,7 +1,8 @@
 use alloc::fmt::format;
 
 use crate::{
-    serial_print, serial_println,
+    devices::ps2_dev::keyboard,
+    serial_println,
     syscalls::syscall_handlers::{sys_read, sys_write},
 };
 
@@ -29,6 +30,7 @@ impl Shell {
             match c {
                 b'\n' => {
                     self.execute_command();
+                    keyboard::flush_buffer();
                     self.print_prompt();
                 }
                 0x08 => self.handle_backspace(),
@@ -113,6 +115,7 @@ impl Default for Shell {
 /// # Safety
 /// TODO
 pub unsafe fn init() -> ! {
+    keyboard::flush_buffer();
     let mut shell = Shell::new();
     shell.run();
 }
