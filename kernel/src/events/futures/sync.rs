@@ -1,5 +1,6 @@
 use alloc::{sync::Arc, vec::Vec};
 use core::{
+    cell::UnsafeCell,
     future::Future,
     ops::{Deref, DerefMut},
     pin::Pin,
@@ -153,7 +154,7 @@ impl<T> BoundedBuffer<T> {
 
 pub struct BlockMutex<T> {
     unlocked: Arc<AtomicBool>,
-    data: T,
+    data: UnsafeCell<T>,
 }
 
 unsafe impl<T> Send for BlockMutex<T> {}
@@ -163,39 +164,52 @@ impl<T> BlockMutex<T> {
     pub fn new(data: T) -> BlockMutex<T> {
         BlockMutex {
             unlocked: Arc::new(AtomicBool::new(true)),
-            data,
+            data: UnsafeCell::new(data),
         }
     }
 
-    pub async fn lock(&mut self) -> BlockMutexGuard<T> {
+    pub async fn lock(&self) -> BlockMutexGuard<T> {
         let event = current_running_event().expect("Using BlockMutex outside event");
         Condition::new(self.unlocked.clone(), event).await;
 
         self.unlocked.store(false, Ordering::Relaxed);
 
-        BlockMutexGuard { mutex: self }
+        BlockMutexGuard {
+            mutex: self,
+            data: self.data.get(),
+        }
     }
 
-    fn unlock(&mut self) {
+    fn unlock(&self) {
         self.unlocked.store(true, Ordering::Relaxed);
     }
 }
 
-pub struct BlockMutexGuard<'a, T> {
-    mutex: &'a mut BlockMutex<T>,
+impl<T> From<T> for BlockMutex<T> {
+    fn from(data: T) -> Self {
+        BlockMutex::new(data)
+    }
 }
+
+pub struct BlockMutexGuard<'a, T> {
+    mutex: &'a BlockMutex<T>,
+    data: *mut T,
+}
+
+unsafe impl<T> Send for BlockMutexGuard<'_, T> {}
+unsafe impl<T> Sync for BlockMutexGuard<'_, T> {}
 
 impl<T> Deref for BlockMutexGuard<'_, T> {
     type Target = T;
 
     fn deref(&self) -> &Self::Target {
-        &self.mutex.data
+        unsafe { &*self.data }
     }
 }
 
 impl<T> DerefMut for BlockMutexGuard<'_, T> {
     fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.mutex.data
+        unsafe { &mut *self.data }
     }
 }
 

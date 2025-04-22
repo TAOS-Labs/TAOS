@@ -3,7 +3,10 @@
 //! This module handles keyboard initialization, event processing,
 //! and provides both synchronous and asynchronous interfaces for keyboard events.
 
-use crate::{devices::ps2_dev::controller, interrupts::idt::without_interrupts, serial_println};
+use crate::{
+    devices::ps2_dev::controller, events::schedule_kernel, interrupts::idt::without_interrupts,
+    serial_println,
+};
 use core::{
     pin::Pin,
     sync::atomic::{AtomicU64, Ordering},
@@ -227,10 +230,15 @@ pub fn keyboard_handler() {
 
             match controller.read_data() {
                 Ok(scancode) => {
-                    let mut keyboard = KEYBOARD.lock();
-                    if let Err(e) = keyboard.process_scancode(scancode) {
-                        serial_println!("Error processing keyboard scancode: {:?}", e);
-                    }
+                    schedule_kernel(
+                        async move {
+                            let mut keyboard = KEYBOARD.lock();
+                            if let Err(e) = keyboard.process_scancode(scancode) {
+                                serial_println!("Error processing keyboard scancode: {:?}", e);
+                            }
+                        },
+                        0,
+                    );
                 }
                 Err(_) => {
                     // If we can't read data despite OUTPUT_FULL being set

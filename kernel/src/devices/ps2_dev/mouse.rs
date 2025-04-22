@@ -3,7 +3,10 @@
 //! This module handles mouse initialization, event processing,
 //! and provides both synchronous and asynchronous interfaces for mouse events.
 
-use crate::{devices::ps2_dev::controller, interrupts::idt::without_interrupts, serial_println};
+use crate::{
+    devices::ps2_dev::controller, events::schedule_kernel, interrupts::idt::without_interrupts,
+    serial_println,
+};
 use core::{
     fmt,
     pin::Pin,
@@ -358,10 +361,15 @@ pub fn mouse_handler() {
 
             match mouse_dev.read_data_packet() {
                 Ok((flags, dx, dy)) => {
-                    let mut mouse = MOUSE.lock();
-                    if let Err(e) = mouse.process_packet(flags, dx, dy) {
-                        serial_println!("Error processing mouse packet: {:?}", e);
-                    }
+                    schedule_kernel(
+                        async move {
+                            let mut mouse = MOUSE.lock();
+                            if let Err(e) = mouse.process_packet(flags, dx, dy) {
+                                serial_println!("Error processing mouse packet: {:?}", e);
+                            }
+                        },
+                        0,
+                    );
                 }
                 Err(_) => {
                     // If we can't read a complete packet, break the loop
