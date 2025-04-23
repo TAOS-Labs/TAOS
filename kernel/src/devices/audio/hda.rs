@@ -1,14 +1,14 @@
 use crate::{
-    devices::pci::{read_config, walk_pci_bus, DeviceInfo}, events::{futures::devices::HWRegisterWrite, nanosleep_current_event}, interrupts::x2apic, memory::HHDM_OFFSET, serial_print, serial_println
+    debug_println, devices::{audio::{command_buffer::RirbBuffer, commands::{CorbEntry, HdaVerb, NodeParams}}, pci::{read_config, walk_pci_bus, DeviceInfo}}, events::{futures::devices::HWRegisterWrite, nanosleep_current_event}, interrupts::x2apic, memory::HHDM_OFFSET, processes::process::sleep_process_int, serial_print, serial_println
 };
 
 use crate::devices::{
     audio::hda_regs::HdaRegisters,
     mmio::MMioPtr,
 };
-use core::{mem::offset_of, ptr::{read_volatile, write_volatile}};
-use alloc::vec;
+use core::{ mem::offset_of, ptr::{read_volatile, write_volatile}};
 use alloc::vec::Vec;
+use goblin::elf::reloc::R_AARCH64_TLSLE_LDST8_TPREL_LO12;
 use x86_64::structures::idt::InterruptStackFrame;
 use crate::devices::audio::command_buffer::{CommandBuffer, WidgetAddr};
 use crate::devices::audio::dma::DmaBuffer;
@@ -16,7 +16,7 @@ use crate::devices::audio::commands::HdaVerb::*;
 
 
 
-use super::widget_info::WidgetInfo;
+use super::{command_buffer::CorbBuffer, commands::RirbEntry, widget_info::WidgetInfo};
 
 /// Physical BAR address (used during development before PCI scan)
 /// TODO - need to find a betterr way so this variable doesnt exist
@@ -60,10 +60,12 @@ pub extern "x86-interrupt" fn hda_interrupt_handler(_frame: InterruptStackFrame)
 
 pub struct IntelHDA {
     pub base: u32,
+    pub virt_base: u64,
     pub vendor_id: u16,
     pub device_id: u16,
     pub regs: &'static mut HdaRegisters,
-    pub cmd_buf: Option<CommandBuffer>,
+    pub cmd_buf: Option<CorbBuffer>,
+    pub rirb_buf: Option<RirbBuffer>,
 }
 
 impl IntelHDA {
@@ -73,209 +75,453 @@ impl IntelHDA {
     pub async fn init() -> Option<Self> {
         let device = find_hda_device()?;
         let bar = get_bar(&device)?;
-    
+
         let virt = *HHDM_OFFSET + bar as u64;
-        let regs = unsafe { &mut *(virt.as_u64() as *mut HdaRegisters) };
-    
-        serial_println!(
+        let regs = unsafe {&mut *(virt.as_u64() as *mut HdaRegisters)};
+
+        debug_println!(
             "Intel HDA found: vendor=0x{:X}, device=0x{:X}, BAR=0x{:X} (virt: 0x{:X})",
             device.vendor_id,
             device.device_id,
             bar,
             virt
         );
-    
+
         let mut hda = IntelHDA {
             base: bar,
+            virt_base: virt.as_u64(),
             regs,
             vendor_id: device.vendor_id,
             device_id: device.device_id,
             cmd_buf: None,
+            rirb_buf: None,
         };
-    
-        // Allocate DMA buffers
-        serial_println!("Allocating CORB and RIRB buffers...");
-        let corb_buf = DmaBuffer::new(4096).expect("Failed to alloc CORB");
-        let rirb_buf = DmaBuffer::new(4096).expect("Failed to alloc RIRB");
-    
-        // Initialize CommandBuffer
-        serial_println!("Creating CommandBuffer...");
-        let mut cmd_buf = unsafe {
-            CommandBuffer::new(virt.as_u64() as usize, &corb_buf, &rirb_buf).await
-        };
-        // unsafe {
-        //     cmd_buf.init(false).await; // Set true to use immediate commands
-        // }
 
-        unsafe {
-            cmd_buf.set_use_immediate(true).await;
-            cmd_buf.init(true).await;
-        }
-        
-        // TEMP: test immediate command mode. TODO Remmove this
-        let val = unsafe {
-            cmd_buf.cmd4(WidgetAddr(0, 0), 0xF, 0).await // GetParameter: Vendor ID
-        };
-        serial_println!("Immediate command result: 0x{:08X}", val as u32);
-
-        
-
-        hda.cmd_buf = Some(cmd_buf);
-    
-        serial_println!("BASE: 0x{:08X}", hda.base);
-        hda.regs.gctl |= 1 << 8;
-    
+        // reset the HDA
+        debug_println!("resetting the hda");
         hda.reset().await;
 
-        let intctl = (HHDM_OFFSET.as_u64() + hda.base as u64 + 0x20) as *mut u32;
-        unsafe {write_volatile(intctl, 0xFFFFFFFF)};
-        serial_println!("INTCTL: 0x{:08X}", unsafe {read_volatile(intctl)});
+        debug_println!("initializing the corb");
+        hda.init_corb().await;
+
+        debug_println!("initializing the rirb");
+        hda.init_rirb().await;
+
+        // TODO: enable interrupts?
+
+        // test we can communicate by asking the codec's root node for a node count
+        
+        hda.test_dma_transfer().await;
+        
+
+        
+        Some(hda)
+    } 
+
+    /// Initializes the CORB
+    pub async fn init_corb(&mut self) {
+        // stop the CORB DMA engine
+        let corbctl_addr = (self.virt_base + 0x4c) as *mut u8;
+        // let mut corbctl_val = unsafe {read_volatile(corbctl_addr)};
+        unsafe {
+            write_volatile(corbctl_addr, 0);
+        }
+        
+        // wait for the hw to acknowledge the write
+        let mut corbctl_val = unsafe {read_volatile(corbctl_addr)};
+        // TODO: fix this spin loop
+        while (corbctl_val >> 1) & 1 != 0 {
+            corbctl_val = unsafe {read_volatile(corbctl_addr)};
+        }
+
+        // Determine the size of the CORB
+        let corbsize_addr = (self.virt_base + 0x4e) as *mut u8;
+        let corb_size_reg = unsafe { read_volatile(corbsize_addr) };
+        let corb_size: u16;
+        let corb_size_val: u8;
+        if (corb_size_reg >> 6) & 1 == 1 {
+            corb_size = 256;
+            corb_size_val = 2;
+        } else if (corb_size_reg >> 5) & 1 == 1 {
+            corb_size = 16;
+            corb_size_val = 1;
+        } else {
+            corb_size = 2;
+            corb_size_val = 0;
+        }
+        // now actually write the size
+        debug_println!("setting the corb size");
+        unsafe { write_volatile(corbsize_addr, corb_size_val); } // TODO: This line isnt actually needed since qemu only suports one size so remove maybe?
+
+        // Allocate a buffer
+        let corb_buf = DmaBuffer::new(4096).expect("Failed to alloc CORB");
+        assert_eq!(corb_buf.virt_addr.as_u64() & (128 - 1), 0);
+        let corb = CorbBuffer::new(&corb_buf, corb_size);
+        self.cmd_buf = Some(corb); // TODO: why is this an option?
+
+        // program the CORB base registers
+        let corbbase = corb_buf.phys_addr.as_u64() & !(128 - 1);
+        let corbbase_addr = (self.virt_base + 0x40) as *mut u32;
+        debug_println!("writing the corb base addr");
+        unsafe {
+            write_volatile(corbbase_addr, (corbbase & 0xFFFFFFC0) as u32);
+            write_volatile(corbbase_addr.add(1), ((corbbase >> 32) & 0xFFFFFFFF) as u32);
+        }
+
+        // TODO: might need to mess with the sizes that we are writing, we will see if qemu gets mad at us
+        // reset the hw read pointer
+        debug_println!("resetting the read pointer");
+        let rp_addr = (self.virt_base + 0x4a) as *mut u16;
+        unsafe { write_volatile(rp_addr, 1 << 15); }
+    
+        let mut rp_val = unsafe { read_volatile(rp_addr) };
+        while rp_val >> 15 != 1 {
+            rp_val = unsafe { read_volatile(rp_addr) };
+        }
+
+        unsafe { write_volatile(rp_addr, 0); }
+        rp_val = unsafe { read_volatile(rp_addr) };
+        // TODO: fix this spin loop
+        while rp_val >> 15 != 0 {
+            rp_val = unsafe { read_volatile(rp_addr) };
+        }
+        debug_println!("read pointer val: {:X}", rp_val);
+
+        // set the write pointer to 0
+        debug_println!("clear the write pointer reg");
+        let wp_addr = (self.virt_base + 0x48) as *mut u8;
+        unsafe { write_volatile(wp_addr, 0); }
+
+        // set the run bit
+        debug_println!("setting the run bit");
+        unsafe { write_volatile(corbctl_addr, 2); } // TODO: figure out if this is needed or do we only set the run bit if there are commands to process?
+        corbctl_val = unsafe { read_volatile(corbctl_addr) };
+        // TODO: fix this spin loop
+        while (corbctl_val >> 1) & 1 != 1 {
+            corbctl_val = unsafe { read_volatile(corbctl_addr) };
+        }
+        debug_println!("finished initializing the corb");
+        debug_println!();
+    }
+
+    /// initializes the RIRB
+    pub async fn init_rirb(&mut self) {
+        // stop the DMA engine
+        let rirbctl_addr = (self.virt_base + 0x5c) as *mut u8;
+        unsafe {
+            write_volatile(rirbctl_addr, 0);
+        }
+
+        // wait for ack
+        let mut ctl_val = unsafe { read_volatile(rirbctl_addr) };
+        // TODO: fix this spin loop
+        while (ctl_val >> 1) & 1 != 0 {
+            ctl_val = unsafe { read_volatile(rirbctl_addr) };
+        }
+
+        // Determine the RIRB size
+        let rirbsize_addr = (self.virt_base + 0x5e) as *mut u8;
+        let rirbsize_val = unsafe { read_volatile(rirbsize_addr) };
+        let rirb_size: u16;
+        if (rirbsize_val >> 6) & 1 == 1 {
+            rirb_size = 256;
+        } else if (rirbsize_val >> 5) & 1 == 1 {
+            rirb_size = 16;
+        } else {
+            rirb_size = 2;
+        }
+
+        // Allocate a buffer
+        let rirb_buf = DmaBuffer::new(4096).expect("Failed to alloc CORB");
+        assert_eq!(rirb_buf.virt_addr.as_u64() & (128 - 1), 0);
+        let rirb = RirbBuffer::new(&rirb_buf, rirb_size);
+        self.rirb_buf = Some(rirb);
+
+        // program the RIRB base registers
+        let rirbbase = rirb_buf.phys_addr.as_u64() & !(128 - 1);
+        let rirbbase_addr = (self.virt_base + 0x50) as *mut u32;
+        debug_println!("writing the rirb base addr");
+        unsafe {
+            write_volatile(rirbbase_addr, (rirbbase & 0xFFFFFFC0) as u32);
+            write_volatile(rirbbase_addr.add(1), ((rirbbase >> 32) & 0xFFFFFFFF) as u32);
+        }
+
+        // reset the hw write pointer
+        debug_println!("resetting the write pointer");
+        let wp_addr = (self.virt_base + 0x58) as *mut u16;
+        unsafe { write_volatile(wp_addr, 0); }
+        // no need to check and wait like in corb cause this bit is always read a 0 for some reason
+
+        // set interrupt count to half the size (it should accept 0 as 256 but it does not for some reason)
+        let intcnt_addr = (self.virt_base + 0x5A) as *mut u16;
+        unsafe { write_volatile(intcnt_addr, rirb_size / 2); }
+
+        // set the run bit
+        debug_println!("setting the run bit");
+        unsafe { write_volatile(rirbctl_addr, 2); }
+        ctl_val = unsafe { read_volatile(rirbctl_addr) };
+        // TODO: fix this spin loop
+        while (ctl_val >> 1) & 1 != 1 {
+            ctl_val = unsafe { read_volatile(rirbctl_addr) };
+        }
+        debug_println!("finished initializing the rirb");
+        debug_println!();
+    }
+
+    /// sends a command if the buffer is not full
+    /// TODO: docs
+    pub async fn send_command(&mut self, codec_address: u32, node_id: u32, command: HdaVerb, data: u16) -> Option<()> {
+        let corb = self.cmd_buf.as_mut().unwrap();
+        // first gotta check if the buffer is full
+        // debug_println!("checking if the buffer is full");
+        let corbrp_addr = (self.virt_base + 0x4A) as *mut u8;
+        let corbrp_val = unsafe { read_volatile(corbrp_addr) };
+        corb.set_read_idx(corbrp_val as u16);
+        if corb.is_full() {
+            debug_println!("buffer is full :(");
+            return None
+        }
+
+        // debug_println!("sending a command to the corb");
+        let cmd = CorbEntry::create_entry(codec_address, node_id, command, data);
+        unsafe {
+            corb.send(cmd).await;
+            // next update the write pointer to indicate to hardware
+            let wp_addr = (self.virt_base + 0x48) as *mut u8;
+            write_volatile(wp_addr, (self.cmd_buf.as_ref().unwrap().get_write_idx() & 0xFF) as u8);
+        }
+        Some(())
+    }
+
+    /// receive a response from the RIRB
+    /// TODO: docs
+    pub async fn receive_response(&mut self) -> Option<RirbEntry> {
+        // debug_println!("waiting for a response on the RIRB");
+        let rirb = self.rirb_buf.as_mut().unwrap();
+        let rirbwp_addr = (self.virt_base + 0x58) as *mut u16;
+        let mut rirbwp_val = unsafe { read_volatile(rirbwp_addr) };
+        rirb.set_write_idx(rirbwp_val);
+        
+        // TODO: figure out a better way to wait for a response (this is not very elegant)
+        let mut counter = 100000;
+        while rirb.is_empty() && counter > 0 {
+            rirbwp_val = unsafe { read_volatile(rirbwp_addr) };
+            rirb.set_write_idx(rirbwp_val);
+            counter -= 1;
+        }
+
+        if counter == 0 {
+            // timeout
+            debug_println!("timed out while waiting");
+            return None
+        }
+
+        unsafe { Some(rirb.read().await) }
+    }
+    
+    /// Initializes HDA controller:
+    /// - Finds the PCI device
+    /// - Maps BAR to virtual address (hhdm ofset + address)
+    // pub async fn old_init() -> Option<Self> {
+    //     let device = find_hda_device()?;
+    //     let bar = get_bar(&device)?;
+    
+    //     let virt = *HHDM_OFFSET + bar as u64;
+    //     let regs = unsafe { &mut *(virt.as_u64() as *mut HdaRegisters) };
+    
+    //     serial_println!(
+    //         "Intel HDA found: vendor=0x{:X}, device=0x{:X}, BAR=0x{:X} (virt: 0x{:X})",
+    //         device.vendor_id,
+    //         device.device_id,
+    //         bar,
+    //         virt
+    //     );
+    
+    //     let mut hda = IntelHDA {
+    //         base: bar,
+    //         regs,
+    //         vendor_id: device.vendor_id,
+    //         device_id: device.device_id,
+    //         cmd_buf: None,
+    //     };
+    
+    //     // Allocate DMA buffers
+    //     serial_println!("Allocating CORB and RIRB buffers...");
+    //     let corb_buf = DmaBuffer::new(4096).expect("Failed to alloc CORB");
+    //     let rirb_buf = DmaBuffer::new(4096).expect("Failed to alloc RIRB");
+    
+    //     // Initialize CommandBuffer
+    //     serial_println!("Creating CommandBuffer...");
+    //     let mut cmd_buf = unsafe {
+    //         CommandBuffer::new(virt.as_u64() as usize, &corb_buf, &rirb_buf).await
+    //     };
+    //     unsafe {
+    //         cmd_buf.init(false).await; // Set true to use immediate commands
+    //     }
+
+    //     unsafe {
+    //         cmd_buf.set_use_immediate(true).await;
+    //         cmd_buf.init(true).await;
+    //     }
+        
+
+    //     hda.cmd_buf = Some(cmd_buf);
+    
+    //     serial_println!("BASE: 0x{:08X}", hda.base);
+    //     // hda.regs.gctl |= 1 << 8;
+    
+    //     hda.reset().await;
+
+    //     let intctl = (HHDM_OFFSET.as_u64() + hda.base as u64 + 0x20) as *mut u32;
+    //     unsafe {write_volatile(intctl, 0xFFFFFFFF)};
+    //     serial_println!("INTCTL: 0x{:08X}", unsafe {read_volatile(intctl)});
 
     
-        // Send initial power-up verb to codec node 0
-        let resp = unsafe {
-            hda.cmd_buf.as_mut().unwrap().cmd12(WidgetAddr(0, 0), KickStart as u32, 0).await
-        };
-        serial_println!("SigmaTel codec kickstart response: 0x{:X}", resp);
+    //     // Send initial power-up verb to codec node 0
+    //     let resp = unsafe {
+    //         hda.cmd_buf.as_mut().unwrap().cmd12(WidgetAddr(0, 0), KickStart as u32, 0).await
+    //     };
+    //     serial_println!("SigmaTel codec kickstart response: 0x{:X}", resp);
     
-        // Try node 1
-        unsafe { hda.cmd_buf.as_mut().unwrap().cmd12(WidgetAddr(0, 1), KickStart as u32, 0).await};
+    //     // Try node 1
+    //     unsafe { hda.cmd_buf.as_mut().unwrap().cmd12(WidgetAddr(0, 1), KickStart as u32, 0).await};
     
-        // Set power state to D0 on node 0 and 3
-        serial_println!("Setting power state to D0 on node 0 and 3");
-        unsafe { hda.cmd_buf.as_mut().unwrap().cmd12(WidgetAddr(0, 0), SetPowerState as u32, 0).await};
-        unsafe {hda.cmd_buf.as_mut().unwrap().cmd12(WidgetAddr(0, 3), SetPowerState as u32, 0).await};
+    //     // Set power state to D0 on node 0 and 3
+    //     serial_println!("Setting power state to D0 on node 0 and 3");
+    //     unsafe { hda.cmd_buf.as_mut().unwrap().cmd12(WidgetAddr(0, 0), SetPowerState as u32, 0).await};
+    //     unsafe {hda.cmd_buf.as_mut().unwrap().cmd12(WidgetAddr(0, 3), SetPowerState as u32, 0).await};
     
-        nanosleep_current_event(DELAY_NS * 2000).unwrap().await;
+    //     nanosleep_current_event(DELAY_NS * 2000).unwrap().await;
     
-        // Unsolicited response enable
-        hda.regs.gctl |= 1 << 8;
+    //     // Unsolicited response enable
+    //     hda.regs.gctl |= 1 << 8;
+
     
-        let widget_list = hda.probe_afg_and_widgets().await;
-        serial_println!("Total widgets discovered: {}", widget_list.len());
+    //     let widget_list = hda.probe_afg_and_widgets().await;
+    //     serial_println!("Total widgets discovered: {}", widget_list.len());
     
-        let func_group_type = unsafe {
-            hda.cmd_buf.as_mut().unwrap().cmd12(WidgetAddr(0, 0), GetParameter as u32, 0).await
-        };
-        serial_println!("Codec node 0 function group type: 0x{:X}", func_group_type);
+    //     let func_group_type = unsafe {
+    //         hda.cmd_buf.as_mut().unwrap().cmd12(WidgetAddr(0, 0), GetParameter as u32, 0).await
+    //     };
+    //     serial_println!("Codec node 0 function group type: 0x{:X}", func_group_type);
     
-        serial_println!("Probing all possible widget nodes manually...");
-        for node in 1..=15 {
-            let widget_type = unsafe {
-                hda.cmd_buf.as_mut().unwrap().cmd12(WidgetAddr(0, node), GetParameter as u32, 0).await
-            };
-            serial_println!(
-                "Node {} widget type: 0x{:X} ({})",
-                node,
-                widget_type,
-                IntelHDA::decode_widget_type(widget_type as u32)
-            );
+    //     serial_println!("Probing all possible widget nodes manually...");
+    //     for node in 1..=15 {
+    //         let widget_type = unsafe {
+    //             hda.cmd_buf.as_mut().unwrap().cmd12(WidgetAddr(0, node), GetParameter as u32, 0).await
+    //         };
+    //         serial_println!(
+    //             "Node {} widget type: 0x{:X} ({})",
+    //             node,
+    //             widget_type,
+    //             IntelHDA::decode_widget_type(widget_type as u32)
+    //         );
             
-        }
+    //     }
     
-        hda.enable_pin(3).await;
+    //     hda.enable_pin(3).await;
     
-        unsafe { hda.cmd_buf.as_mut().unwrap().cmd12(WidgetAddr(0, 3), SetDacEnable as u32, 0x00).await};
-        serial_println!("Pin widget connection select set to DAC node 2");
+    //     unsafe { hda.cmd_buf.as_mut().unwrap().cmd12(WidgetAddr(0, 3), SetDacEnable as u32, 0x00).await};
+    //     serial_println!("Pin widget connection select set to DAC node 2");
     
-        serial_println!("___________TRACE_____________");
-        if let Some(path) = hda.trace_path_to_dac(3).await {
-            serial_println!("Traced path from pin node 3 to DAC: {:?}", path);
-        } else {
-            serial_println!("Failed to trace path from pin to DAC.");
-        }
+    //     serial_println!("___________TRACE_____________");
+    //     if let Some(path) = hda.trace_path_to_dac(3).await {
+    //         serial_println!("Traced path from pin node 3 to DAC: {:?}", path);
+    //     } else {
+    //         serial_println!("Failed to trace path from pin to DAC.");
+    //     }
     
-        let mut pin_ctrl =  unsafe {
-            hda.cmd_buf.as_mut().unwrap().cmd12(WidgetAddr(0, 3), GetPinControl as u32, 0).await
-        };
-        serial_println!("Raw pin control (before): 0x{:X}", pin_ctrl);
+    //     let mut pin_ctrl =  unsafe {
+    //         hda.cmd_buf.as_mut().unwrap().cmd12(WidgetAddr(0, 3), GetPinControl as u32, 0).await
+    //     };
+    //     serial_println!("Raw pin control (before): 0x{:X}", pin_ctrl);
     
-        pin_ctrl |= 0xC0 | 0x20;
-        unsafe { hda.cmd_buf.as_mut().unwrap().cmd12(WidgetAddr(0, 3), SetPinControl as u32, (pin_ctrl & 0xFF) as u8).await};
-        serial_println!("Pin control (after enable+unmute): 0x{:X}", pin_ctrl);
+    //     pin_ctrl |= 0xC0 | 0x20;
+    //     unsafe { hda.cmd_buf.as_mut().unwrap().cmd12(WidgetAddr(0, 3), SetPinControl as u32, (pin_ctrl & 0xFF) as u8).await};
+    //     serial_println!("Pin control (after enable+unmute): 0x{:X}", pin_ctrl);
     
-        let config_default = unsafe {
-            hda.cmd_buf.as_mut().unwrap().cmd12(WidgetAddr(0, 3), GetConfigDefault as u32, 0)
-        };
-        let def_device = (config_default.await >> 20) & 0xF;
-        let def_device_name = match def_device {
-            0x0 => "Line Out",
-            0x1 => "Speaker",
-            0x2 => "HP Out",
-            _ => "Other",
-        };
-        serial_println!("Pin node 3 default device: {} (0x{:X})", def_device_name, def_device);
+    //     let config_default = unsafe {
+    //         hda.cmd_buf.as_mut().unwrap().cmd12(WidgetAddr(0, 3), GetConfigDefault as u32, 0)
+    //     };
+    //     let def_device = (config_default.await >> 20) & 0xF;
+    //     let def_device_name = match def_device {
+    //         0x0 => "Line Out",
+    //         0x1 => "Speaker",
+    //         0x2 => "HP Out",
+    //         _ => "Other",
+    //     };
+    //     serial_println!("Pin node 3 default device: {} (0x{:X})", def_device_name, def_device);
     
-        nanosleep_current_event(DELAY_NS).unwrap().await;
+    //     nanosleep_current_event(DELAY_NS).unwrap().await;
     
-        let val = unsafe {
-            hda.cmd_buf.as_mut().unwrap().cmd12(WidgetAddr(0, 0), GetConnectionListEntry as u32, 0).await
-        };
-        let start_id = (val >> 0) & 0xFF;
-        let total_nodes = (val >> 16) & 0xFF;
-        serial_println!("Codec node 0 has {} subnodes starting at {}", total_nodes, start_id);
+    //     let val = unsafe {
+    //         hda.cmd_buf.as_mut().unwrap().cmd12(WidgetAddr(0, 0), GetConnectionListEntry as u32, 0).await
+    //     };
+    //     let start_id = (val >> 0) & 0xFF;
+    //     let total_nodes = (val >> 16) & 0xFF;
+    //     serial_println!("Codec node 0 has {} subnodes starting at {}", total_nodes, start_id);
     
-        for node in start_id..(start_id + total_nodes) {
-            let response = unsafe {
-                hda.cmd_buf.as_mut().unwrap().cmd12(WidgetAddr(0, node as u8), GetParameter as u32, 0)
-            };
-            serial_println!("Node {} widget type: 0x{:X}", node, response.await);
-        }
+    //     for node in start_id..(start_id + total_nodes) {
+    //         let response = unsafe {
+    //             hda.cmd_buf.as_mut().unwrap().cmd12(WidgetAddr(0, node as u8), GetParameter as u32, 0)
+    //         };
+    //         serial_println!("Node {} widget type: 0x{:X}", node, response.await);
+    //     }
     
-        let conn_len = unsafe {
-            hda.cmd_buf.as_mut().unwrap().cmd12(WidgetAddr(0, 3), GetConnectionListEntry as u32, 0).await
-        };
-        serial_println!("Node 3 connection list length: 0x{:X}", conn_len);
-        for i in 0..(conn_len & 0x7F) {
-            let conn = unsafe {
-                hda.cmd_buf.as_mut().unwrap().cmd12(WidgetAddr(0, 3), GetConnectionListEntry as u32 | ((i as u32) << 8), 0)
-            };
-            serial_println!("Node 3 connection[{}]: 0x{:X}", i, conn.await);
-        }
+    //     let conn_len = unsafe {
+    //         hda.cmd_buf.as_mut().unwrap().cmd12(WidgetAddr(0, 3), GetConnectionListEntry as u32, 0).await
+    //     };
+    //     serial_println!("Node 3 connection list length: 0x{:X}", conn_len);
+    //     for i in 0..(conn_len & 0x7F) {
+    //         let conn = unsafe {
+    //             hda.cmd_buf.as_mut().unwrap().cmd12(WidgetAddr(0, 3), GetConnectionListEntry as u32 | ((i as u32) << 8), 0)
+    //         };
+    //         serial_println!("Node 3 connection[{}]: 0x{:X}", i, conn.await);
+    //     }
     
-        serial_println!("Setting power state to D0 on DAC node 2");
-        unsafe { hda.cmd_buf.as_mut().unwrap().cmd12(WidgetAddr(0, 2), 0x705, 0).await};
+    //     serial_println!("Setting power state to D0 on DAC node 2");
+    //     unsafe { hda.cmd_buf.as_mut().unwrap().cmd12(WidgetAddr(0, 2), 0x705, 0).await};
     
-        let state = unsafe {
-            hda.cmd_buf.as_mut().unwrap().cmd12(WidgetAddr(0, 2), GetPowerState as u32, 0).await
-        };
-        serial_println!("DAC node 2 current power state: 0x{:X}", state);
+    //     let state = unsafe {
+    //         hda.cmd_buf.as_mut().unwrap().cmd12(WidgetAddr(0, 2), GetPowerState as u32, 0).await
+    //     };
+    //     serial_println!("DAC node 2 current power state: 0x{:X}", state);
     
-        hda.set_stream_channel(2, 0x00).await;
+    //     hda.set_stream_channel(2, 0x00).await;
     
-        hda.set_amplifier_gain(2, 0xB035).await;
-        hda.set_converter_format(2, 0x4011).await;
+    //     hda.set_amplifier_gain(2, 0xB035).await;
+    //     hda.set_converter_format(2, 0x4011).await;
     
-        hda.regs.intctl = 1;
-        hda.regs.stream_regs[4].ctl0 |= 1 << 2;
-        hda.regs.gctl |= 1 << 8;
+    //     hda.regs.intctl = 1;
+    //     hda.regs.stream_regs[4].ctl0 |= 1 << 2;
+    //     hda.regs.gctl |= 1 << 8;
     
-        serial_println!("HDA setup complete");
+    //     serial_println!("HDA setup complete");
     
-        let mut pin_ctrl = unsafe {
-            hda.cmd_buf.as_mut().unwrap().cmd12(WidgetAddr(0, 3), GetPinControl as u32, 0).await
-        };
-        pin_ctrl |= 0x40;
-        let _ = unsafe {
-            hda.cmd_buf.as_mut().unwrap().cmd12(WidgetAddr(0, 3), SetPinControl as u32, (pin_ctrl & 0xFF) as u8)
-        };
+    //     let mut pin_ctrl = unsafe {
+    //         hda.cmd_buf.as_mut().unwrap().cmd12(WidgetAddr(0, 3), GetPinControl as u32, 0).await
+    //     };
+    //     pin_ctrl |= 0x40;
+    //     let _ = unsafe {
+    //         hda.cmd_buf.as_mut().unwrap().cmd12(WidgetAddr(0, 3), SetPinControl as u32, (pin_ctrl & 0xFF) as u8)
+    //     };
     
-        nanosleep_current_event(DELAY_NS).unwrap().await;
+    //     nanosleep_current_event(DELAY_NS).unwrap().await;
     
-        serial_println!("--- EAPD re-enable ---");
-        serial_println!("Initial pin control read (node 3): 0x{:02X}", pin_ctrl);
+    //     serial_println!("--- EAPD re-enable ---");
+    //     serial_println!("Initial pin control read (node 3): 0x{:02X}", pin_ctrl);
     
-        let confirm_ctrl = unsafe {
-            hda.cmd_buf.as_mut().unwrap().cmd12(WidgetAddr(0, 3), GetPinControl as u32, 0)
-        };
-        serial_println!(
-            "After setting EAPD, pin control (node 3): 0x{:02X}",
-            confirm_ctrl.await
-        );
+    //     let confirm_ctrl = unsafe {
+    //         hda.cmd_buf.as_mut().unwrap().cmd12(WidgetAddr(0, 3), GetPinControl as u32, 0)
+    //     };
+    //     serial_println!(
+    //         "After setting EAPD, pin control (node 3): 0x{:02X}",
+    //         confirm_ctrl.await
+    //     );
     
-        hda.test_dma_transfer().await;
-        Some(hda)
-    }
+    //     hda.test_dma_transfer().await;
+    //     Some(hda)
+    // }
     
 
     fn decode_widget_type(val: u32) -> &'static str {
@@ -292,38 +538,25 @@ impl IntelHDA {
             _ => "Unknown",
         }
     }
-    
-    pub async fn force_known_widgets() -> Vec<WidgetInfo> {
-        let mut widgets = Vec::new();
-    
-        let mut dac = WidgetInfo::new(2);
-        dac.widget_type = 1; // 0x1 = DAC
-        dac.amp_out_caps = 0xFFFFFFFF; 
-        widgets.push(dac);
-    
-        let mut pin = WidgetInfo::new(3);
-        pin.widget_type = 4; // 0x4 = Pin
-        pin.conn_list.push(2); // Connect to DAC node 2
-        widgets.push(pin);
-    
-        widgets
-    }
 
     pub async fn probe_afg_and_widgets(&mut self) -> Vec<WidgetInfo> {
+        debug_println!("probing afg and widgets");
         let mut widgets = Vec::new();
-    
-        let fg_count_raw = unsafe {
-            self.cmd_buf.as_mut().unwrap().cmd12(WidgetAddr(0, 0), GetParameter as u32, 4).await
-        };
+        
+        self.send_command(0, 0, HdaVerb::GetParameter, NodeParams::NodeCount.as_u16()).await.expect("Failed to send command");
+        
+        let fg_count_raw = self.receive_response().await.expect("Failed").get_response();
+        
         let fg_count = fg_count_raw & 0xFF;
-        serial_println!("Function group count: {}", fg_count);
+        debug_println!("Function group count: {}", fg_count);
     
         let mut afg_nid = None;
         for i in 1..=fg_count {
-            let group_type = unsafe {
-                self.cmd_buf.as_mut().unwrap().cmd12(WidgetAddr(0, i as u8), GetParameter as u32, 5).await
-            };
-            serial_println!("Func group node {} type: 0x{:X}", i, group_type);
+            self.send_command(0, i, HdaVerb::GetParameter, NodeParams::FunctionGroupType.as_u16()).await.expect("failed to sendd command");
+
+            let group_type = self.receive_response().await.expect("Failed to get the response").get_response();
+                
+            debug_println!("Func group node {} type: 0x{:X}", i, group_type);
     
             if (group_type & 0xF) == 0x01 {
                 afg_nid = Some(i as u8);
@@ -334,22 +567,23 @@ impl IntelHDA {
         let afg_node = match afg_nid {
             Some(nid) => nid,
             None => {
-                serial_println!("No AFG found!");
+                debug_println!("No AFG found!");
                 return widgets;
             }
         };
-        serial_println!("AFG found at node {}", afg_node);
-    
-        let val = unsafe {
-            self.cmd_buf.as_mut().unwrap().cmd12(WidgetAddr(0, afg_node), GetConnectionListEntry as u32, 0).await
-        };
-        let start_id = (val >> 0) & 0xFF;
-        let total_nodes = (val >> 16) & 0xFF;
+        debug_println!("AFG found at node {}", afg_node);
+
+        debug_println!("---------------------------here-------------------------------------");
+        self.send_command(0, afg_node as u32, HdaVerb::GetParameter, NodeParams::NodeCount.as_u16()).await.expect("Failed to send command");
+        let list_length = self.receive_response().await.expect("Failed to receive response");
+        list_length.print_response();
+        let total_nodes = (list_length.get_response() & 0xFF) as u8;
+        let start_id = ((list_length.get_response() >> 16) & 0xFF) as u8;
     
         if total_nodes == 0 {
-            serial_println!("AFG {} has 0 subnodes — using brute-force widget scan", afg_node);
+            debug_println!("AFG {} has 0 subnodes — using brute-force widget scan", afg_node);
         } else {
-            serial_println!(
+            debug_println!(
                 "AFG {} has {} subnodes starting at {}",
                 afg_node,
                 total_nodes,
@@ -357,67 +591,48 @@ impl IntelHDA {
             );
         }
     
-        for node in 1..=63 {
-            let wtype = unsafe {
-                self.cmd_buf.as_mut().unwrap().cmd12(WidgetAddr(0, node), GetParameter as u32, 0).await
-            };
+        for node in 0..total_nodes {
+            debug_println!("node: {}", node);
+            let nid = start_id + node;
+            self.send_command(0, nid as u32, HdaVerb::GetParameter, NodeParams::AudioWidgetCap.as_u16()).await.expect("Failed to send command");
+            let val = self.receive_response().await.expect("Failed to get response");
+            val.print_response();
+
+            let wtype = (val.get_response() >> 20) & 0xF;
     
-            if wtype == 0 {
-                continue;
-            }
-    
-            let mut w = WidgetInfo::new(node);
-            w.widget_type = wtype.try_into().unwrap();
+            let mut w = WidgetInfo::new(nid);
+            w.widget_type = wtype;
 
-    
-            use core::convert::TryInto; 
+            self.send_command(0, nid as u32, HdaVerb::GetParameter, NodeParams::PinCap.as_u16()).await.expect("Failed to send command");
+            w.pin_caps = self.receive_response().await.expect("Failed to get response").get_response();
 
-            w.pin_caps = unsafe {
-                self.cmd_buf.as_mut().unwrap().cmd12(WidgetAddr(0, node), GetPinCaps as u32, 0).await
-                    .try_into().unwrap()
-            };
+            self.send_command(0, nid as u32, HdaVerb::GetAmpCapabilities, 0).await.expect("Failed to send command");
+            w.amp_in_caps = self.receive_response().await.expect("Failed to get response").get_response();
+            
+            self.send_command(0, nid as u32, HdaVerb::GetAmpOutCaps, 0).await.expect("Failed to send command");
+            w.amp_out_caps = self.receive_response().await.expect("Failed to get response").get_response();
 
-            w.amp_in_caps = unsafe {
-                self.cmd_buf.as_mut().unwrap().cmd12(WidgetAddr(0, node), GetAmpCapabilities as u32, 0).await
-                    .try_into().unwrap()
-            };
+            self.send_command(0, nid as u32, HdaVerb::GetVolumeKnobCaps, 0).await.expect("Failed to send command");
+            w.volume_knob = self.receive_response().await.expect("Failed to get response").get_response();
+            
+            self.send_command(0, nid as u32, HdaVerb::GetConfigDefault, 0).await.expect("Failed to send command");
+            w.config_default = self.receive_response().await.expect("Failed to get response").get_response();
+            
+            self.send_command(0, nid as u32, HdaVerb::GetParameter, NodeParams::ConnectionListLength.as_u16()).await.expect("Failed to send command");
+            let resp_val = self.receive_response().await.expect("Failed to get response").get_response();
 
-            w.amp_out_caps = unsafe {
-                self.cmd_buf.as_mut().unwrap().cmd12(WidgetAddr(0, node), GetAmpOutCaps as u32, 0).await
-                    .try_into().unwrap()
-            };
-
-            w.volume_knob = unsafe {
-                self.cmd_buf.as_mut().unwrap().cmd12(WidgetAddr(0, node), GetVolumeKnobCaps as u32, 0).await
-                    .try_into().unwrap()
-            };
-
-            w.config_default = unsafe {
-                self.cmd_buf.as_mut().unwrap().cmd12(WidgetAddr(0, node), GetConfigDefault as u32, 0).await
-                    .try_into().unwrap()
-            };
-
-            let conn_len: u32 = unsafe {
-                self.cmd_buf
-                    .as_mut()
-                    .unwrap()
-                    .cmd12(WidgetAddr(0, node), GetConnListLen as u32, 0)
-                    .await
-                    .try_into()
-                    .unwrap()
-            };
-            let conn_len = conn_len & 0x7F;
+            let conn_len = (resp_val & 0x7F) as u8;
             
 
     
             for i in 0..conn_len {
-                let conn = unsafe {
-                    self.cmd_buf.as_mut().unwrap().cmd12(WidgetAddr(0, node), GetConnectionListEntry as u32 | ((i as u32) << 8), 0)
-                };
-                w.conn_list.push(conn.await as u8);
+                self.send_command(0, nid as u32, HdaVerb::GetConnectionListEntry, i as u16).await.expect("Failed to send command");
+                let conn = (self.receive_response().await.expect("Failed to get response").get_response() & 0xFF) as u8;
+                
+                w.conn_list.push(conn);
             }
     
-            serial_println!(
+            debug_println!(
                 "Discovered widget: NID={} type=0x{:X}, connections={:?}",
                 w.nid,
                 w.widget_type,
@@ -429,41 +644,41 @@ impl IntelHDA {
     
         let nonzero_widgets: Vec<_> = widgets.iter().filter(|w| w.widget_type != 0).collect();
         if nonzero_widgets.is_empty() {
-            serial_println!("All widgets returned 0 — codec likely not present or not initialized correctly.");
+            debug_println!("All widgets returned 0 — codec likely not present or not initialized correctly.");
         }
     
         widgets
     }
 
-    pub async fn trace_path_to_dac(&mut self, start: u8) -> Option<Vec<u8>> {
-        let mut stack: Vec<(u8, Vec<u8>)> = vec![(start, vec![start])];
+    // pub async fn trace_path_to_dac(&mut self, start: u8) -> Option<Vec<u8>> {
+    //     let mut stack: Vec<(u8, Vec<u8>)> = vec![(start, vec![start])];
     
-        while let Some((node, path)) = stack.pop() {
-            let widget_type = unsafe {
-                self.cmd_buf.as_mut().unwrap().cmd12(WidgetAddr(0, node), GetParameter as u32, 0)
-            };
+    //     while let Some((node, path)) = stack.pop() {
+    //         let widget_type = unsafe {
+    //             self.cmd_buf.as_mut().unwrap().cmd12(WidgetAddr(0, node), GetParameter as u32, 0)
+    //         };
     
-            if widget_type.await & 0xF == 0x0 {
-                return Some(path); // Found DAC
-            }
+    //         if widget_type.await & 0xF == 0x0 {
+    //             return Some(path); // Found DAC
+    //         }
     
-            let conn_len = unsafe {
-                self.cmd_buf.as_mut().unwrap().cmd12(WidgetAddr(0, node), GetConnectionListEntry as u32, 0).await & 0x7F
-            };
+    //         let conn_len = unsafe {
+    //             self.cmd_buf.as_mut().unwrap().cmd12(WidgetAddr(0, node), GetConnectionListEntry as u32, 0).await & 0x7F
+    //         };
     
-            for i in 0..conn_len {
-                let conn_node = unsafe {
-                    self.cmd_buf.as_mut().unwrap().cmd12(WidgetAddr(0, node), GetConnectionListEntry as u32 | ((i as u32) << 8), 0).await
-                } as u8;
+    //         for i in 0..conn_len {
+    //             let conn_node = unsafe {
+    //                 self.cmd_buf.as_mut().unwrap().cmd12(WidgetAddr(0, node), GetConnectionListEntry as u32 | ((i as u32) << 8), 0).await
+    //             } as u8;
     
-                let mut new_path = path.clone();
-                new_path.push(conn_node);
-                stack.push((conn_node, new_path));
-            }
-        }
+    //             let mut new_path = path.clone();
+    //             new_path.push(conn_node);
+    //             stack.push((conn_node, new_path));
+    //         }
+    //     }
     
-        None
-    }
+    //     None
+    // }
     
     
     
@@ -475,18 +690,18 @@ impl IntelHDA {
             let gctl_ptr = MMioPtr((self.regs as *const _ as *const u8).add(offset_of!(HdaRegisters, gctl)) as *mut u32);
             let gctl = gctl_ptr.read();
 
-            serial_println!("GCTL before clearing CRST: 0x{:08X}", gctl_ptr.read());
+            debug_println!("GCTL before clearing CRST: 0x{:X}", gctl_ptr.read());
 
 
             gctl_ptr.write(gctl & !(1 << 0));
             HWRegisterWrite::new(gctl_ptr.as_ptr(), 0x1, 0).await;
 
             let gctl = gctl_ptr.read();
-            serial_println!("GCTL after clearing CRST:  0x{:08X}", gctl);
+            debug_println!("GCTL after clearing CRST:  0x{:X}", gctl);
             
-            gctl_ptr.write(gctl | (1 << 0));        // THIS IS THE CULPRIT <------
-            serial_println!(
-                "GCTL after setting CRST:   0x{:08X}",
+            gctl_ptr.write(gctl | (1 << 0));
+            debug_println!(
+                "GCTL after setting CRST:   0x{:X}",
                  gctl_ptr.read()
             );
 
@@ -494,60 +709,60 @@ impl IntelHDA {
             nanosleep_current_event(500_000).unwrap().await; // wait 0.5 ms
 
 
-            serial_println!("CRST acknowledged by controller");
+            debug_println!("CRST acknowledged by controller");
 
-            // Delay 0.1 ms (can we safely go smaller?)
-            nanosleep_current_event(3_000_000).unwrap().await;
+            // Delay 0.1 ms for codecs to get initialized (can we safely go smaller?)
+            nanosleep_current_event(1_000_000).unwrap().await;
 
 
             let statests_ptr = (self.regs as *const _ as *const u8).add(offset_of!(HdaRegisters, statests)) as *const u16;
             let statests = core::ptr::read_volatile(statests_ptr);
-            serial_println!("STATESTS (chheckking codec presence): 0x{:X}", statests);
+            debug_println!("STATESTS (chheckking codec presence): 0x{:X}", statests);
         }
     }
 
     /// Enables pin widget output (sets EAPD bit in pin control)
-    pub async fn enable_pin(&mut self, node: u8) {
-        let pin_cntl = unsafe {
-            self.cmd_buf.as_mut().unwrap().cmd12(WidgetAddr(0, node), GetPinControl as u32, 0).await
-        } | 0x40; // Set EAPD bit
+    // pub async fn enable_pin(&mut self, node: u8) {
+    //     let pin_cntl = unsafe {
+    //         self.cmd_buf.as_mut().unwrap().cmd12(WidgetAddr(0, node), GetPinControl as u32, 0).await
+    //     } | 0x40; // Set EAPD bit
     
-        unsafe {
-            self.cmd_buf.as_mut().unwrap().cmd12(WidgetAddr(0, node), SetPinControl as u32, (pin_cntl & 0xFF) as u8).await;
-        }
+    //     unsafe {
+    //         self.cmd_buf.as_mut().unwrap().cmd12(WidgetAddr(0, node), SetPinControl as u32, (pin_cntl & 0xFF) as u8).await;
+    //     }
     
-        serial_println!("Pin widget control set for node {}", node);
-    }
+    //     serial_println!("Pin widget control set for node {}", node);
+    // }
     
 
     /// Sets stream/channel for node (verb 0x706)
-    pub async fn set_stream_channel(&mut self, node: u8, channel: u8) {
-        unsafe {
-            self.cmd_buf.as_mut().unwrap().cmd12(WidgetAddr(0, node), SetStreamChannel as u32, channel).await;
-        }
+    // pub async fn set_stream_channel(&mut self, node: u8, channel: u8) {
+    //     unsafe {
+    //         self.cmd_buf.as_mut().unwrap().cmd12(WidgetAddr(0, node), SetStreamChannel as u32, channel).await;
+    //     }
     
-        serial_println!("Stream channel set for node {}", node);
-    }
+    //     serial_println!("Stream channel set for node {}", node);
+    // }
     
 
     /// Sets amplifier gain (extended verb 0x03)
-    pub async fn set_amplifier_gain(&mut self, node: u8, value: u16) {
-        unsafe {
-            self.cmd_buf.as_mut().unwrap().cmd4(WidgetAddr(0, node), SetAmplifierGain as u32, value).await;
-        }
+    // pub async fn set_amplifier_gain(&mut self, node: u8, value: u16) {
+    //     unsafe {
+    //         self.cmd_buf.as_mut().unwrap().cmd4(WidgetAddr(0, node), SetAmplifierGain as u32, value).await;
+    //     }
     
-        serial_println!("Amplifier gain set for node {}", node);
-    }
+    //     serial_println!("Amplifier gain set for node {}", node);
+    // }
     
 
     /// Sets converter format (extended verb 0x02)
-    pub async fn set_converter_format(&mut self, node: u8, fmt: u16) {
-        unsafe {
-            self.cmd_buf.as_mut().unwrap().cmd4(WidgetAddr(0, node), SetConverterFormat as u32, fmt).await;
-        }
+    // pub async fn set_converter_format(&mut self, node: u8, fmt: u16) {
+    //     unsafe {
+    //         self.cmd_buf.as_mut().unwrap().cmd4(WidgetAddr(0, node), SetConverterFormat as u32, fmt).await;
+    //     }
     
-        serial_println!("Converter format set for node {}", node);
-    }
+    //     serial_println!("Converter format set for node {}", node);
+    // }
     
 
     /// Starts audio stream (sets RUN bit in SDxCTL)
@@ -568,8 +783,23 @@ impl IntelHDA {
         }
     }
 
-    /// Simple test that writes data into the DMA buffer and checks LPIB/STS
     pub async fn test_dma_transfer(&mut self) {
+        // turn on the nodes
+        self.send_command(0, 0, HdaVerb::SetPowerState, 0).await.expect("Failed to send command to the CORB");
+        let mut response = self.receive_response().await.expect("Failed to receive response from the RIRB");
+        response.print_response();
+        
+        // do the get param thingy
+        self.send_command(0, 0, HdaVerb::GetParameter, NodeParams::NodeCount.as_u16()).await.expect("Failed to send command to the CORB");
+        response = self.receive_response().await.expect("Failed to receive response from the RIRB");
+        response.print_response();
+
+        let widget_list = self.probe_afg_and_widgets().await;
+        debug_println!("Total widgets discovered: {}", widget_list.len());
+    }
+    
+    /// Simple test that writes data into the DMA buffer and checks LPIB/STS
+    pub async fn old_test_dma_transfer(&mut self) {
         use crate::devices::audio::{
             buffer::{setup_bdl, BdlEntry},
             dma::DmaBuffer,
@@ -709,9 +939,19 @@ impl IntelHDA {
     
         // Dump stream register state
         let sd_base = &self.regs.stream_regs[4] as *const _ as *const u8;
-
+        let real_base = (*HHDM_OFFSET + self.base as u64 + 0x80 + 4 * 0x20).as_u64();
+        debug_println!("real_base: {:X}", real_base);
+        let temp1 = unsafe { read_volatile(real_base as *const u8) };
+        // let temp2 = unsafe { read_volatile((real_base + 1) as *const u8) };
+        let temp3 = unsafe { read_volatile((real_base + 2) as *const u8) };
+        let ctl = (temp1 as u32) | (temp3 as u32) << 16;
+        debug_println!("read ctl: {:X}", ctl);
+        
+        debug_println!("about to read addr: {:X}", sd_base as u64);
         let ctl0 = unsafe { read_volatile(sd_base.add(0x00) as *const u8) };
-        let ctl1 = unsafe { read_volatile(sd_base.add(0x01) as *const u8) };
+        unsafe {debug_println!("about to read addr: {:X}", sd_base.add(0x01) as u64);}
+        let ctl1 = unsafe { read_volatile(sd_base.add(0x01) as *const u8) }; // This read is unnecessary since the second byte of this reg is all rsvd0
+        unsafe {debug_println!("about to read addr: {:X}", sd_base.add(0x02) as u64);}
         let ctl2 = unsafe { read_volatile(sd_base.add(0x02) as *const u8) };
         let ctl_val = (ctl0 as u32) | ((ctl1 as u32) << 8) | ((ctl2 as u32) << 16);
 

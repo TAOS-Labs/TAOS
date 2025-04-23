@@ -12,11 +12,7 @@ use lazy_static::lazy_static;
 use x86_64::{
     instructions::interrupts,
     registers::control::Cr2,
-    structures::{
-        idt::{InterruptDescriptorTable, InterruptStackFrame, PageFaultErrorCode},
-        paging::{OffsetPageTable, Page, PageTable},
-    },
-    VirtAddr,
+    structures::idt::{InterruptDescriptorTable, InterruptStackFrame, PageFaultErrorCode},
 };
 
 use crate::devices::audio::hda::hda_interrupt_handler;

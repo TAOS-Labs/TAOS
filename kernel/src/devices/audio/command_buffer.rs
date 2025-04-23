@@ -1,8 +1,10 @@
 use core::ptr::{read_volatile, write_volatile};
-use crate::{devices::audio::dma::DmaBuffer, events::nanosleep_current_event, memory::HHDM_OFFSET, serial_println};
+use crate::{debug_println, devices::audio::dma::DmaBuffer, events::nanosleep_current_event, serial_println};
+
+use super::commands::{CorbEntry, RirbEntry};
 
 const CORBRUN: u8 = 1 << 1;
-const CORBRPRST: u16 = 1 << 15;
+// const CORBRPRST: u16 = 1 << 15;
 const RIRBDMAEN: u8 = 1 << 1;
 const RINTCTL: u8 = 1 << 0;
 const RIRBWPRST: u16 = 1 << 15;
@@ -11,6 +13,183 @@ const IRV: u16 = 1 << 1;
 
 #[derive(Copy, Clone)]
 pub struct WidgetAddr(pub u8, pub u8);
+
+/// A struct for operating the CORB
+pub struct CorbBuffer {
+    /// The virtual base address of the CORB
+    pub base: u64,
+    /// The physical base address of the CORB
+    pub phys_base: u64,
+    /// The next block to be written to. It is an index
+    pub write_idx: u16,
+    /// The next block to read from, only hear to see when the CORB is full.
+    pub read_idx: u16,
+    /// Then number of entries that are in this CORB
+    pub size: u16,
+}
+
+unsafe impl Send for CorbBuffer {}
+unsafe impl Sync for CorbBuffer {}
+
+impl CorbBuffer {
+    /// Initializes a new CORB
+    /// 
+    /// # Arguments
+    /// * `base`: a DmaBuffer object that points to the memory that the CORB is on
+    /// * `size`: The number of entries that are contained in this CORB
+    /// 
+    /// # Returns
+    /// `self`
+    pub fn new(base: &DmaBuffer, size: u16) -> Self {
+        debug_println!("creating a CORB with {} entries", size);
+        Self {
+            base: base.virt_addr.as_u64(),
+            phys_base: base.phys_addr.as_u64(),
+            write_idx: 0,
+            read_idx: 0,
+            size,
+        }
+    }
+
+    /// Returns the index of the last written command
+    pub fn get_write_idx(&self) -> u16 {
+        self.write_idx
+    }
+
+    /// Returns the index of the last read command from the hardware
+    pub fn get_read_idx(&self) -> u16 {
+        self.read_idx
+    }
+
+    /// Sets the read idx to `idx`
+    pub fn set_read_idx(&mut self, idx: u16) {
+        self.read_idx = idx;
+    }
+
+    /// Checks to see if the CORB is full
+    /// 
+    /// # Returns
+    /// * `true` if `write_idx + 1 == read_idx`
+    /// * `false` otherwise 
+    pub fn is_full(&self) -> bool {
+        let mut next_write = self.write_idx + 1;
+        if next_write == self.size {
+            next_write = 0;
+        }
+        next_write == self.read_idx
+    }
+
+    /// Sends a cmd onto the CORB and increments the write index
+    /// 
+    /// # Arguments
+    /// * `cmd`: the command to be written onto the CORB
+    /// 
+    /// # Safety
+    /// This function preforms a raw pointer write to write the command to the CORB. This function assumes that the CORB is not full.
+    pub async unsafe fn send(&mut self, cmd: CorbEntry) {
+        assert!(!self.is_full());
+        let mut next_write = self.write_idx + 1;
+        if next_write == self.size {
+            next_write = 0;
+        }
+        // debug_println!("next index to write to: {}", next_write);
+
+        let write_address = (self.base + next_write as u64 * 4) as *mut CorbEntry;
+        // debug_println!("the address to write to: 0x{:X}", write_address as u64);
+        write_volatile(write_address, cmd);
+        debug_println!("wrote cmd: 0x{:X}", cmd.get_cmd());
+
+        self.write_idx = next_write;
+        // debug_println!("set the write_idx to {}", self.write_idx);
+    }
+}
+
+/// A struct for operating the RIRB
+pub struct RirbBuffer {
+    /// The virtual base address of the RIRB
+    pub base: u64,
+    /// The physical base address of the RIRB
+    pub phys_base: u64,
+    /// The next block to be written to
+    pub write_idx: u16,
+    /// The next block to read from
+    pub read_idx: u16,
+    /// Then number of entries that are in this RIRB
+    pub size: u16,
+}
+
+unsafe impl Send for RirbBuffer {}
+unsafe impl Sync for RirbBuffer {}
+
+impl RirbBuffer {
+    /// Initializes a new RIRB
+    /// 
+    /// # Arguments
+    /// * `base`: a DmaBuffer object that points to the memory that the RIRB is on
+    /// * `size`: The number of entries that are contained in this RIRB
+    /// 
+    /// # Returns
+    /// `self`
+    pub fn new(base: &DmaBuffer, size: u16) -> Self {
+        debug_println!("creating a RIRB with {} entries", size);
+        Self {
+            base: base.virt_addr.as_u64(),
+            phys_base: base.phys_addr.as_u64(),
+            write_idx: 0,
+            read_idx: 0,
+            size,
+        }
+    }
+
+    /// Returns the current read index
+    pub fn get_read_idx(&self) -> u16 {
+        self.read_idx
+    }
+
+    /// Sets the read index
+    pub fn set_read_idx(&mut self, idx: u16) {
+        self.read_idx = idx;
+    }
+
+    /// sets the index of the last written command
+    pub fn set_write_idx(&mut self, idx: u16) {
+        self.write_idx = idx;
+    }
+
+    /// Checks to see if the RIRB is empty
+    /// 
+    /// # Returns
+    /// * `true` if `write_idx == read_idx`
+    /// * `false` otherwise
+    pub fn is_empty(&self) -> bool {
+        self.write_idx == self.read_idx
+    }
+
+    /// Reads the next response from the RIRB and increments the read index
+    /// 
+    /// # Returns
+    /// Returns the 8 byte response that is on the RIRB
+    /// 
+    /// # Safety
+    /// This function preforms a raw pointer read to read from the RIRB. This function assumes that the RIRB is not empty.
+    pub async unsafe fn read(&mut self) -> RirbEntry {
+        assert!(!self.is_empty());
+        let next_idx = (self.read_idx + 1) % self.size;
+        // debug_println!("next index to read from: {}", next_idx);
+
+        let read_addr = (self.base + (next_idx as u64 * 8)) as *mut RirbEntry;
+        // debug_println!("the address to read from: 0x{:X}", read_addr as u64);
+        let response = read_volatile(read_addr);
+        debug_println!("read response: 0x{:X} and resp_ex: {:X}", response.get_response(), response.get_response_ex());
+
+        self.read_idx = next_idx;
+        // debug_println!("set the read_idx to {}", self.read_idx);
+        response
+    }
+
+
+    
+}
 
 pub struct CommandBuffer {
     pub base: usize,
@@ -137,7 +316,7 @@ impl CommandBuffer {
             serial_println!("Waiting for CORBRPRST to be latched by controller...");
         }
 
-        let mut val = read_volatile(corbrp_ptr);
+        let val = read_volatile(corbrp_ptr);
         serial_println!("CORBRP after write = 0x{:04X}", val);
 
         write_volatile(corbrp_ptr, 0x0000);
