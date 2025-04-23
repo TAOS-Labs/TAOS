@@ -10,6 +10,7 @@ pub const SYSCALL_FORK: u32 = 5;
 pub const SYSCALL_WAIT: u32 = 6;
 pub const SYSCALL_READ: u32 = 0;
 pub const SYSCALL_WRITE: u32 = 1;
+pub const SYSCALL_EXECVE: u32 = 59;
 
 // Mmap
 pub const START_MMAP_ADDRESS: u64 = 0x0900_0000_0000;

@@ -1,10 +1,13 @@
 use core::ffi::CStr;
 
-use alloc::collections::btree_map::BTreeMap;
+use alloc::{collections::btree_map::BTreeMap, vec};
 use lazy_static::lazy_static;
 use pc_keyboard::{DecodedKey, KeyCode, KeyState};
 use spin::Mutex;
-use x86_64::structures::paging::{PhysFrame, Size4KiB};
+use x86_64::{
+    align_up,
+    structures::paging::{PhysFrame, Size4KiB},
+};
 
 use core::{
     future::Future,
@@ -13,20 +16,26 @@ use core::{
 };
 
 use crate::{
-    constants::syscalls::*,
+    constants::{memory::PAGE_SIZE, syscalls::*},
     devices::ps2_dev::keyboard,
     events::{
         current_running_event, current_running_event_info, futures::await_on::AwaitProcess,
-        get_runner_time, yield_now, EventInfo,
+        get_runner_time, schedule_kernel, schedule_process, yield_now, EventInfo,
     },
+    filesys::{get_file, FileSystem, OpenFlags, FILESYSTEM},
     interrupts::x2apic,
     memory::frame_allocator::with_buddy_frame_allocator,
     processes::{
-        process::{sleep_process_int, sleep_process_syscall, ProcessState, PROCESS_TABLE},
+        process::{
+            create_process, sleep_process_int, sleep_process_syscall, ProcessState, PROCESS_TABLE,
+        },
         registers::ForkingRegisters,
     },
     serial_print, serial_println,
-    syscalls::{fork::sys_fork, memorymap::sys_mmap},
+    syscalls::{
+        fork::sys_fork,
+        memorymap::{sys_mmap, MmapFlags, ProtFlags},
+    },
 };
 
 use core::arch::naked_asm;
@@ -190,11 +199,99 @@ pub unsafe extern "C" fn syscall_handler_impl(
             syscall.arg2 as *mut u8,
             syscall.arg3 as usize,
         ),
+        SYSCALL_EXECVE => sys_exec(
+            syscall.arg1 as *mut u8,
+            syscall.arg2 as *mut u8,
+            syscall.arg3 as *mut u8,
+        ),
 
         _ => {
             panic!("Unknown syscall, {}", syscall.number);
         }
     }
+}
+
+pub fn sys_exec(path: *mut u8, argv: *mut u8, envp: *mut u8) -> u64 {
+    if path.is_null() {
+        return u64::MAX;
+    }
+
+    // Find string length by looking for null terminator
+    let mut len = 0;
+    unsafe {
+        while *path.add(len) != 0 {
+            len += 1;
+        }
+    }
+
+    // Convert to string
+    let bytes = unsafe { alloc::slice::from_raw_parts(path, len) };
+    let pathname = match alloc::str::from_utf8(bytes) {
+        Ok(s) => s,
+        Err(_) => return u64::MAX,
+    };
+    serial_println!("PATHNAME: {:#?}", pathname);
+    schedule_kernel(
+        async move {
+            let fs = FILESYSTEM.get().unwrap();
+            let fd = {
+                fs.lock()
+                    .open_file(pathname, OpenFlags::O_RDONLY | OpenFlags::O_WRONLY)
+                    .await
+            };
+            if fd.is_err() {
+                serial_println!("Unknown command");
+                return;
+            }
+            serial_println!("RUNNING EXECUTABLE PLEASE HOLD");
+            // At this point we assume a valid executable
+            // TODO: check if it is actually executable with chmod mode
+            let fd = fd.unwrap();
+            let file = get_file(fd).unwrap();
+            let file_len = {
+                fs.lock()
+                    .filesystem
+                    .lock()
+                    .get_node(&file.lock().pathname)
+                    .await
+                    .unwrap()
+                    .size()
+            };
+            sys_mmap(
+                0x9000,
+                align_up(file_len, PAGE_SIZE as u64),
+                ProtFlags::PROT_EXEC.bits(),
+                MmapFlags::MAP_FILE.bits(),
+                fd as i64,
+                0,
+            );
+
+            serial_println!("Reading file...");
+
+            let mut buffer = vec![0u8; file_len as usize];
+            let bytes_read = {
+                fs.lock()
+                    .read_file(fd, &mut buffer)
+                    .await
+                    .expect("Failed to read file")
+            };
+
+            let buf = &buffer[..bytes_read];
+
+            serial_println!("Bytes read: {:#?}", bytes_read);
+
+            let pid = create_process(buf);
+            schedule_process(pid);
+            let _waiter = AwaitProcess::new(
+                pid,
+                get_runner_time(3_000_000_000),
+                current_running_event().unwrap(),
+            )
+            .await;
+        },
+        3,
+    );
+    0
 }
 
 pub fn sys_read(fd: u32, buf: *mut u8, count: usize) -> u64 {
