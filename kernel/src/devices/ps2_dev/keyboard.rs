@@ -19,7 +19,6 @@ use lazy_static::lazy_static;
 use pc_keyboard::{
     layouts, DecodedKey, Error, HandleControl, KeyCode, KeyState, Keyboard, Modifiers, ScancodeSet2,
 };
-use ps2::flags::ControllerStatusFlags;
 use spin::Mutex;
 
 /// Maximum number of keyboard events to store in the buffer
