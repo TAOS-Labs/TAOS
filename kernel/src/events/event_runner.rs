@@ -20,7 +20,7 @@ use core::{
 
 use crate::{
     constants::events::{NUM_EVENT_PRIORITIES, PRIORITY_INC_DELAY},
-    interrupts::x2apic::nanos_to_ticks,
+    interrupts::x2apic::nanos_to_ticks, serial_println,
 };
 use spin::Mutex;
 
@@ -240,6 +240,7 @@ impl EventRunner {
 
         if sleeper.is_some() {
             let future = sleeper.unwrap();
+            serial_println!("Awaken");
             if future.target_timestamp <= self.system_clock {
                 future.awake();
                 self.blocked_events.write().remove(&future.get_id());

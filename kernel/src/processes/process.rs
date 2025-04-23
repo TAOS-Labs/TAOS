@@ -191,6 +191,7 @@ pub fn create_placeholder_process() -> u32 {
 
 pub fn create_process(elf_bytes: &[u8]) -> u32 {
     let pid = NEXT_PID.fetch_add(1, Ordering::SeqCst);
+
     with_buddy_frame_allocator(|alloc| {
         alloc.print_free_frames();
     });
@@ -380,7 +381,18 @@ pub async unsafe fn run_process_ring3(pid: u32) {
     let reentry_rip = (*process).kernel_rip;
 
     if (*process).state == ProcessState::Blocked {
-        todo!();
+        // TODO don't simply yield, but block without polling
+        serial_println!("Blocking");
+        yield_now().await;
+        // TODO return back to block_on via return_process (kernel_rip, reentry rsp)
+        core::arch::asm!(
+            "mov rsp, {0}",
+            "push {1}",
+            "swapgs",
+            "ret",
+            in(reg) reentry_rsp,
+            in(reg) reentry_rip,
+        );
     } else if (*process).state == ProcessState::Ready {
         yield_now().await;
         // TODO return back to block_on via return_process (kernel_rip, reentry rsp)

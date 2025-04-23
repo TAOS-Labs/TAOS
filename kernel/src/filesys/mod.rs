@@ -522,7 +522,6 @@ impl FileSystem for Ext2Wrapper {
                     temp
                 }
             };
-
             unsafe {
                 let page_ptr = virt.as_ptr::<u8>().add(page_offset_in_buf);
                 let dst_ptr = buf.as_mut_ptr().add(total_read);

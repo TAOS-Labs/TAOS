@@ -20,8 +20,7 @@ use core::{
 use crate::{
     constants::syscalls::*,
     events::{
-        current_running_event, current_running_event_info, futures::await_on::AwaitProcess,
-        get_runner_time, nanosleep_current_event, EventInfo,
+        current_running_event, current_running_event_info, futures::await_on::AwaitProcess, get_runner_time, nanosleep_current_event, yield_now, EventInfo
     },
     filesys::syscalls::{sys_creat, sys_open},
     interrupts::x2apic::{send_eoi, X2APIC_IA32_FS_BASE, X2APIC_IA32_GSBASE},
@@ -181,13 +180,16 @@ pub unsafe extern "C" fn syscall_handler_impl(
     let syscall = unsafe { &*syscall };
     let reg_vals = unsafe { &*reg_vals };
 
+    crate::debug!("SYS {}", syscall.number);
+
     match syscall.number as u32 {
         SYSCALL_EXIT => {
             sys_exit(syscall.arg1 as i64, reg_vals);
             unreachable!("sys_exit does not return");
         }
         SYSCALL_PRINT => sys_print(syscall.arg1 as *const u8),
-        SYSCALL_NANOSLEEP => sys_nanosleep_64(syscall.arg1, reg_vals),
+        // SYSCALL_NANOSLEEP => sys_nanosleep_64(syscall.arg1, reg_vals),
+        SYSCALL_NANOSLEEP => block_on(sys_nanosleep(syscall.arg1)),
         // Filesystem syscalls
         SYSCALL_OPEN => block_on(sys_open(
             ConstUserPtr::from(syscall.arg1),
@@ -208,6 +210,7 @@ pub unsafe extern "C" fn syscall_handler_impl(
             syscall.arg6,
         ),
         SYSCALL_WAIT => block_on(sys_wait(syscall.arg1 as u32)),
+        SYSCALL_SCHED_YIELD => block_on(sys_sched_yield()),
         SYSCALL_MUNMAP => sys_munmap(syscall.arg1, syscall.arg2),
         SYSCALL_MPROTECT => sys_mprotect(syscall.arg1, syscall.arg2, syscall.arg3),
         SYSCALL_GETEUID => sys_geteuid(),
@@ -304,7 +307,7 @@ pub fn sys_nanosleep_64(nanos: u64, reg_vals: &ForkingRegisters) -> u64 {
 
 pub async fn sys_nanosleep(nanos: u64) -> u64 {
     nanosleep_current_event(nanos).unwrap().await;
-
+    
     0
 }
 
@@ -318,6 +321,12 @@ pub async fn sys_wait(pid: u32) -> u64 {
     .await;
 
     return *(EXIT_CODES.lock().get(&pid).unwrap()) as u64;
+}
+
+pub async fn sys_sched_yield() -> u64 {
+    yield_now().await;
+
+    0
 }
 
 fn anoop_raw_waker() -> RawWaker {

@@ -13,6 +13,8 @@ pub const SYSCALL_CLOSE: u32 = 3;
 
 pub const SYSCALL_ACCESS: u32 = 21;
 
+pub const SYSCALL_SCHED_YIELD: u32 = 24;
+
 pub const SYSCALL_CREAT: u32 = 85;
 
 pub const SYSCALL_FUTEX: u32 = 202;

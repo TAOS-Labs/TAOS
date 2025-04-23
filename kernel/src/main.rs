@@ -7,7 +7,7 @@
 #![reexport_test_harness_main = "test_main"]
 
 use limine::request::{RequestsEndMarker, RequestsStartMarker};
-use taos::{constants::processes::TEST_PRINT_EXIT, debug, events::{run_loop, schedule_process}, processes::process::create_process};
+use taos::{debug, events::run_loop};
 
 extern crate alloc;
 
@@ -36,9 +36,6 @@ extern "C" fn _start() -> ! {
     test_main();
 
     debug!("BSP entering event loop");
-
-    let pid = create_process(TEST_PRINT_EXIT);
-    schedule_process(pid);
 
     unsafe { run_loop(bsp_id) }
 }
