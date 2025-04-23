@@ -9,16 +9,18 @@ pub enum HdaVerb {
     GetPowerState = 0xF05,
     SetPowerState = 0x705,
     GetPinControl = 0xF07,
+    GetEAPDBTLEnable = 0xF0C,
+    SetEAPDBTLEnable = 0x70C,
     SetPinControl = 0x707,
-    GetConfigDefault = 0x1C,
-    GetAmpCapabilities = 0x0D,
-    GetAmpOutCaps = 0x12,
+    GetConfigDefault = 0xF1C,
     GetVolumeKnobCaps = 0x13,
     SetConverterFormat = 0x02,
     SetAmplifierGain = 0x03,
     SetStreamChannel = 0x706,
     SetDacEnable = 0x701,
     KickStart = 0xF81,
+    GetBeepGen = 0xF0A,
+    SetBeepGen = 0x70A,
 }
 
 impl HdaVerb {
@@ -86,7 +88,7 @@ impl CorbEntry {
         let command_num = command.as_u32();
         let cmd_lo: u32;
         if command_num == HdaVerb::SetAmplifierGain.as_u32() || command_num == HdaVerb::SetConverterFormat.as_u32() {
-            debug_println!("cmd4");
+            // debug_println!("cmd4");
             cmd_lo = (command_num << 16) | (data as u32 & 0xFFFF);
         } else {
             // debug_println!("cmd12");

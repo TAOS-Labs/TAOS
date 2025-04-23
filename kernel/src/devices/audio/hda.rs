@@ -1,5 +1,5 @@
 use crate::{
-    debug_println, devices::{audio::{command_buffer::RirbBuffer, commands::{CorbEntry, HdaVerb, NodeParams}}, pci::{read_config, walk_pci_bus, DeviceInfo}}, events::{futures::devices::HWRegisterWrite, nanosleep_current_event}, interrupts::x2apic, memory::HHDM_OFFSET, processes::process::sleep_process_int, serial_print, serial_println
+    debug_print, debug_println, devices::{audio::{buffer::{setup_bdl, BdlEntry}, command_buffer::RirbBuffer, commands::{CorbEntry, HdaVerb, NodeParams}}, pci::{read_config, walk_pci_bus, DeviceInfo}}, events::{futures::devices::HWRegisterWrite, nanosleep_current_event}, filesys::ext2::cache, interrupts::x2apic, memory::HHDM_OFFSET, processes::process::sleep_process_int, serial_print, serial_println
 };
 
 use crate::devices::{
@@ -614,14 +614,17 @@ impl IntelHDA {
     
             let mut w = WidgetInfo::new(nid);
             w.widget_type = wtype;
+
+            self.send_command(0, nid as u32, HdaVerb::GetParameter, NodeParams::NodeCount.as_u16()).await.expect("nope");
+            w.node_count = self.receive_response().await.expect("failed to get node count").get_response();
     
             self.send_command(0, nid as u32, HdaVerb::GetParameter, NodeParams::PinCap.as_u16()).await.expect("Failed to send GetParameter PinCap");
             w.pin_caps = self.receive_response().await.expect("Failed to receive PinCap").get_response();
     
-            self.send_command(0, nid as u32, HdaVerb::GetAmpCapabilities, 0).await.expect("Failed to send GetAmpCapabilities");
+            self.send_command(0, nid as u32, HdaVerb::GetParameter, NodeParams::InputAmplifierCap.as_u16()).await.expect("Failed to send GetAmpCapabilities");
             w.amp_in_caps = self.receive_response().await.expect("Failed to receive GetAmpCapabilities").get_response();
     
-            self.send_command(0, nid as u32, HdaVerb::GetAmpOutCaps, 0).await.expect("Failed to send GetAmpOutCaps");
+            self.send_command(0, nid as u32, HdaVerb::GetParameter, NodeParams::OutputAmplifierCap.as_u16()).await.expect("Failed to send GetAmpOutCaps");
             w.amp_out_caps = self.receive_response().await.expect("Failed to receive GetAmpOutCaps").get_response();
     
             self.send_command(0, nid as u32, HdaVerb::GetVolumeKnobCaps, 0).await.expect("Failed to send GetVolumeKnobCaps");
@@ -643,10 +646,11 @@ impl IntelHDA {
             }
     
             debug_println!(
-                "Discovered widget: NID={} type=0x{:X}, connections={:?}",
+                "Discovered widget: NID={} type=0x{:X}, connections={:?}, node_count=0x{:X}",
                 w.nid,
                 w.widget_type,
-                w.conn_list
+                w.conn_list,
+                w.node_count
             );
     
             widgets.push(w);
@@ -693,12 +697,6 @@ impl IntelHDA {
         debug_println!("trace: no path to DAC found");
         None
     }
-    
-    
-    
-    
-    
-    
         
     /// Resets the controller using GCTL register:
     /// - Clears and sets CRST bit (bit 0)
@@ -839,16 +837,131 @@ impl IntelHDA {
             let mut pin_ctrl = self.receive_response().await.expect("No response to GetPinControl").get_response();
         
             // Enable output and EAPD by setting bbbits 6 and 7 (0xC0)
+            // Idk if this actually does anything, it does not look like qemu actually changes any values?
             pin_ctrl |= 0xC0;
             self.send_command(0, pin_node as u32, HdaVerb::SetPinControl, (pin_ctrl & 0xFF) as u16).await.expect("Failed to send SetPinControl");
             self.receive_response().await.expect("No response to SetPinControl");
-        
+
+            // self.send_command(0, pin_node as u32, HdaVerb::GetEAPDBTLEnable, 0).await.expect("failed");
+            // let temp = self.receive_response().await.expect("no response to geteapdbtl cmd");
+            // temp.print_response();
+
             debug_println!("Playback path [Pin {} → DAC {}] configured successfully.", pin_node, dac_node);
         } else {
             debug_println!("Could not trace a valid path from pin to DAC.");
         }
         
-        
+        // create BDL stuff
+        debug_println!("starting to alloc BDL");
+        let audio_buf = DmaBuffer::new(64 * 1024).expect("Failed to allocate audio buffer");
+        let bdl_buf = DmaBuffer::new(core::mem::size_of::<BdlEntry>() * 32).expect("Failed BDL");
+        assert_eq!(bdl_buf.phys_addr.as_u64() % 128, 0, "BDL not 128-byte aligned");
+    
+        for i in 0..audio_buf.size {
+            unsafe {
+                *audio_buf.virt_addr.as_mut_ptr::<u8>().add(i) =
+                    if i % 2 == 0 { 0x00 } else { 0xFF };
+            }
+        }
+
+        let bdl_ptr = bdl_buf.as_ptr::<BdlEntry>();
+        let num_entries = setup_bdl(
+            bdl_ptr,
+            audio_buf.phys_addr.as_u64(),
+            audio_buf.size as u32,
+            0x1000,
+        );
+    
+        debug_println!("setup_bdl returned {} entries", num_entries);
+        debug_println!("Raw BDL memory:");
+        for i in 0..(num_entries * 16) {
+            let byte = unsafe { *(bdl_buf.virt_addr.as_ptr::<u8>().add(i)) };
+            debug_print!("{:02X} ", byte);
+            if i % 16 == 15 {
+                debug_println!();
+            }
+        }
+
+        // Flush cache to ensure BDL/Audio in RAM for DMA
+        unsafe { core::arch::asm!("wbinvd"); }
+
+        for i in 0..16 {
+            let b = unsafe { *(audio_buf.virt_addr.as_u64() as *const u8).add(i) };
+            debug_println!("Audio buf[{}] = {:02X}", i, b);
+        }
+
+        // begin configuring stream desc
+        let stream_base = self.virt_base + 0x80 + 4 * 0x20;
+        // first make sure that the stream is stopped and then reset it
+        let ctl0_addr = stream_base as *mut u8;
+        let mut ctl0_val = unsafe { read_volatile(ctl0_addr) };
+        unsafe {
+            write_volatile(ctl0_addr, ctl0_val & !(1 << 1));
+            ctl0_val = read_volatile(ctl0_addr);
+            write_volatile(ctl0_addr, ctl0_val | 1);
+            ctl0_val = read_volatile(ctl0_addr);
+        }
+
+        // wait for hw to ack
+        while ctl0_val & 1 != 1 {
+            ctl0_val = unsafe {
+                read_volatile(ctl0_addr)
+            };
+        }
+        // now clear SRST
+        unsafe {
+            write_volatile(ctl0_addr, ctl0_val & !1);
+            ctl0_val = read_volatile(ctl0_addr);
+        }
+        while ctl0_val & 1 != 0 {
+            ctl0_val = unsafe {
+                read_volatile(ctl0_addr)
+            };
+        }
+
+        // now lets congifure the fmt reg
+        let fmt_addr = (stream_base + 0x12) as *mut u16;
+        let fmt_write = 0x4011;
+        let fmt_val: u16;
+        unsafe {
+            write_volatile(fmt_addr, fmt_write);
+            fmt_val = read_volatile(fmt_addr);
+        }
+        debug_println!("fmt_val: {:X}", fmt_val);
+
+        // write bdl address
+        let bdladr_addr = (stream_base + 0x18) as *mut u64;
+        let bdladr_val: u64;
+        unsafe {
+            write_volatile(bdladr_addr, bdl_buf.phys_addr.as_u64());
+            bdladr_val = read_volatile(bdladr_addr);
+        }
+        debug_println!("address: {:X}", bdladr_val);
+
+        let cbl_addr = (stream_base + 0x8) as *mut u32;
+        let cbl_val: u32;
+        unsafe {
+            write_volatile(cbl_addr, audio_buf.size as u32);
+            cbl_val = read_volatile(cbl_addr);
+        }
+        debug_println!("cbl: {:X}", cbl_val);
+
+        // write the LVI
+        let lvi_addr = (stream_base + 0xC) as *mut u16;
+        unsafe {write_volatile(lvi_addr, num_entries as u16 - 1);}
+
+        let ctl2_addr = (stream_base + 2) as *mut u8;
+        unsafe {write_volatile(ctl2_addr, 1);}
+        let ctl2_val = unsafe {read_volatile(ctl2_addr)};
+        debug_println!("ctl2: {:X}", ctl2_val);
+
+        // now set the run bit and hope that the thing works (gonna set some interrupt bits as well)
+        unsafe {
+            write_volatile(ctl0_addr, 0x6);
+        }
+        unsafe{
+            debug_println!("lpib: {}", read_volatile((stream_base + 0x4) as *const u32));
+        }
     }
     
     /// Simple test that writes data into the DMA buffer and checks LPIB/STS
