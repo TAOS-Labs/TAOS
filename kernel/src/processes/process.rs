@@ -24,7 +24,7 @@ use crate::{
     processes::{loader::load_elf, registers::Registers},
     serial_println,
 };
-use alloc::{collections::BTreeMap, sync::Arc};
+use alloc::{collections::BTreeMap, string::String, sync::Arc, vec::Vec};
 use core::{
     arch::naked_asm,
     borrow::BorrowMut,
@@ -192,7 +192,7 @@ pub fn create_placeholder_process() -> u32 {
     pid
 }
 
-pub fn create_process(elf_bytes: &[u8]) -> u32 {
+pub fn create_process(elf_bytes: &[u8], args: Vec<String>, envs: Vec<String>) -> u32 {
     let pid = NEXT_PID.fetch_add(1, Ordering::SeqCst);
     with_buddy_frame_allocator(|alloc| {
         alloc.print_free_frames();
@@ -211,6 +211,8 @@ pub fn create_process(elf_bytes: &[u8]) -> u32 {
         &mut mapper,
         &mut KERNEL_MAPPER.lock(),
         mm.borrow_mut(),
+        args,
+        envs,
     );
 
     let process = Arc::new(UnsafePCB::new(PCB {
@@ -706,5 +708,94 @@ pub fn sleep_process_syscall(nanos: u64, reg_vals: &ForkingRegisters) {
         x2apic::send_eoi();
 
         core::arch::asm!("swapgs", "ret");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::{
+        constants::processes::PRINT_EXIT,
+        memory::{mm::Mm, HHDM_OFFSET},
+        processes::loader::load_elf,
+    };
+
+    use super::*;
+    use core::slice;
+    use x86_64::{
+        structures::paging::{OffsetPageTable, PageTable, PhysFrame},
+        PhysAddr,
+    };
+
+    #[test_case]
+    async fn verify_stack_args_envs() {
+        // ------ setup exactly as before ------
+        let mut user_mapper = unsafe {
+            let pml4 = create_process_page_table();
+            let virt = *HHDM_OFFSET + pml4.start_address().as_u64();
+            let ptr = virt.as_mut_ptr::<PageTable>();
+            OffsetPageTable::new(&mut *ptr, *HHDM_OFFSET)
+        };
+        let args = alloc::vec!["foo".into(), "bar".into()];
+        let envs = alloc::vec!["X=1".into(), "Y=two".into()];
+        let pml4_frame = PhysFrame::containing_address(PhysAddr::new(0x1000));
+        let mut mm = Mm::new(pml4_frame);
+
+        // call loader: `sp` is the address of the u64 slot containing `argc`
+        let (sp, _entry) = load_elf(
+            PRINT_EXIT,
+            &mut user_mapper,
+            &mut KERNEL_MAPPER.lock(),
+            &mut mm,
+            args.clone(),
+            envs.clone(),
+        );
+
+        // total u64 slots we pushed: envs + NULL, args + NULL, argc
+        let nen = envs.len() as u64;
+        let nar = args.len() as u64;
+        let total_slots = nen + nar + 3;
+
+        // ---- 1) verify argc ----
+        // `sp` points at argc, so just read it
+        let got_argc = unsafe { (sp.as_u64() as *const u64).read() };
+        assert_eq!(got_argc, nar, "argc mismatch");
+
+        // ---- 2) verify argv pointers & strings ----
+        // argv[] starts immediately *below* the argc slot:
+        // offset = sp - 8 * (args.len() + 1)
+        let argv0_ptr = (sp.as_u64() - 8 * (nar + 1)) as *const u64;
+        for i in 0..(nar as usize) {
+            // read argv[i]
+            let str_addr = unsafe { argv0_ptr.add(i).read() as *const u8 };
+            // walk until NUL
+            let mut len = 0;
+            while unsafe { *str_addr.add(len) } != 0 {
+                len += 1;
+            }
+            let got = core::str::from_utf8(unsafe { slice::from_raw_parts(str_addr, len) })
+                .expect("Invalid UTF-8 in argv");
+            serial_println!("GOT: {:#?}", got);
+            assert_eq!(got, &args[i], "argv[{}] mismatch", i);
+        }
+
+        // ---- 3) verify envp pointers & strings ----
+        // envp[] sits *below* argv array + its NULL terminator:
+        // offset = sp - 8 * (nar + 1) - 8 * (nen + 1)
+        let envp0_ptr = (
+            sp.as_u64()
+            - 8 * (nar + 1)       // skip argv + NULL
+            - 8 * (nen + 1)
+            // skip envp + NULL
+        ) as *const u64;
+        for i in 0..(nen as usize) {
+            let str_addr = unsafe { envp0_ptr.add(i).read() as *const u8 };
+            let mut len = 0;
+            while unsafe { *str_addr.add(len) } != 0 {
+                len += 1;
+            }
+            let got = core::str::from_utf8(unsafe { slice::from_raw_parts(str_addr, len) })
+                .expect("Invalid UTF-8 in envp");
+            assert_eq!(got, &envs[i], "envp[{}] mismatch", i);
+        }
     }
 }

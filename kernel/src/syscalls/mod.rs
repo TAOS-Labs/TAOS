@@ -4,6 +4,7 @@ pub mod syscall_handlers;
 
 #[cfg(test)]
 mod tests {
+    use alloc::vec::Vec;
     use syscall_handlers::EXIT_CODES;
 
     use crate::{
@@ -20,7 +21,7 @@ mod tests {
     /// The binary exits with code 0 immediately
     #[test_case]
     async fn test_exit_code() {
-        let pid = create_process(TEST_EXIT_CODE);
+        let pid = create_process(TEST_EXIT_CODE, Vec::new(), Vec::new());
         schedule_process(pid);
 
         let waiter = AwaitProcess::new(
@@ -39,7 +40,7 @@ mod tests {
     /// content is correct
     #[test_case]
     async fn test_print_exit() {
-        let pid = create_process(TEST_PRINT_EXIT);
+        let pid = create_process(TEST_PRINT_EXIT, Vec::new(), Vec::new());
         schedule_process(pid);
 
         let waiter = AwaitProcess::new(
@@ -61,7 +62,7 @@ mod tests {
     /// from waiting
     #[test_case]
     async fn test_fork_wait() {
-        let pid = create_process(TEST_WAIT);
+        let pid = create_process(TEST_WAIT, Vec::new(), Vec::new());
         schedule_process(pid);
 
         let waiter = AwaitProcess::new(
@@ -83,7 +84,7 @@ mod tests {
     /// Currently, requires manual verification of buffer
     #[test_case]
     async fn test_fork_cow() {
-        let pid = create_process(TEST_FORK_COW);
+        let pid = create_process(TEST_FORK_COW, Vec::new(), Vec::new());
         schedule_process(pid);
 
         let waiter = AwaitProcess::new(

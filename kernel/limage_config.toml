@@ -54,6 +54,5 @@ success_exit_code = 33
 no_reboot = true
 extra_args = [
     "-device", "isa-debug-exit,iobase=0xf4,iosize=0x04",
-    "-serial", "stdio",
     "-display", "none"
 ]

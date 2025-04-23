@@ -331,7 +331,7 @@ pub unsafe fn sys_exec(path: *mut u8, argv: *mut *mut u8, envp: *mut *mut u8) ->
 
             serial_println!("Bytes read: {:#?}", bytes_read);
 
-            let pid = create_process(buf);
+            let pid = create_process(buf, args, envs);
             schedule_process(pid);
             let _waiter = AwaitProcess::new(
                 pid,

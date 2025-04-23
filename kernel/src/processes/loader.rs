@@ -9,7 +9,7 @@ use crate::{
         paging::{create_mapping, create_mapping_to_frame, update_permissions},
     },
 };
-use alloc::sync::Arc;
+use alloc::{string::String, sync::Arc, vec::Vec};
 use core::ptr::{copy_nonoverlapping, write_bytes};
 use goblin::{
     elf::Elf,
@@ -40,6 +40,8 @@ pub fn load_elf(
     user_mapper: &mut impl Mapper<Size4KiB>,
     kernel_mapper: &mut OffsetPageTable<'static>,
     mm: &mut Mm,
+    args: Vec<String>,
+    envs: Vec<String>,
 ) -> (VirtAddr, u64) {
     let elf = Elf::parse(elf_bytes).expect("Parsing ELF failed");
     for ph in elf.program_headers.iter() {
@@ -167,31 +169,66 @@ pub fn load_elf(
         );
     });
 
-    let stack_ptr = stack_end;
-    let mut write_ptr = stack_ptr;
+    // 1) Start at top of stack
+    let mut sp = stack_end;
+    // 2) Align down to 16 bytes
+    sp = VirtAddr::new(sp.as_u64() & !0xF);
 
-    write_ptr = VirtAddr::new((write_ptr.as_u64() + 0xF) & !0xF);
-
-    // argc
-    unsafe {
-        let ptr = write_ptr.as_mut_ptr::<u64>();
-        ptr.write(0);
+    // 3) Reserve space for the argument strings
+    let mut arg_ptrs = Vec::with_capacity(args.len());
+    for s in args.into_iter().rev() {
+        let bytes = s.into_bytes();
+        let len = bytes.len() + 1; // +1 for '\0'
+        sp = VirtAddr::new(sp.as_u64() + len as u64);
+        unsafe {
+            let dst = sp.as_mut_ptr::<u8>();
+            core::ptr::copy_nonoverlapping(bytes.as_ptr(), dst, bytes.len());
+            dst.add(bytes.len()).write(0);
+        }
+        arg_ptrs.push(sp.as_u64());
     }
-    write_ptr += core::mem::size_of::<u64>() as u64;
+    // iterating in reverse so unreverse it
+    arg_ptrs.reverse();
 
-    // argv
-    unsafe {
-        let ptr = write_ptr.as_mut_ptr::<u64>();
-        ptr.write(0);
+    // 4) Same for env strings
+    let mut env_ptrs = Vec::with_capacity(envs.len());
+    for s in envs.into_iter().rev() {
+        let bytes = s.into_bytes();
+        let len = bytes.len() + 1;
+        sp = VirtAddr::new(sp.as_u64() + len as u64);
+        unsafe {
+            let dst = sp.as_mut_ptr::<u8>();
+            core::ptr::copy_nonoverlapping(bytes.as_ptr(), dst, bytes.len());
+            dst.add(bytes.len()).write(0);
+        }
+        env_ptrs.push(sp.as_u64());
     }
-    write_ptr += core::mem::size_of::<u64>() as u64;
+    env_ptrs.reverse();
 
-    // envp (environment variables)
-    unsafe {
-        let ptr = write_ptr.as_mut_ptr::<u64>();
-        ptr.write(0);
+    // 5) Align down again before pushing pointer arrays
+    sp = VirtAddr::new(sp.as_u64() & !0xF);
+
+    // 6) Push envp pointers (NULL-terminated)
+    for &ptr in env_ptrs.iter().chain(core::iter::once(&0u64)) {
+        unsafe {
+            sp.as_mut_ptr::<u64>().write(ptr);
+        }
+        sp = VirtAddr::new(sp.as_u64() + 8);
     }
-    write_ptr += core::mem::size_of::<u64>() as u64;
 
-    (stack_ptr, elf.header.e_entry)
+    // 7) Push argv pointers (NULL-terminated)
+    for &ptr in arg_ptrs.iter().chain(core::iter::once(&0u64)) {
+        unsafe {
+            sp.as_mut_ptr::<u64>().write(ptr);
+        }
+        sp = VirtAddr::new(sp.as_u64() + 8);
+    }
+
+    // 8) Finally push argc
+    let argc = arg_ptrs.len() as u64;
+    unsafe {
+        sp.as_mut_ptr::<u64>().write(argc);
+    }
+
+    (sp, elf.header.e_entry)
 }

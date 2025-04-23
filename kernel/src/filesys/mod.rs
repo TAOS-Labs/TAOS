@@ -787,7 +787,8 @@ mod tests {
         {
             let meta = user_fs.metadata(fd).await.unwrap();
             assert_eq!(meta.pathname, "./temp/meta.txt");
-            assert_eq!(meta.fd, 0);
+            // 0 and 1 are stdin/out
+            assert_eq!(meta.fd, 2);
             assert_eq!(meta.flags, OpenFlags::O_WRONLY | OpenFlags::O_CREAT);
         }
 

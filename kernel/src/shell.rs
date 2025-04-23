@@ -97,7 +97,6 @@ impl Shell {
     }
 
     async fn execute_command(&mut self) {
-        // copy command into an owned String
         let cmd_owned = {
             let slice = &self.buffer[..self.position];
             String::from_utf8_lossy(slice).to_string()
@@ -170,7 +169,7 @@ impl Shell {
             }
 
             t if t.starts_with("export ") => {
-                // support: export KEY=VAL
+                // export KEY=VAL
                 if let Some(rest) = t.strip_prefix("export ") {
                     if let Some((k, v)) = rest.split_once('=') {
                         let pair = format(format_args!("{}={}", k, v));
@@ -180,7 +179,7 @@ impl Shell {
             }
 
             t if t.starts_with('/') => {
-                // build argv[] in-place
+                // build argv[]
                 const MAX_ARGS: usize = 16;
                 let mut argv: [*mut u8; MAX_ARGS + 1] = [core::ptr::null_mut(); MAX_ARGS + 1];
                 let mut argc = 0;
