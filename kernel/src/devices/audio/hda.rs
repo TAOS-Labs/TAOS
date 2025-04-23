@@ -7,13 +7,14 @@ use crate::devices::{
     mmio::MMioPtr,
 };
 use core::{ mem::offset_of, ptr::{read_volatile, write_volatile}};
+use alloc::vec;
 use alloc::vec::Vec;
-use goblin::elf::reloc::R_AARCH64_TLSLE_LDST8_TPREL_LO12;
-use x86_64::structures::idt::InterruptStackFrame;
-use crate::devices::audio::command_buffer::{CommandBuffer, WidgetAddr};
-use crate::devices::audio::dma::DmaBuffer;
-use crate::devices::audio::commands::HdaVerb::*;
+use alloc::vec::*;
 
+// use goblin::elf::reloc::R_AARCH64_TLSLE_LDST8_TPREL_LO12;
+use x86_64::structures::idt::InterruptStackFrame;
+// use crate::devices::audio::command_buffer::{CommandBuffer, WidgetAddr};
+use crate::devices::audio::dma::DmaBuffer;
 
 
 use super::{command_buffer::CorbBuffer, commands::RirbEntry, widget_info::WidgetInfo};
@@ -542,20 +543,26 @@ impl IntelHDA {
     pub async fn probe_afg_and_widgets(&mut self) -> Vec<WidgetInfo> {
         debug_println!("probing afg and widgets");
         let mut widgets = Vec::new();
-        
-        self.send_command(0, 0, HdaVerb::GetParameter, NodeParams::NodeCount.as_u16()).await.expect("Failed to send command");
-        
-        let fg_count_raw = self.receive_response().await.expect("Failed").get_response();
-        
+    
+        self.send_command(0, 0, HdaVerb::GetParameter, NodeParams::NodeCount.as_u16())
+            .await.expect("Failed to send GetParameter NodeCount");
+    
+        let fg_count_raw = self.receive_response().await
+            .expect("Failed to receive NodeCount response")
+            .get_response();
+    
         let fg_count = fg_count_raw & 0xFF;
         debug_println!("Function group count: {}", fg_count);
     
         let mut afg_nid = None;
         for i in 1..=fg_count {
-            self.send_command(0, i, HdaVerb::GetParameter, NodeParams::FunctionGroupType.as_u16()).await.expect("failed to sendd command");
-
-            let group_type = self.receive_response().await.expect("Failed to get the response").get_response();
-                
+            self.send_command(0, i, HdaVerb::GetParameter, NodeParams::FunctionGroupType.as_u16())
+                .await.expect("Failed to send GetParameter FunctionGroupType");
+    
+            let group_type = self.receive_response().await
+                .expect("Failed to receive FunctionGroupType response")
+                .get_response();
+    
             debug_println!("Func group node {} type: 0x{:X}", i, group_type);
     
             if (group_type & 0xF) == 0x01 {
@@ -572,11 +579,14 @@ impl IntelHDA {
             }
         };
         debug_println!("AFG found at node {}", afg_node);
-
-        debug_println!("---------------------------here-------------------------------------");
-        self.send_command(0, afg_node as u32, HdaVerb::GetParameter, NodeParams::NodeCount.as_u16()).await.expect("Failed to send command");
-        let list_length = self.receive_response().await.expect("Failed to receive response");
+    
+        self.send_command(0, afg_node as u32, HdaVerb::GetParameter, NodeParams::NodeCount.as_u16())
+            .await.expect("Failed to send GetParameter NodeCount for AFG");
+    
+        let list_length = self.receive_response().await
+            .expect("Failed to receive NodeCount for AFG");
         list_length.print_response();
+    
         let total_nodes = (list_length.get_response() & 0xFF) as u8;
         let start_id = ((list_length.get_response() >> 16) & 0xFF) as u8;
     
@@ -592,43 +602,43 @@ impl IntelHDA {
         }
     
         for node in 0..total_nodes {
-            debug_println!("node: {}", node);
             let nid = start_id + node;
-            self.send_command(0, nid as u32, HdaVerb::GetParameter, NodeParams::AudioWidgetCap.as_u16()).await.expect("Failed to send command");
-            let val = self.receive_response().await.expect("Failed to get response");
+            debug_println!("node: {}", nid);
+    
+            self.send_command(0, nid as u32, HdaVerb::GetParameter, NodeParams::AudioWidgetCap.as_u16()).await.expect("Failed to send GetParameter AudioWidgetCap");
+    
+            let val = self.receive_response().await.expect("Failed to receive AudioWidgetCap");
             val.print_response();
-
+    
             let wtype = (val.get_response() >> 20) & 0xF;
     
             let mut w = WidgetInfo::new(nid);
             w.widget_type = wtype;
-
-            self.send_command(0, nid as u32, HdaVerb::GetParameter, NodeParams::PinCap.as_u16()).await.expect("Failed to send command");
-            w.pin_caps = self.receive_response().await.expect("Failed to get response").get_response();
-
-            self.send_command(0, nid as u32, HdaVerb::GetAmpCapabilities, 0).await.expect("Failed to send command");
-            w.amp_in_caps = self.receive_response().await.expect("Failed to get response").get_response();
-            
-            self.send_command(0, nid as u32, HdaVerb::GetAmpOutCaps, 0).await.expect("Failed to send command");
-            w.amp_out_caps = self.receive_response().await.expect("Failed to get response").get_response();
-
-            self.send_command(0, nid as u32, HdaVerb::GetVolumeKnobCaps, 0).await.expect("Failed to send command");
-            w.volume_knob = self.receive_response().await.expect("Failed to get response").get_response();
-            
-            self.send_command(0, nid as u32, HdaVerb::GetConfigDefault, 0).await.expect("Failed to send command");
-            w.config_default = self.receive_response().await.expect("Failed to get response").get_response();
-            
-            self.send_command(0, nid as u32, HdaVerb::GetParameter, NodeParams::ConnectionListLength.as_u16()).await.expect("Failed to send command");
-            let resp_val = self.receive_response().await.expect("Failed to get response").get_response();
-
+    
+            self.send_command(0, nid as u32, HdaVerb::GetParameter, NodeParams::PinCap.as_u16()).await.expect("Failed to send GetParameter PinCap");
+            w.pin_caps = self.receive_response().await.expect("Failed to receive PinCap").get_response();
+    
+            self.send_command(0, nid as u32, HdaVerb::GetAmpCapabilities, 0).await.expect("Failed to send GetAmpCapabilities");
+            w.amp_in_caps = self.receive_response().await.expect("Failed to receive GetAmpCapabilities").get_response();
+    
+            self.send_command(0, nid as u32, HdaVerb::GetAmpOutCaps, 0).await.expect("Failed to send GetAmpOutCaps");
+            w.amp_out_caps = self.receive_response().await.expect("Failed to receive GetAmpOutCaps").get_response();
+    
+            self.send_command(0, nid as u32, HdaVerb::GetVolumeKnobCaps, 0).await.expect("Failed to send GetVolumeKnobCaps");
+            w.volume_knob = self.receive_response().await.expect("Failed to receive GetVolumeKnobCaps").get_response();
+    
+            self.send_command(0, nid as u32, HdaVerb::GetConfigDefault, 0).await.expect("Failed to send GetConfigDefault");
+            w.config_default = self.receive_response().await.expect("Failed to receive GetConfigDefault").get_response();
+    
+            self.send_command(0, nid as u32, HdaVerb::GetParameter, NodeParams::ConnectionListLength.as_u16()).await.expect("Failed to send GetParameter ConnectionListLength");
+            let resp_val = self.receive_response().await.expect("Failed to receive ConnectionListLength").get_response();
+    
             let conn_len = (resp_val & 0x7F) as u8;
-            
-
     
             for i in 0..conn_len {
-                self.send_command(0, nid as u32, HdaVerb::GetConnectionListEntry, i as u16).await.expect("Failed to send command");
-                let conn = (self.receive_response().await.expect("Failed to get response").get_response() & 0xFF) as u8;
-                
+                self.send_command(0, nid as u32, HdaVerb::GetConnectionListEntry, i as u16).await.expect("Failed to send GetConnectionListEntry");
+                let conn = (self.receive_response().await.expect("Failed to receive GetConnectionListEntry").get_response() & 0xFF) as u8;
+    
                 w.conn_list.push(conn);
             }
     
@@ -649,36 +659,43 @@ impl IntelHDA {
     
         widgets
     }
+    
 
-    // pub async fn trace_path_to_dac(&mut self, start: u8) -> Option<Vec<u8>> {
-    //     let mut stack: Vec<(u8, Vec<u8>)> = vec![(start, vec![start])];
+    pub async fn trace_path_to_dac(&mut self, pin_node: u8) -> Option<(u8, u8)> {
+        let mut stack: Vec<(u8, Vec<u8>)> = vec![(pin_node, vec![pin_node])];
     
-    //     while let Some((node, path)) = stack.pop() {
-    //         let widget_type = unsafe {
-    //             self.cmd_buf.as_mut().unwrap().cmd12(WidgetAddr(0, node), GetParameter as u32, 0)
-    //         };
+        while let Some((node, path)) = stack.pop() {
+            self.send_command(0, node as u32, HdaVerb::GetParameter, NodeParams::AudioWidgetCap.as_u16()).await.expect("Failed to send AudioWidgetCap");
+            let widget_type = self.receive_response().await.expect("Failed to receive AudioWidgetCap").get_response();
+            let wtype = (widget_type >> 20) & 0xF;
     
-    //         if widget_type.await & 0xF == 0x0 {
-    //             return Some(path); // Found DAC
-    //         }
+            debug_println!("trace: node {} has type 0x{:X}", node, wtype);
+            if wtype == 0x0 {
+                debug_println!("trace: found DAC at node {}", node);
+                return Some((pin_node, node));
+            }
     
-    //         let conn_len = unsafe {
-    //             self.cmd_buf.as_mut().unwrap().cmd12(WidgetAddr(0, node), GetConnectionListEntry as u32, 0).await & 0x7F
-    //         };
+            self.send_command(0, node as u32, HdaVerb::GetParameter, NodeParams::ConnectionListLength.as_u16()).await.expect("Failed to send ConnectionListLength");
+            let conn_len_resp = self.receive_response().await.expect("Failed to receive ConnectionListLength").get_response();
+            let conn_len = (conn_len_resp & 0x7F) as u8;
     
-    //         for i in 0..conn_len {
-    //             let conn_node = unsafe {
-    //                 self.cmd_buf.as_mut().unwrap().cmd12(WidgetAddr(0, node), GetConnectionListEntry as u32 | ((i as u32) << 8), 0).await
-    //             } as u8;
+            for i in 0..conn_len {
+                self.send_command(0, node as u32, HdaVerb::GetConnectionListEntry, i as u16).await.expect("Failed to send GetConnectionListEntry");
+                let conn_resp = self.receive_response().await.expect("Failed to receive GetConnectionListEntry").get_response();
+                let conn_node = (conn_resp & 0xFF) as u8;
     
-    //             let mut new_path = path.clone();
-    //             new_path.push(conn_node);
-    //             stack.push((conn_node, new_path));
-    //         }
-    //     }
+                let mut new_path = path.clone();
+                new_path.push(conn_node);
+                stack.push((conn_node, new_path));
+            }
+        }
     
-    //     None
-    // }
+        debug_println!("trace: no path to DAC found");
+        None
+    }
+    
+    
+    
     
     
     
@@ -796,6 +813,42 @@ impl IntelHDA {
 
         let widget_list = self.probe_afg_and_widgets().await;
         debug_println!("Total widgets discovered: {}", widget_list.len());
+
+        debug_println!("___________TRACE_____________");
+        if let Some((pin_node, dac_node)) = self.trace_path_to_dac(3).await {
+            debug_println!("Traced path from pin {} to DAC {}", pin_node, dac_node);
+        
+            self.send_command(0, dac_node as u32, HdaVerb::SetPowerState, 0x00).await.expect("Failed to send SetPowerState to DAC");
+            self.receive_response().await.expect("No response to SetPowerState");
+        
+            // 0x10 means strream number 1, channel 0
+            self.send_command(0, dac_node as u32, HdaVerb::SetStreamChannel, 0x10).await.expect("Failed to send SetStreamChannel");
+            self.receive_response().await.expect("No response to SetStreamChannel");
+        
+            // Set ampplifier gain on the DAC: unmuted, 0 dB gain
+            // 0xB035 enabbles output for both channels with default ggain
+            self.send_command(0, dac_node as u32, HdaVerb::SetAmplifierGain, 0xB035).await.expect("Failed to send SetAmplifierGain");
+            self.receive_response().await.expect("No response to SetAmplifierGain");
+        
+            // Configure the DAC format to 48kHz, 16-bit, stereoo
+            self.send_command(0, dac_node as u32, HdaVerb::SetConverterFormat, 0x4011).await.expect("Failed to send SetConverterFormat");
+            self.receive_response().await.expect("No response to SetConverterFormat");
+        
+            // Read current pin conttrol to preserve existing bitts before setting EAPD/output
+            self.send_command(0, pin_node as u32, HdaVerb::GetPinControl, 0).await.expect("Failed to send GetPinControl");
+            let mut pin_ctrl = self.receive_response().await.expect("No response to GetPinControl").get_response();
+        
+            // Enable output and EAPD by setting bbbits 6 and 7 (0xC0)
+            pin_ctrl |= 0xC0;
+            self.send_command(0, pin_node as u32, HdaVerb::SetPinControl, (pin_ctrl & 0xFF) as u16).await.expect("Failed to send SetPinControl");
+            self.receive_response().await.expect("No response to SetPinControl");
+        
+            debug_println!("Playback path [Pin {} → DAC {}] configured successfully.", pin_node, dac_node);
+        } else {
+            debug_println!("Could not trace a valid path from pin to DAC.");
+        }
+        
+        
     }
     
     /// Simple test that writes data into the DMA buffer and checks LPIB/STS
