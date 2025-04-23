@@ -4,11 +4,13 @@ use num_traits::FromPrimitive;
 use smoltcp::{
     iface::SocketHandle,
     socket::{tcp, udp},
+    wire::{IpAddress, IpEndpoint, Ipv4Address},
 };
 use spin::Mutex;
 
 use crate::{
-    net::with_interface,
+    constants::processes::MAX_FILES,
+    net::{get_eph_port, with_interface, DeviceInterface},
     processes::process::{with_current_pcb, FakeFile},
 };
 
@@ -75,6 +77,14 @@ pub enum SocketError {
     NoFreeFileDescriptor,
     // No interface is set up, set errno = ENODEV (but ENXIO also works)
     NoInterface,
+    // The file descriptor given was not a valid file = EBADF
+    NotAnOpenFile,
+    // The file descriptor given was not a socket = ENOTSOC
+    NotASocket,
+    // The address was already used, or all ephenepheral ports were used = EADDRINUSE
+    AddressInUse,
+    // Tried to bind to an already bound value = EINVAL
+    SocketAlreadyBound,
 }
 
 /// Implementation of the socket system call.
@@ -148,4 +158,104 @@ fn create_internet_socket(
         )))))
     });
     Result::Ok(fd)
+}
+
+pub fn sys_bind(socket_fd: u64, sock_addr_ptr: u64, addrlen: u64) -> u64 {
+    if bind_impl(socket_fd, sock_addr_ptr, addrlen).is_err() {
+        return u64::MAX;
+    }
+    0
+}
+
+pub fn bind_impl(socket_fd: u64, sock_addr_ptr: u64, _addrlen: u64) -> Result<(), SocketError> {
+    let socket_size: usize = socket_fd.try_into().unwrap();
+    if socket_size > MAX_FILES {
+        return Result::Err(SocketError::NotAnOpenFile);
+    }
+    let file = with_current_pcb(|pcb| pcb.fd_table[socket_size].clone());
+    let file = file.ok_or(SocketError::NotAnOpenFile)?;
+    if let FakeFile::Socket(socket) = file {
+        let socket_guard = socket.lock();
+        match socket_guard.clone() {
+            Socket::Internet(inet_socket) => {
+                bind_internet_socket(inet_socket, sock_addr_ptr)?;
+                Ok(())
+            }
+            Socket::Unix(_domain_socket) => {
+                todo!()
+            }
+        }
+    } else {
+        Result::Err(SocketError::NotASocket)
+    }
+}
+
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+struct SockAddr {
+    sa_family: u32,
+    // In NETWORK byte order (big endian)
+    port: u16,
+    // In NETWORK byte order (big endian)
+    sin_addr: u32,
+}
+
+fn bind_internet_socket(
+    inet_socket: InternetSocket,
+    sock_addr_ptr: u64,
+) -> Result<(), SocketError> {
+    let sock_addr_size: usize = sock_addr_ptr.try_into().unwrap();
+    let sock_addr_ptr = sock_addr_size as *const SockAddr;
+    let sock_addr = unsafe { *sock_addr_ptr };
+    let network_ports = sock_addr.port.to_be();
+    let network_addr = sock_addr.sin_addr.to_be_bytes();
+    let ipv4_addr = Ipv4Address::new(
+        network_addr[0],
+        network_addr[1],
+        network_addr[2],
+        network_addr[3],
+    );
+    let ip_ep = IpEndpoint {
+        addr: IpAddress::Ipv4(ipv4_addr),
+        port: network_ports,
+    };
+    match inet_socket {
+        InternetSocket::UDP(udp_socket) => {
+            with_interface(|interface| bind_udp_socket(interface, ip_ep, udp_socket))
+                .ok_or(SocketError::NoInterface)?
+        }
+        InternetSocket::TCP(tcp_socket) => {
+            with_interface(|interface| bind_tcp_socket(interface, ip_ep, tcp_socket))
+                .ok_or(SocketError::NoInterface)?
+        }
+        InternetSocket::Raw(_raw_socket) => {
+            todo!()
+        }
+    }
+}
+
+fn bind_udp_socket(
+    interface: &mut DeviceInterface,
+    ip_ep: IpEndpoint,
+    udp_socket: UDPSocket,
+) -> Result<(), SocketError> {
+    let udp_socket = interface.sockets.get_mut::<udp::Socket>(udp_socket.handle);
+    udp_socket
+        .bind(ip_ep)
+        .map_err(|_| SocketError::SocketAlreadyBound)?;
+    Result::Ok(())
+}
+
+fn bind_tcp_socket(
+    interface: &mut DeviceInterface,
+    ip_ep: IpEndpoint,
+    tcp_socket: TCPSocket,
+) -> Result<(), SocketError> {
+    let tcp_socket = interface.sockets.get_mut::<tcp::Socket>(tcp_socket.handle);
+    let local_endpoint = get_eph_port().ok_or(SocketError::AddressInUse)?;
+    tcp_socket
+        .connect(interface.interface.context(), ip_ep, local_endpoint)
+        .map_err(|_| SocketError::SocketAlreadyBound)?;
+
+    Result::Ok(())
 }

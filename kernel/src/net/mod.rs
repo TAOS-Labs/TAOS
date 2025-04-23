@@ -1,15 +1,24 @@
-use alloc::vec;
+use core::sync::atomic::{AtomicBool, AtomicU16};
+
+use alloc::{collections::btree_set::BTreeSet, sync::Arc, vec};
+use lazy_static::lazy_static;
 use smoltcp::{
     iface::{Interface, SocketHandle, SocketSet},
     socket::dhcpv4,
     time::Instant,
     wire::{EthernetAddress, IpCidr, Ipv4Cidr},
 };
-use spin::Mutex;
+use spin::{Mutex, RwLock};
 
 use crate::{debug, debug_println, devices::xhci::ecm::ECMDevice};
-
+const EPHEMERAL_PORTS_START: u16 = 49152;
+static NEXT_EPHEMERAL_PORT: AtomicU16 = AtomicU16::new(EPHEMERAL_PORTS_START);
+static EPHEMERAL_PORTS_OVERFLOW: AtomicBool = AtomicBool::new(false);
 pub static INTERFACE: Mutex<Option<DeviceInterface>> = Mutex::new(Option::None);
+
+lazy_static! {
+    pub static ref PORTS_SET: Arc<RwLock<BTreeSet<u16>>> = Arc::new(RwLock::new(BTreeSet::new()));
+}
 
 #[derive(Debug)]
 pub enum NetError {
@@ -22,7 +31,7 @@ pub enum NetError {
 
 pub struct DeviceInterface {
     device: ECMDevice,
-    interface: Interface,
+    pub interface: Interface,
     pub sockets: SocketSet<'static>,
     dhcp_handle: Option<SocketHandle>,
 }
@@ -136,4 +145,16 @@ fn set_ipv4_addr(iface: &mut Interface, cidr: Ipv4Cidr) {
         addrs.clear();
         addrs.push(IpCidr::Ipv4(cidr)).unwrap();
     });
+}
+
+pub fn get_eph_port() -> Option<u16> {
+    if EPHEMERAL_PORTS_OVERFLOW.load(core::sync::atomic::Ordering::SeqCst) {
+        return Option::None;
+    }
+    let potential_result = NEXT_EPHEMERAL_PORT.fetch_add(1, core::sync::atomic::Ordering::SeqCst);
+    if potential_result < EPHEMERAL_PORTS_START {
+        EPHEMERAL_PORTS_OVERFLOW.store(true, core::sync::atomic::Ordering::SeqCst);
+        return Option::None;
+    }
+    Option::Some(potential_result)
 }
