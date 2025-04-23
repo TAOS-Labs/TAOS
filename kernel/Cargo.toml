@@ -40,6 +40,7 @@ log = { version = "0.4.25", default-features = false }
 num-derive = { version = "0.4", default-features = false }
 num-traits = { version = "0.2", default-features = false }
 pc-keyboard = "0.8.0"
+ps2 = "0.2.0"
 rand = { version = "0.8.3", features = ["small_rng"], default-features = false }
 raw-cpuid = "11.3.0"
 smoltcp = { version = "0.10.0", default-features = false, features = [

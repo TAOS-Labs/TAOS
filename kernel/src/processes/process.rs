@@ -408,7 +408,7 @@ pub async unsafe fn run_process_ring3(pid: u32) {
     }
 }
 
-#[naked]
+#[unsafe(naked)]
 #[no_mangle]
 unsafe fn call_process(
     registers: *const Registers,
@@ -466,7 +466,7 @@ unsafe fn call_process(
     );
 }
 
-#[naked]
+#[unsafe(naked)]
 #[no_mangle]
 unsafe fn return_process() {
     naked_asm!(
