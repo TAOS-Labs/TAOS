@@ -13,6 +13,7 @@ pub const SYSCALL_BIND: u32 = 49;
 pub const SYSCALL_CONNECT: u32 = 42;
 pub const SYSCALL_READ: u32 = 0;
 pub const SYSCALL_WRITE: u32 = 1;
+pub const SYSCALL_EXECVE: u32 = 59;
 
 // Mmap
 pub const START_MMAP_ADDRESS: u64 = 0x0900_0000_0000;

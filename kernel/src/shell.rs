@@ -1,10 +1,10 @@
-use alloc::fmt::format;
+use alloc::{fmt::format, string::ToString};
 
 use crate::{
     devices::ps2_dev::keyboard,
     events::yield_now,
     serial_println,
-    syscalls::syscall_handlers::{sys_read, sys_write},
+    syscalls::syscall_handlers::{sys_exec, sys_read, sys_write},
 };
 
 // src/shell.rs
@@ -29,13 +29,16 @@ impl Shell {
             let c = self.read_char();
 
             match c {
-                b'\n' => {
-                    self.execute_command();
+                b'\n' | b'\r' => {
+                    self.execute_command().await;
                     keyboard::flush_buffer();
                     self.print_prompt();
                 }
                 0x08 => self.handle_backspace(),
-                _ => self.handle_char(c),
+                _ if c.is_ascii_graphic() || c == b' ' => {
+                    self.handle_char(c);
+                }
+                _ => { /* ignore everything else */ }
             }
             yield_now().await;
         }
@@ -81,7 +84,7 @@ impl Shell {
         }
     }
 
-    fn execute_command(&mut self) {
+    async fn execute_command(&mut self) {
         self.print("\r"); // return to start of line
         let cmd = core::str::from_utf8(&self.buffer[..self.position]).unwrap_or("Invalid UTF-8");
 
@@ -95,11 +98,21 @@ impl Shell {
             "" => {}
             "help" => self.print("Available commands: help, echo, clear\n"),
             "clear" => self.print("\x1B[2J\x1B[H"), // ANSI clear screen
-            cmd if cmd.starts_with("echo ") => {
-                let text = cmd.strip_prefix("echo ").unwrap();
+            trimmed if trimmed.starts_with("echo ") => {
+                // Use trimmed, not cmd, since that's what was matched
+                let text = trimmed.strip_prefix("echo ").unwrap();
                 self.print(&format(format_args!("{}\n", text)));
             }
-            _ => self.print(&format(format_args!("Unknown command: {}\n", cmd))),
+            trimmed if trimmed.starts_with("/") => {
+                let mut cmd_owned = trimmed.to_string() + "\0";
+                // TODO: as of now we do not support cmd args or environment vars
+                sys_exec(
+                    cmd_owned.as_mut_ptr(),
+                    core::ptr::null_mut(),
+                    core::ptr::null_mut(),
+                );
+            }
+            _ => self.print("Unknown command\n"),
         }
     }
 
