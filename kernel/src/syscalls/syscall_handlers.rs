@@ -1,6 +1,6 @@
 use core::ffi::CStr;
 
-use alloc::{collections::btree_map::BTreeMap, vec};
+use alloc::{collections::btree_map::BTreeMap, slice, string::ToString, vec};
 use lazy_static::lazy_static;
 use pc_keyboard::{DecodedKey, KeyCode, KeyState};
 use spin::Mutex;
@@ -201,8 +201,8 @@ pub unsafe extern "C" fn syscall_handler_impl(
         ),
         SYSCALL_EXECVE => sys_exec(
             syscall.arg1 as *mut u8,
-            syscall.arg2 as *mut u8,
-            syscall.arg3 as *mut u8,
+            syscall.arg2 as *mut *mut u8,
+            syscall.arg3 as *mut *mut u8,
         ),
 
         _ => {
@@ -211,7 +211,9 @@ pub unsafe extern "C" fn syscall_handler_impl(
     }
 }
 
-pub fn sys_exec(path: *mut u8, argv: *mut u8, envp: *mut u8) -> u64 {
+/// # Safety
+/// TODO
+pub unsafe fn sys_exec(path: *mut u8, argv: *mut *mut u8, envp: *mut *mut u8) -> u64 {
     if path.is_null() {
         return u64::MAX;
     }
@@ -230,19 +232,68 @@ pub fn sys_exec(path: *mut u8, argv: *mut u8, envp: *mut u8) -> u64 {
         Ok(s) => s,
         Err(_) => return u64::MAX,
     };
+
+    // build args
+    let mut args = vec![];
+    unsafe {
+        let mut i = 0;
+        loop {
+            let ptr = *argv.add(i);
+            if ptr.is_null() {
+                break;
+            }
+            let mut l = 0;
+            while *ptr.add(l) != 0 {
+                l += 1;
+            }
+            let slice = slice::from_raw_parts(&*ptr, l);
+            if let Ok(s) = str::from_utf8(slice) {
+                args.push(s.to_string());
+            }
+            i += 1;
+        }
+    }
+
+    serial_println!("NOT EXITING");
+
+    // build env vars
+    let mut envs = vec![];
+    unsafe {
+        let mut i = 0;
+        loop {
+            let ptr = *envp.add(i);
+            if ptr.is_null() {
+                break;
+            }
+            let mut l = 0;
+            while *ptr.add(l) != 0 {
+                l += 1;
+            }
+            let slice = slice::from_raw_parts(&*ptr, l);
+            if let Ok(s) = str::from_utf8(slice) {
+                envs.push(s.to_string());
+            }
+            i += 1;
+        }
+    }
     serial_println!("PATHNAME: {:#?}", pathname);
+    serial_println!("CMD ARGS: {:#?}", args);
+    serial_println!("ENV VARS: {:#?}", envs);
     schedule_kernel(
-        async move {
+        async {
             let fs = FILESYSTEM.get().unwrap();
             let fd = {
                 fs.lock()
-                    .open_file(pathname, OpenFlags::O_RDONLY | OpenFlags::O_WRONLY)
+                    .open_file(
+                        "/executables/hello",
+                        OpenFlags::O_RDONLY | OpenFlags::O_WRONLY,
+                    )
                     .await
             };
-            if fd.is_err() {
-                serial_println!("Unknown command");
-                return;
-            }
+            // if fd.is_err() {
+            //     serial_println!("Unknown command");
+            //     return;
+            // }
             serial_println!("RUNNING EXECUTABLE PLEASE HOLD");
             // At this point we assume a valid executable
             // TODO: check if it is actually executable with chmod mode
@@ -294,7 +345,9 @@ pub fn sys_exec(path: *mut u8, argv: *mut u8, envp: *mut u8) -> u64 {
     0
 }
 
-pub fn sys_read(fd: u32, buf: *mut u8, count: usize) -> u64 {
+/// # Safety
+/// TODO
+pub unsafe fn sys_read(fd: u32, buf: *mut u8, count: usize) -> u64 {
     if fd == 0 {
         let mut i = 0;
         while i < count {
@@ -316,7 +369,9 @@ pub fn sys_read(fd: u32, buf: *mut u8, count: usize) -> u64 {
     }
 }
 
-pub fn sys_write(fd: u32, buf: *const u8, count: usize) -> u64 {
+/// # Safety
+/// TODO
+pub unsafe fn sys_write(fd: u32, buf: *const u8, count: usize) -> u64 {
     if fd == 1 {
         // STDOUT
         unsafe {

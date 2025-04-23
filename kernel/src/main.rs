@@ -42,7 +42,7 @@ extern "C" fn _start() -> ! {
 
     debug!("BSP entering event loop");
 
-    schedule_kernel(unsafe { shell::init() }, 0);
+    unsafe { shell::init() };
 
     unsafe {
         run_loop(bsp_id);
