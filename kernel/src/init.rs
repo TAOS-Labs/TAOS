@@ -13,7 +13,7 @@ use limine::{
 use x86_64::align_up;
 
 use crate::{
-    constants::{memory::PAGE_SIZE, processes::TEST_WAIT},
+    constants::{memory::PAGE_SIZE, processes::{TEST_PRINT_EXIT, TEST_WAIT}},
     debug,
     devices::{self},
     events::{
@@ -139,8 +139,11 @@ pub fn init() -> u32 {
     //     3,
     // );
 
-    let pid = create_process(TEST_WAIT);
+    let pid = create_process(TEST_PRINT_EXIT);
     schedule_process(pid);
+
+    // let pid = create_process(TEST_PRINT_EXIT);
+    // schedule_process(pid);
 
     bsp_id
 }

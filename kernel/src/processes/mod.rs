@@ -12,19 +12,12 @@ pub fn init(cpu_id: u32) {
 
 #[cfg(test)]
 mod tests {
-    use alloc::vec;
-    use x86_64::align_up;
-
     use crate::{
-        constants::{memory::PAGE_SIZE, processes::TEST_SIMPLE_PROCESS},
+        constants::processes::TEST_SIMPLE_PROCESS,
         events::{
             current_running_event, futures::await_on::AwaitProcess, get_runner_time,
             schedule_process,
-        },
-        filesys::{get_file, FileSystem, OpenFlags, FILESYSTEM},
-        processes::process::create_process,
-        serial_println,
-        syscalls::memorymap::{sys_mmap, MmapFlags, ProtFlags},
+        }, processes::process::create_process
     };
 
     #[test_case]

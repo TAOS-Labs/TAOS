@@ -7,7 +7,7 @@ use crate::{
     },
     debug,
     events::{
-        current_running_event_info, nanosleep_current_process, runner_timestamp, schedule_process, yield_now, EventInfo
+        current_running_event_info, nanosleep_current_process, runner_timestamp, yield_now, EventInfo
     },
     filesys::File,
     interrupts::{
@@ -54,7 +54,8 @@ pub struct PCB {
     pub state: ProcessState,
     pub kernel_rsp: u64,
     pub kernel_rip: u64,
-    pub reentry_rsp: u64,
+    pub reentry_arg1: u64,
+    pub reentry_rip: u64,
     pub next_preemption_time: u64,
     pub registers: Registers,
     pub mmap_address: u64,
@@ -157,7 +158,8 @@ pub fn create_placeholder_process() -> u32 {
         state: ProcessState::New,
         kernel_rsp: 0,
         kernel_rip: 0,
-        reentry_rsp: 0,
+        reentry_arg1: 0,
+        reentry_rip: 0,
         registers: Registers {
             rax: 0,
             rbx: 0,
@@ -216,7 +218,8 @@ pub fn create_process(elf_bytes: &[u8]) -> u32 {
         state: ProcessState::New,
         kernel_rsp: 0,
         kernel_rip: 0,
-        reentry_rsp: 0,
+        reentry_arg1: 0,
+        reentry_rip: 0,
         next_preemption_time: 0,
         registers: Registers {
             rax: 0,
@@ -333,7 +336,61 @@ use super::registers::ForkingRegisters;
 /// This process is unsafe because it directly modifies registers
 #[no_mangle]
 pub async unsafe fn run_process_ring3(pid: u32) {
+    loop {
+        resume_process_ring3(pid);
+
+        let process = {
+            let process_table = PROCESS_TABLE.read();
+            let Some(process) = process_table.get(&pid) else {
+                serial_println!("Exiting");
+                return;
+            };
+            process.clone()
+        };
+    
+        // Do not lock lowest common denominator
+        // Once kernel threads are in, will need lock around PCB
+        // But not TCB
+        let process = process.pcb.get();
+    
+        let arg1 = (*process).reentry_arg1;
+        let reentry_rip = (*process).reentry_rip;
+    
+        if (*process).state == ProcessState::Blocked {
+            // TODO don't simply yield, but block without polling
+            serial_println!("Blocking");
+            todo!();
+        } else if (*process).state == ProcessState::Ready {
+            serial_println!("Yielding");
+            yield_now().await;
+    
+            debug!("Going to RIP: {:#X}", reentry_rip);
+            
+            // // TODO return back to block_on via return_process (kernel_rip, reentry rsp)
+            // core::arch::asm!(
+            //     // "mov rsp, {0}",
+            //     "mov rdi, {0}",
+            //     // "swapgs",
+            //     "call {1}",
+            //     // in(reg) reentry_rsp,
+            //     in(reg) arg1,
+            //     in(reg) reentry_rip,
+            // );   
+        }
+    }
+}
+
+pub unsafe fn resume_process_ring3(pid: u32) {
     interrupts::disable();
+    unsafe {
+        let rsp: u64;
+        core::arch::asm!(
+            "mov {0}, rsp",
+            out(reg) rsp
+        );
+        crate::debug!("RPR3_RSP = {:#X}", rsp);
+    }
+
     let process = {
         let process_table = PROCESS_TABLE.read();
         let process = process_table
@@ -376,36 +433,8 @@ pub async unsafe fn run_process_ring3(pid: u32) {
             in("r8")  &(*process).state,
         );
     }
-
-    let reentry_rsp = (*process).reentry_rsp;
-    let reentry_rip = (*process).kernel_rip;
-
-    if (*process).state == ProcessState::Blocked {
-        // TODO don't simply yield, but block without polling
-        serial_println!("Blocking");
-        yield_now().await;
-        // TODO return back to block_on via return_process (kernel_rip, reentry rsp)
-        core::arch::asm!(
-            "mov rsp, {0}",
-            "push {1}",
-            "swapgs",
-            "ret",
-            in(reg) reentry_rsp,
-            in(reg) reentry_rip,
-        );
-    } else if (*process).state == ProcessState::Ready {
-        yield_now().await;
-        // TODO return back to block_on via return_process (kernel_rip, reentry rsp)
-        core::arch::asm!(
-            "mov rsp, {0}",
-            "push {1}",
-            "swapgs",
-            "ret",
-            in(reg) reentry_rsp,
-            in(reg) reentry_rip,
-        );
-    }
 }
+
 
 #[unsafe(naked)]
 #[no_mangle]
@@ -492,6 +521,7 @@ unsafe fn return_process() {
 pub fn preempt_process(rsp: u64) {
     let event: EventInfo = current_running_event_info();
     if event.pid == 0 {
+        x2apic::send_eoi();
         return;
     }
 
@@ -508,6 +538,7 @@ pub fn preempt_process(rsp: u64) {
         if (*pcb).state != ProcessState::Running
             || (*pcb).next_preemption_time <= runner_timestamp()
         {
+            x2apic::send_eoi();
             return;
         }
 
@@ -536,19 +567,34 @@ pub fn preempt_process(rsp: u64) {
 
         (*pcb).state = ProcessState::Ready;
 
+        (*pcb).reentry_arg1 = event.pid as u64;
+        (*pcb).reentry_rip = resume_process_ring3 as usize as u64;
+
         ((*pcb).kernel_rsp, (*pcb).kernel_rip)
     };
 
     unsafe {
-        schedule_process(event.pid);
+        // schedule_process(event.pid);
 
-        // Restore kernel RSP + PC -> RIP from where it was stored in run/resume process
+        // // Restore kernel RSP + PC -> RIP from where it was stored in run/resume process
         core::arch::asm!(
             "mov rsp, {0}",
             "push {1}",
             in(reg) preemption_info.0,
             in(reg) preemption_info.1
         );
+
+        // Restore kernel RSP + PC -> RIP from where it was stored in run/resume process
+        // core::arch::asm!(
+        //     "mov r11, rsp",   // Move RSP to R11
+        //     "mov [rcx], r11", // store RSP (from R11)"
+        //     "mov rsp, {0}",
+        //     "push {1}",
+        //     in(reg) preemption_info.0,
+        //     in(reg) preemption_info.1,
+        //     in("rcx") preemption_info.2,
+        //     out("r11") _
+        // );
 
         x2apic::send_eoi();
 

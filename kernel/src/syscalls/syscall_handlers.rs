@@ -1,7 +1,4 @@
-use core::{
-    ffi::CStr,
-    task::{RawWaker, RawWakerVTable, Waker},
-};
+use core::ffi::CStr;
 
 use alloc::collections::btree_map::BTreeMap;
 use lazy_static::lazy_static;
@@ -9,12 +6,6 @@ use spin::Mutex;
 use x86_64::{
     registers::model_specific::Msr,
     structures::paging::{PhysFrame, Size4KiB},
-};
-
-use core::{
-    future::Future,
-    pin::Pin,
-    task::{Context, Poll},
 };
 
 use crate::{
@@ -29,7 +20,7 @@ use crate::{
         registers::ForkingRegisters,
     },
     serial_println,
-    syscalls::{fork::sys_fork, memorymap::sys_mmap},
+    syscalls::{block::block_on, fork::sys_fork, memorymap::sys_mmap},
 };
 
 use core::arch::naked_asm;
@@ -180,6 +171,15 @@ pub unsafe extern "C" fn syscall_handler_impl(
     let syscall = unsafe { &*syscall };
     let reg_vals = unsafe { &*reg_vals };
 
+    unsafe {
+        let rsp: u64;
+        core::arch::asm!(
+            "mov {0}, rsp",
+            out(reg) rsp
+        );
+        crate::debug!("SYS_RSP = {:#X}", rsp);
+    }
+
     crate::debug!("SYS {}", syscall.number);
 
     match syscall.number as u32 {
@@ -189,17 +189,17 @@ pub unsafe extern "C" fn syscall_handler_impl(
         }
         SYSCALL_PRINT => sys_print(syscall.arg1 as *const u8),
         // SYSCALL_NANOSLEEP => sys_nanosleep_64(syscall.arg1, reg_vals),
-        SYSCALL_NANOSLEEP => block_on(sys_nanosleep(syscall.arg1)),
+        SYSCALL_NANOSLEEP => block_on(sys_nanosleep(syscall.arg1), reg_vals),
         // Filesystem syscalls
         SYSCALL_OPEN => block_on(sys_open(
             ConstUserPtr::from(syscall.arg1),
             syscall.arg2 as u32,
             syscall.arg3 as u16,
-        )),
+        ), reg_vals),
         SYSCALL_CREAT => block_on(sys_creat(
             ConstUserPtr::from(syscall.arg1),
             syscall.arg3 as u16,
-        )),
+        ), reg_vals),
         SYSCALL_FORK => sys_fork(reg_vals),
         SYSCALL_MMAP => sys_mmap(
             syscall.arg1,
@@ -209,8 +209,8 @@ pub unsafe extern "C" fn syscall_handler_impl(
             syscall.arg5 as i64,
             syscall.arg6,
         ),
-        SYSCALL_WAIT => block_on(sys_wait(syscall.arg1 as u32)),
-        SYSCALL_SCHED_YIELD => block_on(sys_sched_yield()),
+        SYSCALL_WAIT => block_on(sys_wait(syscall.arg1 as u32), reg_vals),
+        SYSCALL_SCHED_YIELD => block_on(sys_sched_yield(), reg_vals),
         SYSCALL_MUNMAP => sys_munmap(syscall.arg1, syscall.arg2),
         SYSCALL_MPROTECT => sys_mprotect(syscall.arg1, syscall.arg2, syscall.arg3),
         SYSCALL_GETEUID => sys_geteuid(),
@@ -329,75 +329,6 @@ pub async fn sys_sched_yield() -> u64 {
     0
 }
 
-fn anoop_raw_waker() -> RawWaker {
-    fn clone(_: *const ()) -> RawWaker {
-        anoop_raw_waker()
-    }
-    fn wake(_: *const ()) {}
-    fn wake_by_ref(_: *const ()) {}
-    fn drop(_: *const ()) {}
-    let vtable = &RawWakerVTable::new(clone, wake, wake_by_ref, drop);
-    RawWaker::new(core::ptr::null(), vtable)
-}
-
-/// Helper function for sys_wait, not sure if necessary
-/// TODO make this into a real block (bring back pawait)
-pub fn spin_on<F: Future>(mut future: F) -> F::Output {
-    let waker = unsafe { Waker::from_raw(anoop_raw_waker()) };
-    let mut cx = Context::from_waker(&waker);
-    // Safety: we’re not moving the future while polling.
-    let mut future = unsafe { Pin::new_unchecked(&mut future) };
-    loop {
-        if let Poll::Ready(val) = future.as_mut().poll(&mut cx) {
-            return val;
-        }
-    }
-}
-
-fn block_on<F: Future>(mut future: F) -> F::Output {
-    let waker = unsafe { Waker::from_raw(anoop_raw_waker()) };
-    let mut cx = Context::from_waker(&waker);
-    // Safety: we’re not moving the future while polling.
-    let mut future = unsafe { Pin::new_unchecked(&mut future) };
-    loop {
-        if let Poll::Ready(val) = future.as_mut().poll(&mut cx) {
-            return val;
-        }
-
-        let preemption_info: (u64, u64, u64) = unsafe { 
-            let pid = current_running_event_info().pid;
-            let mut process_table = PROCESS_TABLE.write();
-            let process = process_table
-                .get_mut(&pid)
-                .expect("Process not found");
-    
-            let pcb = process.pcb.get();
-
-            (*pcb).state = ProcessState::Ready;
-            // TODO could also set state to Blocked (and invoke block_process??)
-            // For now just poll from scheduler (and thus allow other things to poll in-between)
-
-            ((*pcb).kernel_rsp, (*pcb).kernel_rip, &(*pcb).reentry_rsp as *const u64 as u64)
-        };
-        
-        unsafe {
-            // Restore kernel RSP + PC -> RIP from where it was stored in run/resume process
-            core::arch::asm!(
-                "mov r11, rsp",   // Move RSP to R11
-                "mov [rcx], r11", // store RSP (from R11)"
-                "mov rsp, {0}",
-                "push {1}",
-                "swapgs",
-                "ret",
-                in(reg) preemption_info.0,
-                in(reg) preemption_info.1,
-                in("rcx") preemption_info.2,
-                out("r11") _
-            );
-        }
-    }
-}
-
 pub fn sys_geteuid() -> u64 {
     0
 }
@@ -452,3 +383,4 @@ pub fn sys_arch_prctl(code: i32, addr: u64) -> u64 {
         }
     }
 }
+

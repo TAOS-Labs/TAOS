@@ -84,6 +84,8 @@ impl EventRunner {
                         // Event is ready, go ahead and remove it
                         event.completed.swap(true, Ordering::Relaxed);
                         self.pending_events.write().remove(&event.eid.0);
+
+                        crate::debug!("Event {} done", event.eid.0);
                     }
                 }
 
@@ -92,6 +94,8 @@ impl EventRunner {
                 // Explicitly re-enable interrupts once the current event is unmarked
                 // Helps with run_process_ring3(), which shouldn't be pre-empted
                 // TODO can maybe refactor and safely remove
+
+                // TODO do a lil work-stealing
                 interrupts::enable();
             }
 
@@ -99,8 +103,6 @@ impl EventRunner {
             if self.have_blocked_events() {
                 self.awake_next_sleeper();
             }
-
-            // TODO do a lil work-stealing
 
             // Sleep until next interrupt
             interrupts::enable_and_hlt();

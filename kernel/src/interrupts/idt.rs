@@ -15,6 +15,7 @@ use x86_64::{
     structures::idt::{InterruptDescriptorTable, InterruptStackFrame, PageFaultErrorCode},
 };
 
+use crate::syscalls::block::spin_on;
 #[allow(deprecated)]
 use crate::{
     constants::{
@@ -39,7 +40,7 @@ use crate::{
     },
     syscalls::{
         memorymap::sys_mmap,
-        syscall_handlers::{spin_on, sys_exit, sys_nanosleep_32, sys_print},
+        syscall_handlers::{sys_exit, sys_nanosleep_32, sys_print},
     },
 };
 
