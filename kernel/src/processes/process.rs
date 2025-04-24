@@ -753,18 +753,15 @@ mod tests {
         // total u64 slots we pushed: envs + NULL, args + NULL, argc
         let nen = envs.len() as u64;
         let nar = args.len() as u64;
-        let total_slots = nen + nar + 3;
 
         // ---- 1) verify argc ----
         // `sp` points at argc, so just read it
         let got_argc = unsafe { (sp.as_u64() as *const u64).read() };
         assert_eq!(got_argc, nar, "argc mismatch");
 
-        // ---- 2) verify argv pointers & strings ----
-        // argv[] starts immediately *below* the argc slot:
-        // offset = sp - 8 * (args.len() + 1)
+        // 2) verify argv
         let argv0_ptr = (sp.as_u64() - 8 * (nar + 1)) as *const u64;
-        for i in 0..(nar as usize) {
+        (0..(nar as usize)).for_each(|i| {
             // read argv[i]
             let str_addr = unsafe { argv0_ptr.add(i).read() as *const u8 };
             // walk until NUL
@@ -776,7 +773,7 @@ mod tests {
                 .expect("Invalid UTF-8 in argv");
             serial_println!("GOT: {:#?}", got);
             assert_eq!(got, &args[i], "argv[{}] mismatch", i);
-        }
+        });
 
         // ---- 3) verify envp pointers & strings ----
         // envp[] sits *below* argv array + its NULL terminator:
@@ -787,7 +784,7 @@ mod tests {
             - 8 * (nen + 1)
             // skip envp + NULL
         ) as *const u64;
-        for i in 0..(nen as usize) {
+        (0..(nen as usize)).for_each(|i| {
             let str_addr = unsafe { envp0_ptr.add(i).read() as *const u8 };
             let mut len = 0;
             while unsafe { *str_addr.add(len) } != 0 {
@@ -796,6 +793,6 @@ mod tests {
             let got = core::str::from_utf8(unsafe { slice::from_raw_parts(str_addr, len) })
                 .expect("Invalid UTF-8 in envp");
             assert_eq!(got, &envs[i], "envp[{}] mismatch", i);
-        }
+        });
     }
 }
