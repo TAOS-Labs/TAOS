@@ -47,7 +47,7 @@ impl Mount {
                                 }
                             }
                             Err(e) => {
-                                log::error!("Failed to parse message: {:?}", e);
+                                log::error!("Failed to parse message: {e}");
                                 continue;
                             }
                         },

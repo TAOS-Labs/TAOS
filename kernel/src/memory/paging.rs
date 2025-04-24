@@ -644,7 +644,7 @@ mod tests {
             let buf_ptr = page.start_address().as_ptr::<u8>();
             for i in 1..PAGE_SIZE {
                 let val = *buf_ptr.add(i);
-                assert_eq!(val, 1, "Byte at offset {} is not 1 (found {})", i, val);
+                assert_eq!(val, 1, "Byte at offset {i} is not 1 (found {val})");
             }
         }
 
