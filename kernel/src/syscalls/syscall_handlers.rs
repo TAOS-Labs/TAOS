@@ -196,13 +196,16 @@ pub unsafe extern "C" fn syscall_handler_impl(
             reg_vals,
         ),
         SYSCALL_FORK => sys_fork(reg_vals),
-        SYSCALL_MMAP => sys_mmap(
-            syscall.arg1,
-            syscall.arg2,
-            syscall.arg3,
-            syscall.arg4,
-            syscall.arg5 as i64,
-            syscall.arg6,
+        SYSCALL_MMAP => block_on(
+            sys_mmap(
+                syscall.arg1,
+                syscall.arg2,
+                syscall.arg3,
+                syscall.arg4,
+                syscall.arg5 as i64,
+                syscall.arg6,
+            ),
+            reg_vals,
         ),
         SYSCALL_WAIT => block_on(sys_wait(syscall.arg1 as u32), reg_vals),
         SYSCALL_SCHED_YIELD => block_on(sys_sched_yield(), reg_vals),

@@ -15,7 +15,7 @@ use x86_64::{
     structures::idt::{InterruptDescriptorTable, InterruptStackFrame, PageFaultErrorCode},
 };
 
-use crate::syscalls::block::spin_on;
+use crate::syscalls::block::{block_on, spin_on};
 #[allow(deprecated)]
 use crate::{
     constants::{
@@ -346,7 +346,10 @@ fn syscall_handler(rsp: u64) {
     if syscall_num == SYSCALL_EXIT {
         sys_exit(p1 as i64, &ForkingRegisters::default());
     } else if syscall_num == SYSCALL_MMAP {
-        let val = sys_mmap(p1, p2, p3, p4, p5 as i64, p6);
+        let val = block_on(
+            sys_mmap(p1, p2, p3, p4, p5 as i64, p6),
+            &ForkingRegisters::default(),
+        );
         unsafe {
             core::arch::asm!(
                 "mov rax, {0}",
@@ -394,11 +397,11 @@ extern "x86-interrupt" fn naked_timer_handler(_: InterruptStackFrame) {
             push rcx
             push rbx
             push rax
-    
+
             cld
             mov	rdi, rsp
             call timer_handler
-    
+
             pop rax
             pop rbx
             pop rcx

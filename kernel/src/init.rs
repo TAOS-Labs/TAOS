@@ -32,9 +32,12 @@ use crate::{
     logging,
     memory::{self},
     net::get_ip_addr,
-    processes::{self, process::create_process},
+    processes::{self, process::create_process, registers::ForkingRegisters},
     serial_println,
-    syscalls::memorymap::{sys_mmap, MmapFlags, ProtFlags},
+    syscalls::{
+        block::block_on,
+        memorymap::{sys_mmap, MmapFlags, ProtFlags},
+    },
     trace,
 };
 extern crate alloc;
@@ -103,13 +106,16 @@ pub fn init() -> u32 {
                     .unwrap()
                     .size()
             };
-            sys_mmap(
-                0x9000,
-                align_up(file_len, PAGE_SIZE as u64),
-                ProtFlags::PROT_EXEC.bits(),
-                MmapFlags::MAP_FILE.bits(),
-                fd as i64,
-                0,
+            block_on(
+                sys_mmap(
+                    0x9000,
+                    align_up(file_len, PAGE_SIZE as u64),
+                    ProtFlags::PROT_EXEC.bits(),
+                    MmapFlags::MAP_FILE.bits(),
+                    fd as i64,
+                    0,
+                ),
+                &ForkingRegisters::default(),
             );
 
             serial_println!("Reading file...");
@@ -138,12 +144,6 @@ pub fn init() -> u32 {
         },
         3,
     );
-
-    // let pid = create_process(TEST_WAIT);
-    // schedule_process(pid);
-
-    // let pid = create_process(TEST_PRINT_EXIT);
-    // schedule_process(pid);
 
     bsp_id
 }
