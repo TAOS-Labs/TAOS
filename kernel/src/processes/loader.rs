@@ -8,6 +8,7 @@ use crate::{
         mm::{Mm, VmAreaBackings, VmAreaFlags},
         paging::{create_mapping, create_mapping_to_frame, update_permissions},
     },
+    serial_println,
 };
 use alloc::{string::String, sync::Arc, vec::Vec};
 use core::ptr::{copy_nonoverlapping, write_bytes};
@@ -174,7 +175,8 @@ pub fn load_elf(
     // 2) Align down to 16 bytes
     sp = VirtAddr::new(sp.as_u64() & !0xF);
 
-    // 3) Reserve space for the argument strings
+    // 3) Reserve space for the argument strings themselves,
+    //    writing them at lower addresses, and save their pointers.
     let mut arg_ptrs = Vec::with_capacity(args.len());
     for s in args.into_iter().rev() {
         let bytes = s.into_bytes();
@@ -187,8 +189,7 @@ pub fn load_elf(
         }
         arg_ptrs.push(sp.as_u64());
     }
-    // iterating in reverse so unreverse it
-    arg_ptrs.reverse();
+    arg_ptrs.reverse(); // because we iterated in reverse
 
     // 4) Same for env strings
     let mut env_ptrs = Vec::with_capacity(envs.len());
@@ -201,9 +202,18 @@ pub fn load_elf(
             core::ptr::copy_nonoverlapping(bytes.as_ptr(), dst, bytes.len());
             dst.add(bytes.len()).write(0);
         }
+        let cstr = unsafe { core::ffi::CStr::from_ptr(sp.as_u64() as *const i8) };
+        let s = cstr.to_str().unwrap();
+        crate::serial_println!("envp: {}", s);
         env_ptrs.push(sp.as_u64());
     }
     env_ptrs.reverse();
+
+    for &s in &env_ptrs {
+        let cstr = unsafe { core::ffi::CStr::from_ptr(s as *const i8) };
+        let s = cstr.to_str().unwrap();
+        crate::serial_println!("envp: {}", s);
+    }
 
     // 5) Align down again before pushing pointer arrays
     sp = VirtAddr::new(sp.as_u64() & !0xF);
@@ -230,5 +240,6 @@ pub fn load_elf(
         sp.as_mut_ptr::<u64>().write(argc);
     }
 
+    // Return the new stack pointer and entry point
     (sp, elf.header.e_entry)
 }
