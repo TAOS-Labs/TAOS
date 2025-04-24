@@ -29,6 +29,8 @@ pub mod net;
 pub mod processes;
 pub mod syscalls;
 
+pub mod shell;
+
 pub use devices::serial;
 
 pub mod prelude {

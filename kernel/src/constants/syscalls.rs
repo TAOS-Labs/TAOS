@@ -26,6 +26,7 @@ pub const SYSCALL_MPROTECT: u32 = 10;
 pub const SYSCALL_MUNMAP: u32 = 11;
 pub const SYSCALL_FORK: u32 = 5;
 pub const SYSCALL_WAIT: u32 = 6;
+pub const SYSCALL_EXECVE: u32 = 59;
 
 pub const SYSCALL_GETUID: u32 = 102;
 pub const SYSCALL_GETEUID: u32 = 107;

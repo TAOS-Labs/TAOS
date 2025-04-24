@@ -506,7 +506,7 @@ impl FileSystem for Ext2Wrapper {
         let mut remaining = buf.len();
         let mut total_read = 0;
         let mut file_pos = locked_file.position;
-
+        let mut iter = 0;
         while remaining > 0 {
             let page_offset = file_pos & !(PAGE_SIZE - 1);
             let page_offset_in_buf = file_pos % PAGE_SIZE;
@@ -535,6 +535,8 @@ impl FileSystem for Ext2Wrapper {
             file_pos += copy_len;
             total_read += copy_len;
             remaining -= copy_len;
+            iter += 1;
+            serial_println!("looping {} times", iter);
         }
 
         locked_file.position = file_pos;
@@ -791,7 +793,8 @@ mod tests {
         {
             let meta = user_fs.metadata(fd).await.unwrap();
             assert_eq!(meta.pathname, "./temp/meta.txt");
-            assert_eq!(meta.fd, 0);
+            // 0 and 1 are stdin/out
+            assert_eq!(meta.fd, 2);
             assert_eq!(meta.flags, OpenFlags::O_WRONLY | OpenFlags::O_CREAT);
         }
 

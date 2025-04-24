@@ -1,27 +1,41 @@
 use core::ffi::CStr;
 
-use alloc::collections::btree_map::BTreeMap;
+use alloc::{collections::btree_map::BTreeMap, slice, string::ToString, vec};
 use lazy_static::lazy_static;
+use pc_keyboard::{DecodedKey, KeyCode, KeyState};
 use spin::Mutex;
 use x86_64::{
+    align_up,
     registers::model_specific::Msr,
     structures::paging::{PhysFrame, Size4KiB},
 };
 
 use crate::{
-    constants::syscalls::*,
+    constants::{memory::PAGE_SIZE, syscalls::*},
+    devices::ps2_dev::keyboard,
     events::{
         current_running_event, current_running_event_info, futures::await_on::AwaitProcess,
-        get_runner_time, nanosleep_current_event, yield_now, EventInfo,
+        get_runner_time, nanosleep_current_event, schedule_kernel, schedule_process, yield_now,
+        EventInfo,
     },
-    filesys::syscalls::{sys_creat, sys_open},
+    filesys::{
+        get_file,
+        syscalls::{sys_creat, sys_open},
+        FileSystem, OpenFlags, FILESYSTEM,
+    },
     interrupts::x2apic::{send_eoi, X2APIC_IA32_FS_BASE, X2APIC_IA32_GSBASE},
     processes::{
-        process::{sleep_process_int, sleep_process_syscall, ProcessState, PROCESS_TABLE},
+        process::{
+            create_process, sleep_process_int, sleep_process_syscall, ProcessState, PROCESS_TABLE,
+        },
         registers::ForkingRegisters,
     },
-    serial_println,
-    syscalls::{block::block_on, fork::sys_fork, memorymap::sys_mmap},
+    serial_print, serial_println,
+    syscalls::{
+        block::block_on,
+        fork::sys_fork,
+        memorymap::{sys_mmap, MmapFlags, ProtFlags},
+    },
 };
 
 use core::arch::naked_asm;
@@ -216,9 +230,223 @@ pub unsafe extern "C" fn syscall_handler_impl(
         SYSCALL_GETEGID => sys_getegid(),
         SYSCALL_GETGID => sys_getgid(),
         SYSCALL_ARCH_PRCTL => sys_arch_prctl(syscall.arg1 as i32, syscall.arg2),
+        SYSCALL_READ => block_on(
+            sys_read(
+                syscall.arg1 as u32,
+                syscall.arg2 as *mut u8,
+                syscall.arg3 as usize,
+            ),
+            reg_vals,
+        ),
+        SYSCALL_WRITE => block_on(
+            sys_write(
+                syscall.arg1 as u32,
+                syscall.arg2 as *mut u8,
+                syscall.arg3 as usize,
+            ),
+            reg_vals,
+        ),
+        SYSCALL_EXECVE => sys_exec(
+            syscall.arg1 as *mut u8,
+            syscall.arg2 as *mut *mut u8,
+            syscall.arg3 as *mut *mut u8,
+        ),
         _ => {
             panic!("Unknown syscall, {}", syscall.number);
         }
+    }
+}
+
+/// # Safety
+/// TODO
+pub unsafe fn sys_exec(path: *mut u8, argv: *mut *mut u8, envp: *mut *mut u8) -> u64 {
+    if path.is_null() {
+        return u64::MAX;
+    }
+
+    // Find string length by looking for null terminator
+    let mut len = 0;
+    unsafe {
+        while *path.add(len) != 0 {
+            len += 1;
+        }
+    }
+
+    // Convert to string
+    let bytes = unsafe { alloc::slice::from_raw_parts(path, len) };
+    let pathname = match alloc::str::from_utf8(bytes) {
+        Ok(s) => s,
+        Err(_) => return u64::MAX,
+    };
+
+    // build args
+    let mut args = vec![];
+    unsafe {
+        let mut i = 0;
+        loop {
+            let ptr = *argv.add(i);
+            if ptr.is_null() {
+                break;
+            }
+            let mut l = 0;
+            while *ptr.add(l) != 0 {
+                l += 1;
+            }
+            let slice = slice::from_raw_parts(&*ptr, l);
+            if let Ok(s) = str::from_utf8(slice) {
+                args.push(s.to_string());
+            }
+            i += 1;
+        }
+    }
+
+    serial_println!("NOT EXITING");
+
+    // build env vars
+    let mut envs = vec![];
+    unsafe {
+        let mut i = 0;
+        loop {
+            let ptr = *envp.add(i);
+            if ptr.is_null() {
+                break;
+            }
+            let mut l = 0;
+            while *ptr.add(l) != 0 {
+                l += 1;
+            }
+            let slice = slice::from_raw_parts(&*ptr, l);
+            if let Ok(s) = str::from_utf8(slice) {
+                envs.push(s.to_string());
+            }
+            i += 1;
+        }
+    }
+    serial_println!("PATHNAME: {:#?}", pathname);
+    serial_println!("CMD ARGS: {:#?}", args);
+    serial_println!("ENV VARS: {:#?}", envs);
+    schedule_kernel(
+        async {
+            let fs = FILESYSTEM.get().unwrap();
+            let fd = {
+                fs.lock()
+                    .await
+                    .open_file(
+                        "/executables/hello",
+                        OpenFlags::O_RDONLY | OpenFlags::O_WRONLY,
+                    )
+                    .await
+            };
+            // if fd.is_err() {
+            //     serial_println!("Unknown command");
+            //     return;
+            // }
+            serial_println!("RUNNING EXECUTABLE PLEASE HOLD");
+            // At this point we assume a valid executable
+            // TODO: check if it is actually executable with chmod mode
+            let fd = fd.unwrap();
+            let file = get_file(fd).unwrap();
+            let file_len = {
+                fs.lock()
+                    .await
+                    .filesystem
+                    .lock()
+                    .get_node(&file.lock().pathname)
+                    .await
+                    .unwrap()
+                    .size()
+            };
+            block_on(
+                sys_mmap(
+                    0x9000,
+                    align_up(file_len, PAGE_SIZE as u64),
+                    ProtFlags::PROT_EXEC.bits(),
+                    MmapFlags::MAP_FILE.bits(),
+                    fd as i64,
+                    0,
+                ),
+                &ForkingRegisters::default(),
+            );
+
+            serial_println!("Reading file...");
+
+            let mut buffer = vec![0u8; file_len as usize];
+            let bytes_read = {
+                fs.lock()
+                    .await
+                    .read_file(fd, &mut buffer)
+                    .await
+                    .expect("Failed to read file")
+            };
+
+            let buf = &buffer[..bytes_read];
+
+            serial_println!("Bytes read: {:#?}", bytes_read);
+
+            let pid = create_process(buf, args, envs);
+            schedule_process(pid);
+            let _waiter = AwaitProcess::new(
+                pid,
+                get_runner_time(3_000_000_000),
+                current_running_event().unwrap(),
+            )
+            .await;
+        },
+        3,
+    );
+    0
+}
+
+/// # Safety
+/// TODO
+pub async unsafe fn sys_read(fd: u32, buf: *mut u8, count: usize) -> u64 {
+    if fd == 0 {
+        let mut i = 0;
+        while i < count {
+            unsafe {
+                match keyboard::try_read_event().await {
+                    Some(event) => {
+                        if let Some(c) = event_to_ascii(&event) {
+                            *buf.add(i) = c;
+                            i += 1;
+                        }
+                    }
+                    None => break, // Exit early
+                }
+            }
+        }
+        i as u64
+    } else {
+        u64::MAX
+    }
+}
+
+/// # Safety
+/// TODO
+pub async unsafe fn sys_write(fd: u32, buf: *const u8, count: usize) -> u64 {
+    if fd == 1 {
+        // STDOUT
+        unsafe {
+            let slice = core::slice::from_raw_parts(buf, count);
+            serial_print!("{}", core::str::from_utf8_unchecked(slice));
+        }
+        count as u64
+    } else {
+        u64::MAX // Error
+    }
+}
+
+// Helper to convert keyboard events to ASCII
+pub fn event_to_ascii(event: &keyboard::KeyboardEvent) -> Option<u8> {
+    if event.state != KeyState::Down {
+        return None;
+    }
+
+    match event.decoded {
+        Some(DecodedKey::Unicode(c)) if c.is_ascii() => Some(c as u8),
+        Some(DecodedKey::RawKey(KeyCode::Return)) => Some(b'\n'),
+        Some(DecodedKey::RawKey(KeyCode::Backspace)) => Some(0x08),
+        _ => None,
     }
 }
 

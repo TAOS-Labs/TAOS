@@ -2,7 +2,7 @@
 //!
 //! Handles the initialization of kernel subsystems and CPU cores.
 
-use alloc::vec;
+use alloc::vec::Vec;
 use bytes::Bytes;
 use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use limine::{
@@ -120,7 +120,7 @@ pub fn init() -> u32 {
 
             serial_println!("Reading file...");
 
-            let mut buffer = vec![0u8; file_len as usize];
+            let mut buffer = alloc::vec![0u8; file_len as usize];
             let bytes_read = {
                 fs.lock()
                     .await
@@ -133,7 +133,8 @@ pub fn init() -> u32 {
 
             serial_println!("Bytes read: {:#?}", bytes_read);
 
-            let pid = create_process(buf);
+            let pid = create_process(buf, Vec::new(), Vec::new());
+            serial_println!("Creating process");
             schedule_process(pid);
             let _waiter = AwaitProcess::new(
                 pid,
@@ -144,7 +145,6 @@ pub fn init() -> u32 {
         },
         3,
     );
-
     bsp_id
 }
 
