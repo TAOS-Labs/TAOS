@@ -17,7 +17,8 @@ mod tests {
         events::{
             current_running_event, futures::await_on::AwaitProcess, get_runner_time,
             schedule_process,
-        }, processes::process::create_process
+        },
+        processes::process::create_process,
     };
 
     #[test_case]

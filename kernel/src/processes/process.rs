@@ -7,7 +7,8 @@ use crate::{
     },
     debug,
     events::{
-        current_running_event, current_running_event_info, nanosleep_current_process, runner_timestamp, yield_now, EventInfo
+        current_running_event, current_running_event_info, nanosleep_current_process,
+        runner_timestamp, yield_now, EventInfo,
     },
     filesys::File,
     interrupts::{
@@ -25,7 +26,10 @@ use crate::{
 };
 use alloc::{collections::BTreeMap, sync::Arc};
 use core::{
-    arch::naked_asm, borrow::BorrowMut, cell::UnsafeCell, sync::atomic::{AtomicU32, Ordering}, u64
+    arch::naked_asm,
+    borrow::BorrowMut,
+    cell::UnsafeCell,
+    sync::atomic::{AtomicU32, Ordering},
 };
 use spin::{rwlock::RwLock, Mutex};
 use x86_64::{
@@ -350,17 +354,17 @@ pub async unsafe fn run_process_ring3(pid: u32) {
             };
             process.clone()
         };
-    
+
         // Do not lock lowest common denominator
         // Once kernel threads are in, will need lock around PCB
         // But not TCB
         let process = process.pcb.get();
-    
+
         let arg1 = (*process).reentry_arg1;
         let reentry_rip = (*process).reentry_rip;
         let kernel_rsp = &mut (*process).kernel_rsp as *mut u64 as u64;
-        let in_kernel= (*process).in_kernel;
-    
+        let in_kernel = (*process).in_kernel;
+
         if (*process).state == ProcessState::Blocked || (*process).state == ProcessState::Ready {
             interrupts::disable();
 
@@ -384,7 +388,7 @@ pub async unsafe fn run_process_ring3(pid: u32) {
             } else {
                 // Came from process (likely timer interrupt preemption)
                 // No need to check any futures, can simply resume the process
-                resume_process_ring3(arg1 as u32);  
+                resume_process_ring3(arg1 as u32);
             }
         }
     }
@@ -392,7 +396,9 @@ pub async unsafe fn run_process_ring3(pid: u32) {
 
 #[unsafe(naked)]
 #[no_mangle]
-pub unsafe extern "C" fn resume_syscall(arg1: u64, reentry_rip: u64, kernel_rsp: *mut u64) {
+/// # Safety
+/// Don't call this unless you are run_process_ring3
+unsafe extern "C" fn resume_syscall(arg1: u64, reentry_rip: u64, kernel_rsp: *mut u64) {
     core::arch::naked_asm!(
         //save callee-saved registers
         "
@@ -410,16 +416,18 @@ pub unsafe extern "C" fn resume_syscall(arg1: u64, reentry_rip: u64, kernel_rsp:
         push rbx
         ",
         "swapgs",
-        "mov r11, rsp",   
-        "mov [rdx], r11", // Save kernel RSP to return
+        "mov r11, rsp",
+        "mov [rdx], r11",            // Save kernel RSP to return
         "mov rsp, qword ptr gs:[4]", // Switch to syscall RSP
         "mov rdi, rdi",
         "push rsi", // Call syscall (using syscall stack)
-        "cli",  // TODO is this safe???
+        "cli",      // TODO is this safe???
         "ret",
     );
 }
 
+/// # Safety
+/// Don't call this unless you are run_process_ring3
 pub unsafe fn resume_process_ring3(pid: u32) {
     interrupts::disable();
 
@@ -466,7 +474,6 @@ pub unsafe fn resume_process_ring3(pid: u32) {
         );
     }
 }
-
 
 #[unsafe(naked)]
 #[no_mangle]
@@ -528,6 +535,8 @@ unsafe fn call_process(
 
 #[unsafe(naked)]
 #[no_mangle]
+/// # Safety
+/// Don't call this directly, use function pointers
 pub unsafe fn return_process() {
     naked_asm!(
         "cli", //disable interrupts
@@ -560,11 +569,13 @@ pub fn preempt_process(rsp: u64) {
     // Get PCB from PID
     let preemption_info = unsafe {
         let mut process_table = PROCESS_TABLE.write();
-        let Some(process) = process_table
-            .get_mut(&event.pid) else {
-                debug!("Tried to preempt exited process...eid {}", current_running_event().unwrap().id());
-                x2apic::send_eoi();
-                return;
+        let Some(process) = process_table.get_mut(&event.pid) else {
+            debug!(
+                "Tried to preempt exited process...eid {}",
+                current_running_event().unwrap().id()
+            );
+            x2apic::send_eoi();
+            return;
         };
 
         let pcb = process.pcb.get();

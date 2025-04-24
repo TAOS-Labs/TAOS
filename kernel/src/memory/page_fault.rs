@@ -332,11 +332,7 @@ pub async fn handle_private_file_mapping(
     // Set VMA SHARED flag to false so it's COW
     vma.flags.set(VmAreaFlags::SHARED, false);
 
-    let mut fs = FILESYSTEM
-        .get()
-        .expect("could not get fs")
-        .lock()
-        .await;
+    let mut fs = FILESYSTEM.get().expect("could not get fs").lock().await;
     let file = with_current_pcb(|pcb| {
         pcb.fd_table[fd]
             .as_ref()

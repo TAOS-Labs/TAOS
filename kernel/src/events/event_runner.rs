@@ -261,7 +261,11 @@ impl EventRunner {
         self.current_event.as_ref().map(|e| {
             let system_ticks = nanos_to_ticks(nanos);
 
-            crate::debug!("Sleeping @ {}, to be awoken @ {}", self.system_clock, self.system_clock + system_ticks);
+            crate::debug!(
+                "Sleeping @ {}, to be awoken @ {}",
+                self.system_clock,
+                self.system_clock + system_ticks
+            );
 
             let sleep = Sleep::new(self.system_clock + system_ticks, (*e).clone());
             self.sleeping_events.push(sleep.clone());

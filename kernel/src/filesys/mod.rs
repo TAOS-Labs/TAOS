@@ -5,7 +5,11 @@
 
 use crate::{
     constants::{memory::PAGE_SIZE, processes::MAX_FILES},
-    events::{current_running_event, futures::sync::{BlockMutex, Condition}, schedule_kernel_on},
+    events::{
+        current_running_event,
+        futures::sync::{BlockMutex, Condition},
+        schedule_kernel_on,
+    },
     filesys::ext2::structures::FileMode,
     memory::{
         frame_allocator::{alloc_frame, dealloc_frame},

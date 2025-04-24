@@ -11,7 +11,8 @@ use x86_64::{
 use crate::{
     constants::syscalls::*,
     events::{
-        current_running_event, current_running_event_info, futures::await_on::AwaitProcess, get_runner_time, nanosleep_current_event, yield_now, EventInfo
+        current_running_event, current_running_event_info, futures::await_on::AwaitProcess,
+        get_runner_time, nanosleep_current_event, yield_now, EventInfo,
     },
     filesys::syscalls::{sys_creat, sys_open},
     interrupts::x2apic::{send_eoi, X2APIC_IA32_FS_BASE, X2APIC_IA32_GSBASE},
@@ -182,15 +183,18 @@ pub unsafe extern "C" fn syscall_handler_impl(
         // SYSCALL_NANOSLEEP => sys_nanosleep_64(syscall.arg1, reg_vals),
         SYSCALL_NANOSLEEP => block_on(sys_nanosleep(syscall.arg1), reg_vals),
         // Filesystem syscalls
-        SYSCALL_OPEN => block_on(sys_open(
-            ConstUserPtr::from(syscall.arg1),
-            syscall.arg2 as u32,
-            syscall.arg3 as u16,
-        ), reg_vals),
-        SYSCALL_CREAT => block_on(sys_creat(
-            ConstUserPtr::from(syscall.arg1),
-            syscall.arg3 as u16,
-        ), reg_vals),
+        SYSCALL_OPEN => block_on(
+            sys_open(
+                ConstUserPtr::from(syscall.arg1),
+                syscall.arg2 as u32,
+                syscall.arg3 as u16,
+            ),
+            reg_vals,
+        ),
+        SYSCALL_CREAT => block_on(
+            sys_creat(ConstUserPtr::from(syscall.arg1), syscall.arg3 as u16),
+            reg_vals,
+        ),
         SYSCALL_FORK => sys_fork(reg_vals),
         SYSCALL_MMAP => sys_mmap(
             syscall.arg1,
@@ -312,7 +316,7 @@ pub async fn sys_nanosleep(nanos: u64) -> u64 {
     };
 
     nanosleep_current_event(nanos).unwrap().await;
-    
+
     0
 }
 
@@ -388,4 +392,3 @@ pub fn sys_arch_prctl(code: i32, addr: u64) -> u64 {
         }
     }
 }
-
