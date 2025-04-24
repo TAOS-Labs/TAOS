@@ -12,6 +12,8 @@ pub const TEST_PRINT_EXIT: &[u8] = include_bytes!("../processes/test_binaries/te
 
 pub const TEST_WAIT: &[u8] = include_bytes!("../processes/test_binaries/test_wait");
 
+pub const TEST_SLEEP: &[u8] = include_bytes!("../processes/test_binaries/sleep");
+
 pub const TEST_FORK_COW: &[u8] = include_bytes!("../processes/test_binaries/test_fork_cow");
 
 pub const TEST_MMAP_ANON_SHARED: &[u8] =

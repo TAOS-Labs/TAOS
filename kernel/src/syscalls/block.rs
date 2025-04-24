@@ -2,7 +2,7 @@ use core::{future::Future, pin::Pin, task::{Context, Poll, RawWaker, RawWakerVTa
 
 use alloc::boxed::Box;
 
-use crate::{events::current_running_event_info, processes::{process::{ProcessState, PROCESS_TABLE}, registers::ForkingRegisters}, serial_println};
+use crate::{events::current_running_event_info, processes::{process::{ProcessState, PROCESS_TABLE}, registers::ForkingRegisters}};
 
 /// Helper function for sys_wait, not sure if necessary
 /// TODO make this into a real block (bring back pawait)
@@ -43,9 +43,7 @@ unsafe fn block_on_helper<F: Future<Output = u64> + ?Sized>(fut_ptr: *mut F, reg
 
   let future = unsafe { Pin::new_unchecked(&mut *fut_ptr) };
 
-  // TODO remove
-  serial_println!("INT? {}", x86_64::instructions::interrupts::are_enabled());
-  
+  // TODO remove  
   if let Poll::Ready(val) = future.poll(&mut cx) {
       // We haven't yet yielded, so act like normal
       return val;
@@ -79,7 +77,11 @@ unsafe fn block_on_helper<F: Future<Output = u64> + ?Sized>(fut_ptr: *mut F, reg
       (*pcb).registers.rcx = (*reg_vals).rcx;
       (*pcb).registers.rbx = (*reg_vals).rbx;
 
+      (*pcb).registers.rsp = (*reg_vals).rsp;
+
+      (*pcb).reentry_arg1 = fut_ptr as *const () as u64;
       (*pcb).reentry_rip = retry_block_on_helper::<F> as usize as u64;
+      (*pcb).in_kernel = true;
 
       ((*pcb).kernel_rsp, (*pcb).kernel_rip)
   };
@@ -97,24 +99,28 @@ unsafe fn block_on_helper<F: Future<Output = u64> + ?Sized>(fut_ptr: *mut F, reg
   unreachable!("If future is not ready, should yield back to scheduler")
 }
 
-pub unsafe fn retry_block_on_helper<F: Future<Output = u64> + ?Sized>(fut_ptr: *mut F) -> ! {
+pub unsafe extern "C" fn retry_block_on_helper<F: Future<Output = u64> + ?Sized>(fut_ptr: *mut F) -> ! {
   // TODO option to "spin poll" with max iterations, to prevent exessive yielding
   let waker = unsafe { Waker::from_raw(anoop_raw_waker()) };
   let mut cx = Context::from_waker(&waker);
 
   let future = unsafe { Pin::new_unchecked(&mut *fut_ptr) };
 
-  // TODO remove
-  serial_println!("INT? {}", x86_64::instructions::interrupts::are_enabled());
-  
+  // TODO remove  
   if let Poll::Ready(val) = future.poll(&mut cx) {
-    let pid = current_running_event_info().pid;
-      let mut process_table = PROCESS_TABLE.write();
-      let process = process_table
-          .get_mut(&pid)
-          .expect("Process not found");
+      let pid = current_running_event_info().pid;
+      let regs = {
+        let mut process_table = PROCESS_TABLE.write();
+        let process = process_table
+            .get_mut(&pid)
+            .expect("Process not found");
 
-      let pcb = process.pcb.get();
+        let pcb = process.pcb.get();
+        (*pcb).in_kernel = false;
+        (*pcb).state = ProcessState::Running;
+
+        &(*pcb).registers
+      };
 
       // We've yielded before, so stack is unreliable
       core::arch::asm!(
@@ -131,21 +137,22 @@ pub unsafe fn retry_block_on_helper<F: Future<Output = u64> + ?Sized>(fut_ptr: *
           "mov r13, [rcx+88]",
           "mov r14, [rcx+96]",
           "mov r15, [rcx+104]",
+
+          "mov rsp, [rcx+120]",
           "mov rcx, [rcx+16]",
 
           // Swap GS back.
-          "mov rsp, qword ptr gs:[20]",
           "swapgs",
           // Return to user mode. sysretq will use RCX (which contains the user RIP)
           // and R11 (which holds user RFLAGS).
           "sti",
           "sysretq",
           in("rax") val,
-          in("rcx") &(*pcb).registers
+          in("rcx") regs
       );
           
       unreachable!("If future is ready, should return to process")
-    }
+  }
 
   let preemption_info: (u64, u64) = { 
       let pid = current_running_event_info().pid;

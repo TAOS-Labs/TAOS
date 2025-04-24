@@ -7,7 +7,7 @@ use crate::{
     },
     debug,
     events::{
-        current_running_event_info, nanosleep_current_process, runner_timestamp, yield_now, EventInfo
+        current_running_event, current_running_event_info, nanosleep_current_process, runner_timestamp, yield_now, EventInfo
     },
     filesys::File,
     interrupts::{
@@ -56,6 +56,7 @@ pub struct PCB {
     pub kernel_rip: u64,
     pub reentry_arg1: u64,
     pub reentry_rip: u64,
+    pub in_kernel: bool,
     pub next_preemption_time: u64,
     pub registers: Registers,
     pub mmap_address: u64,
@@ -160,6 +161,7 @@ pub fn create_placeholder_process() -> u32 {
         kernel_rip: 0,
         reentry_arg1: 0,
         reentry_rip: 0,
+        in_kernel: false,
         registers: Registers {
             rax: 0,
             rbx: 0,
@@ -220,6 +222,7 @@ pub fn create_process(elf_bytes: &[u8]) -> u32 {
         kernel_rip: 0,
         reentry_arg1: 0,
         reentry_rip: 0,
+        in_kernel: false,
         next_preemption_time: 0,
         registers: Registers {
             rax: 0,
@@ -336,9 +339,9 @@ use super::registers::ForkingRegisters;
 /// This process is unsafe because it directly modifies registers
 #[no_mangle]
 pub async unsafe fn run_process_ring3(pid: u32) {
-    loop {
-        resume_process_ring3(pid);
+    resume_process_ring3(pid);
 
+    loop {
         let process = {
             let process_table = PROCESS_TABLE.read();
             let Some(process) = process_table.get(&pid) else {
@@ -355,41 +358,70 @@ pub async unsafe fn run_process_ring3(pid: u32) {
     
         let arg1 = (*process).reentry_arg1;
         let reentry_rip = (*process).reentry_rip;
+        let kernel_rsp = &mut (*process).kernel_rsp as *mut u64 as u64;
+        let in_kernel= (*process).in_kernel;
     
-        if (*process).state == ProcessState::Blocked {
-            // TODO don't simply yield, but block without polling
-            serial_println!("Blocking");
-            todo!();
-        } else if (*process).state == ProcessState::Ready {
-            serial_println!("Yielding");
+        if (*process).state == ProcessState::Blocked || (*process).state == ProcessState::Ready {
+            interrupts::disable();
+
             yield_now().await;
-    
-            debug!("Going to RIP: {:#X}", reentry_rip);
-            
-            // // TODO return back to block_on via return_process (kernel_rip, reentry rsp)
-            // core::arch::asm!(
-            //     // "mov rsp, {0}",
-            //     "mov rdi, {0}",
-            //     // "swapgs",
-            //     "call {1}",
-            //     // in(reg) reentry_rsp,
-            //     in(reg) arg1,
-            //     in(reg) reentry_rip,
-            // );   
+            if in_kernel {
+                // Switch back to syscall stack
+                unsafe {
+                    asm!(
+                        "push rax",
+                        "push rcx",
+                        "push rdx",
+                        "call resume_syscall",
+                        "pop rdx",
+                        "pop rcx",
+                        "pop rax",
+                        in("rdi") arg1,
+                        in("rsi") reentry_rip,
+                        in("rdx") kernel_rsp as *mut u64,
+                    );
+                }
+            } else {
+                // Came from process (likely timer interrupt preemption)
+                // No need to check any futures, can simply resume the process
+                resume_process_ring3(arg1 as u32);  
+            }
         }
     }
 }
 
+#[unsafe(naked)]
+#[no_mangle]
+pub unsafe extern "C" fn resume_syscall(arg1: u64, reentry_rip: u64, kernel_rsp: *mut u64) {
+    core::arch::naked_asm!(
+        //save callee-saved registers
+        "
+        push rbp
+        push r15
+        push r14
+        push r13
+        push r12
+        push r11
+        push r10
+        push r9
+        push r8
+        push rdi
+        push rsi
+        push rbx
+        ",
+        "swapgs",
+        "mov r11, rsp",   
+        "mov [rdx], r11", // Save kernel RSP to return
+        "mov rsp, qword ptr gs:[4]", // Switch to syscall RSP
+        "mov rdi, rdi",
+        "push rsi", // Call syscall (using syscall stack)
+        "cli",  // TODO is this safe???
+        "ret",
+    );
+}
+
 pub unsafe fn resume_process_ring3(pid: u32) {
     interrupts::disable();
-    unsafe {
-        let rsp: u64;
-        core::arch::asm!(
-            "mov {0}, rsp",
-            out(reg) rsp
-        );
-        crate::debug!("RPR3_RSP = {:#X}", rsp);
-    }
 
     let process = {
         let process_table = PROCESS_TABLE.read();
@@ -496,7 +528,7 @@ unsafe fn call_process(
 
 #[unsafe(naked)]
 #[no_mangle]
-unsafe fn return_process() {
+pub unsafe fn return_process() {
     naked_asm!(
         "cli", //disable interrupts
         //restore callee-saved registers
@@ -528,9 +560,12 @@ pub fn preempt_process(rsp: u64) {
     // Get PCB from PID
     let preemption_info = unsafe {
         let mut process_table = PROCESS_TABLE.write();
-        let process = process_table
-            .get_mut(&event.pid)
-            .expect("Process not found");
+        let Some(process) = process_table
+            .get_mut(&event.pid) else {
+                debug!("Tried to preempt exited process...eid {}", current_running_event().unwrap().id());
+                x2apic::send_eoi();
+                return;
+        };
 
         let pcb = process.pcb.get();
 

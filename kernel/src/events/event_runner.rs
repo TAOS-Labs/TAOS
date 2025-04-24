@@ -20,7 +20,7 @@ use core::{
 
 use crate::{
     constants::events::{NUM_EVENT_PRIORITIES, PRIORITY_INC_DELAY},
-    interrupts::x2apic::nanos_to_ticks, serial_println,
+    interrupts::x2apic::nanos_to_ticks,
 };
 use spin::Mutex;
 
@@ -46,7 +46,6 @@ impl EventRunner {
                 if !self.have_unblocked_events() {
                     break;
                 }
-
                 self.current_event = self.next_event();
 
                 let event = self
@@ -66,6 +65,7 @@ impl EventRunner {
 
                     // Executes the event
                     let ready: bool = future_guard.as_mut().poll(&mut context) != Poll::Pending;
+                    interrupts::disable();
 
                     drop(future_guard);
 
@@ -242,7 +242,6 @@ impl EventRunner {
 
         if sleeper.is_some() {
             let future = sleeper.unwrap();
-            serial_println!("Awaken");
             if future.target_timestamp <= self.system_clock {
                 future.awake();
                 self.blocked_events.write().remove(&future.get_id());
@@ -261,6 +260,8 @@ impl EventRunner {
     pub fn nanosleep_current_event(&mut self, nanos: u64) -> Option<Sleep> {
         self.current_event.as_ref().map(|e| {
             let system_ticks = nanos_to_ticks(nanos);
+
+            crate::debug!("Sleeping @ {}, to be awoken @ {}", self.system_clock, self.system_clock + system_ticks);
 
             let sleep = Sleep::new(self.system_clock + system_ticks, (*e).clone());
             self.sleeping_events.push(sleep.clone());

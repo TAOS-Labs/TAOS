@@ -171,15 +171,6 @@ pub unsafe extern "C" fn syscall_handler_impl(
     let syscall = unsafe { &*syscall };
     let reg_vals = unsafe { &*reg_vals };
 
-    unsafe {
-        let rsp: u64;
-        core::arch::asm!(
-            "mov {0}, rsp",
-            out(reg) rsp
-        );
-        crate::debug!("SYS_RSP = {:#X}", rsp);
-    }
-
     crate::debug!("SYS {}", syscall.number);
 
     match syscall.number as u32 {
@@ -246,6 +237,7 @@ pub fn sys_exit(code: i64, reg_vals: &ForkingRegisters) -> Option<u64> {
     // Get PCB from PID
     let preemption_info = unsafe {
         let mut process_table = PROCESS_TABLE.write();
+
         let process = process_table
             .get_mut(&event.pid)
             .expect("Process not found");
@@ -306,6 +298,19 @@ pub fn sys_nanosleep_64(nanos: u64, reg_vals: &ForkingRegisters) -> u64 {
 }
 
 pub async fn sys_nanosleep(nanos: u64) -> u64 {
+    unsafe {
+        let event = current_running_event_info();
+        let mut process_table = PROCESS_TABLE.write();
+
+        let process = process_table
+            .get_mut(&event.pid)
+            .expect("Process not found");
+
+        let pcb = process.pcb.get();
+
+        (*pcb).state = ProcessState::Blocked;
+    };
+
     nanosleep_current_event(nanos).unwrap().await;
     
     0
