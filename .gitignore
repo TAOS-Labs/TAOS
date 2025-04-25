@@ -6,7 +6,7 @@
 *.txt
 *.od
 
-*zig*
-
 /target
 .vscode
+
+.DS_Store
