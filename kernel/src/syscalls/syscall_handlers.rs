@@ -589,6 +589,12 @@ const ARCH_SET_GS: i32 = 0x1001;
 const ARCH_SET_FS: i32 = 0x1002;
 const ARCH_GET_GS: i32 = 0x1003;
 const ARCH_GET_FS: i32 = 0x1004;
+const ARCH_CET_STATUS: i32 = 0x3001;
+const ARCH_CET_DISABLE: i32 = 0x3002;
+const ARCH_CET_LOCK: i32 = 0x3003;
+const ARCH_CET_EXEC: i32 = 0x3004;
+const ARCH_CET_ALLOC_SHSTK: i32 = 0x3005;
+const ARCH_CET_PUSH_SHSTK: i32 = 0x3006;
 
 /// Emulate arch_prctl(2)
 pub fn sys_arch_prctl(code: i32, addr: u64) -> u64 {
@@ -615,6 +621,24 @@ pub fn sys_arch_prctl(code: i32, addr: u64) -> u64 {
             let gs = unsafe { Msr::new(X2APIC_IA32_GSBASE).read() };
             let ptr = addr as *mut u64;
             unsafe { ptr.write_volatile(gs) };
+            0
+        }
+        ARCH_CET_STATUS => {
+            0
+        }
+        ARCH_CET_DISABLE => {
+            0
+        }
+        ARCH_CET_LOCK => {
+            0 
+        }
+        ARCH_CET_EXEC => {
+            0
+        }
+        ARCH_CET_ALLOC_SHSTK => {
+            0
+        }
+        ARCH_CET_PUSH_SHSTK => {
             0
         }
         _ => {

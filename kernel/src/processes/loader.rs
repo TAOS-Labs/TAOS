@@ -8,7 +8,6 @@ use crate::{
         mm::{Mm, VmAreaBackings, VmAreaFlags},
         paging::{create_mapping, create_mapping_to_frame, update_permissions},
     },
-    serial_println,
 };
 use alloc::{string::String, sync::Arc, vec::Vec};
 use core::ptr::{copy_nonoverlapping, write_bytes};
