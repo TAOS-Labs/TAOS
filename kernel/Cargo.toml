@@ -57,3 +57,6 @@ futures-util = { version = "0.3.31", default-features = false, features = [
     "async-await-macro",
     "futures-macro",
 ] }
+
+[patch.crates-io]
+wavv = { git = 'https://github.com/samuelleeuwenburg/wavv.git' }

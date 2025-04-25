@@ -1,11 +1,13 @@
-use alloc::vec::Vec;
 use wavv::{Wav, Data};
 use crate::filesys::ext2::filesystem::{Ext2, FilesystemError};
 use crate::serial_println;
 
 pub async fn read_wav(fs: &Ext2, path: &str) -> Result<Wav, FilesystemError> {
     let wav_bytes = fs.read_file(path).await?;
-    Wav::from_bytes(&wav_bytes).ok_or(FilesystemError::InvalidFd)
+    match Wav::from_bytes(&wav_bytes) {
+        Ok(wav) => Ok(wav),
+        Err(_) => Err(FilesystemError::InvalidFd)
+    }
 }
 
 pub async fn write_wav(fs: &Ext2, path: &str, wav: &Wav) -> Result<(), FilesystemError> {

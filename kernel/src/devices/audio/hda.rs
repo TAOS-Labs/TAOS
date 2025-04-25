@@ -9,7 +9,6 @@ use crate::devices::{
 use core::{ mem::offset_of, ptr::{read_volatile, write_volatile}};
 use alloc::vec;
 use alloc::vec::Vec;
-use alloc::vec::*;
 
 // use goblin::elf::reloc::R_AARCH64_TLSLE_LDST8_TPREL_LO12;
 use x86_64::structures::idt::InterruptStackFrame;

@@ -590,8 +590,7 @@ checksum = "442887c63f2c839b346c192d047a7c87e73d0689c9157b00b53dcc27dd5ea793"
 [[package]]
 name = "wavv"
 version = "0.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "643a928d20e60c77f9cb721a120dc295da9f924702fd6a3199ac72381233f9f7"
+source = "git+https://github.com/samuelleeuwenburg/wavv.git#753a315d2434c9f4440e70c86054168ca0deee95"
 
 [[package]]
 name = "x86"
