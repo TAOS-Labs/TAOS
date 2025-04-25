@@ -6,3 +6,4 @@ pub mod hda_regs;
 pub mod widget_info;
 pub mod command_buffer;
 pub mod commands;
+pub mod wav_parser;
