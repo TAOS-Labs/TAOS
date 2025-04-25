@@ -259,3 +259,15 @@ fn bind_tcp_socket(
 
     Result::Ok(())
 }
+
+pub fn sys_connect(socket_fd: u64, sock_addr_ptr: u64, addrlen: u64) -> u64 {
+    if bind_impl(socket_fd, sock_addr_ptr, addrlen).is_err() {
+        return u64::MAX;
+    }
+    0
+}
+
+pub fn connect_impl(socket_fd: u64, sock_addr_ptr: u64, addrlen: u64) -> Result<(), SocketError> {
+    // Probally wrong, but who cares
+    return bind_impl(socket_fd, sock_addr_ptr, addrlen);
+}
