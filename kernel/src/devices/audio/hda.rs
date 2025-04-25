@@ -1,5 +1,5 @@
 use crate::{
-    debug_print, debug_println, devices::{audio::{buffer::{setup_bdl, BdlEntry}, command_buffer::RirbBuffer, commands::{CorbEntry, HdaVerb, NodeParams}}, pci::{read_config, walk_pci_bus, DeviceInfo}}, events::{futures::devices::HWRegisterWrite, nanosleep_current_event, yield_now}, filesys::ext2::cache, interrupts::x2apic, memory::HHDM_OFFSET, processes::process::sleep_process_int, serial_print, serial_println
+    debug_print, debug_println, devices::{audio::{buffer::{setup_bdl, BdlEntry}, command_buffer::RirbBuffer, commands::{CorbEntry, HdaVerb, NodeParams}, wav_parser::load_wav}, pci::{read_config, walk_pci_bus, DeviceInfo}}, events::{futures::devices::HWRegisterWrite, nanosleep_current_event, yield_now}, filesys::ext2::cache, interrupts::x2apic, memory::HHDM_OFFSET, processes::process::sleep_process_int, serial_print, serial_println
 };
 
 use crate::devices::{
@@ -22,6 +22,11 @@ use super::{command_buffer::CorbBuffer, commands::RirbEntry, widget_info::Widget
 /// TODO - need to find a betterr way so this variable doesnt exist
 const HDA_BAR_PHYS: u32 = 0x81010000;
 const DELAY_NS: u64 = 100_000;
+
+pub struct AudioData {
+    pub bytes: Vec<u8>,
+    pub fmt: u16
+}
 
 /// Interrupt handler for Intel HDA.
 /// - Handles interrupts by reading INTSTS: interrupt status registeer (0x20) and RIRBSTS: response ring buffer status (0x5d).
@@ -319,210 +324,6 @@ impl IntelHDA {
         unsafe { Some(rirb.read().await) }
     }
     
-    /// Initializes HDA controller:
-    /// - Finds the PCI device
-    /// - Maps BAR to virtual address (hhdm ofset + address)
-    // pub async fn old_init() -> Option<Self> {
-    //     let device = find_hda_device()?;
-    //     let bar = get_bar(&device)?;
-    
-    //     let virt = *HHDM_OFFSET + bar as u64;
-    //     let regs = unsafe { &mut *(virt.as_u64() as *mut HdaRegisters) };
-    
-    //     serial_println!(
-    //         "Intel HDA found: vendor=0x{:X}, device=0x{:X}, BAR=0x{:X} (virt: 0x{:X})",
-    //         device.vendor_id,
-    //         device.device_id,
-    //         bar,
-    //         virt
-    //     );
-    
-    //     let mut hda = IntelHDA {
-    //         base: bar,
-    //         regs,
-    //         vendor_id: device.vendor_id,
-    //         device_id: device.device_id,
-    //         cmd_buf: None,
-    //     };
-    
-    //     // Allocate DMA buffers
-    //     serial_println!("Allocating CORB and RIRB buffers...");
-    //     let corb_buf = DmaBuffer::new(4096).expect("Failed to alloc CORB");
-    //     let rirb_buf = DmaBuffer::new(4096).expect("Failed to alloc RIRB");
-    
-    //     // Initialize CommandBuffer
-    //     serial_println!("Creating CommandBuffer...");
-    //     let mut cmd_buf = unsafe {
-    //         CommandBuffer::new(virt.as_u64() as usize, &corb_buf, &rirb_buf).await
-    //     };
-    //     unsafe {
-    //         cmd_buf.init(false).await; // Set true to use immediate commands
-    //     }
-
-    //     unsafe {
-    //         cmd_buf.set_use_immediate(true).await;
-    //         cmd_buf.init(true).await;
-    //     }
-        
-
-    //     hda.cmd_buf = Some(cmd_buf);
-    
-    //     serial_println!("BASE: 0x{:08X}", hda.base);
-    //     // hda.regs.gctl |= 1 << 8;
-    
-    //     hda.reset().await;
-
-    //     let intctl = (HHDM_OFFSET.as_u64() + hda.base as u64 + 0x20) as *mut u32;
-    //     unsafe {write_volatile(intctl, 0xFFFFFFFF)};
-    //     serial_println!("INTCTL: 0x{:08X}", unsafe {read_volatile(intctl)});
-
-    
-    //     // Send initial power-up verb to codec node 0
-    //     let resp = unsafe {
-    //         hda.cmd_buf.as_mut().unwrap().cmd12(WidgetAddr(0, 0), KickStart as u32, 0).await
-    //     };
-    //     serial_println!("SigmaTel codec kickstart response: 0x{:X}", resp);
-    
-    //     // Try node 1
-    //     unsafe { hda.cmd_buf.as_mut().unwrap().cmd12(WidgetAddr(0, 1), KickStart as u32, 0).await};
-    
-    //     // Set power state to D0 on node 0 and 3
-    //     serial_println!("Setting power state to D0 on node 0 and 3");
-    //     unsafe { hda.cmd_buf.as_mut().unwrap().cmd12(WidgetAddr(0, 0), SetPowerState as u32, 0).await};
-    //     unsafe {hda.cmd_buf.as_mut().unwrap().cmd12(WidgetAddr(0, 3), SetPowerState as u32, 0).await};
-    
-    //     nanosleep_current_event(DELAY_NS * 2000).unwrap().await;
-    
-    //     // Unsolicited response enable
-    //     hda.regs.gctl |= 1 << 8;
-
-    
-    //     let widget_list = hda.probe_afg_and_widgets().await;
-    //     serial_println!("Total widgets discovered: {}", widget_list.len());
-    
-    //     let func_group_type = unsafe {
-    //         hda.cmd_buf.as_mut().unwrap().cmd12(WidgetAddr(0, 0), GetParameter as u32, 0).await
-    //     };
-    //     serial_println!("Codec node 0 function group type: 0x{:X}", func_group_type);
-    
-    //     serial_println!("Probing all possible widget nodes manually...");
-    //     for node in 1..=15 {
-    //         let widget_type = unsafe {
-    //             hda.cmd_buf.as_mut().unwrap().cmd12(WidgetAddr(0, node), GetParameter as u32, 0).await
-    //         };
-    //         serial_println!(
-    //             "Node {} widget type: 0x{:X} ({})",
-    //             node,
-    //             widget_type,
-    //             IntelHDA::decode_widget_type(widget_type as u32)
-    //         );
-            
-    //     }
-    
-    //     hda.enable_pin(3).await;
-    
-    //     unsafe { hda.cmd_buf.as_mut().unwrap().cmd12(WidgetAddr(0, 3), SetDacEnable as u32, 0x00).await};
-    //     serial_println!("Pin widget connection select set to DAC node 2");
-    
-    //     serial_println!("___________TRACE_____________");
-    //     if let Some(path) = hda.trace_path_to_dac(3).await {
-    //         serial_println!("Traced path from pin node 3 to DAC: {:?}", path);
-    //     } else {
-    //         serial_println!("Failed to trace path from pin to DAC.");
-    //     }
-    
-    //     let mut pin_ctrl =  unsafe {
-    //         hda.cmd_buf.as_mut().unwrap().cmd12(WidgetAddr(0, 3), GetPinControl as u32, 0).await
-    //     };
-    //     serial_println!("Raw pin control (before): 0x{:X}", pin_ctrl);
-    
-    //     pin_ctrl |= 0xC0 | 0x20;
-    //     unsafe { hda.cmd_buf.as_mut().unwrap().cmd12(WidgetAddr(0, 3), SetPinControl as u32, (pin_ctrl & 0xFF) as u8).await};
-    //     serial_println!("Pin control (after enable+unmute): 0x{:X}", pin_ctrl);
-    
-    //     let config_default = unsafe {
-    //         hda.cmd_buf.as_mut().unwrap().cmd12(WidgetAddr(0, 3), GetConfigDefault as u32, 0)
-    //     };
-    //     let def_device = (config_default.await >> 20) & 0xF;
-    //     let def_device_name = match def_device {
-    //         0x0 => "Line Out",
-    //         0x1 => "Speaker",
-    //         0x2 => "HP Out",
-    //         _ => "Other",
-    //     };
-    //     serial_println!("Pin node 3 default device: {} (0x{:X})", def_device_name, def_device);
-    
-    //     nanosleep_current_event(DELAY_NS).unwrap().await;
-    
-    //     let val = unsafe {
-    //         hda.cmd_buf.as_mut().unwrap().cmd12(WidgetAddr(0, 0), GetConnectionListEntry as u32, 0).await
-    //     };
-    //     let start_id = (val >> 0) & 0xFF;
-    //     let total_nodes = (val >> 16) & 0xFF;
-    //     serial_println!("Codec node 0 has {} subnodes starting at {}", total_nodes, start_id);
-    
-    //     for node in start_id..(start_id + total_nodes) {
-    //         let response = unsafe {
-    //             hda.cmd_buf.as_mut().unwrap().cmd12(WidgetAddr(0, node as u8), GetParameter as u32, 0)
-    //         };
-    //         serial_println!("Node {} widget type: 0x{:X}", node, response.await);
-    //     }
-    
-    //     let conn_len = unsafe {
-    //         hda.cmd_buf.as_mut().unwrap().cmd12(WidgetAddr(0, 3), GetConnectionListEntry as u32, 0).await
-    //     };
-    //     serial_println!("Node 3 connection list length: 0x{:X}", conn_len);
-    //     for i in 0..(conn_len & 0x7F) {
-    //         let conn = unsafe {
-    //             hda.cmd_buf.as_mut().unwrap().cmd12(WidgetAddr(0, 3), GetConnectionListEntry as u32 | ((i as u32) << 8), 0)
-    //         };
-    //         serial_println!("Node 3 connection[{}]: 0x{:X}", i, conn.await);
-    //     }
-    
-    //     serial_println!("Setting power state to D0 on DAC node 2");
-    //     unsafe { hda.cmd_buf.as_mut().unwrap().cmd12(WidgetAddr(0, 2), 0x705, 0).await};
-    
-    //     let state = unsafe {
-    //         hda.cmd_buf.as_mut().unwrap().cmd12(WidgetAddr(0, 2), GetPowerState as u32, 0).await
-    //     };
-    //     serial_println!("DAC node 2 current power state: 0x{:X}", state);
-    
-    //     hda.set_stream_channel(2, 0x00).await;
-    
-    //     hda.set_amplifier_gain(2, 0xB035).await;
-    //     hda.set_converter_format(2, 0x4011).await;
-    
-    //     hda.regs.intctl = 1;
-    //     hda.regs.stream_regs[4].ctl0 |= 1 << 2;
-    //     hda.regs.gctl |= 1 << 8;
-    
-    //     serial_println!("HDA setup complete");
-    
-    //     let mut pin_ctrl = unsafe {
-    //         hda.cmd_buf.as_mut().unwrap().cmd12(WidgetAddr(0, 3), GetPinControl as u32, 0).await
-    //     };
-    //     pin_ctrl |= 0x40;
-    //     let _ = unsafe {
-    //         hda.cmd_buf.as_mut().unwrap().cmd12(WidgetAddr(0, 3), SetPinControl as u32, (pin_ctrl & 0xFF) as u8)
-    //     };
-    
-    //     nanosleep_current_event(DELAY_NS).unwrap().await;
-    
-    //     serial_println!("--- EAPD re-enable ---");
-    //     serial_println!("Initial pin control read (node 3): 0x{:02X}", pin_ctrl);
-    
-    //     let confirm_ctrl = unsafe {
-    //         hda.cmd_buf.as_mut().unwrap().cmd12(WidgetAddr(0, 3), GetPinControl as u32, 0)
-    //     };
-    //     serial_println!(
-    //         "After setting EAPD, pin control (node 3): 0x{:02X}",
-    //         confirm_ctrl.await
-    //     );
-    
-    //     hda.test_dma_transfer().await;
-    //     Some(hda)
-    // }
-    
 
     fn decode_widget_type(val: u32) -> &'static str {
         match val & 0xF {
@@ -808,6 +609,8 @@ impl IntelHDA {
         response = self.receive_response().await.expect("Failed to receive response from the RIRB");
         response.print_response();
 
+        let audio_data = load_wav().await.expect("Wav error");
+
         let widget_list = self.probe_afg_and_widgets().await;
         debug_println!("Total widgets discovered: {}", widget_list.len());
 
@@ -828,7 +631,7 @@ impl IntelHDA {
             self.receive_response().await.expect("No response to SetAmplifierGain");
         
             // Configure the DAC format to 48kHz, 16-bit, stereoo
-            self.send_command(0, dac_node as u32, HdaVerb::SetConverterFormat, 0x4011).await.expect("Failed to send SetConverterFormat");
+            self.send_command(0, dac_node as u32, HdaVerb::SetConverterFormat, audio_data.fmt).await.expect("Failed to send SetConverterFormat");
             self.receive_response().await.expect("No response to SetConverterFormat");
         
             // Read current pin conttrol to preserve existing bitts before setting EAPD/output
@@ -849,18 +652,32 @@ impl IntelHDA {
         } else {
             debug_println!("Could not trace a valid path from pin to DAC.");
         }
+
+        
         
         // create BDL stuff
         debug_println!("starting to alloc BDL");
-        let audio_buf = DmaBuffer::new(64 * 1024).expect("Failed to allocate audio buffer");
+        let audio_buf = DmaBuffer::new(4096).expect("Failed to allocate audio buffer");
         let bdl_buf = DmaBuffer::new(core::mem::size_of::<BdlEntry>() * 32).expect("Failed BDL");
         assert_eq!(bdl_buf.phys_addr.as_u64() % 128, 0, "BDL not 128-byte aligned");
-    
-        for i in 0..audio_buf.size {
+
+        let total_bytes = audio_data.bytes.len();
+        let mut offset = 0;
+        let page_size = 4096;
+        let buf_ptr = audio_buf.virt_addr.as_mut_ptr::<u8>();
+
+        while offset < total_bytes {
+            let to_copy = core::cmp::min(page_size, total_bytes - offset);
+
             unsafe {
-                *audio_buf.virt_addr.as_mut_ptr::<u8>().add(i) =
-                    if i % 3 == 0 { 0x00 } else if i % 3 == 1 { 0x10 } else { 0xFF };
+                core::ptr::copy_nonoverlapping(
+                    audio_data.bytes.as_ptr().add(offset),
+                    buf_ptr.add(offset),
+                    to_copy,
+                );
             }
+
+            offset += to_copy;
         }
 
         let bdl_ptr = bdl_buf.as_ptr::<BdlEntry>();
@@ -872,15 +689,7 @@ impl IntelHDA {
         );
     
         debug_println!("setup_bdl returned {} entries", num_entries);
-        debug_println!("Raw BDL memory:");
-        for i in 0..(num_entries * 16) {
-            let byte = unsafe { *(bdl_buf.virt_addr.as_ptr::<u8>().add(i)) };
-            debug_print!("{:02X} ", byte);
-            if i % 16 == 15 {
-                debug_println!();
-            }
-        }
-
+        
         // Flush cache to ensure BDL/Audio in RAM for DMA
         unsafe { core::arch::asm!("wbinvd"); }
 
@@ -941,7 +750,7 @@ impl IntelHDA {
 
         // now lets congifure the fmt reg
         let fmt_addr = (stream_base + 0x12) as *mut u16;
-        let fmt_write = 0x4011;
+        let fmt_write = audio_data.fmt; // 8 bits per sample
         let fmt_val: u16;
         unsafe {
             write_volatile(fmt_addr, fmt_write);
@@ -967,216 +776,7 @@ impl IntelHDA {
         }
     }
     
-    /// Simple test that writes data into the DMA buffer and checks LPIB/STS
-    pub async fn old_test_dma_transfer(&mut self) {
-        use crate::devices::audio::{
-            buffer::{setup_bdl, BdlEntry},
-            dma::DmaBuffer,
-        };
-        use core::ptr::{read_volatile, write_volatile};
     
-        serial_println!("Running DMA transfer test...");
-    
-        let audio_buf = DmaBuffer::new(64 * 1024).expect("Failed to allocate audio buffer");
-        let bdl_buf = DmaBuffer::new(core::mem::size_of::<BdlEntry>() * 32).expect("Failed BDL");
-    
-        for i in 0..audio_buf.size {
-            unsafe {
-                *audio_buf.virt_addr.as_mut_ptr::<u8>().add(i) =
-                    if i % 2 == 0 { 0x00 } else { 0xFF };
-            }
-        }
-        serial_println!("before assertt for bbdl");
-        assert_eq!(bdl_buf.phys_addr.as_u64() % 128, 0, "BDL not 128-byte aligned");
-
-    
-        let bdl_ptr = bdl_buf.as_ptr::<BdlEntry>();
-        let num_entries = setup_bdl(
-            bdl_ptr,
-            audio_buf.phys_addr.as_u64(),
-            audio_buf.size as u32,
-            0x1000,
-        );
-    
-        serial_println!("setup_bdl returned {} entries", num_entries);
-        serial_println!("Raw BDL memory:");
-        for i in 0..(num_entries * 16) {
-            let byte = unsafe { *(bdl_buf.virt_addr.as_ptr::<u8>().add(i)) };
-            serial_print!("{:02X} ", byte);
-            if i % 16 == 15 {
-                serial_println!();
-            }
-        }
-
-        // Flush cache to ensure BDL/Audio in RAM for DMA
-        unsafe { core::arch::asm!("wbinvd"); }
-
-        for i in 0..16 {
-            let b = unsafe { *(audio_buf.virt_addr.as_u64() as *const u8).add(i) };
-            serial_println!("Audio buf[{}] = {:02X}", i, b);
-        }
-        
-
-        let regs_base = MMioPtr(self.regs as *const _ as *mut u8);
-    
-        let stream_base = &self.regs.stream_regs[4] as *const _ as *mut u8;
-        let ctl0_ptr = unsafe { MMioPtr(stream_base.add(0x00) as *mut u8) };
-        let ctl2_ptr = unsafe { MMioPtr(stream_base.add(0x02) as *mut u8) };
-        let sts_ptr = unsafe { MMioPtr(stream_base.add(0x03) as *mut u8) };
-        let lpib_ptr = unsafe { MMioPtr(stream_base.add(0x04) as *mut u32) };
-        let cbl_ptr = unsafe { MMioPtr(stream_base.add(0x08) as *mut u32) };
-        let lvi_ptr = unsafe { MMioPtr(stream_base.add(0x0C) as *mut u16) };
-        let _fifo_ptr = unsafe { MMioPtr(stream_base.add(0x10) as *mut u16) };
-        let fmt_ptr = unsafe { MMioPtr(stream_base.add(0x12) as *mut u16) };
-
-        let bdlpl_ptr = unsafe { MMioPtr(stream_base.add(0x18) as *mut u32) }; 
-        let bdlpu_ptr = unsafe { MMioPtr(stream_base.add(0x1C) as *mut u32) };
-        let bdl_phys = bdl_buf.phys_addr.as_u64();
-    
-        // Reset stream
-        unsafe {
-            ctl0_ptr.write(ctl0_ptr.read() | 1);
-            serial_println!("Wrote CTL (SRST set): 0x{:08X}", ctl0_ptr.read());
-            HWRegisterWrite::new(ctl0_ptr.as_ptr(), 1, 1).await;
-    
-            ctl0_ptr.write(ctl0_ptr.read() & 0);
-            serial_println!("Wrote CTL (SRST cleared): 0x{:08X}", ctl0_ptr.read());
-            HWRegisterWrite::new(ctl0_ptr.as_ptr(), 1, 0).await;
-        }
-    
-        // Stream configuration
-        unsafe {
-            write_volatile(fmt_ptr.as_ptr(), 0x4011);
-            HWRegisterWrite::new(fmt_ptr.as_ptr(), 0xFFFFu16, 0x4011).await;
-            serial_println!("Wrote FMT: 0x{:04X}", fmt_ptr.read());
-    
-            write_volatile(cbl_ptr.as_ptr(), audio_buf.size as u32);
-            serial_println!("Wrote CBL: {}", cbl_ptr.read());
-
-            write_volatile(lvi_ptr.as_ptr(), (num_entries - 1) as u16);
-            serial_println!("Wrote LVI: {}", lvi_ptr.read());
-    
-            //Correct ordering of BDLPL and BDLPU
-            write_volatile(bdlpl_ptr.as_ptr(), (bdl_phys & 0xFFFFFFFF) as u32);
-            serial_println!("Wrote BDLPL: 0x{:08X}", bdlpl_ptr.read());
-
-            write_volatile(bdlpu_ptr.as_ptr(), (bdl_phys >> 32) as u32);// High bits = 0 for 32-bit address
-            serial_println!("Wrote BDLPU: 0x{:08X}", bdlpu_ptr.read());
-        }
-    
-        // Tag & IOC enable
-        unsafe {
-            let tag_ioc = 1 << 4;
-            ctl2_ptr.write(tag_ioc);
-            serial_println!("Wrote CTL (tag + IOC): 0x{:08X}", ctl2_ptr.read());
-        }
-    
-        // Clear STS
-        unsafe {
-            let sts = sts_ptr.read();
-            sts_ptr.write(sts);
-            serial_println!("Cleared STS: 0x{:08X}", sts_ptr.read());
-        }
-    
-        // Enable global DMA
-
-        let gctl_ptr: MMioPtr<u32> = unsafe { regs_base.add(offset_of!(HdaRegisters, gctl)) };
-        unsafe {
-            let current = gctl_ptr.read();
-            gctl_ptr.write(current | (1 << 1));
-            serial_println!(
-                "GCTL after DMA enable: 0x{:08X}",
-                gctl_ptr.read()
-            );
-        }
-
-        // Find num streams (temp)
-        unsafe {
-            let gcap_ptr: MMioPtr<u16> = regs_base.add(offset_of!(HdaRegisters, gcap));
-            let gcap = gcap_ptr.read();
-            serial_println!("GCAP: 0x{:08X}", gcap);
-            serial_println!("Number of input streams: {}", (gcap & (0xF << 8)) >> 8);
-        }
-
-        // Start stream (RUN | DEIE | FEIE)
-        unsafe {
-            let val = ctl0_ptr.read();
-            let new_ctl = val | (1 << 1) | (1 << 3) | (1 << 4);
-            ctl0_ptr.write(new_ctl);
-            serial_println!("Wrote CTL (RUN | DEIE | FEIE): 0x{:08X}", ctl0_ptr.read());
-        }
-    
-        // Dump stream register state
-        let sd_base = &self.regs.stream_regs[4] as *const _ as *const u8;
-        let real_base = (*HHDM_OFFSET + self.base as u64 + 0x80 + 4 * 0x20).as_u64();
-        debug_println!("real_base: {:X}", real_base);
-        let temp1 = unsafe { read_volatile(real_base as *const u8) };
-        // let temp2 = unsafe { read_volatile((real_base + 1) as *const u8) };
-        let temp3 = unsafe { read_volatile((real_base + 2) as *const u8) };
-        let ctl = (temp1 as u32) | (temp3 as u32) << 16;
-        debug_println!("read ctl: {:X}", ctl);
-        
-        debug_println!("about to read addr: {:X}", sd_base as u64);
-        let ctl0 = unsafe { read_volatile(sd_base.add(0x00) as *const u8) };
-        unsafe {debug_println!("about to read addr: {:X}", sd_base.add(0x01) as u64);}
-        let ctl1 = unsafe { read_volatile(sd_base.add(0x01) as *const u8) }; // This read is unnecessary since the second byte of this reg is all rsvd0
-        unsafe {debug_println!("about to read addr: {:X}", sd_base.add(0x02) as u64);}
-        let ctl2 = unsafe { read_volatile(sd_base.add(0x02) as *const u8) };
-        let ctl_val = (ctl0 as u32) | ((ctl1 as u32) << 8) | ((ctl2 as u32) << 16);
-
-        let sts    = unsafe { read_volatile(sd_base.add(0x03) as *const u8) };
-        let lpib   = unsafe { read_volatile(sd_base.add(0x04) as *const u32) };
-        let cbl    = unsafe { read_volatile(sd_base.add(0x08) as *const u32) };
-        let lvi    = unsafe { read_volatile(sd_base.add(0x0C) as *const u16) };
-        let fmt    = unsafe { read_volatile(sd_base.add(0x12) as *const u16) };
-        let bdlpl  = unsafe { read_volatile(sd_base.add(0x18) as *const u32) };
-        let bdlpu  = unsafe { read_volatile(sd_base.add(0x1C) as *const u32) };
-
-        serial_println!("--- SD0 Register Dump ---");
-        serial_println!("CTL   : 0x{:08X}", ctl_val);
-        serial_println!("STS   : 0x{:02X}", sts);
-        serial_println!("LPIB  : 0x{:08X}", lpib);
-        serial_println!("CBL   : 0x{:08X}", cbl);
-        serial_println!("LVI   : 0x{:04X}", lvi);
-        serial_println!("FMT   : 0x{:04X}", fmt);
-        serial_println!("BDLPL : 0x{:08X}", bdlpl);
-        serial_println!("BDLPU : 0x{:08X}", bdlpu);
-
-        unsafe {
-            let lpib_ptr = MMioPtr((&self.regs.stream_regs[4] as *const _ as *mut u8).add(0x04) as *mut u32);
-            lpib_ptr.write(0x100);
-            serial_println!("LPIB after manual write: 0x{:X}", lpib_ptr.read());
-        }
-
-        // Other values (no change needed if not from packed struct)
-        let ctl = unsafe { (ctl0_ptr.read() as u32) | ((ctl2_ptr.read() as u32) << 16) };
-        
-        let gctl_ptr: MMioPtr<u32> = unsafe { regs_base.add(offset_of!(HdaRegisters, gctl)) };
-        let intsts_ptr: MMioPtr<u32> = unsafe { regs_base.add(offset_of!(HdaRegisters, intsts)) };
-
-        let gctl = unsafe { gctl_ptr.read() };
-        let intsts = unsafe { intsts_ptr.read() };
-
-        serial_println!(
-            "After RUN -> CTL=0x{:08X}, LPIB=0x{:X}, GCTL=0x{:08X}, INTSTS=0x{:08X}",
-            ctl,
-            lpib,
-            gctl,
-            intsts
-        );
-    
-        // Poll LPIB to watch playback progress
-        serial_println!("Polling LPIB...");
-        for _ in 0..20 {
-            let lpib = unsafe { lpib_ptr.read() };
-            let status = unsafe { sts_ptr.read() };
-            serial_println!("LPIB: 0x{:X}, STS: 0x{:X}", lpib, status);
-            nanosleep_current_event(DELAY_NS * 30).unwrap().await;
-        }
-    
-        serial_println!("Stopping stream.");
-        self.stop_stream(1);
-    }
     
 }
 
