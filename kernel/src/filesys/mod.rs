@@ -5,7 +5,11 @@
 
 use crate::{
     constants::{memory::PAGE_SIZE, processes::MAX_FILES},
-    events::{current_running_event, futures::sync::Condition, schedule_kernel_on},
+    events::{
+        current_running_event,
+        futures::sync::{BlockMutex, Condition},
+        schedule_kernel_on,
+    },
     filesys::ext2::structures::FileMode,
     memory::{
         frame_allocator::{alloc_frame, dealloc_frame},
@@ -21,7 +25,10 @@ use alloc::{
     sync::Arc,
     vec::Vec,
 };
-use core::sync::atomic::{AtomicBool, Ordering};
+use core::{
+    cmp,
+    sync::atomic::{AtomicBool, Ordering},
+};
 use ext2::{
     filesystem::{Ext2, FilesystemError, FilesystemResult},
     node::{DirEntry, NodeError},
@@ -33,6 +40,7 @@ use x86_64::{
     VirtAddr,
 };
 pub mod ext2;
+pub mod syscalls;
 
 use async_trait::async_trait;
 
@@ -45,7 +53,7 @@ lazy_static! {
     static ref FS_INIT_COMPLETE: Arc<AtomicBool> = Arc::new(AtomicBool::new(false));
 
     /// Global filesystem instance
-    pub static ref FILESYSTEM: Once<Mutex<Ext2Wrapper>> = Once::new();
+    pub static ref FILESYSTEM: Once<BlockMutex<Ext2Wrapper>> = Once::new();
 }
 
 bitflags! {
@@ -106,7 +114,7 @@ bitflags::bitflags! {
 /// A file object in the filesystem trait
 pub struct File {
     /// The pathname in the filesystem
-    pathname: String,
+    pub pathname: String,
     /// File descriptor
     pub fd: usize,
     /// Position we are seeking from in the file
@@ -257,7 +265,7 @@ pub struct Ext2Wrapper {
     pub page_cache: PageCache,
 
     // Wrapper for Ext2 Filesystem
-    filesystem: Mutex<Ext2>,
+    pub filesystem: Mutex<Ext2>,
 
     // Maps inode number to number of processes
     refcount: Mutex<BTreeMap<u32, usize>>,
@@ -498,7 +506,7 @@ impl FileSystem for Ext2Wrapper {
         let mut remaining = buf.len();
         let mut total_read = 0;
         let mut file_pos = locked_file.position;
-
+        let mut iter = 0;
         while remaining > 0 {
             let page_offset = file_pos & !(PAGE_SIZE - 1);
             let page_offset_in_buf = file_pos % PAGE_SIZE;
@@ -518,7 +526,6 @@ impl FileSystem for Ext2Wrapper {
                     temp
                 }
             };
-
             unsafe {
                 let page_ptr = virt.as_ptr::<u8>().add(page_offset_in_buf);
                 let dst_ptr = buf.as_mut_ptr().add(total_read);
@@ -528,6 +535,8 @@ impl FileSystem for Ext2Wrapper {
             file_pos += copy_len;
             total_read += copy_len;
             remaining -= copy_len;
+            iter += 1;
+            serial_println!("looping {} times", iter);
         }
 
         locked_file.position = file_pos;
@@ -596,7 +605,11 @@ impl FileSystem for Ext2Wrapper {
         // Do raw pointer write *after* .await to avoid Send violation
         unsafe {
             let buf_ptr = kernel_va.as_mut_ptr();
-            core::ptr::copy_nonoverlapping(file_buf.as_ptr(), buf_ptr, file_buf.len());
+            core::ptr::copy_nonoverlapping(
+                file_buf.as_ptr(),
+                buf_ptr,
+                cmp::min(PAGE_SIZE, file_buf.len()),
+            );
         }
 
         file_mappings.insert(offset, Page::containing_address(kernel_va));
@@ -780,7 +793,8 @@ mod tests {
         {
             let meta = user_fs.metadata(fd).await.unwrap();
             assert_eq!(meta.pathname, "./temp/meta.txt");
-            assert_eq!(meta.fd, 0);
+            // 0 and 1 are stdin/out
+            assert_eq!(meta.fd, 2);
             assert_eq!(meta.flags, OpenFlags::O_WRONLY | OpenFlags::O_CREAT);
         }
 

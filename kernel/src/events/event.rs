@@ -24,6 +24,10 @@ impl Event {
             completed: AtomicBool::new(false),
         }
     }
+
+    pub fn id(&self) -> u64 {
+        self.eid.0
+    }
 }
 
 impl ArcWake for Event {

@@ -5,7 +5,7 @@
 
 use crate::{
     devices::ps2_dev::controller,
-    events::{futures::sync::BlockMutex, schedule_kernel},
+    events::{futures::sync::BlockMutex, schedule_kernel, yield_now},
     interrupts::idt::without_interrupts,
     serial_println,
 };
@@ -19,6 +19,7 @@ use lazy_static::lazy_static;
 use pc_keyboard::{
     layouts, DecodedKey, Error, HandleControl, KeyCode, KeyState, Keyboard, Modifiers, ScancodeSet2,
 };
+use ps2::flags::ControllerStatusFlags;
 use spin::Mutex;
 
 /// Maximum number of keyboard events to store in the buffer
@@ -256,6 +257,25 @@ pub fn keyboard_handler() {
             }
         }
     });
+}
+
+pub async fn flush_buffer() {
+    loop {
+        if let Ok(mut kb) = KEYBOARD.try_lock() {
+            // got the lock, clear it
+            kb.clear_buffer();
+            controller::with_controller(|ctrl| {
+                while ctrl
+                    .read_status()
+                    .contains(ControllerStatusFlags::OUTPUT_FULL)
+                {
+                    let _ = ctrl.read_data();
+                }
+            });
+            return;
+        }
+        yield_now().await;
+    }
 }
 
 impl Stream for KeyboardStream {

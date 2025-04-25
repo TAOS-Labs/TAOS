@@ -1,8 +1,6 @@
 //! Process related constants
 
 // Binaries used for tests
-pub const PRINT_EXIT: &[u8] = include_bytes!("../processes/test_binaries/print_exit");
-
 pub const FORK_SIMPLE: &[u8] = include_bytes!("../processes/test_binaries/fork_simple");
 
 pub const TEST_SIMPLE_PROCESS: &[u8] =
@@ -13,6 +11,8 @@ pub const TEST_EXIT_CODE: &[u8] = include_bytes!("../processes/test_binaries/tes
 pub const TEST_PRINT_EXIT: &[u8] = include_bytes!("../processes/test_binaries/test_print_exit");
 
 pub const TEST_WAIT: &[u8] = include_bytes!("../processes/test_binaries/test_wait");
+
+pub const TEST_SLEEP: &[u8] = include_bytes!("../processes/test_binaries/sleep");
 
 pub const TEST_FORK_COW: &[u8] = include_bytes!("../processes/test_binaries/test_fork_cow");
 

@@ -46,7 +46,6 @@ impl EventRunner {
                 if !self.have_unblocked_events() {
                     break;
                 }
-
                 self.current_event = self.next_event();
 
                 let event = self
@@ -66,6 +65,7 @@ impl EventRunner {
 
                     // Executes the event
                     let ready: bool = future_guard.as_mut().poll(&mut context) != Poll::Pending;
+                    interrupts::disable();
 
                     drop(future_guard);
 
@@ -84,6 +84,8 @@ impl EventRunner {
                         // Event is ready, go ahead and remove it
                         event.completed.swap(true, Ordering::Relaxed);
                         self.pending_events.write().remove(&event.eid.0);
+
+                        crate::debug!("Event {} done", event.eid.0);
                     }
                 }
 
@@ -92,6 +94,8 @@ impl EventRunner {
                 // Explicitly re-enable interrupts once the current event is unmarked
                 // Helps with run_process_ring3(), which shouldn't be pre-empted
                 // TODO can maybe refactor and safely remove
+
+                // TODO do a lil work-stealing
                 interrupts::enable();
             }
 
@@ -99,8 +103,6 @@ impl EventRunner {
             if self.have_blocked_events() {
                 self.awake_next_sleeper();
             }
-
-            // TODO do a lil work-stealing
 
             // Sleep until next interrupt
             interrupts::enable_and_hlt();
@@ -259,6 +261,12 @@ impl EventRunner {
         self.current_event.as_ref().map(|e| {
             let system_ticks = nanos_to_ticks(nanos);
 
+            crate::debug!(
+                "Sleeping @ {}, to be awoken @ {}",
+                self.system_clock,
+                self.system_clock + system_ticks
+            );
+
             let sleep = Sleep::new(self.system_clock + system_ticks, (*e).clone());
             self.sleeping_events.push(sleep.clone());
             self.blocked_events.write().insert(e.eid.0);
@@ -303,6 +311,15 @@ impl EventRunner {
 
             Some(sleep)
         }
+    }
+
+    /// Blocks the current event until awoken
+    ///
+    /// # Returns
+    /// * `Option<Block>` - A Block future that can be awaited on (if there is an event to block)
+    #[allow(dead_code)]
+    pub fn block_current_event(&mut self) -> Option<Sleep> {
+        todo!();
     }
 
     /// # Returns

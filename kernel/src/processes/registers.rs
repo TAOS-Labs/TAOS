@@ -47,6 +47,7 @@ pub struct Registers {
     pub rflags: u64,
 }
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[repr(C)]
 pub struct ForkingRegisters {
     pub rsp: u64,
     pub rbx: u64,

@@ -6,10 +6,17 @@ section .text
 
 _start:
   ; Set up registers for the custom syscall
-  mov rax, 3         ; Custom syscall number 3
+  mov rax, 1003         ; Custom syscall number 1003 (print)
   mov rdi, buffer ; First argument: pointer to our string
 
   syscall
+
+  mov rbx, 0xFFFFFF
+
+_loop:
+    sub rbx, 1
+    cmp rbx, 0
+    jg _loop
 
   ; Exit the program using the Linux exit syscall (number 1)
   mov rax, 60         ; syscall: exit

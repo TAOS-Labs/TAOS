@@ -1,30 +1,41 @@
 use core::ffi::CStr;
 
-use alloc::collections::btree_map::BTreeMap;
+use alloc::{collections::btree_map::BTreeMap, slice, string::ToString, vec};
 use lazy_static::lazy_static;
+use pc_keyboard::{DecodedKey, KeyCode, KeyState};
 use spin::Mutex;
-use x86_64::structures::paging::{PhysFrame, Size4KiB};
-
-use core::{
-    future::Future,
-    pin::Pin,
-    task::{Context, Poll, RawWaker, RawWakerVTable, Waker},
+use x86_64::{
+    align_up,
+    registers::model_specific::Msr,
+    structures::paging::{PhysFrame, Size4KiB},
 };
 
 use crate::{
-    constants::syscalls::*,
+    constants::{memory::PAGE_SIZE, syscalls::*},
+    devices::ps2_dev::keyboard,
     events::{
         current_running_event, current_running_event_info, futures::await_on::AwaitProcess,
-        get_runner_time, yield_now, EventInfo,
+        get_runner_time, nanosleep_current_event, schedule_kernel, schedule_process, yield_now,
+        EventInfo,
     },
-    interrupts::x2apic,
-    memory::frame_allocator::with_buddy_frame_allocator,
+    filesys::{
+        get_file,
+        syscalls::{sys_creat, sys_open},
+        FileSystem, OpenFlags, FILESYSTEM,
+    },
+    interrupts::x2apic::{send_eoi, X2APIC_IA32_FS_BASE, X2APIC_IA32_GSBASE},
     processes::{
-        process::{sleep_process_int, sleep_process_syscall, ProcessState, PROCESS_TABLE},
+        process::{
+            create_process, sleep_process_int, sleep_process_syscall, ProcessState, PROCESS_TABLE,
+        },
         registers::ForkingRegisters,
     },
-    serial_println,
-    syscalls::{fork::sys_fork, memorymap::sys_mmap},
+    serial_print, serial_println,
+    syscalls::{
+        block::block_on,
+        fork::sys_fork,
+        memorymap::{sys_mmap, MmapFlags, ProtFlags},
+    },
 };
 
 use core::arch::naked_asm;
@@ -49,6 +60,22 @@ pub struct SyscallRegisters {
     pub arg4: u64,   // originally in r10
     pub arg5: u64,   // originally in r8
     pub arg6: u64,   // originally in r9
+}
+
+pub struct ConstUserPtr<T>(pub *const T);
+unsafe impl<T> Send for ConstUserPtr<T> {}
+impl<T> From<u64> for ConstUserPtr<T> {
+    fn from(value: u64) -> Self {
+        ConstUserPtr(value as *const T)
+    }
+}
+
+pub struct MutUserPtr<T>(pub *mut T);
+unsafe impl<T> Send for MutUserPtr<T> {}
+impl<T> From<u64> for MutUserPtr<T> {
+    fn from(value: u64) -> Self {
+        MutUserPtr(value as *mut T)
+    }
 }
 
 /// Naked syscall handler that switches to a valid kernel stack (saving
@@ -159,28 +186,267 @@ pub unsafe extern "C" fn syscall_handler_impl(
     let syscall = unsafe { &*syscall };
     let reg_vals = unsafe { &*reg_vals };
 
+    crate::debug!("SYS {}", syscall.number);
+
     match syscall.number as u32 {
         SYSCALL_EXIT => {
             sys_exit(syscall.arg1 as i64, reg_vals);
             unreachable!("sys_exit does not return");
         }
         SYSCALL_PRINT => sys_print(syscall.arg1 as *const u8),
-        SYSCALL_NANOSLEEP => sys_nanosleep_64(syscall.arg1, reg_vals),
-        SYSCALL_FORK => sys_fork(reg_vals),
-        SYSCALL_MMAP => sys_mmap(
-            syscall.arg1,
-            syscall.arg2,
-            syscall.arg3,
-            syscall.arg4,
-            syscall.arg5 as i64,
-            syscall.arg6,
+        // SYSCALL_NANOSLEEP => sys_nanosleep_64(syscall.arg1, reg_vals),
+        SYSCALL_NANOSLEEP => block_on(sys_nanosleep(syscall.arg1), reg_vals),
+        // Filesystem syscalls
+        SYSCALL_OPEN => block_on(
+            sys_open(
+                ConstUserPtr::from(syscall.arg1),
+                syscall.arg2 as u32,
+                syscall.arg3 as u16,
+            ),
+            reg_vals,
         ),
-        SYSCALL_WAIT => block_on(sys_wait(syscall.arg1 as u32)),
+        SYSCALL_CREAT => block_on(
+            sys_creat(ConstUserPtr::from(syscall.arg1), syscall.arg3 as u16),
+            reg_vals,
+        ),
+        SYSCALL_FORK => sys_fork(reg_vals),
+        SYSCALL_MMAP => block_on(
+            sys_mmap(
+                syscall.arg1,
+                syscall.arg2,
+                syscall.arg3,
+                syscall.arg4,
+                syscall.arg5 as i64,
+                syscall.arg6,
+            ),
+            reg_vals,
+        ),
+        SYSCALL_WAIT => block_on(sys_wait(syscall.arg1 as u32), reg_vals),
+        SYSCALL_SCHED_YIELD => block_on(sys_sched_yield(), reg_vals),
         SYSCALL_MUNMAP => sys_munmap(syscall.arg1, syscall.arg2),
         SYSCALL_MPROTECT => sys_mprotect(syscall.arg1, syscall.arg2, syscall.arg3),
+        SYSCALL_GETEUID => sys_geteuid(),
+        SYSCALL_GETUID => sys_getuid(),
+        SYSCALL_GETEGID => sys_getegid(),
+        SYSCALL_GETGID => sys_getgid(),
+        SYSCALL_ARCH_PRCTL => sys_arch_prctl(syscall.arg1 as i32, syscall.arg2),
+        SYSCALL_READ => block_on(
+            sys_read(
+                syscall.arg1 as u32,
+                syscall.arg2 as *mut u8,
+                syscall.arg3 as usize,
+            ),
+            reg_vals,
+        ),
+        SYSCALL_WRITE => block_on(
+            sys_write(
+                syscall.arg1 as u32,
+                syscall.arg2 as *mut u8,
+                syscall.arg3 as usize,
+            ),
+            reg_vals,
+        ),
+        SYSCALL_EXECVE => sys_exec(
+            syscall.arg1 as *mut u8,
+            syscall.arg2 as *mut *mut u8,
+            syscall.arg3 as *mut *mut u8,
+        ),
         _ => {
             panic!("Unknown syscall, {}", syscall.number);
         }
+    }
+}
+
+/// # Safety
+/// TODO
+pub unsafe fn sys_exec(path: *mut u8, argv: *mut *mut u8, envp: *mut *mut u8) -> u64 {
+    if path.is_null() {
+        return u64::MAX;
+    }
+
+    // Find string length by looking for null terminator
+    let mut len = 0;
+    unsafe {
+        while *path.add(len) != 0 {
+            len += 1;
+        }
+    }
+
+    // Convert to string
+    let bytes = unsafe { alloc::slice::from_raw_parts(path, len) };
+    let pathname = match alloc::str::from_utf8(bytes) {
+        Ok(s) => s,
+        Err(_) => return u64::MAX,
+    };
+
+    // build args
+    let mut args = vec![];
+    unsafe {
+        let mut i = 0;
+        loop {
+            let ptr = *argv.add(i);
+            if ptr.is_null() {
+                break;
+            }
+            let mut l = 0;
+            while *ptr.add(l) != 0 {
+                l += 1;
+            }
+            let slice = slice::from_raw_parts(&*ptr, l);
+            if let Ok(s) = str::from_utf8(slice) {
+                args.push(s.to_string());
+            }
+            i += 1;
+        }
+    }
+
+    serial_println!("NOT EXITING");
+
+    // build env vars
+    let mut envs = vec![];
+    unsafe {
+        let mut i = 0;
+        loop {
+            let ptr = *envp.add(i);
+            if ptr.is_null() {
+                break;
+            }
+            let mut l = 0;
+            while *ptr.add(l) != 0 {
+                l += 1;
+            }
+            let slice = slice::from_raw_parts(&*ptr, l);
+            if let Ok(s) = str::from_utf8(slice) {
+                envs.push(s.to_string());
+            }
+            i += 1;
+        }
+    }
+    serial_println!("PATHNAME: {:#?}", pathname);
+    serial_println!("CMD ARGS: {:#?}", args);
+    serial_println!("ENV VARS: {:#?}", envs);
+    schedule_kernel(
+        async {
+            let fs = FILESYSTEM.get().unwrap();
+            let fd = {
+                fs.lock()
+                    .await
+                    .open_file(
+                        "/executables/hello",
+                        OpenFlags::O_RDONLY | OpenFlags::O_WRONLY,
+                    )
+                    .await
+            };
+            // if fd.is_err() {
+            //     serial_println!("Unknown command");
+            //     return;
+            // }
+            serial_println!("RUNNING EXECUTABLE PLEASE HOLD");
+            // At this point we assume a valid executable
+            // TODO: check if it is actually executable with chmod mode
+            let fd = fd.unwrap();
+            let file = get_file(fd).unwrap();
+            let file_len = {
+                fs.lock()
+                    .await
+                    .filesystem
+                    .lock()
+                    .get_node(&file.lock().pathname)
+                    .await
+                    .unwrap()
+                    .size()
+            };
+            block_on(
+                sys_mmap(
+                    0x9000,
+                    align_up(file_len, PAGE_SIZE as u64),
+                    ProtFlags::PROT_EXEC.bits(),
+                    MmapFlags::MAP_FILE.bits(),
+                    fd as i64,
+                    0,
+                ),
+                &ForkingRegisters::default(),
+            );
+
+            serial_println!("Reading file...");
+
+            let mut buffer = vec![0u8; file_len as usize];
+            let bytes_read = {
+                fs.lock()
+                    .await
+                    .read_file(fd, &mut buffer)
+                    .await
+                    .expect("Failed to read file")
+            };
+
+            let buf = &buffer[..bytes_read];
+
+            serial_println!("Bytes read: {:#?}", bytes_read);
+
+            let pid = create_process(buf, args, envs);
+            schedule_process(pid);
+            let _waiter = AwaitProcess::new(
+                pid,
+                get_runner_time(3_000_000_000),
+                current_running_event().unwrap(),
+            )
+            .await;
+        },
+        3,
+    );
+    0
+}
+
+/// # Safety
+/// TODO
+pub async unsafe fn sys_read(fd: u32, buf: *mut u8, count: usize) -> u64 {
+    if fd == 0 {
+        let mut i = 0;
+        while i < count {
+            unsafe {
+                match keyboard::try_read_event().await {
+                    Some(event) => {
+                        if let Some(c) = event_to_ascii(&event) {
+                            *buf.add(i) = c;
+                            i += 1;
+                        }
+                    }
+                    None => break, // Exit early
+                }
+            }
+        }
+        i as u64
+    } else {
+        u64::MAX
+    }
+}
+
+/// # Safety
+/// TODO
+pub async unsafe fn sys_write(fd: u32, buf: *const u8, count: usize) -> u64 {
+    if fd == 1 {
+        // STDOUT
+        unsafe {
+            let slice = core::slice::from_raw_parts(buf, count);
+            serial_print!("{}", core::str::from_utf8_unchecked(slice));
+        }
+        count as u64
+    } else {
+        u64::MAX // Error
+    }
+}
+
+// Helper to convert keyboard events to ASCII
+pub fn event_to_ascii(event: &keyboard::KeyboardEvent) -> Option<u8> {
+    if event.state != KeyState::Down {
+        return None;
+    }
+
+    match event.decoded {
+        Some(DecodedKey::Unicode(c)) if c.is_ascii() => Some(c as u8),
+        Some(DecodedKey::RawKey(KeyCode::Return)) => Some(b'\n'),
+        Some(DecodedKey::RawKey(KeyCode::Backspace)) => Some(0x08),
+        _ => None,
     }
 }
 
@@ -194,7 +460,6 @@ pub fn sys_exit(code: i64, reg_vals: &ForkingRegisters) -> Option<u64> {
 
     let event: EventInfo = current_running_event_info();
 
-    serial_println!("Process {} exited with code {}", event.pid, code);
     // This is for testing; this way, we can write binaries that conditionally fail tests
     if code == -1 {
         panic!("Unknown exit code, something went wrong")
@@ -207,6 +472,7 @@ pub fn sys_exit(code: i64, reg_vals: &ForkingRegisters) -> Option<u64> {
     // Get PCB from PID
     let preemption_info = unsafe {
         let mut process_table = PROCESS_TABLE.write();
+
         let process = process_table
             .get_mut(&event.pid)
             .expect("Process not found");
@@ -216,9 +482,6 @@ pub fn sys_exit(code: i64, reg_vals: &ForkingRegisters) -> Option<u64> {
         (*pcb).state = ProcessState::Terminated;
 
         // clear_process_frames(&mut *pcb);
-        with_buddy_frame_allocator(|alloc| {
-            alloc.print_free_frames();
-        });
 
         EXIT_CODES.lock().insert(event.pid, code);
         REGISTER_VALUES.lock().insert(event.pid, reg_vals.clone());
@@ -233,16 +496,11 @@ pub fn sys_exit(code: i64, reg_vals: &ForkingRegisters) -> Option<u64> {
         core::arch::asm!(
             "mov rsp, {0}",
             "push {1}",
-            "stc",          // Use carry flag as sentinel to run_process that we're exiting
-            // "ret",
+            "swapgs",
+            "ret",
             in(reg) preemption_info.0,
             in(reg) preemption_info.1
         );
-    }
-
-    unsafe {
-        core::arch::asm!("swapgs");
-        core::arch::asm!("ret");
     }
 
     Some(code as u64)
@@ -261,7 +519,7 @@ pub fn sys_print(buffer: *const u8) -> u64 {
 /// Uses interrupt stack to restore state
 pub fn sys_nanosleep_32(nanos: u64, rsp: u64) -> u64 {
     sleep_process_int(nanos, rsp);
-    x2apic::send_eoi();
+    send_eoi();
 
     0
 }
@@ -270,6 +528,25 @@ pub fn sys_nanosleep_32(nanos: u64, rsp: u64) -> u64 {
 /// Uses manually-created NonFlagRegisters struct to restore state
 pub fn sys_nanosleep_64(nanos: u64, reg_vals: &ForkingRegisters) -> u64 {
     sleep_process_syscall(nanos, reg_vals);
+
+    0
+}
+
+pub async fn sys_nanosleep(nanos: u64) -> u64 {
+    unsafe {
+        let event = current_running_event_info();
+        let mut process_table = PROCESS_TABLE.write();
+
+        let process = process_table
+            .get_mut(&event.pid)
+            .expect("Process not found");
+
+        let pcb = process.pcb.get();
+
+        (*pcb).state = ProcessState::Blocked;
+    };
+
+    nanosleep_current_event(nanos).unwrap().await;
 
     0
 }
@@ -286,28 +563,63 @@ pub async fn sys_wait(pid: u32) -> u64 {
     return *(EXIT_CODES.lock().get(&pid).unwrap()) as u64;
 }
 
-/// Helper function for sys_wait, not sure if necessary
-/// TODO Ask Kiran if necessary
-fn anoop_raw_waker() -> RawWaker {
-    fn clone(_: *const ()) -> RawWaker {
-        anoop_raw_waker()
-    }
-    fn wake(_: *const ()) {}
-    fn wake_by_ref(_: *const ()) {}
-    fn drop(_: *const ()) {}
-    let vtable = &RawWakerVTable::new(clone, wake, wake_by_ref, drop);
-    RawWaker::new(core::ptr::null(), vtable)
+pub async fn sys_sched_yield() -> u64 {
+    yield_now().await;
+
+    0
 }
-/// Helper function for sys_wait, not sure if necessary
-pub fn block_on<F: Future>(mut future: F) -> F::Output {
-    let waker = unsafe { Waker::from_raw(anoop_raw_waker()) };
-    let mut cx = Context::from_waker(&waker);
-    // Safety: we’re not moving the future while polling.
-    let mut future = unsafe { Pin::new_unchecked(&mut future) };
-    loop {
-        if let Poll::Ready(val) = future.as_mut().poll(&mut cx) {
-            return val;
+
+pub fn sys_geteuid() -> u64 {
+    0
+}
+
+pub fn sys_getuid() -> u64 {
+    0
+}
+
+pub fn sys_getegid() -> u64 {
+    0
+}
+
+pub fn sys_getgid() -> u64 {
+    0
+}
+
+const ARCH_SET_GS: i32 = 0x1001;
+const ARCH_SET_FS: i32 = 0x1002;
+const ARCH_GET_GS: i32 = 0x1003;
+const ARCH_GET_FS: i32 = 0x1004;
+
+/// Emulate arch_prctl(2)
+pub fn sys_arch_prctl(code: i32, addr: u64) -> u64 {
+    match code {
+        ARCH_SET_FS => {
+            // point %fs at user‐space TLS block
+            unsafe { Msr::new(X2APIC_IA32_FS_BASE).write(addr) };
+            0
         }
-        yield_now();
+        ARCH_SET_GS => {
+            // point %gs at user‐space TLS block (if used)
+            unsafe { Msr::new(X2APIC_IA32_FS_BASE).write(addr) };
+            0
+        }
+        ARCH_GET_FS => {
+            // read current fs_base
+            let fs = unsafe { Msr::new(X2APIC_IA32_FS_BASE).read() };
+            // write it back into the user buffer
+            let ptr = addr as *mut u64;
+            unsafe { ptr.write_volatile(fs) };
+            0
+        }
+        ARCH_GET_GS => {
+            let gs = unsafe { Msr::new(X2APIC_IA32_GSBASE).read() };
+            let ptr = addr as *mut u64;
+            unsafe { ptr.write_volatile(gs) };
+            0
+        }
+        _ => {
+            // unknown code
+            0
+        }
     }
 }

@@ -7,8 +7,8 @@ use crate::{
     },
     debug,
     events::{
-        current_running_event_info, nanosleep_current_process, runner_timestamp, schedule_process,
-        EventInfo,
+        current_running_event, current_running_event_info, nanosleep_current_process,
+        runner_timestamp, yield_now, EventInfo,
     },
     filesys::File,
     interrupts::{
@@ -24,7 +24,7 @@ use crate::{
     processes::{loader::load_elf, registers::Registers},
     serial_println,
 };
-use alloc::{collections::BTreeMap, sync::Arc};
+use alloc::{collections::BTreeMap, string::String, sync::Arc, vec::Vec};
 use core::{
     arch::naked_asm,
     borrow::BorrowMut,
@@ -58,6 +58,9 @@ pub struct PCB {
     pub state: ProcessState,
     pub kernel_rsp: u64,
     pub kernel_rip: u64,
+    pub reentry_arg1: u64,
+    pub reentry_rip: u64,
+    pub in_kernel: bool,
     pub next_preemption_time: u64,
     pub registers: Registers,
     pub mmap_address: u64,
@@ -160,6 +163,9 @@ pub fn create_placeholder_process() -> u32 {
         state: ProcessState::New,
         kernel_rsp: 0,
         kernel_rip: 0,
+        reentry_arg1: 0,
+        reentry_rip: 0,
+        in_kernel: false,
         registers: Registers {
             rax: 0,
             rbx: 0,
@@ -182,7 +188,8 @@ pub fn create_placeholder_process() -> u32 {
         },
         mmap_address: START_MMAP_ADDRESS,
         fd_table: [const { None }; MAX_FILES],
-        next_fd: Arc::new(Mutex::new(0)),
+        // 0 and 1 are stdin, stdout
+        next_fd: Arc::new(Mutex::new(2)),
         next_preemption_time: 0,
         mm,
         namespace: Namespace::new(),
@@ -191,8 +198,9 @@ pub fn create_placeholder_process() -> u32 {
     pid
 }
 
-pub fn create_process(elf_bytes: &[u8]) -> u32 {
+pub fn create_process(elf_bytes: &[u8], args: Vec<String>, envs: Vec<String>) -> u32 {
     let pid = NEXT_PID.fetch_add(1, Ordering::SeqCst);
+
     with_buddy_frame_allocator(|alloc| {
         alloc.print_free_frames();
     });
@@ -210,6 +218,8 @@ pub fn create_process(elf_bytes: &[u8]) -> u32 {
         &mut mapper,
         &mut KERNEL_MAPPER.lock(),
         mm.borrow_mut(),
+        args,
+        envs,
     );
 
     let process = Arc::new(UnsafePCB::new(PCB {
@@ -217,6 +227,9 @@ pub fn create_process(elf_bytes: &[u8]) -> u32 {
         state: ProcessState::New,
         kernel_rsp: 0,
         kernel_rip: 0,
+        reentry_arg1: 0,
+        reentry_rip: 0,
+        in_kernel: false,
         next_preemption_time: 0,
         registers: Registers {
             rax: 0,
@@ -240,7 +253,8 @@ pub fn create_process(elf_bytes: &[u8]) -> u32 {
         },
         mmap_address: START_MMAP_ADDRESS,
         fd_table: [const { None }; MAX_FILES],
-        next_fd: Arc::new(Mutex::new(0)),
+        // 0 and 1 are stdin, stdout
+        next_fd: Arc::new(Mutex::new(2)),
         mm,
         namespace: Namespace::new(),
     }));
@@ -333,6 +347,92 @@ use super::registers::ForkingRegisters;
 /// This process is unsafe because it directly modifies registers
 #[no_mangle]
 pub async unsafe fn run_process_ring3(pid: u32) {
+    resume_process_ring3(pid);
+
+    loop {
+        let process = {
+            let process_table = PROCESS_TABLE.read();
+            let Some(process) = process_table.get(&pid) else {
+                serial_println!("Exiting");
+                return;
+            };
+            process.clone()
+        };
+
+        // Do not lock lowest common denominator
+        // Once kernel threads are in, will need lock around PCB
+        // But not TCB
+        let process = process.pcb.get();
+
+        let arg1 = (*process).reentry_arg1;
+        let reentry_rip = (*process).reentry_rip;
+        let kernel_rsp = &mut (*process).kernel_rsp as *mut u64 as u64;
+        let in_kernel = (*process).in_kernel;
+
+        if (*process).state == ProcessState::Blocked || (*process).state == ProcessState::Ready {
+            interrupts::disable();
+
+            yield_now().await;
+            if in_kernel {
+                // Switch back to syscall stack
+                unsafe {
+                    asm!(
+                        "push rax",
+                        "push rcx",
+                        "push rdx",
+                        "call resume_syscall",
+                        "pop rdx",
+                        "pop rcx",
+                        "pop rax",
+                        in("rdi") arg1,
+                        in("rsi") reentry_rip,
+                        in("rdx") kernel_rsp as *mut u64,
+                    );
+                }
+            } else {
+                // Came from process (likely timer interrupt preemption)
+                // No need to check any futures, can simply resume the process
+                resume_process_ring3(arg1 as u32);
+            }
+        }
+    }
+}
+
+#[unsafe(naked)]
+#[no_mangle]
+/// # Safety
+/// Don't call this unless you are run_process_ring3
+unsafe extern "C" fn resume_syscall(arg1: u64, reentry_rip: u64, kernel_rsp: *mut u64) {
+    core::arch::naked_asm!(
+        //save callee-saved registers
+        "
+        push rbp
+        push r15
+        push r14
+        push r13
+        push r12
+        push r11
+        push r10
+        push r9
+        push r8
+        push rdi
+        push rsi
+        push rbx
+        ",
+        "swapgs",
+        "mov r11, rsp",
+        "mov [rdx], r11",            // Save kernel RSP to return
+        "mov rsp, qword ptr gs:[4]", // Switch to syscall RSP
+        "mov rdi, rdi",
+        "push rsi", // Call syscall (using syscall stack)
+        "cli",      // TODO is this safe???
+        "ret",
+    );
+}
+
+/// # Safety
+/// Don't call this unless you are run_process_ring3
+pub unsafe fn resume_process_ring3(pid: u32) {
     interrupts::disable();
     let process = {
         let process_table = PROCESS_TABLE.read();
@@ -373,7 +473,7 @@ pub async unsafe fn run_process_ring3(pid: u32) {
             in("rsi") user_ds,
             in("rdx") user_cs,
             in("rcx") &(*process).kernel_rsp,
-            in("r8")  &(*process).state
+            in("r8")  &(*process).state,
         );
     }
 }
@@ -438,7 +538,9 @@ unsafe fn call_process(
 
 #[unsafe(naked)]
 #[no_mangle]
-unsafe fn return_process() {
+/// # Safety
+/// Don't call this directly, use function pointers
+pub unsafe fn return_process() {
     naked_asm!(
         "cli", //disable interrupts
         //restore callee-saved registers
@@ -463,15 +565,21 @@ unsafe fn return_process() {
 pub fn preempt_process(rsp: u64) {
     let event: EventInfo = current_running_event_info();
     if event.pid == 0 {
+        x2apic::send_eoi();
         return;
     }
 
     // Get PCB from PID
     let preemption_info = unsafe {
         let mut process_table = PROCESS_TABLE.write();
-        let process = process_table
-            .get_mut(&event.pid)
-            .expect("Process not found");
+        let Some(process) = process_table.get_mut(&event.pid) else {
+            debug!(
+                "Tried to preempt exited process...eid {}",
+                current_running_event().unwrap().id()
+            );
+            x2apic::send_eoi();
+            return;
+        };
 
         let pcb = process.pcb.get();
 
@@ -479,6 +587,7 @@ pub fn preempt_process(rsp: u64) {
         if (*pcb).state != ProcessState::Running
             || (*pcb).next_preemption_time <= runner_timestamp()
         {
+            x2apic::send_eoi();
             return;
         }
 
@@ -507,13 +616,16 @@ pub fn preempt_process(rsp: u64) {
 
         (*pcb).state = ProcessState::Ready;
 
+        (*pcb).reentry_arg1 = event.pid as u64;
+        (*pcb).reentry_rip = resume_process_ring3 as usize as u64;
+
         ((*pcb).kernel_rsp, (*pcb).kernel_rip)
     };
 
     unsafe {
-        schedule_process(event.pid);
+        // schedule_process(event.pid);
 
-        // Restore kernel RSP + PC -> RIP from where it was stored in run/resume process
+        // // Restore kernel RSP + PC -> RIP from where it was stored in run/resume process
         core::arch::asm!(
             "mov rsp, {0}",
             "push {1}",
@@ -521,65 +633,17 @@ pub fn preempt_process(rsp: u64) {
             in(reg) preemption_info.1
         );
 
-        x2apic::send_eoi();
-
-        core::arch::asm!("ret");
-    }
-}
-
-pub fn block_process(rsp: u64) {
-    let event: EventInfo = current_running_event_info();
-    if event.pid == 0 {
-        return;
-    }
-
-    // Get PCB from PID
-    let preemption_info = unsafe {
-        let mut process_table = PROCESS_TABLE.write();
-        let process = process_table
-            .get_mut(&event.pid)
-            .expect("Process not found");
-
-        let pcb = process.pcb.get();
-
-        // save registers to the PCB
-        let stack_ptr: *const u64 = rsp as *const u64;
-
-        (*pcb).registers.rax = *stack_ptr.add(0);
-        (*pcb).registers.rbx = *stack_ptr.add(1);
-        (*pcb).registers.rcx = *stack_ptr.add(2);
-        (*pcb).registers.rdx = *stack_ptr.add(3);
-        (*pcb).registers.rsi = *stack_ptr.add(4);
-        (*pcb).registers.rdi = *stack_ptr.add(5);
-        (*pcb).registers.r8 = *stack_ptr.add(6);
-        (*pcb).registers.r9 = *stack_ptr.add(7);
-        (*pcb).registers.r10 = *stack_ptr.add(8);
-        (*pcb).registers.r11 = *stack_ptr.add(9);
-        (*pcb).registers.r12 = *stack_ptr.add(10);
-        (*pcb).registers.r13 = *stack_ptr.add(11);
-        (*pcb).registers.r14 = *stack_ptr.add(12);
-        (*pcb).registers.r15 = *stack_ptr.add(13);
-        (*pcb).registers.rbp = *stack_ptr.add(14);
-        // saved from interrupt stack frame
-        (*pcb).registers.rsp = *stack_ptr.add(18);
-        (*pcb).registers.rip = *stack_ptr.add(15);
-        (*pcb).registers.rflags = *stack_ptr.add(17);
-
-        (*pcb).state = ProcessState::Blocked;
-
-        ((*pcb).kernel_rsp, (*pcb).kernel_rip)
-    };
-
-    unsafe {
-        // TODO schedule blocked process
-
         // Restore kernel RSP + PC -> RIP from where it was stored in run/resume process
-        core::arch::asm!(
-            "mov rsp, {0}",
-            "push {1}",
-            in(reg) preemption_info.0,
-            in(reg) preemption_info.1
-        );
+        // core::arch::asm!(
+        //     "mov r11, rsp",   // Move RSP to R11
+        //     "mov [rcx], r11", // store RSP (from R11)"
+        //     "mov rsp, {0}",
+        //     "push {1}",
+        //     in(reg) preemption_info.0,
+        //     in(reg) preemption_info.1,
+        //     in("rcx") preemption_info.2,
+        //     out("r11") _
+        // );
 
         x2apic::send_eoi();
 
@@ -703,5 +767,91 @@ pub fn sleep_process_syscall(nanos: u64, reg_vals: &ForkingRegisters) {
         x2apic::send_eoi();
 
         core::arch::asm!("swapgs", "ret");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::{
+        constants::processes::TEST_EXIT_CODE,
+        memory::{mm::Mm, HHDM_OFFSET},
+        processes::loader::load_elf,
+    };
+
+    use super::*;
+    use core::slice;
+    use x86_64::{
+        structures::paging::{OffsetPageTable, PageTable, PhysFrame},
+        PhysAddr,
+    };
+
+    #[test_case]
+    async fn verify_stack_args_envs() {
+        // ------ setup exactly as before ------
+        let mut user_mapper = unsafe {
+            let pml4 = create_process_page_table();
+            let virt = *HHDM_OFFSET + pml4.start_address().as_u64();
+            let ptr = virt.as_mut_ptr::<PageTable>();
+            OffsetPageTable::new(&mut *ptr, *HHDM_OFFSET)
+        };
+        let args = alloc::vec!["foo".into(), "bar".into()];
+        let envs = alloc::vec!["X=1".into(), "Y=two".into()];
+        let pml4_frame = PhysFrame::containing_address(PhysAddr::new(0x1000));
+        let mut mm = Mm::new(pml4_frame);
+
+        // call loader: `sp` is the address of the u64 slot containing `argc`
+        let (sp, _entry) = load_elf(
+            TEST_EXIT_CODE,
+            &mut user_mapper,
+            &mut KERNEL_MAPPER.lock(),
+            &mut mm,
+            args.clone(),
+            envs.clone(),
+        );
+
+        // total u64 slots we pushed: envs + NULL, args + NULL, argc
+        let nen = envs.len() as u64;
+        let nar = args.len() as u64;
+
+        // ---- 1) verify argc ----
+        // `sp` points at argc, so just read it
+        let got_argc = unsafe { (sp.as_u64() as *const u64).read() };
+        assert_eq!(got_argc, nar, "argc mismatch");
+
+        // 2) verify argv
+        let argv0_ptr = (sp.as_u64() - 8 * (nar + 1)) as *const u64;
+        (0..(nar as usize)).for_each(|i| {
+            // read argv[i]
+            let str_addr = unsafe { argv0_ptr.add(i).read() as *const u8 };
+            // walk until NUL
+            let mut len = 0;
+            while unsafe { *str_addr.add(len) } != 0 {
+                len += 1;
+            }
+            let got = core::str::from_utf8(unsafe { slice::from_raw_parts(str_addr, len) })
+                .expect("Invalid UTF-8 in argv");
+            serial_println!("GOT: {:#?}", got);
+            assert_eq!(got, &args[i], "argv[{}] mismatch", i);
+        });
+
+        // ---- 3) verify envp pointers & strings ----
+        // envp[] sits *below* argv array + its NULL terminator:
+        // offset = sp - 8 * (nar + 1) - 8 * (nen + 1)
+        let envp0_ptr = (
+            sp.as_u64()
+            - 8 * (nar + 1)       // skip argv + NULL
+            - 8 * (nen + 1)
+            // skip envp + NULL
+        ) as *const u64;
+        (0..(nen as usize)).for_each(|i| {
+            let str_addr = unsafe { envp0_ptr.add(i).read() as *const u8 };
+            let mut len = 0;
+            while unsafe { *str_addr.add(len) } != 0 {
+                len += 1;
+            }
+            let got = core::str::from_utf8(unsafe { slice::from_raw_parts(str_addr, len) })
+                .expect("Invalid UTF-8 in envp");
+            assert_eq!(got, &envs[i], "envp[{}] mismatch", i);
+        });
     }
 }

@@ -317,7 +317,7 @@ mod tests {
     #[test_case]
     async fn test_superblock_block_size() {
         let mut sb = Superblock::default();
-
+        // sb.block_size_shift = 0; // 1024 bytes
         assert_eq!(sb.block_size(), 1024);
 
         sb.block_size_shift = 1; // 2048 bytes
