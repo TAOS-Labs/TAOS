@@ -31,7 +31,7 @@ use core::arch::naked_asm;
 
 use super::{
     memorymap::{sys_mprotect, sys_munmap},
-    sockets::sys_socket,
+    sockets::{sys_bind, sys_connect, sys_socket},
 };
 
 lazy_static! {
@@ -182,6 +182,8 @@ pub unsafe extern "C" fn syscall_handler_impl(
         SYSCALL_MUNMAP => sys_munmap(syscall.arg1, syscall.arg2),
         SYSCALL_MPROTECT => sys_mprotect(syscall.arg1, syscall.arg2, syscall.arg3),
         SYSCALL_SOCKET => sys_socket(syscall.arg1, syscall.arg2, syscall.arg3),
+        SYSCALL_BIND => sys_bind(syscall.arg1, syscall.arg2, syscall.arg3),
+        SYSCALL_CONNECT => sys_connect(syscall.arg1, syscall.arg2, syscall.arg3),
         _ => {
             panic!("Unknown syscall, {}", syscall.number);
         }
