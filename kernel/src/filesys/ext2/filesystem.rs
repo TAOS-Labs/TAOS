@@ -29,6 +29,8 @@ pub enum FilesystemError {
     InvalidPath,
     CacheError,
     InvalidFd,
+    /// The process has used all of its file descriptors
+    NoFd,
 }
 
 pub type FilesystemResult<T> = Result<T, FilesystemError>;

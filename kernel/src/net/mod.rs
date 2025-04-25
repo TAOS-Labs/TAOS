@@ -1,15 +1,24 @@
-use alloc::vec;
+use core::sync::atomic::{AtomicBool, AtomicU16};
+
+use alloc::{collections::btree_set::BTreeSet, sync::Arc, vec};
+use lazy_static::lazy_static;
 use smoltcp::{
     iface::{Interface, SocketHandle, SocketSet},
     socket::dhcpv4,
     time::Instant,
     wire::{EthernetAddress, IpCidr, Ipv4Cidr},
 };
-use spin::Mutex;
+use spin::{Mutex, RwLock};
 
 use crate::{debug, debug_println, devices::xhci::ecm::ECMDevice};
-
+const EPHEMERAL_PORTS_START: u16 = 49152;
+static NEXT_EPHEMERAL_PORT: AtomicU16 = AtomicU16::new(EPHEMERAL_PORTS_START);
+static EPHEMERAL_PORTS_OVERFLOW: AtomicBool = AtomicBool::new(false);
 pub static INTERFACE: Mutex<Option<DeviceInterface>> = Mutex::new(Option::None);
+
+lazy_static! {
+    pub static ref PORTS_SET: Arc<RwLock<BTreeSet<u16>>> = Arc::new(RwLock::new(BTreeSet::new()));
+}
 
 #[derive(Debug)]
 pub enum NetError {
@@ -20,10 +29,10 @@ pub enum NetError {
     Deconfigured,
 }
 
-pub struct DeviceInterface<'a> {
+pub struct DeviceInterface {
     device: ECMDevice,
-    interface: Interface,
-    sockets: SocketSet<'a>,
+    pub interface: Interface,
+    pub sockets: SocketSet<'static>,
     dhcp_handle: Option<SocketHandle>,
 }
 
@@ -31,15 +40,37 @@ pub fn set_interface(mut device: ECMDevice, hardware_address: EthernetAddress) {
     let config =
         smoltcp::iface::Config::new(smoltcp::wire::HardwareAddress::Ethernet(hardware_address));
     let interface = smoltcp::iface::Interface::new(config, &mut device, Instant::ZERO);
+    // Can use 'static because we are using owned buffers for sockets
+    // see https://docs.rs/smoltcp/latest/smoltcp/iface/struct.SocketSet.html
+    let sockets: SocketSet<'static> = SocketSet::new(vec![]);
     let new_interface = DeviceInterface {
         device,
         interface,
-        sockets: SocketSet::new(vec![]),
+        sockets,
         dhcp_handle: Option::None,
     };
 
     let mut old_interface = INTERFACE.lock();
     *old_interface = Option::Some(new_interface);
+}
+
+/// Get a reference to the global network interface
+pub fn get() -> Option<spin::MutexGuard<'static, Option<DeviceInterface>>> {
+    let guard = INTERFACE.lock();
+    if guard.is_some() {
+        Some(guard)
+    } else {
+        None
+    }
+}
+
+pub fn with_interface<F, R>(f: F) -> Option<R>
+where
+    F: FnOnce(&mut DeviceInterface) -> R,
+{
+    let mut guard = get()?;
+    let interface = guard.as_mut()?;
+    Some(f(interface))
 }
 
 /// Sends a dhcp request for an ip address.
@@ -114,4 +145,16 @@ fn set_ipv4_addr(iface: &mut Interface, cidr: Ipv4Cidr) {
         addrs.clear();
         addrs.push(IpCidr::Ipv4(cidr)).unwrap();
     });
+}
+
+pub fn get_eph_port() -> Option<u16> {
+    if EPHEMERAL_PORTS_OVERFLOW.load(core::sync::atomic::Ordering::SeqCst) {
+        return Option::None;
+    }
+    let potential_result = NEXT_EPHEMERAL_PORT.fetch_add(1, core::sync::atomic::Ordering::SeqCst);
+    if potential_result < EPHEMERAL_PORTS_START {
+        EPHEMERAL_PORTS_OVERFLOW.store(true, core::sync::atomic::Ordering::SeqCst);
+        return Option::None;
+    }
+    Option::Some(potential_result)
 }
