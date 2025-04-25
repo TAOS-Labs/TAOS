@@ -7,7 +7,7 @@
 #![reexport_test_harness_main = "test_main"]
 
 use limine::request::{RequestsEndMarker, RequestsStartMarker};
-use taos::{debug, events::run_loop, shell};
+use taos::{debug, events::run_loop};
 
 extern crate alloc;
 

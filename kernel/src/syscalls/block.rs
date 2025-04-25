@@ -54,11 +54,12 @@ unsafe fn block_on_helper<F: Future<Output = u64> + ?Sized>(
     let waker = unsafe { Waker::from_raw(anoop_raw_waker()) };
     let mut cx = Context::from_waker(&waker);
 
-    let future = unsafe { Pin::new_unchecked(&mut *fut_ptr) };
+    let mut future = unsafe { Pin::new_unchecked(&mut *fut_ptr) };
 
     // TODO remove
-    if let Poll::Ready(val) = future.poll(&mut cx) {
+    if let Poll::Ready(val) = future.as_mut().poll(&mut cx) {
         // We haven't yet yielded, so act like normal
+        drop(Box::from_raw(fut_ptr));
         return val;
     }
 
@@ -134,6 +135,8 @@ pub unsafe extern "C" fn retry_block_on_helper<F: Future<Output = u64> + ?Sized>
 
             &(*pcb).registers
         };
+
+        drop(Box::from_raw(fut_ptr));
 
         // We've yielded before, so stack is unreliable
         core::arch::asm!(

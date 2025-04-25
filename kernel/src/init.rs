@@ -145,6 +145,7 @@ pub fn init() -> u32 {
         },
         3,
     );
+
     bsp_id
 }
 
