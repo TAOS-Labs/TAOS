@@ -270,20 +270,20 @@ mod tests {
         ];
 
         for name in names.iter() {
-            let path = format!("/{}", name);
+            let path = format!("/{name}");
             fs.create_file(&path, mode).await.unwrap();
 
             let node = fs.get_node(&path).await.unwrap();
             assert!(node.is_file());
 
-            let content = format!("Content for {}", name);
+            let content = format!("Content for {name}");
             fs.write_file(&path, content.as_bytes()).await.unwrap();
             let read_content = fs.read_file(&path).await.unwrap();
             assert_eq!(read_content, content.as_bytes());
         }
 
         let long_name = "a".repeat(256);
-        let long_path = format!("/{}", long_name);
+        let long_path = format!("/{long_name}");
         match fs.create_file(&long_path, mode).await {
             Err(FilesystemError::InvalidPath) | Err(FilesystemError::NodeError(_)) => {}
             _ => panic!("Expected error for too long filename"),
@@ -295,7 +295,7 @@ mod tests {
         }
 
         for name in names.iter() {
-            let path = format!("/{}", name);
+            let path = format!("/{name}");
             fs.remove(&path).await.unwrap();
         }
     }
@@ -310,19 +310,19 @@ mod tests {
         let depth = 5;
 
         for i in 1..=depth {
-            current_path = format!("{}/dir{}", current_path, i);
+            current_path = format!("{current_path}/dir{i}");
             fs.create_directory(&current_path, dir_mode).await.unwrap();
 
-            let file_path = format!("{}/file{}.txt", current_path, i);
+            let file_path = format!("{current_path}/file{i}.txt");
             fs.create_file(&file_path, file_mode).await.unwrap();
 
-            let content = format!("Content for level {}", i);
+            let content = format!("Content for level {i}");
             fs.write_file(&file_path, content.as_bytes()).await.unwrap();
         }
 
-        let deepest_file = format!("{}/file{}.txt", current_path, depth);
+        let deepest_file = format!("{current_path}/file{depth}.txt");
         let content = fs.read_file(&deepest_file).await.unwrap();
-        assert_eq!(content, format!("Content for level {}", depth).as_bytes());
+        assert_eq!(content, format!("Content for level {depth}").as_bytes());
 
         for i in (1..=3).rev() {
             let dir_path = if i == 1 {
@@ -337,7 +337,7 @@ mod tests {
             if i < depth {
                 assert!(entries.iter().any(|e| e.name == format!("dir{}", i + 1)));
             }
-            assert!(entries.iter().any(|e| e.name == format!("file{}.txt", i)));
+            assert!(entries.iter().any(|e| e.name == format!("file{i}.txt")));
         }
 
         for i in (1..=depth).rev() {
@@ -346,12 +346,12 @@ mod tests {
             } else {
                 let mut path = String::from("/dir1");
                 for j in 2..=i {
-                    path = format!("{}/dir{}", path, j);
+                    path = format!("{path}/dir{j}");
                 }
                 path
             };
 
-            let file_path = format!("{}/file{}.txt", dir_path, i);
+            let file_path = format!("{dir_path}/file{i}.txt");
             fs.remove(&file_path).await.unwrap();
 
             if i > 1 {
