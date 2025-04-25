@@ -1,4 +1,4 @@
-use alloc::{sync::Arc, vec};
+use alloc::{boxed::Box, sync::Arc, vec, vec::Vec};
 use num_derive::FromPrimitive;
 use num_traits::FromPrimitive;
 use smoltcp::{
@@ -54,15 +54,14 @@ pub enum InternetSocket {
 }
 
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct UDPSocket {
     handle: SocketHandle,
 }
 
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct TCPSocket {
     handle: SocketHandle,
+    queue: Option<Box<[Option<SockAddr>]>>,
 }
 
 #[derive(Debug, Clone)]
@@ -85,6 +84,8 @@ pub enum SocketError {
     AddressInUse,
     // Tried to bind to an already bound value = EINVAL
     SocketAlreadyBound,
+    // Tried to preform an operation on a socket type that was not supported = EOPNOTSUPP
+    OperationNotSuppoorted,
 }
 
 /// Implementation of the socket system call.
@@ -148,6 +149,7 @@ fn create_internet_socket(
                 .ok_or(SocketError::NoInterface)?;
             let tcp_socket = TCPSocket {
                 handle: socket_handle,
+                queue: Option::None,
             };
             InternetSocket::TCP(tcp_socket)
         }
@@ -270,4 +272,44 @@ pub fn sys_connect(socket_fd: u64, sock_addr_ptr: u64, addrlen: u64) -> u64 {
 pub fn connect_impl(socket_fd: u64, sock_addr_ptr: u64, addrlen: u64) -> Result<(), SocketError> {
     // Probally wrong, but who cares
     bind_impl(socket_fd, sock_addr_ptr, addrlen)
+}
+
+pub fn listen_impl(socket_fd: u64, backlog: u64) -> Result<(), SocketError> {
+    let socket_size: usize = socket_fd.try_into().unwrap();
+    if socket_size > MAX_FILES {
+        return Result::Err(SocketError::NotAnOpenFile);
+    }
+    let file = with_current_pcb(|pcb| pcb.fd_table[socket_size].clone());
+    let file = file.ok_or(SocketError::NotAnOpenFile)?;
+    if let FakeFile::Socket(socket) = file {
+        let mut socket_guard = socket.lock();
+        match socket_guard.clone() {
+            Socket::Internet(mut inet_socket) => {
+                listen_internet_socket(&mut inet_socket, backlog)?;
+                *socket_guard = Socket::Internet(inet_socket);
+                Result::Ok(())
+            }
+            Socket::Unix(_domain_socket) => {
+                todo!()
+            }
+        }
+    } else {
+        Result::Err(SocketError::NotASocket)
+    }
+}
+
+fn listen_internet_socket(socket: &mut InternetSocket, backlog: u64) -> Result<(), SocketError> {
+    if let InternetSocket::TCP(ref mut tcp_sock) = socket {
+        let backlog_size: usize = backlog.try_into().unwrap();
+        let mut conn_buff: Vec<Option<SockAddr>> = Vec::with_capacity(backlog_size);
+        for _ in 0..backlog_size {
+            conn_buff.push(Option::None);
+        }
+        let stuff = conn_buff.into_boxed_slice();
+
+        tcp_sock.queue = Option::Some(stuff);
+        return Result::Ok(());
+    }
+
+    Result::Err(SocketError::OperationNotSuppoorted)
 }
