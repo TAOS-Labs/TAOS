@@ -254,7 +254,7 @@ extern "x86-interrupt" fn page_fault_handler(
 
 // TODO: Refactor this to follow the way 64 bit works
 #[no_mangle]
-#[naked]
+#[unsafe(naked)]
 pub extern "x86-interrupt" fn naked_syscall_handler(_: InterruptStackFrame) {
     unsafe {
         naked_asm!(
@@ -369,7 +369,7 @@ fn syscall_handler(rsp: u64) {
     // }
 }
 
-#[naked]
+#[unsafe(naked)]
 extern "x86-interrupt" fn naked_timer_handler(_: InterruptStackFrame) {
     unsafe {
         core::arch::naked_asm!(
