@@ -4,6 +4,7 @@
 *.hdd
 *.img
 *.txt
+*.od
 
 *zig*
 

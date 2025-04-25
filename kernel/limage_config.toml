@@ -19,8 +19,9 @@ base_args = [
     "-device", "usb-net,netdev=net0",
 
     # Audio
-    "-device", "intel-hda",
-    "-device", "hda-duplex",
+    "-audiodev", "coreaudio,id=snd0",
+    "-device", "intel-hda,debug=0",
+    "-device", "hda-duplex,audiodev=snd0",
 
     # General Storage
     "-drive", "id=mysdcard,file=storage_test.img,if=none,format=raw",

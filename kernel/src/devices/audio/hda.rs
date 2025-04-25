@@ -1,5 +1,5 @@
 use crate::{
-    debug_print, debug_println, devices::{audio::{buffer::{setup_bdl, BdlEntry}, command_buffer::RirbBuffer, commands::{CorbEntry, HdaVerb, NodeParams}}, pci::{read_config, walk_pci_bus, DeviceInfo}}, events::{futures::devices::HWRegisterWrite, nanosleep_current_event}, filesys::ext2::cache, interrupts::x2apic, memory::HHDM_OFFSET, processes::process::sleep_process_int, serial_print, serial_println
+    debug_print, debug_println, devices::{audio::{buffer::{setup_bdl, BdlEntry}, command_buffer::RirbBuffer, commands::{CorbEntry, HdaVerb, NodeParams}}, pci::{read_config, walk_pci_bus, DeviceInfo}}, events::{futures::devices::HWRegisterWrite, nanosleep_current_event, yield_now}, filesys::ext2::cache, interrupts::x2apic, memory::HHDM_OFFSET, processes::process::sleep_process_int, serial_print, serial_println
 };
 
 use crate::devices::{
@@ -860,7 +860,7 @@ impl IntelHDA {
         for i in 0..audio_buf.size {
             unsafe {
                 *audio_buf.virt_addr.as_mut_ptr::<u8>().add(i) =
-                    if i % 2 == 0 { 0x00 } else { 0xFF };
+                    if i % 3 == 0 { 0x00 } else if i % 3 == 1 { 0x10 } else { 0xFF };
             }
         }
 
@@ -919,16 +919,6 @@ impl IntelHDA {
             };
         }
 
-        // now lets congifure the fmt reg
-        let fmt_addr = (stream_base + 0x12) as *mut u16;
-        let fmt_write = 0x4011;
-        let fmt_val: u16;
-        unsafe {
-            write_volatile(fmt_addr, fmt_write);
-            fmt_val = read_volatile(fmt_addr);
-        }
-        debug_println!("fmt_val: {:X}", fmt_val);
-
         // write bdl address
         let bdladr_addr = (stream_base + 0x18) as *mut u64;
         let bdladr_val: u64;
@@ -950,8 +940,18 @@ impl IntelHDA {
         let lvi_addr = (stream_base + 0xC) as *mut u16;
         unsafe {write_volatile(lvi_addr, num_entries as u16 - 1);}
 
+        // now lets congifure the fmt reg
+        let fmt_addr = (stream_base + 0x12) as *mut u16;
+        let fmt_write = 0x4011;
+        let fmt_val: u16;
+        unsafe {
+            write_volatile(fmt_addr, fmt_write);
+            fmt_val = read_volatile(fmt_addr);
+        }
+        debug_println!("fmt_val: {:X}", fmt_val);
+
         let ctl2_addr = (stream_base + 2) as *mut u8;
-        unsafe {write_volatile(ctl2_addr, 1);}
+        unsafe {write_volatile(ctl2_addr, 1 << 4);}
         let ctl2_val = unsafe {read_volatile(ctl2_addr)};
         debug_println!("ctl2: {:X}", ctl2_val);
 
@@ -959,8 +959,12 @@ impl IntelHDA {
         unsafe {
             write_volatile(ctl0_addr, 0x6);
         }
-        unsafe{
-            debug_println!("lpib: {}", read_volatile((stream_base + 0x4) as *const u32));
+        
+        for _ in 0..10 {
+            unsafe{
+                debug_println!("lpib: {}", read_volatile((stream_base + 0x4) as *const u32));
+            }
+            nanosleep_current_event(1_000_000_000).unwrap().await;
         }
     }
     
