@@ -5,16 +5,10 @@ use x86_64::PhysAddr;
 
 use crate::{
     constants::devices::SD_REQ_TIMEOUT_NANOS,
-    debug_println,
+    debug, debug_println,
     devices::pci::write_pci_command,
     events::{current_running_event, futures::devices::SDCardReq, get_runner_time},
-    filesys::{
-        ext2::{
-            block_io::{BlockError, BlockIO, BlockResult},
-            filesystem::{FilesystemError, FilesystemResult},
-        },
-        BlockDevice,
-    },
+    filesys::ext2::block_io::{BlockError, BlockIO, BlockResult},
     memory::KERNEL_MAPPER,
 };
 use bitflags::bitflags;
@@ -200,53 +194,6 @@ const SD_DMA_INTERFACE: u8 = 0x1;
 const MAX_ITERATIONS: usize = 1_000;
 const SD_SECTOR_SIZE: u32 = 512;
 
-#[async_trait]
-impl BlockDevice for SDCardInfo {
-    async fn read_block(&self, block_num: u64, buf: &mut [u8]) -> FilesystemResult<u8> {
-        if block_num > self.total_sectors {
-            return Result::Err(FilesystemError::DeviceError(BlockError::InvalidBlock));
-        }
-        let data = read_sd_card(
-            self,
-            block_num
-                .try_into()
-                .expect("Maxumum block number should not be greater than 32 bits"),
-        )
-        .await
-        .map_err(|_| FilesystemError::DeviceError(BlockError::DeviceError))?;
-
-        buf.copy_from_slice(&data);
-
-        Result::Ok(0)
-    }
-
-    async fn write_block(&mut self, block_num: u64, buf: &[u8]) -> FilesystemResult<u8> {
-        if block_num > self.total_sectors {
-            return Result::Err(FilesystemError::DeviceError(BlockError::InvalidBlock));
-        }
-        let mut data: [u8; 512] = [0; 512];
-        data.copy_from_slice(buf);
-        write_sd_card(
-            self,
-            block_num
-                .try_into()
-                .expect("Maximum block number should not be greater than 32 bits"),
-            data,
-        )
-        .await
-        .map_err(|_| FilesystemError::DeviceError(BlockError::DeviceError))?;
-        Result::Ok(0)
-    }
-
-    fn block_size(&self) -> usize {
-        SD_SECTOR_SIZE.try_into().expect("To be on 64 bit system")
-    }
-
-    fn total_blocks(&self) -> u64 {
-        self.total_sectors
-    }
-}
-
 const SECTORS_PER_BLOCK: u32 = 2;
 const SD_BLOCK_IO_SIZE: u32 = SD_SECTOR_SIZE * SECTORS_PER_BLOCK;
 
@@ -256,6 +203,7 @@ impl BlockIO for SDCardInfo {
         if (block_num + 1) * SECTORS_PER_BLOCK as u64 > self.total_sectors {
             return BlockResult::Err(BlockError::InvalidBlock);
         }
+        let start = get_runner_time(0);
         for start_block in 0..SECTORS_PER_BLOCK {
             let block_num_32: u32 = block_num
                 .try_into()
@@ -268,6 +216,8 @@ impl BlockIO for SDCardInfo {
             buf[start_block_size..(SD_SECTOR_SIZE as usize + start_block_size)]
                 .copy_from_slice(&data[..(SD_SECTOR_SIZE as usize)]);
         }
+        let end = get_runner_time(0);
+        debug!("Reading took {} ticks", end - start);
 
         Result::Ok(())
     }

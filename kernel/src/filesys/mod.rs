@@ -146,14 +146,6 @@ impl File {
     }
 }
 
-#[async_trait]
-pub trait BlockDevice: Send + Sync {
-    async fn read_block(&self, block_num: u64, buf: &mut [u8]) -> FilesystemResult<u8>;
-    async fn write_block(&mut self, block_num: u64, buf: &[u8]) -> FilesystemResult<u8>;
-    fn block_size(&self) -> usize;
-    fn total_blocks(&self) -> u64;
-}
-
 /// The main filesystem trait that sits on top of the filesystem
 #[async_trait]
 pub trait FileSystem {
