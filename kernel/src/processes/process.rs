@@ -23,6 +23,7 @@ use crate::{
     },
     processes::{loader::load_elf, registers::Registers, signal},
     serial_println,
+    syscalls::sockets::Socket,
 };
 use alloc::{collections::BTreeMap, sync::Arc};
 use core::{
@@ -48,6 +49,20 @@ pub enum ProcessState {
     Kernel,
 }
 
+/// Represents everything that is given a file descriptor
+#[derive(Debug, Clone)]
+pub enum FakeFile {
+    /// Represents a actual file
+    File(Arc<Mutex<File>>),
+    /// Represents a socket
+    Socket(Arc<Mutex<Socket>>),
+    /// Reserved for standard in and out
+    Console(),
+    /// Used as a sentinel to say that someone has claimed the file
+    /// descriptor, but has not chosen what to place in it yet.
+    Claimed(),
+}
+
 #[derive(Debug, Clone)]
 /// TODO:Put locks around all of this for supporting multithreadings
 pub struct PCB {
@@ -58,8 +73,7 @@ pub struct PCB {
     pub next_preemption_time: u64,
     pub registers: Registers,
     pub mmap_address: u64,
-    pub fd_table: [Option<Arc<Mutex<File>>>; MAX_FILES],
-    pub next_fd: Arc<Mutex<usize>>,
+    pub fd_table: [Option<FakeFile>; MAX_FILES],
     pub mm: Mm,
     pub namespace: Namespace,
     pub signal_descriptor: SignalDescriptor,
@@ -93,6 +107,17 @@ impl PCB {
         let virt = *HHDM_OFFSET + self.mm.pml4_frame.start_address().as_u64();
         let ptr = virt.as_mut_ptr::<PageTable>();
         OffsetPageTable::new(unsafe { &mut *ptr }, *HHDM_OFFSET)
+    }
+
+    /// Finds the next open file descriptor in the files
+    pub fn find_next_fd(&mut self) -> Option<usize> {
+        for (idx, file) in self.fd_table.iter().enumerate() {
+            if file.is_none() {
+                self.fd_table[idx] = Option::Some(FakeFile::Claimed());
+                return Option::Some(idx);
+            }
+        }
+        Option::None
     }
 }
 
@@ -153,6 +178,10 @@ pub fn create_placeholder_process() -> u32 {
     let pid = 0;
     let process_pml4_frame = unsafe { create_process_page_table() };
     let mm = Mm::new(process_pml4_frame);
+    let mut fd_table = [const { None }; MAX_FILES];
+    fd_table[0] = Option::Some(FakeFile::Console());
+    fd_table[1] = Option::Some(FakeFile::Console());
+    fd_table[2] = Option::Some(FakeFile::Console());
     let process = Arc::new(UnsafePCB::new(PCB {
         pid,
         state: ProcessState::New,
@@ -179,8 +208,7 @@ pub fn create_placeholder_process() -> u32 {
             rflags: 0x0,
         },
         mmap_address: START_MMAP_ADDRESS,
-        fd_table: [const { None }; MAX_FILES],
-        next_fd: Arc::new(Mutex::new(0)),
+        fd_table,
         next_preemption_time: 0,
         mm,
         namespace: Namespace::new(),
@@ -210,7 +238,10 @@ pub fn create_process(elf_bytes: &[u8]) -> u32 {
         &mut KERNEL_MAPPER.lock(),
         mm.borrow_mut(),
     );
-
+    let mut fd_table = [const { None }; MAX_FILES];
+    fd_table[0] = Option::Some(FakeFile::Console());
+    fd_table[1] = Option::Some(FakeFile::Console());
+    fd_table[2] = Option::Some(FakeFile::Console());
     let process = Arc::new(UnsafePCB::new(PCB {
         pid,
         state: ProcessState::New,
@@ -238,8 +269,7 @@ pub fn create_process(elf_bytes: &[u8]) -> u32 {
             rflags: 0x202,
         },
         mmap_address: START_MMAP_ADDRESS,
-        fd_table: [const { None }; MAX_FILES],
-        next_fd: Arc::new(Mutex::new(0)),
+        fd_table,
         mm,
         namespace: Namespace::new(),
         signal_descriptor: SignalDescriptor::new(0, VirtAddr::new(0), 0),
@@ -378,7 +408,7 @@ pub async unsafe fn run_process_ring3(pid: u32) {
     }
 }
 
-#[naked]
+#[unsafe(naked)]
 #[no_mangle]
 unsafe fn call_process(
     registers: *const Registers,
@@ -436,7 +466,7 @@ unsafe fn call_process(
     );
 }
 
-#[naked]
+#[unsafe(naked)]
 #[no_mangle]
 unsafe fn return_process() {
     naked_asm!(

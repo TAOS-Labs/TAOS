@@ -29,7 +29,10 @@ use crate::{
 
 use core::arch::naked_asm;
 
-use super::memorymap::{sys_mprotect, sys_munmap};
+use super::{
+    memorymap::{sys_mprotect, sys_munmap},
+    sockets::{sys_bind, sys_connect, sys_socket},
+};
 
 lazy_static! {
     pub static ref EXIT_CODES: Mutex<BTreeMap<u32, i64>> = Mutex::new(BTreeMap::new());
@@ -60,7 +63,7 @@ pub struct SyscallRegisters {
 ///
 /// # Safety
 /// This function is unsafe as it manually saves state and switches stacks
-#[naked]
+#[unsafe(naked)]
 #[no_mangle]
 pub unsafe extern "C" fn syscall_handler_64_naked() -> ! {
     naked_asm!(
@@ -178,6 +181,9 @@ pub unsafe extern "C" fn syscall_handler_impl(
         SYSCALL_WAIT => block_on(sys_wait(syscall.arg1 as u32)),
         SYSCALL_MUNMAP => sys_munmap(syscall.arg1, syscall.arg2),
         SYSCALL_MPROTECT => sys_mprotect(syscall.arg1, syscall.arg2, syscall.arg3),
+        SYSCALL_SOCKET => sys_socket(syscall.arg1, syscall.arg2, syscall.arg3),
+        SYSCALL_BIND => sys_bind(syscall.arg1, syscall.arg2, syscall.arg3),
+        SYSCALL_CONNECT => sys_connect(syscall.arg1, syscall.arg2, syscall.arg3),
         _ => {
             panic!("Unknown syscall, {}", syscall.number);
         }

@@ -5,6 +5,6 @@
 *.img
 *.txt
 
-*zig*
-
 /target
+
+.DS_Store

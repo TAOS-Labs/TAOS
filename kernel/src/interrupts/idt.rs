@@ -20,7 +20,7 @@ use crate::{
         idt::{KEYBOARD_VECTOR, MOUSE_VECTOR, SYSCALL_HANDLER, TIMER_VECTOR, TLB_SHOOTDOWN_VECTOR},
         syscalls::{SYSCALL_EXIT, SYSCALL_MMAP, SYSCALL_NANOSLEEP, SYSCALL_PRINT},
     },
-    devices::{keyboard::keyboard_handler, mouse::mouse_handler},
+    devices::ps2_dev::{keyboard_interrupt_handler, mouse_interrupt_handler},
     events::inc_runner_clock,
     interrupts::x2apic::{self, current_core_id, TLB_SHOOTDOWN_ADDR},
     memory::{
@@ -61,8 +61,8 @@ lazy_static! {
             .set_handler_fn(naked_syscall_handler)
             .set_privilege_level(x86_64::PrivilegeLevel::Ring3);
         idt[TLB_SHOOTDOWN_VECTOR].set_handler_fn(tlb_shootdown_handler);
-        idt[KEYBOARD_VECTOR].set_handler_fn(keyboard_handler);
-        idt[MOUSE_VECTOR].set_handler_fn(mouse_handler);
+        idt[KEYBOARD_VECTOR].set_handler_fn(keyboard_interrupt_handler);
+        idt[MOUSE_VECTOR].set_handler_fn(mouse_interrupt_handler);
         idt
     };
 }
@@ -261,7 +261,8 @@ extern "x86-interrupt" fn page_fault_handler(
 
 // TODO: Refactor this to follow the way 64 bit works
 #[no_mangle]
-#[naked]
+#[unsafe(naked)]
+#[allow(unused_unsafe)]
 pub extern "x86-interrupt" fn naked_syscall_handler(_: InterruptStackFrame) {
     unsafe {
         naked_asm!(
@@ -376,7 +377,8 @@ fn syscall_handler(rsp: u64) {
     // }
 }
 
-#[naked]
+#[unsafe(naked)]
+#[allow(unused_unsafe)]
 extern "x86-interrupt" fn naked_timer_handler(_: InterruptStackFrame) {
     unsafe {
         core::arch::naked_asm!(
@@ -396,11 +398,11 @@ extern "x86-interrupt" fn naked_timer_handler(_: InterruptStackFrame) {
             push rcx
             push rbx
             push rax
-
+    
             cld
             mov	rdi, rsp
             call timer_handler
-
+    
             pop rax
             pop rbx
             pop rcx
@@ -417,7 +419,7 @@ extern "x86-interrupt" fn naked_timer_handler(_: InterruptStackFrame) {
             pop r15
             pop rbp
             iretq
-      "
+        "
         );
     }
 }
