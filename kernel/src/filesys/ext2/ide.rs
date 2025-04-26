@@ -199,6 +199,9 @@ impl BlockIO for Ide {
         unsafe { regs.read_data(buffer) }
     }
 
+    async fn read_sector(&self, sector_number: u64, buffer: &mut [u8]) -> BlockResult<()> {
+        self.read_block(sector_number, buffer).await
+    }
     async fn write_block(&self, block_number: u64, buffer: &[u8]) -> BlockResult<()> {
         if buffer.len() < SECTOR_SIZE {
             return Err(BlockError::InvalidBlock);

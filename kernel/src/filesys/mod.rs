@@ -50,7 +50,7 @@ use crate::{devices::sd_card::SD_CARD, serial_println};
 
 lazy_static! {
     /// Whether the filesystem has finished initialization
-    static ref FS_INIT_COMPLETE: Arc<AtomicBool> = Arc::new(AtomicBool::new(false));
+    pub static ref FS_INIT_COMPLETE: Arc<AtomicBool> = Arc::new(AtomicBool::new(false));
 
     /// Global filesystem instance
     pub static ref FILESYSTEM: Once<BlockMutex<Ext2Wrapper>> = Once::new();

@@ -8,15 +8,15 @@ use core::{
 use futures::task::ArcWake;
 
 use crate::{
-    devices::sd_card::{PresentState, SDCardError},
+    devices::sd_card::{NormalInterupts, SDCardError},
     events::{runner_timestamp, Event},
 };
 
 /// Future to sleep an event until a target timestamp (in system ticks)
 #[derive(Clone)]
 pub struct SDCardReq {
-    target_state: PresentState,
-    present_state_register_addr: *const u32,
+    target_state: NormalInterupts,
+    interrupt_register_addr: *const u16,
     timeout_timestamp: u64,
     event: Arc<Event>,
 }
@@ -25,14 +25,14 @@ unsafe impl Send for SDCardReq {}
 
 impl SDCardReq {
     pub fn new(
-        target_state: PresentState,
-        present_state_register_addr: *const u32,
+        target_state: NormalInterupts,
+        interrupt_register_addr: *const u16,
         timeout_timestamp: u64,
         event: Arc<Event>,
     ) -> SDCardReq {
         SDCardReq {
-            present_state_register_addr,
             target_state,
+            interrupt_register_addr,
             timeout_timestamp,
             event,
         }
@@ -89,8 +89,8 @@ impl Future for SDCardReq {
         }
 
         let present_state = unsafe {
-            PresentState::from_bits_retain(core::ptr::read_volatile(
-                self.present_state_register_addr,
+            NormalInterupts::from_bits_retain(core::ptr::read_volatile(
+                self.interrupt_register_addr,
             ))
         };
 

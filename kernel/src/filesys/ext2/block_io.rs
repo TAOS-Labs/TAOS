@@ -42,6 +42,13 @@ pub trait BlockIO: Send + Sync {
     /// * `buffer` - Buffer to read into, must be at least block_size() bytes
     async fn read_block(&self, block_number: u64, buffer: &mut [u8]) -> BlockResult<()>;
 
+    /// Read a sector into the provided buffer
+    ///
+    /// # Arguments
+    /// * `sector_number` - The sector number to read
+    /// * `buffer` - Buffer to read into, must be at least block_size() bytes
+    async fn read_sector(&self, sector_number: u64, buffer: &mut [u8]) -> BlockResult<()>;
+
     /// Read bytes from a specific offset
     ///
     /// # Arguments
@@ -177,6 +184,10 @@ impl BlockIO for MockDevice {
             buffer[..self.block_size as usize].fill(0);
             Ok(())
         }
+    }
+
+    async fn read_sector(&self, sector_number: u64, buffer: &mut [u8]) -> BlockResult<()> {
+        self.read_block(sector_number, buffer).await
     }
 
     async fn write_block(&self, block_number: u64, buffer: &[u8]) -> BlockResult<()> {

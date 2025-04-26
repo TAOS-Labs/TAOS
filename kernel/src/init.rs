@@ -17,10 +17,12 @@ use crate::{
     debug,
     devices::{self},
     events::{
-        current_running_event, futures::await_on::AwaitProcess, get_runner_time,
-        register_event_runner, run_loop, schedule_kernel, schedule_process, spawn, yield_now,
+        current_running_event,
+        futures::{await_on::AwaitProcess, sleep, sync::Condition},
+        get_runner_time, register_event_runner, run_loop, schedule_kernel, schedule_process, spawn,
+        yield_now,
     },
-    filesys::{self, get_file, FileSystem, OpenFlags, FILESYSTEM},
+    filesys::{self, get_file, FileSystem, OpenFlags, FILESYSTEM, FS_INIT_COMPLETE},
     interrupts::{self, idt},
     ipc::{
         messages::Message,
@@ -84,6 +86,13 @@ pub fn init() -> u32 {
 
     schedule_kernel(
         async {
+            if !FS_INIT_COMPLETE.load(Ordering::Relaxed) {
+                Condition::new(
+                    FS_INIT_COMPLETE.clone(),
+                    current_running_event().expect("Fat16 action outside event"),
+                )
+                .await;
+            }
             let fs = FILESYSTEM.get().unwrap();
             let fd = {
                 fs.lock()

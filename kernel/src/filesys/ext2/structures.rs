@@ -3,6 +3,8 @@ use bitflags::bitflags;
 use core::mem::size_of;
 use zerocopy::{FromBytes, Immutable, KnownLayout};
 
+use crate::debug;
+
 use super::{
     block_io::BlockIO,
     filesystem::{FilesystemError, FilesystemResult},
@@ -95,9 +97,14 @@ impl Superblock {
     pub async fn from_block(device: Arc<dyn BlockIO>) -> FilesystemResult<Self> {
         let mut superblock_buff: [u8; 1024] = [0; 1024];
         device
-            .read_block(1, &mut superblock_buff)
+            .read_sector(2, &mut superblock_buff)
             .await
             .map_err(FilesystemError::DeviceError)?;
+        device
+            .read_sector(3, &mut superblock_buff[512..])
+            .await
+            .map_err(FilesystemError::DeviceError)?;
+        // debug!("Superblock buff = {superblock_buff:?}");
         let superblock_ref = Superblock::ref_from_prefix(&superblock_buff).unwrap().0;
         Result::Ok(superblock_ref.clone())
     }
