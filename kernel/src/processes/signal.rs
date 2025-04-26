@@ -1,6 +1,6 @@
-use core::error;
+use core::{error, future::pending};
 
-use alloc::{collections::vec_deque::{self, VecDeque}, sync::Arc};
+use alloc::{collections::{btree_map::BTreeMap, vec_deque::{self, VecDeque}}, sync::Arc};
 use spin::Mutex;
 use x86_64::VirtAddr;
 
@@ -9,7 +9,7 @@ use crate::{constants::processes::NUM_SIGNALS, serial_println, syscalls::syscall
 use super::registers::ForkingRegisters;
 
 #[repr(u8)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Ord, PartialOrd)]
 pub enum SignalCode {
     SIGHUP    = 1,  // Hang up controlling terminal or process
     SIGINT    = 2,  // Interrupt from keyboard (Ctrl-C)
@@ -127,7 +127,7 @@ pub enum SignalHandler {
 
 #[derive(Debug, Clone)]
 pub struct SignalDescriptor {
-    pending_signals: VecDeque<SignalEntry>, // queue for pending signals sent to process
+    pending_signals: BTreeMap<SignalCode, VecDeque<SignalEntry>>,
     blocked_signals: u32, // a bitmap for the 32 different signals Linux handles
     sas_ss_sp: VirtAddr, // TODO: support a separate stack for some signal handling
     sas_ss_size: u64,
@@ -146,7 +146,7 @@ impl SignalDescriptor {
         sas_ss_size: u64,
     ) -> Self {
         Self {
-            pending_signals: VecDeque::new(),
+            pending_signals: BTreeMap::new(),
             blocked_signals: blocked_signals,
             sas_ss_sp: sas_ss_sp,
             sas_ss_size: sas_ss_size,
@@ -173,25 +173,32 @@ impl SignalDescriptor {
             source_code: source_code,
             signal_fields: signal_fields,
         };
-        self.pending_signals.push_back(signal_entry);
+        if !self.pending_signals.contains_key(&signal_code) {
+            self.pending_signals.insert(signal_code, VecDeque::new());
+        }
+        self.pending_signals.get_mut(&signal_code).unwrap().push_back(signal_entry)
     }
 
     pub fn handle_signal(&mut self) {
-        let mut found = false;
         let mut signal: Option<SignalEntry> = None;
-        while !found {
-            if self.pending_signals.is_empty() {
-                found = true;
-            }
-            else {
-                let temp_signal = self.pending_signals.pop_front().unwrap();
-                let signal_code_idx = temp_signal.signal_code as usize - 1;
-                let is_blocked = (self.blocked_signals >> signal_code_idx) & 1;
-                if is_blocked == 0 {
-                    found = true;
-                    signal = Some(temp_signal);
+        let mut should_remove = false;
+        let mut remove_key = SignalCode::SIGSYS;
+        // iterate through BTreeMap form lowest keys to highest based off priorities to pick most pending signal
+        for (signal_code, entry_queue) in self.pending_signals.iter_mut() {
+            let blocked =  (self.blocked_signals >> (*signal_code as usize - 1) & 1) == 1;
+            if !blocked {
+                assert!(!entry_queue.is_empty());
+                signal = entry_queue.pop_front();
+                if entry_queue.is_empty() {
+                    remove_key = *signal_code;
+                    should_remove = true;
                 }
+                break;
             }
+        }
+
+        if should_remove {
+            self.pending_signals.remove(&remove_key);
         }
 
         if signal.is_none() {
