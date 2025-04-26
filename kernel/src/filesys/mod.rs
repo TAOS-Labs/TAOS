@@ -6,7 +6,9 @@
 use crate::{
     constants::{memory::PAGE_SIZE, processes::MAX_FILES},
     events::{
-        current_running_event, futures::sync::{BlockMutex, Condition}, get_runner_time, schedule_kernel_on
+        current_running_event,
+        futures::sync::{BlockMutex, Condition},
+        get_runner_time, schedule_kernel_on,
     },
     filesys::ext2::structures::FileMode,
     memory::{
@@ -529,7 +531,7 @@ impl FileSystem for Ext2Wrapper {
             iter += 1;
             let end = get_runner_time(0);
 
-            serial_println!("looping {} times, took {} ticks", iter, end-start);
+            serial_println!("looping {} times, took {} ticks", iter, end - start);
             // serial_println!("looping {} times", iter);
         }
 

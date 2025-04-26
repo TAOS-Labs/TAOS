@@ -18,7 +18,7 @@ use crate::{
     devices::{self},
     events::{
         current_running_event,
-        futures::{await_on::AwaitProcess, sleep, sync::Condition},
+        futures::{await_on::AwaitProcess, sync::Condition},
         get_runner_time, register_event_runner, run_loop, schedule_kernel, schedule_process, spawn,
         yield_now,
     },

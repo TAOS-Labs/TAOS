@@ -7,10 +7,12 @@ use x86_64::{
 };
 
 use crate::{
-    constants::memory::EPHEMERAL_KERNEL_MAPPINGS_START, debug, memory::{
+    constants::memory::EPHEMERAL_KERNEL_MAPPINGS_START,
+    debug,
+    memory::{
         frame_allocator::{alloc_frame, dealloc_frame, FRAME_ALLOCATOR},
         tlb::tlb_shootdown,
-    }
+    },
 };
 
 use super::{frame_allocator::with_buddy_frame_allocator, HHDM_OFFSET};

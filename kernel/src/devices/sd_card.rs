@@ -226,13 +226,10 @@ impl BlockIO for SDCardInfo {
         if (block_num + 1) * SECTORS_PER_BLOCK as u64 > self.total_sectors {
             return BlockResult::Err(BlockError::InvalidBlock);
         }
-        assert!(buf.len() % SD_SECTOR_SIZE as usize == 0);
         let start = get_runner_time(0);
-        // for start_block in 0..SECTORS_PER_BLOCK {
         let block_num_32: u32 = block_num
             .try_into()
             .expect("Total blocks is less than 32 bits long");
-        // let start_block_size: usize = (start_block * SD_SECTOR_SIZE).try_into().unwrap();
         read_sd_card(
             self,
             block_num_32 * SECTORS_PER_BLOCK,
@@ -241,7 +238,6 @@ impl BlockIO for SDCardInfo {
         )
         .await
         .map_err(|_| BlockError::DeviceError)?;
-        // }
         let end = get_runner_time(0);
         debug!("Reading took {} ticks", end - start);
 
@@ -252,17 +248,13 @@ impl BlockIO for SDCardInfo {
         if (sector_num + 1) > self.total_sectors {
             return BlockResult::Err(BlockError::InvalidBlock);
         }
-        assert!(buf.len() % SD_SECTOR_SIZE as usize == 0);
         let start = get_runner_time(0);
-        // for start_block in 0..SECTORS_PER_BLOCK {
         let sector_num_32: u32 = sector_num
             .try_into()
             .expect("Total blocks is less than 32 bits long");
-        // let start_block_size: usize = (start_block * SD_SECTOR_SIZE).try_into().unwrap();
         read_sd_card(self, sector_num_32, 1, buf)
             .await
             .map_err(|_| BlockError::DeviceError)?;
-        // }
         let end = get_runner_time(0);
         debug!("Reading took {} ticks", end - start);
 
@@ -291,7 +283,7 @@ impl BlockIO for SDCardInfo {
     }
 
     fn block_size(&self) -> u64 {
-        SD_BLOCK_IO_SIZE as u64 //.try_into().expect("To be on 64 bit system")
+        SD_BLOCK_IO_SIZE as u64
     }
 
     fn size_in_bytes(&self) -> u64 {
