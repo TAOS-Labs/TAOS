@@ -29,7 +29,6 @@ base_args = [
 
     # Graphics
     "-vga", "std",
-"-serial", "stdio",
     # Debugging traces
     # USB
     # "-trace", "usb*",
