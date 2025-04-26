@@ -12,8 +12,8 @@ use crate::{
 use alloc::{string::String, sync::Arc, vec::Vec};
 use core::ptr::{copy_nonoverlapping, write_bytes};
 use goblin::{
-    elf::Elf,
-    elf64::program_header::{PF_W, PF_X, PT_LOAD},
+    elf::{Elf, ProgramHeader},
+    elf64::program_header::{PF_W, PF_X, PT_LOAD, PT_TLS},
 };
 use x86_64::{
     structures::paging::{
@@ -44,98 +44,170 @@ pub fn load_elf(
     envs: Vec<String>,
 ) -> (VirtAddr, u64) {
     let elf = Elf::parse(elf_bytes).expect("Parsing ELF failed");
+    let mut tls_ph: Option<&ProgramHeader> = None;
     for ph in elf.program_headers.iter() {
-        if ph.p_type != PT_LOAD {
-            continue;
-        }
+        match ph.p_type {
+            PT_LOAD => {
+                let virt_addr = VirtAddr::new(ph.p_vaddr);
+                let mem_size = ph.p_memsz as usize;
+                let file_size = ph.p_filesz as usize;
+                let offset = ph.p_offset as usize;
 
-        let virt_addr = VirtAddr::new(ph.p_vaddr);
-        let mem_size = ph.p_memsz as usize;
-        let file_size = ph.p_filesz as usize;
-        let offset = ph.p_offset as usize;
+                let start_page = Page::containing_address(virt_addr);
+                let end_page = Page::containing_address(virt_addr + (mem_size - 1) as u64);
 
-        let start_page = Page::containing_address(virt_addr);
-        let end_page = Page::containing_address(virt_addr + (mem_size - 1) as u64);
+                // Build final page flags
+                let default_flags =
+                    PageTableFlags::PRESENT | PageTableFlags::USER_ACCESSIBLE | PageTableFlags::WRITABLE;
+                let mut flags = PageTableFlags::PRESENT | PageTableFlags::USER_ACCESSIBLE;
 
-        // Build final page flags
-        let default_flags =
-            PageTableFlags::PRESENT | PageTableFlags::USER_ACCESSIBLE | PageTableFlags::WRITABLE;
-        let mut flags = PageTableFlags::PRESENT | PageTableFlags::USER_ACCESSIBLE;
+                let anon_vma_code_and_data = Arc::new(VmAreaBackings::new());
 
-        let anon_vma_code_and_data = Arc::new(VmAreaBackings::new());
+                // For each page in [start_page..end_page], create user mapping,
+                // then do a kernel alias to copy data in
+                for page in Page::range_inclusive(start_page, end_page) {
+                    let frame = create_mapping(page, user_mapper, Some(default_flags));
+                    let kernel_alias = map_kernel_frame(kernel_mapper, frame, default_flags);
+                    // now `kernel_alias` is a kernel virtual address of that same frame
 
-        // For each page in [start_page..end_page], create user mapping,
-        // then do a kernel alias to copy data in
-        for page in Page::range_inclusive(start_page, end_page) {
-            let frame = create_mapping(page, user_mapper, Some(default_flags));
-            let kernel_alias = map_kernel_frame(kernel_mapper, frame, default_flags);
-            // now `kernel_alias` is a kernel virtual address of that same frame
+                    let page_offset =
+                        page.start_address()
+                            .as_u64()
+                            .saturating_sub(start_page.start_address().as_u64()) as usize;
+                    let page_remaining = PAGE_SIZE - (page_offset % PAGE_SIZE);
+                    let to_copy = core::cmp::min(file_size.saturating_sub(page_offset), page_remaining);
 
-            let page_offset =
-                page.start_address()
-                    .as_u64()
-                    .saturating_sub(start_page.start_address().as_u64()) as usize;
-            let page_remaining = PAGE_SIZE - (page_offset % PAGE_SIZE);
-            let to_copy = core::cmp::min(file_size.saturating_sub(page_offset), page_remaining);
-
-            if to_copy > 0 {
-                let dest = kernel_alias.as_mut_ptr::<u8>();
-                let src = &elf_bytes[offset + page_offset..offset + page_offset + to_copy];
-                unsafe {
-                    copy_nonoverlapping(src.as_ptr(), dest, to_copy);
-                }
-            }
-
-            let bss_start = file_size.saturating_sub(page_offset);
-            if bss_start < page_remaining {
-                // i.e. if this page has some leftover space beyond file_size
-                let zero_offset_in_page = core::cmp::max(bss_start, 0);
-                let zero_len = page_remaining.saturating_sub(zero_offset_in_page);
-                if zero_len > 0 {
-                    unsafe {
-                        let dest = kernel_alias.as_mut_ptr::<u8>().add(zero_offset_in_page);
-                        write_bytes(dest, 0, zero_len);
+                    if to_copy > 0 {
+                        let dest = kernel_alias.as_mut_ptr::<u8>();
+                        let src = &elf_bytes[offset + page_offset..offset + page_offset + to_copy];
+                        unsafe {
+                            copy_nonoverlapping(src.as_ptr(), dest, to_copy);
+                        }
                     }
+
+                    let bss_start = file_size.saturating_sub(page_offset);
+                    if bss_start < page_remaining {
+                        // i.e. if this page has some leftover space beyond file_size
+                        let zero_offset_in_page = core::cmp::max(bss_start, 0);
+                        let zero_len = page_remaining.saturating_sub(zero_offset_in_page);
+                        if zero_len > 0 {
+                            unsafe {
+                                let dest = kernel_alias.as_mut_ptr::<u8>().add(zero_offset_in_page);
+                                write_bytes(dest, 0, zero_len);
+                            }
+                        }
+                    }
+
+                    let mut vma_flags = VmAreaFlags::empty();
+                    if (ph.p_flags & PF_W) != 0 {
+                        flags |= PageTableFlags::WRITABLE;
+                        vma_flags |= VmAreaFlags::WRITABLE;
+                    }
+                    if (ph.p_flags & PF_X) == 0 {
+                        flags |= PageTableFlags::NO_EXECUTE;
+                    } else {
+                        vma_flags |= VmAreaFlags::EXECUTE;
+                    }
+
+                    mm.with_vma_tree_mutable(|tree| {
+                        Mm::insert_vma(
+                            tree,
+                            page.start_address().as_u64(),
+                            page.start_address().as_u64() + PAGE_SIZE as u64,
+                            anon_vma_code_and_data.clone(),
+                            vma_flags,
+                            usize::MAX,
+                            0,
+                        );
+                    });
+
+                    update_permissions(page, user_mapper, flags);
+
+                    let unmap_page: Page<Size4KiB> = Page::containing_address(kernel_alias);
+                    // unmap the frame, but do not actually deallocate it
+                    // the physical frame is still used by the process in its own mapping
+                    kernel_mapper
+                        .unmap(unmap_page)
+                        .expect("Unmapping kernel frame failed")
+                        .1
+                        .flush();
+                    with_generic_allocator(|allocator| unsafe { kernel_mapper.clean_up(allocator) });
+
+                    update_permissions(page, user_mapper, flags);
                 }
             }
 
-            let mut vma_flags = VmAreaFlags::empty();
-            if (ph.p_flags & PF_W) != 0 {
-                flags |= PageTableFlags::WRITABLE;
-                vma_flags |= VmAreaFlags::WRITABLE;
-            }
-            if (ph.p_flags & PF_X) == 0 {
-                flags |= PageTableFlags::NO_EXECUTE;
-            } else {
-                vma_flags |= VmAreaFlags::EXECUTE;
+            PT_TLS => {
+                tls_ph = Some(ph);
             }
 
-            mm.with_vma_tree_mutable(|tree| {
-                Mm::insert_vma(
-                    tree,
-                    page.start_address().as_u64(),
-                    page.start_address().as_u64() + PAGE_SIZE as u64,
-                    anon_vma_code_and_data.clone(),
-                    vma_flags,
-                    usize::MAX,
-                    0,
-                );
-            });
-
-            update_permissions(page, user_mapper, flags);
-
-            let unmap_page: Page<Size4KiB> = Page::containing_address(kernel_alias);
-            // unmap the frame, but do not actually deallocate it
-            // the physical frame is still used by the process in its own mapping
-            kernel_mapper
-                .unmap(unmap_page)
-                .expect("Unmapping kernel frame failed")
-                .1
-                .flush();
-            with_generic_allocator(|allocator| unsafe { kernel_mapper.clean_up(allocator) });
-
-            update_permissions(page, user_mapper, flags);
+            _ => {}
         }
+    }
+
+    if let Some(ph) = tls_ph {
+        // where in user‐space the TLS wants to live
+        let tls_start = VirtAddr::new(ph.p_vaddr);
+        let tls_memsz = ph.p_memsz as usize;
+        let tls_filesz = ph.p_filesz as usize;
+        let tls_align  = ph.p_align as u64;             // usually pointer‐size
+
+        // round up filesz to alignment to compute the “Thread Pointer” offset:
+        let tp_offset = ((tls_filesz + (tls_align as usize) - 1) / (tls_align as usize))
+                        * (tls_align as usize);
+
+        // map [tls_start .. tls_start + tls_memsz) just like PT_LOAD:
+        let start_page = Page::containing_address(tls_start);
+        let end_page   = Page::containing_address(tls_start + (tls_memsz - 1) as u64);
+        for page in Page::range_inclusive(start_page, end_page) {
+            let frame = create_mapping(
+                page,
+                user_mapper,
+                Some(PageTableFlags::PRESENT
+                    | PageTableFlags::USER_ACCESSIBLE
+                    | PageTableFlags::WRITABLE),
+            );
+            let kernel_alias = map_kernel_frame(
+                kernel_mapper,
+                frame,
+                PageTableFlags::PRESENT
+            | PageTableFlags::USER_ACCESSIBLE
+            | PageTableFlags::WRITABLE,
+            );
+
+            let page_off = (page.start_address().as_u64()
+                            .saturating_sub(start_page.start_address().as_u64())) as usize;
+            // copy the initialized data
+            if page_off < tls_filesz {
+                let to_copy = core::cmp::min(tls_filesz - page_off, PAGE_SIZE);
+                unsafe {
+                    copy_nonoverlapping(
+                        elf_bytes[(ph.p_offset as usize + page_off)..]
+                                .as_ptr(),
+                        kernel_alias.as_mut_ptr::<u8>(),
+                        to_copy,
+                    );
+                }
+            }
+            // zero needed for some reason?
+            let zero_start = core::cmp::max(page_off, tls_filesz);
+            if zero_start < PAGE_SIZE {
+                unsafe {
+                    write_bytes(
+                        kernel_alias.as_mut_ptr::<u8>().add(zero_start),
+                        0,
+                        PAGE_SIZE - zero_start,
+                    );
+                }
+            }
+
+        }
+
+        // compute the value we have to load into FS_BASE
+        let fs_base = tls_start + tp_offset as u64;
+
+        // stash this in pcb for context switch maybe?
+        // pcb.fs_base = fs_base;
     }
 
     // Map user stack
