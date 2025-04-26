@@ -7,11 +7,10 @@ use x86_64::{
 };
 
 use crate::{
-    constants::memory::EPHEMERAL_KERNEL_MAPPINGS_START,
-    memory::{
+    constants::memory::EPHEMERAL_KERNEL_MAPPINGS_START, debug, memory::{
         frame_allocator::{alloc_frame, dealloc_frame, FRAME_ALLOCATOR},
         tlb::tlb_shootdown,
-    },
+    }
 };
 
 use super::{frame_allocator::with_buddy_frame_allocator, HHDM_OFFSET};
@@ -248,7 +247,7 @@ pub fn map_kernel_frame(
         NEXT_EPH_OFFSET += 0x1000; // move up by a page
         current
     };
-
+    // debug!("offset is {offset}");
     let temp_virt = VirtAddr::new(EPHEMERAL_KERNEL_MAPPINGS_START + offset);
     let temp_page = Page::containing_address(temp_virt);
 

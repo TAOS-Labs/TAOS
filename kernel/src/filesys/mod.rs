@@ -6,9 +6,7 @@
 use crate::{
     constants::{memory::PAGE_SIZE, processes::MAX_FILES},
     events::{
-        current_running_event,
-        futures::sync::{BlockMutex, Condition},
-        schedule_kernel_on,
+        current_running_event, futures::sync::{BlockMutex, Condition}, get_runner_time, schedule_kernel_on
     },
     filesys::ext2::structures::FileMode,
     memory::{
@@ -500,6 +498,7 @@ impl FileSystem for Ext2Wrapper {
         let mut file_pos = locked_file.position;
         let mut iter = 0;
         while remaining > 0 {
+            let start = get_runner_time(0);
             let page_offset = file_pos & !(PAGE_SIZE - 1);
             let page_offset_in_buf = file_pos % PAGE_SIZE;
             let copy_len = core::cmp::min(PAGE_SIZE - page_offset_in_buf, remaining);
@@ -528,7 +527,10 @@ impl FileSystem for Ext2Wrapper {
             total_read += copy_len;
             remaining -= copy_len;
             iter += 1;
-            serial_println!("looping {} times", iter);
+            let end = get_runner_time(0);
+
+            serial_println!("looping {} times, took {} ticks", iter, end-start);
+            // serial_println!("looping {} times", iter);
         }
 
         locked_file.position = file_pos;
