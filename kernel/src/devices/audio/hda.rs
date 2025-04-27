@@ -35,7 +35,6 @@ pub struct AudioData {
 /// - Handles interrupts by reading INTSTS: interrupt status registeer (0x20) and RIRBSTS: response ring buffer status (0x5d).
 /// - Clears the respective bits by writing them back.
 /// - Sends EOI after handling.
-
 pub extern "x86-interrupt" fn hda_interrupt_handler(_frame: InterruptStackFrame) {
     let virt = *HHDM_OFFSET + HDA_BAR_PHYS as u64;
     let regs = unsafe { &*(virt.as_u64() as *const HdaRegisters) };
@@ -115,13 +114,15 @@ impl IntelHDA {
         debug_println!("initializing the rirb");
         hda.init_rirb().await;
 
-        // TODO: enable interrupts?
-
-        // test we can communicate by asking the codec's root node for a node count
+        // enable interrupts
+        let intctl_addr = (hda.virt_base + 0x20) as *mut u32;
+        let intctl_val = ((1 << 31) | (1 << 4)) as u32; // TODO check the correct stream int is enabled, idk if 4 is the right num to shift by
+        unsafe {
+            write_volatile(intctl_addr, intctl_val);
+        }
         
+        // test we can play some audio
         hda.test_dma_transfer().await;
-        
-
         
         Some(hda)
     } 
@@ -664,6 +665,9 @@ impl IntelHDA {
         let bdl_buf = DmaBuffer::new(core::mem::size_of::<BdlEntry>() * 32).expect("Failed BDL");
         assert_eq!(bdl_buf.phys_addr.as_u64() % 128, 0, "BDL not 128-byte aligned");
 
+        debug_println!("audio data len: {}", audio_data.len);
+        debug_println!("audio buf size: {}", audio_buf.size);
+        assert!(false);
         unsafe {
             core::ptr::copy_nonoverlapping(
                 audio_data.bytes.as_ptr(), 
