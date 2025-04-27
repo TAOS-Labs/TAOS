@@ -1,10 +1,8 @@
-use alloc::vec::Vec;
 use wavv::{Wav, Data};
 use crate::constants::devices::TEST_WAV;
+use crate::devices::mmio::MMioConstPtr;
 use crate::filesys::ext2::filesystem::{Ext2, FilesystemError};
-use crate::serial_println;
 
-use super::dma::DmaBuffer;
 use super::hda::AudioData;
 
 
@@ -31,15 +29,19 @@ pub async fn load_wav(/*fs: &Ext2*/) -> Result<AudioData, FilesystemError> {
         Ok(wav) => {
             crate::debug!("WAV loaded: {} ch, {} bit, {} Hz", wav.fmt.num_channels, wav.fmt.bit_depth, wav.fmt.sample_rate);
 
-            match &wav.data {
-                Data::BitDepth8(samples) => crate::debug!("8-bit samples: {}", samples.len()),
-                Data::BitDepth16(samples) => crate::debug!("16-bit samples: {}", samples.len()),
-                Data::BitDepth24(samples) => crate::debug!("24-bit samples: {}", samples.len()),
-            }
+            let (samples, len) = match &wav.data {
+                Data::BitDepth8(samples) => (samples.as_ptr(), samples.len()),
+                Data::BitDepth16(samples) => (samples.as_ptr() as *const u8, samples.len() * 2),
+                Data::BitDepth24(samples) => (samples.as_ptr() as *const u8, samples.len() * 4),
+            };
+
+            let fmt = get_fmt(&wav);
 
             Ok(AudioData {
-                bytes: wav.to_bytes(),
-                fmt: get_fmt(&wav)
+                bytes: MMioConstPtr(samples),
+                len: len,
+                data: wav.data, // holding onto data to prevent deallocation of buffer
+                fmt: fmt
             })
         }
         Err(e) => {
@@ -50,10 +52,13 @@ pub async fn load_wav(/*fs: &Ext2*/) -> Result<AudioData, FilesystemError> {
 }
 
 pub fn get_fmt(wav: &Wav) -> u16 {
-    let samples = match &wav.data {
-        Data::BitDepth8(_) => 0,
-        Data::BitDepth16(_) => 1,
-        Data::BitDepth24(_) => 3,
+    let bit_depth: u8 = match wav.fmt.bit_depth {
+        8 => 0,
+        16 => 1,
+        20 => 2,
+        24 => 3,
+        32 => 4,
+        _ => 5
     };
 
     let channels = wav.fmt.num_channels - 1;
@@ -68,7 +73,7 @@ pub fn get_fmt(wav: &Wav) -> u16 {
 
     let divider = match wav.fmt.sample_rate {
         24_000 | 22_050 => 0b001,
-        16_000 | 24_000 => 0b010,
+        16_000 => 0b010, // | 24_000?
         11_025 => 0b011,
         9_600 => 0b100,
         8_000 => 0b101,
@@ -83,13 +88,13 @@ pub fn get_fmt(wav: &Wav) -> u16 {
     crate::debug!("sample_base    = {:#X}", sample_base);
     crate::debug!("multiplier     = {:#X}", multiplier);
     crate::debug!("divider        = {:#X}", divider);
-    crate::debug!("samples        = {:#X}", samples);
+    crate::debug!("samples        = {:#X}", bit_depth);
     crate::debug!("channels       = {:#X}", channels);
 
     let fmt: u16 = ((sample_base as u16) << 14) 
                  | ((multiplier as u16) << 11) 
                  | ((divider as u16) << 8) 
-                 | ((samples as u16) << 4) 
+                 | ((bit_depth as u16) << 4) 
                  | channels;
 
     crate::debug!("FMT: {:#X}", fmt);

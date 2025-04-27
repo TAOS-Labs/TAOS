@@ -1,5 +1,5 @@
 use crate::{
-    debug_print, debug_println, devices::{audio::{buffer::{setup_bdl, BdlEntry}, command_buffer::RirbBuffer, commands::{CorbEntry, HdaVerb, NodeParams}, wav_parser::load_wav}, pci::{read_config, walk_pci_bus, DeviceInfo}}, events::{futures::devices::HWRegisterWrite, nanosleep_current_event, yield_now}, filesys::ext2::cache, interrupts::x2apic, memory::HHDM_OFFSET, processes::process::sleep_process_int, serial_print, serial_println
+    debug_println, devices::{audio::{buffer::{setup_bdl, BdlEntry}, command_buffer::RirbBuffer, commands::{CorbEntry, HdaVerb, NodeParams}, wav_parser::load_wav}, mmio::MMioConstPtr, pci::{read_config, walk_pci_bus, DeviceInfo}}, events::{futures::devices::HWRegisterWrite, nanosleep_current_event}, interrupts::x2apic, memory::HHDM_OFFSET, serial_println
 };
 
 use crate::devices::{
@@ -10,6 +10,7 @@ use core::{ mem::offset_of, ptr::{read_volatile, write_volatile}};
 use alloc::vec;
 use alloc::vec::Vec;
 
+use wavv::Data;
 // use goblin::elf::reloc::R_AARCH64_TLSLE_LDST8_TPREL_LO12;
 use x86_64::structures::idt::InterruptStackFrame;
 // use crate::devices::audio::command_buffer::{CommandBuffer, WidgetAddr};
@@ -24,7 +25,9 @@ const HDA_BAR_PHYS: u32 = 0x81010000;
 const DELAY_NS: u64 = 100_000;
 
 pub struct AudioData {
-    pub bytes: Vec<u8>,
+    pub bytes: MMioConstPtr<u8>,
+    pub len: usize,
+    pub data: Data,
     pub fmt: u16
 }
 
@@ -657,7 +660,7 @@ impl IntelHDA {
         
         // create BDL stuff
         debug_println!("starting to alloc BDL");
-        let audio_buf = DmaBuffer::new(audio_data.bytes.len()).expect("Failed to allocate audio buffer");
+        let audio_buf = DmaBuffer::new(audio_data.len).expect("Failed to allocate audio buffer");
         let bdl_buf = DmaBuffer::new(core::mem::size_of::<BdlEntry>() * 32).expect("Failed BDL");
         assert_eq!(bdl_buf.phys_addr.as_u64() % 128, 0, "BDL not 128-byte aligned");
 
@@ -665,7 +668,7 @@ impl IntelHDA {
             core::ptr::copy_nonoverlapping(
                 audio_data.bytes.as_ptr(), 
                 audio_buf.virt_addr.as_mut_ptr::<u8>(), 
-                audio_data.bytes.len());
+                audio_data.len);
         }
 
         let bdl_ptr = bdl_buf.as_ptr::<BdlEntry>();
