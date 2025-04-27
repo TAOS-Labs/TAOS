@@ -661,23 +661,11 @@ impl IntelHDA {
         let bdl_buf = DmaBuffer::new(core::mem::size_of::<BdlEntry>() * 32).expect("Failed BDL");
         assert_eq!(bdl_buf.phys_addr.as_u64() % 128, 0, "BDL not 128-byte aligned");
 
-        let total_bytes = audio_data.bytes.len();
-        let mut offset = 0;
-        let page_size = 4096;
-        let buf_ptr = audio_buf.virt_addr.as_mut_ptr::<u8>();
-
-        while offset < total_bytes {
-            let to_copy = core::cmp::min(page_size, total_bytes - offset);
-
-            unsafe {
-                core::ptr::copy_nonoverlapping(
-                    audio_data.bytes.as_ptr().add(offset),
-                    buf_ptr.add(offset),
-                    to_copy,
-                );
-            }
-
-            offset += to_copy;
+        unsafe {
+            core::ptr::copy_nonoverlapping(
+                audio_data.bytes.as_ptr(), 
+                audio_buf.virt_addr.as_mut_ptr::<u8>(), 
+                audio_data.bytes.len());
         }
 
         let bdl_ptr = bdl_buf.as_ptr::<BdlEntry>();
