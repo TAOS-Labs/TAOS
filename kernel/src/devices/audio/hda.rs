@@ -657,7 +657,7 @@ impl IntelHDA {
         
         // create BDL stuff
         debug_println!("starting to alloc BDL");
-        let audio_buf = DmaBuffer::new(4096).expect("Failed to allocate audio buffer");
+        let audio_buf = DmaBuffer::new(audio_data.bytes.len()).expect("Failed to allocate audio buffer");
         let bdl_buf = DmaBuffer::new(core::mem::size_of::<BdlEntry>() * 32).expect("Failed BDL");
         assert_eq!(bdl_buf.phys_addr.as_u64() % 128, 0, "BDL not 128-byte aligned");
 
