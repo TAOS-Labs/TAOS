@@ -667,7 +667,7 @@ impl IntelHDA {
 
         debug_println!("audio data len: {}", audio_data.len);
         debug_println!("audio buf size: {}", audio_buf.size);
-        assert!(false);
+        
         unsafe {
             core::ptr::copy_nonoverlapping(
                 audio_data.bytes.as_ptr(), 
