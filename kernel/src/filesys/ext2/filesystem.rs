@@ -322,10 +322,11 @@ impl Ext2 {
 
         let size = node.size() as usize;
         let mut buffer = vec![0; size];
-        node.read_at(pos as u64, &mut buffer)
+        let s = node
+            .read_at(pos as u64, &mut buffer)
             .await
             .map_err(FilesystemError::NodeError)?;
-
+        buffer.resize(s, 0);
         Ok(buffer)
     }
 

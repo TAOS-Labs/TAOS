@@ -495,6 +495,7 @@ impl Node {
 
     async fn read_raw_at(&self, offset: u64, buffer: &mut [u8]) -> NodeResult<usize> {
         let size = self.size();
+
         if offset >= size {
             return Ok(0);
         }

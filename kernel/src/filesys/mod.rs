@@ -506,11 +506,21 @@ impl FileSystem for Ext2Wrapper {
         let mut remaining = buf.len();
         let mut total_read = 0;
         let mut file_pos = locked_file.position;
-        let mut iter = 0;
         while remaining > 0 {
             let page_offset = file_pos & !(PAGE_SIZE - 1);
             let page_offset_in_buf = file_pos % PAGE_SIZE;
             let copy_len = core::cmp::min(PAGE_SIZE - page_offset_in_buf, remaining);
+            if file_pos as u64
+                >= self
+                    .filesystem
+                    .lock()
+                    .get_node(&locked_file.pathname)
+                    .await
+                    .expect("Failed to get path")
+                    .size()
+            {
+                return Ok(total_read);
+            }
             // Load the page into cache if not already present
             let virt = match self
                 .page_cache_get_mapping(locked_file.clone(), page_offset)
@@ -518,8 +528,17 @@ impl FileSystem for Ext2Wrapper {
             {
                 Ok(va) => va,
                 Err(_) => {
-                    self.add_entry_to_page_cache(locked_file.clone(), page_offset)
-                        .await?;
+                    match self
+                        .add_entry_to_page_cache(locked_file.clone(), page_offset)
+                        .await
+                    {
+                        Ok(_) => {}
+                        Err(FilesystemError::CacheError) => {
+                            return Ok(total_read);
+                        }
+                        Err(e) => return Err(e.into()),
+                    }
+
                     let temp = self
                         .page_cache_get_mapping(locked_file.clone(), page_offset)
                         .await?;
@@ -535,8 +554,6 @@ impl FileSystem for Ext2Wrapper {
             file_pos += copy_len;
             total_read += copy_len;
             remaining -= copy_len;
-            iter += 1;
-            serial_println!("looping {} times", iter);
         }
 
         locked_file.position = file_pos;
@@ -586,6 +603,15 @@ impl FileSystem for Ext2Wrapper {
         }
 
         let inode_number = file.inode_number;
+        // clone the pathname before await
+        let path = file.pathname.clone();
+
+        // read file buffer
+        let file_buf = self.filesystem.lock().read_file_at(&path, offset).await?;
+        if file_buf.len() == 0 {
+            return Err(FilesystemError::CacheError);
+        }
+
         let mut pg_cache = self.page_cache.lock();
         pg_cache
             .entry(inode_number)
@@ -596,11 +622,6 @@ impl FileSystem for Ext2Wrapper {
         let frame = alloc_frame().ok_or(FilesystemError::CacheError)?;
         let default_flags = PageTableFlags::PRESENT | PageTableFlags::WRITABLE;
         let kernel_va = map_kernel_frame(&mut *KERNEL_MAPPER.lock(), frame, default_flags);
-        // clone the pathname before await
-        let path = file.pathname.clone();
-
-        // read file buffer
-        let file_buf = self.filesystem.lock().read_file_at(&path, offset).await?;
 
         // Do raw pointer write *after* .await to avoid Send violation
         unsafe {
@@ -644,7 +665,6 @@ impl FileSystem for Ext2Wrapper {
 pub fn init(cpu_id: u32) {
     serial_println!("INITING FS");
     if cpu_id == 0 {
-        serial_println!("CPU ID 0");
         schedule_kernel_on(
             0,
             async {

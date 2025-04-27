@@ -74,7 +74,7 @@ pub fn init() -> u32 {
     // Should be kept after devices in case logging gets complicated
     // Right now log writes to serial, but if it were to switch to VGA, this would be important
     logging::init(0);
-    get_ip_addr().unwrap();
+    //get_ip_addr().unwrap();
     processes::init(0);
 
     debug!("Waking cores");
@@ -89,7 +89,7 @@ pub fn init() -> u32 {
                 fs.lock()
                     .await
                     .open_file(
-                        "/executables/hello",
+                        "/fonts/Comfortaa-Regular.ttf",
                         OpenFlags::O_RDONLY | OpenFlags::O_WRONLY,
                     )
                     .await
@@ -106,18 +106,6 @@ pub fn init() -> u32 {
                     .unwrap()
                     .size()
             };
-            block_on(
-                sys_mmap(
-                    0x9000,
-                    align_up(file_len, PAGE_SIZE as u64),
-                    ProtFlags::PROT_EXEC.bits(),
-                    MmapFlags::MAP_FILE.bits(),
-                    fd as i64,
-                    0,
-                ),
-                &ForkingRegisters::default(),
-            );
-
             serial_println!("Reading file...");
 
             let mut buffer = alloc::vec![0u8; file_len as usize];
@@ -131,7 +119,26 @@ pub fn init() -> u32 {
 
             let buf = &buffer[..bytes_read];
 
-            serial_println!("Bytes read: {:#?}", bytes_read);
+            serial_println!("Bytes read: {}", bytes_read);
+
+            {
+                //fs.lock().await.seek_file(fd, 0).await;
+            }
+            serial_println!("Reading file...");
+            let mut buffer = alloc::vec![0u8; file_len as usize];
+
+            let bytes_read = {
+                fs.lock()
+                    .await
+                    .read_file(fd, &mut buffer)
+                    .await
+                    .expect("Failed to read file")
+            };
+
+            let buf = &buffer[..bytes_read];
+            let t2 = get_runner_time(0);
+
+            serial_println!("Bytes read: {}", bytes_read);
 
             let pid = create_process(buf, Vec::new(), Vec::new());
             serial_println!("Creating process");

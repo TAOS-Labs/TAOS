@@ -623,24 +623,12 @@ pub fn sys_arch_prctl(code: i32, addr: u64) -> u64 {
             unsafe { ptr.write_volatile(gs) };
             0
         }
-        ARCH_CET_STATUS => {
-            0
-        }
-        ARCH_CET_DISABLE => {
-            0
-        }
-        ARCH_CET_LOCK => {
-            0 
-        }
-        ARCH_CET_EXEC => {
-            0
-        }
-        ARCH_CET_ALLOC_SHSTK => {
-            0
-        }
-        ARCH_CET_PUSH_SHSTK => {
-            0
-        }
+        ARCH_CET_STATUS => 0,
+        ARCH_CET_DISABLE => 0,
+        ARCH_CET_LOCK => 0,
+        ARCH_CET_EXEC => 0,
+        ARCH_CET_ALLOC_SHSTK => 0,
+        ARCH_CET_PUSH_SHSTK => 0,
         _ => {
             // unknown code
             0
