@@ -78,7 +78,7 @@ pub fn init(cpu_id: u32) {
         keyboard::init().expect("Failed to initialize keyboard");
         mouse::init().expect("Failed to initialize mouse");
 
-        serial_println!("bbeforre init audio");
+        serial_println!("before init audio");
         schedule_kernel(
             async {
                 if let Some(hda) = audio::hda::IntelHDA::init().await {

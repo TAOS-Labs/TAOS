@@ -1,5 +1,5 @@
 use crate::{
-    debug_println, memory::{frame_allocator::alloc_frame, HHDM_OFFSET}, serial_println
+    debug_println, memory::{frame_allocator::{alloc_frame, with_buddy_frame_allocator}, HHDM_OFFSET, }, serial_println
 };
 
 use alloc::vec::Vec;
@@ -27,41 +27,68 @@ impl DmaBuffer {
 
         let mut virt_addr = None;
         let mut phys_addr = None;
+        let order = page_count.ilog2() + 1;
 
-        
+        // with_buddy_frame_allocator(|f| {
+        //     let frames = f.allocate_block(order.try_into().unwrap());
+        //     for idx, frame in frames.enumerate() {
 
-        for i in 0..page_count {
-            // serial_println!("Allocating frame {}", i);
+        //     let temp_virt = *HHDM_OFFSET + frame.start_address().as_u64();
 
-            let frame = match alloc_frame() {
-                Some(f) => f,
-                None => {
-                    serial_println!("Failed to allocate frame {}", i);
-                    if i == 0 {
-                        return None;
-                    } else {
-                        let fallback_size = i * 0x1000;
-                        serial_println!("Falling back to {} bytes", fallback_size);
-                        return DmaBuffer::new(fallback_size);
-                    }
+        //     if i == 0 {
+        //         virt_addr = Some(temp_virt);
+        //         phys_addr = Some(frame.start_address()); 
+        //     }
+        //     }
+        // });
+        with_buddy_frame_allocator(|f| {
+            let frames = f.allocate_block(order.try_into().unwrap());
+            for (idx, frame) in frames.iter().enumerate() {
+                let temp_virt = *HHDM_OFFSET + frame.start_address().as_u64();
+
+                if idx == 0 {
+                    virt_addr = Some(temp_virt);
+                    phys_addr = Some(frame.start_address());
                 }
-            };
 
-            // serial_println!("Got frame {} at physical address 0x{:X}", i, frame.start_address().as_u64());
-
-            let temp_virt = *HHDM_OFFSET + frame.start_address().as_u64();
-
-            if i == 0 {
-                virt_addr = Some(temp_virt);
-                phys_addr = Some(frame.start_address()); // now it works, since no shadowing
+                unsafe {
+                    core::ptr::write_bytes(temp_virt.as_mut_ptr::<u8>(), 0, 0x1000);
+                }
             }
+        });
+        
+        // for i in 0..page_count {
+        //     // serial_println!("Allocating frame {}", i);
 
-            // serial_println!("Using virtual address 0x{:X} for page {}", temp_virt.as_u64(), i);
+        //     let frame = match alloc_frame() {
+        //         Some(f) => f,
+        //         None => {
+        //             serial_println!("Failed to allocate frame {}", i);
+        //             if i == 0 {
+        //                 return None;
+        //             } else {
+        //                 let fallback_size = i * 0x1000;
+        //                 serial_println!("Falling back to {} bytes", fallback_size);
+        //                 return DmaBuffer::new(fallback_size);
+        //             }
+        //         }
+        //     };
 
-            unsafe {
-                core::ptr::write_bytes(temp_virt.as_mut_ptr::<u8>(), 0, 0x1000);
-            }
-        }
+        //     // serial_println!("Got frame {} at physical address 0x{:X}", i, frame.start_address().as_u64());
+
+        //     let temp_virt = *HHDM_OFFSET + frame.start_address().as_u64();
+
+        //     if i == 0 {
+        //         virt_addr = Some(temp_virt);
+        //         phys_addr = Some(frame.start_address()); 
+        //     }
+
+        //     // serial_println!("Using virtual address 0x{:X} for page {}", temp_virt.as_u64(), i);
+
+        //     unsafe {
+        //         core::ptr::write_bytes(temp_virt.as_mut_ptr::<u8>(), 0, 0x1000);
+        //     }
+        // }
 
         let virt = virt_addr?;
         let phys = phys_addr?;
@@ -79,6 +106,53 @@ impl DmaBuffer {
             size: page_count * 0x1000,
         })
     }
+
+    // pub fn new(size: usize) -> Option<Self> {
+    //     let page_count = (size + 0xFFF) / 0x1000;
+    //     serial_println!(
+    //         "DmaBuffer::new() -> Requesting {} pages ({} bytes)",
+    //         page_count,
+    //         size
+    //     );
+    
+    //     let mut phys_addrs = Vec::new();
+    
+    //     for i in 0..page_count {
+    //         let frame = match alloc_frame() {
+    //             Some(f) => f,
+    //             None => {
+    //                 serial_println!("Failed to allocate frame {}", i);
+    //                 return None;
+    //             }
+    //         };
+    //         phys_addrs.push(frame.start_address());
+    //     }
+    
+    //     // Check physical contiguity
+    //     for i in 1..phys_addrs.len() {
+    //         if phys_addrs[i].as_u64() != phys_addrs[i - 1].as_u64() + 0x1000 {
+    //             serial_println!("DMA allocation is NOT physically contiguous!");
+    //             return None;
+    //         }
+    //     }
+    
+    //     let base_phys = phys_addrs[0];
+    //     let virt = *HHDM_OFFSET + base_phys.as_u64();
+    
+    //     serial_println!(
+    //         "DMA buffer allocated: virt=0x{:X}, phys=0x{:X}, size={} bytes",
+    //         virt.as_u64(),
+    //         base_phys.as_u64(),
+    //         page_count * 0x1000
+    //     );
+    
+    //     Some(Self {
+    //         virt_addr: virt,
+    //         phys_addr: base_phys,
+    //         size: page_count * 0x1000,
+    //     })
+    // }
+    
 
     /// Zero out the buffer
     pub fn zero(&self) {
