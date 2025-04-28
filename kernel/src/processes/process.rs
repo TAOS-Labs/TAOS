@@ -358,6 +358,7 @@ use super::registers::ForkingRegisters;
 /// This process is unsafe because it directly modifies registers
 #[no_mangle]
 pub async unsafe fn run_process_ring3(pid: u32) {
+    serial_print!("Running process: {}", pid);
     resume_process_ring3(pid);
 
     loop {

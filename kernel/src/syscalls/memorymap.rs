@@ -186,7 +186,7 @@ pub async fn sys_mmap(_addr: u64, len: u64, prot: u64, flags: u64, fd: i64, offs
                 fd as usize,
                 offset,
             );
-        })
+        });
     }
     addr_to_return
 }

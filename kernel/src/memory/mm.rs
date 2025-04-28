@@ -170,7 +170,6 @@ impl Mm {
         }
 
         tree.insert(candidate.lock().start as usize, candidate.clone());
-
         // If no merge occurred, return the candidate unchanged.
         candidate
     }
