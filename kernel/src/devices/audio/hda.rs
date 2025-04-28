@@ -118,7 +118,25 @@ impl IntelHDA {
         let intctl_addr = (hda.virt_base + 0x20) as *mut u32;
         let intctl_val = ((1 << 31) | (1 << 4)) as u32; // TODO check the correct stream int is enabled, idk if 4 is the right num to shift by
         unsafe {
+            let before = read_volatile(intctl_addr);
+            serial_println!("INTCTL before write: 0x{:08X}", before);
+
             write_volatile(intctl_addr, intctl_val);
+
+            let after = read_volatile(intctl_addr);
+            serial_println!("INTCTL after write:  0x{:08X}", after);
+
+            if (after & (1 << 31)) != 0 {
+                serial_println!("Global interrupts are enabled.");
+            } else {
+                serial_println!("Global interrupts are not enabled.");
+            }
+
+            if (after & (1 << 4)) != 0 {
+                serial_println!("Interrupt for stream 4 is enabled.");
+            } else {
+                serial_println!("Interrupt for stream 4 is not enabled.");
+            }
         }
         
         // test we can play some audio
@@ -389,7 +407,7 @@ impl IntelHDA {
     
         let list_length = self.receive_response().await
             .expect("Failed to receive NodeCount for AFG");
-        list_length.print_response();
+        // list_length.print_response();
     
         let total_nodes = (list_length.get_response() & 0xFF) as u8;
         let start_id = ((list_length.get_response() >> 16) & 0xFF) as u8;
@@ -412,7 +430,7 @@ impl IntelHDA {
             self.send_command(0, nid as u32, HdaVerb::GetParameter, NodeParams::AudioWidgetCap.as_u16()).await.expect("Failed to send GetParameter AudioWidgetCap");
     
             let val = self.receive_response().await.expect("Failed to receive AudioWidgetCap");
-            val.print_response();
+            // val.print_response();
     
             let wtype = (val.get_response() >> 20) & 0xF;
     
@@ -606,12 +624,12 @@ impl IntelHDA {
         // turn on the nodes
         self.send_command(0, 0, HdaVerb::SetPowerState, 0).await.expect("Failed to send command to the CORB");
         let mut response = self.receive_response().await.expect("Failed to receive response from the RIRB");
-        response.print_response();
+        // response.print_response();
         
         // do the get param thingy
         self.send_command(0, 0, HdaVerb::GetParameter, NodeParams::NodeCount.as_u16()).await.expect("Failed to send command to the CORB");
         response = self.receive_response().await.expect("Failed to receive response from the RIRB");
-        response.print_response();
+        // response.print_response();
 
         let audio_data = load_wav().await.expect("Wav error");
 
@@ -656,25 +674,30 @@ impl IntelHDA {
         } else {
             debug_println!("Could not trace a valid path from pin to DAC.");
         }
-
+        
         
         
         // create BDL stuff
+        
         debug_println!("starting to alloc BDL");
         let audio_buf = DmaBuffer::new(audio_data.len).expect("Failed to allocate audio buffer");
         let bdl_buf = DmaBuffer::new(core::mem::size_of::<BdlEntry>() * 32).expect("Failed BDL");
         assert_eq!(bdl_buf.phys_addr.as_u64() % 128, 0, "BDL not 128-byte aligned");
-
+        
         debug_println!("audio data len: {}", audio_data.len);
         debug_println!("audio buf size: {}", audio_buf.size);
-        assert!(false);
+
+        debug_println!("audio_data.bytes.asptr 0x{:X}", audio_data.bytes.as_ptr() as u64);
+        debug_println!("audio bug virt addrress 0x{:X}", audio_buf.virt_addr.as_mut_ptr::<u8>() as u64);
         unsafe {
             core::ptr::copy_nonoverlapping(
                 audio_data.bytes.as_ptr(), 
                 audio_buf.virt_addr.as_mut_ptr::<u8>(), 
                 audio_data.len);
         }
-
+        assert!(false);
+        
+        debug_println!("before bdl setup");
         let bdl_ptr = bdl_buf.as_ptr::<BdlEntry>();
         let num_entries = setup_bdl(
             bdl_ptr,

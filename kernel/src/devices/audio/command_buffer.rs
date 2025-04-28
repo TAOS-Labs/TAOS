@@ -41,7 +41,7 @@ impl CorbBuffer {
     /// # Returns
     /// `self`
     pub fn new(base: &DmaBuffer, size: u16) -> Self {
-        debug_println!("creating a CORB with {} entries", size);
+        // debug_println!("creating a CORB with {} entries", size);
         Self {
             base: base.virt_addr.as_u64(),
             phys_base: base.phys_addr.as_u64(),
@@ -180,7 +180,7 @@ impl RirbBuffer {
         let read_addr = (self.base + (next_idx as u64 * 8)) as *mut RirbEntry;
         // debug_println!("the address to read from: 0x{:X}", read_addr as u64);
         let response = read_volatile(read_addr);
-        debug_println!("read response: 0x{:X} and resp_ex: {:X}", response.get_response(), response.get_response_ex());
+        // debug_println!("read response: 0x{:X} and resp_ex: {:X}", response.get_response(), response.get_response_ex());
 
         self.read_idx = next_idx;
         // debug_println!("set the read_idx to {}", self.read_idx);
