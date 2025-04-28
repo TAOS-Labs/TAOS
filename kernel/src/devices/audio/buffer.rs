@@ -35,11 +35,16 @@ pub fn setup_bdl(
     total_size: u32,
     entry_size: u32,
 ) -> usize {
-    debug_println!("in setup bdl");
-    let num_entries = (total_size + entry_size - 1) / entry_size;
+    // debug_println!("in setup bdl");
+    let num_entries_needed = ((total_size / entry_size) + 1) as u64;
+    let num_entries: u64;
+    if num_entries_needed > 256 {
+        num_entries = 256;
+    } else {
+        num_entries = num_entries_needed;
+    }
     let mut offset = 0;
-    debug_println!("num entries: {}", num_entries);
-    debug_println!("size of each entry: {}");
+    // debug_println!("num entries: {}", num_entries);
 
     for i in 0..num_entries {
         let phys_addr = buffer_phys_start + offset as u64;

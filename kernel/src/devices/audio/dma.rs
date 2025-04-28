@@ -8,6 +8,7 @@ use x86_64::{
     PhysAddr, VirtAddr,
 };
 
+#[derive(Clone)]
 /// DMA buffer that is physically contiguous and mapped to virtual memory
 pub struct DmaBuffer {
     pub virt_addr: VirtAddr,
@@ -62,53 +63,6 @@ impl DmaBuffer {
         })
     }
 
-    // pub fn new(size: usize) -> Option<Self> {
-    //     let page_count = (size + 0xFFF) / 0x1000;
-    //     serial_println!(
-    //         "DmaBuffer::new() -> Requesting {} pages ({} bytes)",
-    //         page_count,
-    //         size
-    //     );
-    
-    //     let mut phys_addrs = Vec::new();
-    
-    //     for i in 0..page_count {
-    //         let frame = match alloc_frame() {
-    //             Some(f) => f,
-    //             None => {
-    //                 serial_println!("Failed to allocate frame {}", i);
-    //                 return None;
-    //             }
-    //         };
-    //         phys_addrs.push(frame.start_address());
-    //     }
-    
-    //     // Check physical contiguity
-    //     for i in 1..phys_addrs.len() {
-    //         if phys_addrs[i].as_u64() != phys_addrs[i - 1].as_u64() + 0x1000 {
-    //             serial_println!("DMA allocation is NOT physically contiguous!");
-    //             return None;
-    //         }
-    //     }
-    
-    //     let base_phys = phys_addrs[0];
-    //     let virt = *HHDM_OFFSET + base_phys.as_u64();
-    
-    //     serial_println!(
-    //         "DMA buffer allocated: virt=0x{:X}, phys=0x{:X}, size={} bytes",
-    //         virt.as_u64(),
-    //         base_phys.as_u64(),
-    //         page_count * 0x1000
-    //     );
-    
-    //     Some(Self {
-    //         virt_addr: virt,
-    //         phys_addr: base_phys,
-    //         size: page_count * 0x1000,
-    //     })
-    // }
-    
-
     /// Zero out the buffer
     pub fn zero(&self) {
         unsafe {
@@ -116,6 +70,13 @@ impl DmaBuffer {
                 core::ptr::write_volatile(self.virt_addr.as_mut_ptr::<u8>().add(i), 0);
             }
         }
+    }
+
+    /// offsets the dma buffer by offset bytes
+    pub fn offset(&mut self, offset: u64) {
+        self.virt_addr += offset;
+        self.phys_addr += offset;
+        self.size -= offset as usize;
     }
 
     /// Interpret buffer as pointer to `T`
