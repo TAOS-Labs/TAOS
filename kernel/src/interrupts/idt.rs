@@ -432,13 +432,6 @@ extern "x86-interrupt" fn naked_timer_handler(_: InterruptStackFrame) {
 fn timer_handler(rsp: u64) {
     inc_runner_clock();
     preempt_process(rsp);
-    // with_current_pcb(|pcb| {
-    //     if pcb.fs_base != 0 || FsBase::read().as_u64() != 0 {
-    //         serial_println!("Saved FS base: {}", pcb.fs_base);
-    //         serial_println!("FS base: {}", FsBase::read().as_u64());
-    //     }
-    // });
-
     x2apic::send_eoi();
 }
 

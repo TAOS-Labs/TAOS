@@ -7,7 +7,7 @@ use spin::Mutex;
 use x86_64::{
     align_up,
     registers::model_specific::{FsBase, Msr},
-    structures::paging::{PhysFrame, Size4KiB},
+    structures::paging::{Mapper, OffsetPageTable, Page, PageTableFlags, PhysFrame, Size4KiB},
     VirtAddr,
 };
 
@@ -25,14 +25,15 @@ use crate::{
         FileSystem, OpenFlags, FILESYSTEM,
     },
     interrupts::x2apic::{send_eoi, X2APIC_IA32_FS_BASE, X2APIC_IA32_GSBASE},
+    memory::paging::create_mapping,
     processes::{
         process::{
-            create_process, sleep_process_int, sleep_process_syscall, with_current_pcb,
-            ProcessState, PROCESS_TABLE,
+            create_process, sleep_process_int, sleep_process_syscall,
+            with_current_pcb, ProcessState, PROCESS_TABLE,
         },
         registers::ForkingRegisters,
     },
-    serial_print, serial_println,
+    serial, serial_print, serial_println,
     syscalls::{
         block::block_on,
         fork::sys_fork,
@@ -282,8 +283,9 @@ pub unsafe extern "C" fn syscall_handler_impl(
                 syscall.arg2 as *mut *mut u8,
                 syscall.arg3 as *mut *mut u8,
             ),
-            reg_vals
+            reg_vals,
         ),
+        SYSCALL_SBRK => sys_sbrk(syscall.arg1 as isize),
         _ => {
             panic!("Unknown syscall, {}", syscall.number);
         }
@@ -396,7 +398,8 @@ pub async unsafe fn sys_exec(path: *mut u8, argv: *mut *mut u8, envp: *mut *mut 
                 MmapFlags::MAP_FILE.bits(),
                 fd as i64,
                 0,
-            ).await;
+            )
+            .await;
 
             serial_println!("Reading file...");
 
@@ -425,6 +428,40 @@ pub async unsafe fn sys_exec(path: *mut u8, argv: *mut *mut u8, envp: *mut *mut 
         3,
     );
     0
+}
+
+pub fn sys_sbrk(incr: isize) -> u64 {
+    serial_println!("SBRK w/ inc: {:#x}", incr);
+
+    let old_brk = with_current_pcb(|pcb| pcb.brk);
+
+    if incr == 0 {
+        return old_brk;
+    }
+
+    let new_brk = old_brk.checked_add(incr as u64).unwrap();
+    let old_page =
+        Page::<Size4KiB>::containing_address(VirtAddr::new(align_up(old_brk, PAGE_SIZE as u64)));
+    let new_page =
+        Page::<Size4KiB>::containing_address(VirtAddr::new(align_up(new_brk, PAGE_SIZE as u64)));
+    with_current_pcb(|pcb| unsafe {
+        let mut pt = pcb.create_mapper();
+
+        for page in Page::range_inclusive(old_page, new_page) {
+            let frame = create_mapping(
+                page,
+                &mut pt,
+                Some(
+                    PageTableFlags::PRESENT
+                        | PageTableFlags::USER_ACCESSIBLE
+                        | PageTableFlags::WRITABLE,
+                ),
+            );
+        }
+        pcb.brk = new_brk;
+    });
+
+    new_brk
 }
 
 /// # Safety

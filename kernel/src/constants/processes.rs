@@ -28,6 +28,9 @@ pub const TEST_MPROTECT_CHILD_WRITES: &[u8] =
 // Virtual memory address for the stack
 pub const STACK_START: u64 = 0x7000_0000_0000;
 
+// User Heaps
+pub const USR_HEAP_START: u64 = 0x5000_0000_0000;
+
 // Maximum number of files for the process control block's file descriptor table
 // if this number is big clone fails
 pub const MAX_FILES: usize = 128;

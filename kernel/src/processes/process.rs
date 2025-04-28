@@ -2,7 +2,7 @@ extern crate alloc;
 
 use crate::{
     constants::{
-        processes::{MAX_FILES, PROCESS_NANOS, PROCESS_TIMESLICE},
+        processes::{MAX_FILES, PROCESS_NANOS, PROCESS_TIMESLICE, USR_HEAP_START},
         syscalls::START_MMAP_ADDRESS,
     },
     debug,
@@ -66,6 +66,7 @@ pub struct PCB {
     pub next_preemption_time: u64,
     pub registers: Registers,
     pub mmap_address: u64,
+    pub brk: u64,
     pub fd_table: [Option<Arc<Mutex<File>>>; MAX_FILES],
     pub next_fd: Arc<Mutex<usize>>,
     pub mm: Mm,
@@ -190,6 +191,7 @@ pub fn create_placeholder_process() -> u32 {
             rflags: 0x0,
         },
         mmap_address: START_MMAP_ADDRESS,
+        brk: USR_HEAP_START,
         fd_table: [const { None }; MAX_FILES],
         // 0 and 1 are stdin, stdout
         next_fd: Arc::new(Mutex::new(2)),
@@ -247,6 +249,7 @@ pub fn create_process(elf_bytes: &[u8], args: Vec<String>, envs: Vec<String>) ->
             rflags: 0x202,
         },
         mmap_address: START_MMAP_ADDRESS,
+        brk: USR_HEAP_START,
         fd_table: [const { None }; MAX_FILES],
         // 0 and 1 are stdin, stdout
         next_fd: Arc::new(Mutex::new(2)),
