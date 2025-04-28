@@ -224,6 +224,46 @@ pub fn load_elf(
                     }
                 }
 
+                {
+                    // 1) Find the VA of the `_dl_ns` symbol in the parsed ELF
+                    let dl_ns_va = {
+                        let sym = elf
+                            .syms
+                            .iter()
+                            .find(|sym| &elf.strtab[sym.st_name] == "_dl_ns")
+                            .expect("_dl_ns not found in symbol table");
+                        sym.st_value
+                    };
+
+                    // 2) Figure out which user page it lives on
+                    let page = Page::containing_address(VirtAddr::new(dl_ns_va));
+                    let phys = user_mapper
+                        .translate_page(page)
+                        .expect("_dl_ns must be in one of your PT_LOAD segments");
+
+                    // 3) Kernel‐alias that frame so we can write to it
+                    let kalias = map_kernel_frame(
+                        kernel_mapper,
+                        phys,
+                        PageTableFlags::PRESENT
+                            | PageTableFlags::USER_ACCESSIBLE
+                            | PageTableFlags::WRITABLE,
+                    );
+                    let kbase = kalias.as_u64();
+                    let offset = dl_ns_va & (PAGE_SIZE as u64 - 1);
+                    let ptr = (kbase + offset) as *mut u64;
+
+                    // 4) Store the address of your DTV there
+                    unsafe {
+                        ptr.write_volatile(dtv_base);
+                    }
+
+                    // 5) Tear down the alias
+                    let unmap_pg: Page<Size4KiB> = Page::containing_address(kalias);
+                    kernel_mapper.unmap(unmap_pg).unwrap().1.flush();
+                    with_generic_allocator(|a| unsafe { kernel_mapper.clean_up(a) });
+                }
+
                 let unmap_pg: Page<Size4KiB> = Page::containing_address(kalias);
                 kernel_mapper.unmap(unmap_pg).unwrap().1.flush();
                 with_generic_allocator(|a| unsafe { kernel_mapper.clean_up(a) });
