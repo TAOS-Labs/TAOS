@@ -11,7 +11,10 @@ use core::arch::naked_asm;
 use lazy_static::lazy_static;
 use x86_64::{
     instructions::interrupts,
-    registers::control::Cr2,
+    registers::{
+        control::Cr2,
+        model_specific::{FsBase, Msr},
+    },
     structures::idt::{InterruptDescriptorTable, InterruptStackFrame, PageFaultErrorCode},
 };
 
@@ -24,7 +27,7 @@ use crate::{
     },
     devices::ps2_dev::{keyboard_interrupt_handler, mouse_interrupt_handler},
     events::inc_runner_clock,
-    interrupts::x2apic::{self, current_core_id, TLB_SHOOTDOWN_ADDR},
+    interrupts::x2apic::{self, current_core_id, TLB_SHOOTDOWN_ADDR, X2APIC_IA32_FS_BASE},
     memory::{
         mm::Mm,
         page_fault::{
@@ -427,6 +430,12 @@ extern "x86-interrupt" fn naked_timer_handler(_: InterruptStackFrame) {
 fn timer_handler(rsp: u64) {
     inc_runner_clock();
     preempt_process(rsp);
+    with_current_pcb(|pcb| {
+        if pcb.fs_base != 0 || FsBase::read().as_u64() != 0 {
+            serial_println!("Saved FS base: {}", pcb.fs_base);
+            serial_println!("FS base: {}", FsBase::read().as_u64());
+        }
+    });
 
     x2apic::send_eoi();
 }

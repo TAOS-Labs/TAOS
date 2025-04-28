@@ -8,6 +8,7 @@ use crate::{
         mm::{Mm, VmAreaBackings, VmAreaFlags},
         paging::{create_mapping, create_mapping_to_frame, update_permissions},
     },
+    serial_print, serial_println,
 };
 use alloc::{string::String, sync::Arc, vec::Vec};
 use core::ptr::{copy_nonoverlapping, write_bytes};
@@ -25,6 +26,8 @@ use x86_64::{
 // We import our new helper
 use crate::memory::paging::map_kernel_frame;
 
+use super::process::PCB;
+
 /// Function for initializing addresss space for process using ELF executable
 ///
 /// # Arguments:
@@ -36,19 +39,26 @@ use crate::memory::paging::map_kernel_frame;
 /// # Returns:
 /// Virtual address of the top of user stack and entry point for process
 pub fn load_elf(
+    pcb: &mut PCB,
     elf_bytes: &[u8],
     user_mapper: &mut impl Mapper<Size4KiB>,
     kernel_mapper: &mut OffsetPageTable<'static>,
-    mm: &mut Mm,
     args: Vec<String>,
     envs: Vec<String>,
 ) -> (VirtAddr, u64) {
     let elf = Elf::parse(elf_bytes).expect("Parsing ELF failed");
     let mut tls_ph: Option<&ProgramHeader> = None;
+    let mut phdr_runtime: u64 = 0; // will hold VA of the phdr table
+
     for ph in elf.program_headers.iter() {
         match ph.p_type {
             PT_LOAD => {
                 let virt_addr = VirtAddr::new(ph.p_vaddr);
+                if ph.p_offset == 0 && phdr_runtime == 0 {
+                    // this PT_LOAD starts at file off 0, so load_base = virt_addr
+                    phdr_runtime = virt_addr.as_u64() + elf.header.e_phoff as u64;
+                }
+
                 let mem_size = ph.p_memsz as usize;
                 let file_size = ph.p_filesz as usize;
                 let offset = ph.p_offset as usize;
@@ -57,8 +67,9 @@ pub fn load_elf(
                 let end_page = Page::containing_address(virt_addr + (mem_size - 1) as u64);
 
                 // Build final page flags
-                let default_flags =
-                    PageTableFlags::PRESENT | PageTableFlags::USER_ACCESSIBLE | PageTableFlags::WRITABLE;
+                let default_flags = PageTableFlags::PRESENT
+                    | PageTableFlags::USER_ACCESSIBLE
+                    | PageTableFlags::WRITABLE;
                 let mut flags = PageTableFlags::PRESENT | PageTableFlags::USER_ACCESSIBLE;
 
                 let anon_vma_code_and_data = Arc::new(VmAreaBackings::new());
@@ -70,12 +81,14 @@ pub fn load_elf(
                     let kernel_alias = map_kernel_frame(kernel_mapper, frame, default_flags);
                     // now `kernel_alias` is a kernel virtual address of that same frame
 
-                    let page_offset =
-                        page.start_address()
-                            .as_u64()
-                            .saturating_sub(start_page.start_address().as_u64()) as usize;
+                    let page_offset = page
+                        .start_address()
+                        .as_u64()
+                        .saturating_sub(start_page.start_address().as_u64())
+                        as usize;
                     let page_remaining = PAGE_SIZE - (page_offset % PAGE_SIZE);
-                    let to_copy = core::cmp::min(file_size.saturating_sub(page_offset), page_remaining);
+                    let to_copy =
+                        core::cmp::min(file_size.saturating_sub(page_offset), page_remaining);
 
                     if to_copy > 0 {
                         let dest = kernel_alias.as_mut_ptr::<u8>();
@@ -109,7 +122,7 @@ pub fn load_elf(
                         vma_flags |= VmAreaFlags::EXECUTE;
                     }
 
-                    mm.with_vma_tree_mutable(|tree| {
+                    pcb.mm.with_vma_tree_mutable(|tree| {
                         Mm::insert_vma(
                             tree,
                             page.start_address().as_u64(),
@@ -131,7 +144,9 @@ pub fn load_elf(
                         .expect("Unmapping kernel frame failed")
                         .1
                         .flush();
-                    with_generic_allocator(|allocator| unsafe { kernel_mapper.clean_up(allocator) });
+                    with_generic_allocator(|allocator| unsafe {
+                        kernel_mapper.clean_up(allocator)
+                    });
 
                     update_permissions(page, user_mapper, flags);
                 }
@@ -144,92 +159,114 @@ pub fn load_elf(
             _ => {}
         }
     }
-
     if let Some(ph) = tls_ph {
-        // where in user‐space the TLS wants to live
-        let tls_start = VirtAddr::new(ph.p_vaddr);
+        let tls_p_vaddr = ph.p_vaddr;
         let tls_memsz = ph.p_memsz as usize;
         let tls_filesz = ph.p_filesz as usize;
-        let tls_align  = ph.p_align as u64;             // usually pointer‐size
+        let tls_align = ph.p_align as u64;
 
-        // round up filesz to alignment to compute the “Thread Pointer” offset:
-        let tp_offset = ((tls_filesz + (tls_align as usize) - 1) / (tls_align as usize))
-                        * (tls_align as usize);
+        // round up for tp_offset
+        let tp_offset =
+            ((tls_filesz + (tls_align as usize) - 1) / (tls_align as usize)) * (tls_align as usize);
 
-        // map [tls_start .. tls_start + tls_memsz) just like PT_LOAD:
-        let start_page = Page::containing_address(tls_start);
-        let end_page   = Page::containing_address(tls_start + (tls_memsz - 1) as u64);
-        for page in Page::range_inclusive(start_page, end_page) {
-            let frame = create_mapping(
-                page,
-                user_mapper,
-                Some(PageTableFlags::PRESENT
-                    | PageTableFlags::USER_ACCESSIBLE
-                    | PageTableFlags::WRITABLE),
-            );
-            let kernel_alias = map_kernel_frame(
-                kernel_mapper,
-                frame,
-                PageTableFlags::PRESENT
-            | PageTableFlags::USER_ACCESSIBLE
-            | PageTableFlags::WRITABLE,
-            );
+        let template_start = VirtAddr::new(tls_p_vaddr);
 
-            let page_off = (page.start_address().as_u64()
-                            .saturating_sub(start_page.start_address().as_u64())) as usize;
-            // copy the initialized data
-            if page_off < tls_filesz {
-                let to_copy = core::cmp::min(tls_filesz - page_off, PAGE_SIZE);
-                unsafe {
-                    copy_nonoverlapping(
-                        elf_bytes[(ph.p_offset as usize + page_off)..]
-                                .as_ptr(),
-                        kernel_alias.as_mut_ptr::<u8>(),
-                        to_copy,
-                    );
+        // decide static vs dynamic
+        let is_static = user_mapper
+            .translate_page(Page::containing_address(template_start))
+            .is_ok();
+        if is_static {
+            let tls_start = VirtAddr::new(ph.p_vaddr);
+            let tls_memsz = ph.p_memsz as usize;
+            let tls_filesz = ph.p_filesz as usize;
+            let tls_align = ph.p_align as u64;
+
+            // compute where FS:0 / FS:8 go
+            let tp_offset =
+                ((tls_filesz + tls_align as usize - 1) / tls_align as usize) * tls_align as usize;
+            let tcb_base = tls_start.as_u64() + tp_offset as u64;
+            let dtv_base = tcb_base + 16;
+
+            // cover both the TCB and the DTV slots
+            let first = Page::containing_address(VirtAddr::new(tcb_base));
+            let last = Page::containing_address(VirtAddr::new(dtv_base + 15));
+
+            let flags = PageTableFlags::PRESENT
+                | PageTableFlags::USER_ACCESSIBLE
+                | PageTableFlags::WRITABLE;
+
+            for page in Page::range_inclusive(first, last) {
+                let phys = user_mapper
+                    .translate_page(page)
+                    .expect("static TLS page not mapped");
+
+                // 2) alias it in the kernel so we can write it
+                let kalias = map_kernel_frame(kernel_mapper, phys, flags);
+                let kbase = kalias.as_u64();
+                let ubase = page.start_address().as_u64();
+
+                // helper: turn a user-VA into a kernel pointer
+                let tocptr = |user_va: u64| -> *mut u64 { (kbase + (user_va - ubase)) as *mut u64 };
+
+                // 3) if this page contains the TCB area, write FS:0 and FS:8
+                if (ubase..ubase + PAGE_SIZE as u64).contains(&tcb_base) {
+                    unsafe {
+                        tocptr(tcb_base).write_volatile(tcb_base);
+                        tocptr(tcb_base + 8).write_volatile(dtv_base);
+                    }
                 }
-            }
-            // zero needed for some reason?
-            let zero_start = core::cmp::max(page_off, tls_filesz);
-            if zero_start < PAGE_SIZE {
-                unsafe {
-                    write_bytes(
-                        kernel_alias.as_mut_ptr::<u8>().add(zero_start),
-                        0,
-                        PAGE_SIZE - zero_start,
-                    );
+
+                // 4) if it contains the DTV, write DTV[0]=1 and DTV[1]=tls_start
+                if (ubase..ubase + PAGE_SIZE as u64).contains(&dtv_base) {
+                    unsafe {
+                        tocptr(dtv_base).write_volatile(1);
+                        tocptr(dtv_base + 8).write_volatile(tls_start.as_u64());
+                    }
                 }
+
+                let unmap_pg: Page<Size4KiB> = Page::containing_address(kalias);
+                kernel_mapper.unmap(unmap_pg).unwrap().1.flush();
+                with_generic_allocator(|a| unsafe { kernel_mapper.clean_up(a) });
             }
 
+            pcb.fs_base = tcb_base;
+            serial_println!("STATIC TLS → fs_base = {:#x}", pcb.fs_base);
+        } else {
+            // ── DYNAMIC TLS ───────────────────────────────────────────────────
         }
-
-        // compute the value we have to load into FS_BASE
-        let fs_base = tls_start + tp_offset as u64;
-
-        // stash this in pcb for context switch maybe?
-        // pcb.fs_base = fs_base;
     }
 
     // Map user stack
     let stack_start = VirtAddr::new(STACK_START);
     let stack_end = VirtAddr::new(STACK_START + STACK_SIZE as u64);
-    let _start_page: Page<Size4KiB> = Page::containing_address(stack_start);
-    let _end_page: Page<Size4KiB> = Page::containing_address(stack_end);
-    let frame = create_mapping(
-        _end_page,
-        user_mapper,
-        Some(PageTableFlags::PRESENT | PageTableFlags::USER_ACCESSIBLE | PageTableFlags::WRITABLE),
-    );
-    create_mapping_to_frame(
-        _end_page,
-        kernel_mapper,
-        Some(PageTableFlags::PRESENT | PageTableFlags::USER_ACCESSIBLE | PageTableFlags::WRITABLE),
-        frame,
-    );
+    let start_page: Page<Size4KiB> = Page::containing_address(stack_start);
+    let end_page: Page<Size4KiB> = Page::containing_address(stack_end);
+
+    for page in Page::range_inclusive(start_page, end_page) {
+        let frame = create_mapping(
+            page,
+            user_mapper,
+            Some(
+                PageTableFlags::PRESENT
+                    | PageTableFlags::USER_ACCESSIBLE
+                    | PageTableFlags::WRITABLE,
+            ),
+        );
+        create_mapping_to_frame(
+            page,
+            kernel_mapper,
+            Some(
+                PageTableFlags::PRESENT
+                    | PageTableFlags::USER_ACCESSIBLE
+                    | PageTableFlags::WRITABLE,
+            ),
+            frame,
+        );
+    }
     // new anon_vma that corresponds to this stack
     let anon_vma_stack = Arc::new(VmAreaBackings::new());
 
-    mm.with_vma_tree_mutable(|tree| {
+    pcb.mm.with_vma_tree_mutable(|tree| {
         Mm::insert_vma(
             tree,
             STACK_START,
@@ -241,76 +278,90 @@ pub fn load_elf(
         );
     });
 
-    // 1) Start at top of stack
-    let mut sp = stack_end;
-    // 2) Align down to 16 bytes
+    // 1) start at top of the stack space
+    let mut sp = VirtAddr::new(STACK_START + STACK_SIZE as u64);
+    // 2) align down to 16 bytes
     sp = VirtAddr::new(sp.as_u64() & !0xF);
 
-    // 3) Reserve space for the argument strings themselves,
-    //    writing them at lower addresses, and save their pointers.
-    let mut arg_ptrs = Vec::with_capacity(args.len());
-    for s in args.into_iter().rev() {
-        let bytes = s.into_bytes();
-        let len = bytes.len() + 1; // +1 for '\0'
-        sp = VirtAddr::new(sp.as_u64() + len as u64);
+    // --- helper to push a C‐string and return its user‐VA ---
+    let mut push_cstr = |bytes: &[u8]| -> u64 {
+        // make room for the string + NUL (no extra alignment here)
+        let len = bytes.len() as u64 + 1;
+        sp = VirtAddr::new(sp.as_u64() - len);
         unsafe {
             let dst = sp.as_mut_ptr::<u8>();
-            core::ptr::copy_nonoverlapping(bytes.as_ptr(), dst, bytes.len());
+            copy_nonoverlapping(bytes.as_ptr(), dst, bytes.len());
             dst.add(bytes.len()).write(0);
         }
-        arg_ptrs.push(sp.as_u64());
-    }
-    arg_ptrs.reverse(); // because we iterated in reverse
+        sp.as_u64()
+    };
 
-    // 4) Same for env strings
-    let mut env_ptrs = Vec::with_capacity(envs.len());
-    for s in envs.into_iter().rev() {
-        let bytes = s.into_bytes();
-        let len = bytes.len() + 1;
-        sp = VirtAddr::new(sp.as_u64() + len as u64);
-        unsafe {
-            let dst = sp.as_mut_ptr::<u8>();
-            core::ptr::copy_nonoverlapping(bytes.as_ptr(), dst, bytes.len());
-            dst.add(bytes.len()).write(0);
-        }
-        let cstr = unsafe { core::ffi::CStr::from_ptr(sp.as_u64() as *const i8) };
-        let s = cstr.to_str().unwrap();
-        crate::serial_println!("envp: {}", s);
-        env_ptrs.push(sp.as_u64());
-    }
+    // 3) copy args/envs **backwards**, record their pointers
+    let mut argv_ptrs: Vec<u64> = args.iter().rev().map(|s| push_cstr(s.as_bytes())).collect();
+    let mut env_ptrs: Vec<u64> = envs.iter().rev().map(|s| push_cstr(s.as_bytes())).collect();
+    argv_ptrs.reverse();
     env_ptrs.reverse();
 
-    for &s in &env_ptrs {
-        let cstr = unsafe { core::ffi::CStr::from_ptr(s as *const i8) };
-        let s = cstr.to_str().unwrap();
-        crate::serial_println!("envp: {}", s);
+    // 4) carve out 16 bytes for AT_RANDOM
+    sp = VirtAddr::new((sp.as_u64() - 16) & !0xF);
+    unsafe {
+        write_bytes(sp.as_mut_ptr::<u8>(), 0xAA, 16);
+    }
+    let rand_ptr = sp.as_u64();
+
+    // 5) helper to push a u64
+    let mut push64 = |val: u64| {
+        sp = VirtAddr::new(sp.as_u64() - 8);
+        unsafe {
+            sp.as_mut_ptr::<u64>().write(val);
+        }
+    };
+
+    // 6) AUX-VECTOR (forward order, so AT_NULL ends up highest in the auxv):
+    const AT_NULL: u64 = 0;
+    const AT_RANDOM: u64 = 25;
+    const AT_PAGESZ: u64 = 6;
+    const AT_PHDR: u64 = 3;
+    const AT_PHENT: u64 = 4;
+    const AT_PHNUM: u64 = 5;
+
+    // push AT_NULL first
+    push64(0);
+    push64(AT_NULL);
+    // push AT_RANDOM
+    push64(rand_ptr);
+    push64(AT_RANDOM);
+    // push page size
+    push64(PAGE_SIZE as u64);
+    push64(AT_PAGESZ);
+    // push program‐header table info
+    push64(elf.header.e_phnum as u64);
+    push64(AT_PHNUM);
+    push64(core::mem::size_of::<ProgramHeader>() as u64);
+    push64(AT_PHENT);
+    // phdr_runtime was computed above when mapping PT_LOAD at p_offset=0
+    serial_println!("PHDR runtime: {}", phdr_runtime);
+    push64(phdr_runtime);
+    push64(AT_PHDR);
+
+    // 7) envp pointers (NULL‐terminated)
+    push64(0);
+    for &p in env_ptrs.iter().rev() {
+        push64(p);
     }
 
-    // 5) Align down again before pushing pointer arrays
+    // 8) argv pointers (NULL‐terminated)
+    push64(0);
+    for &p in argv_ptrs.iter().rev() {
+        push64(p);
+    }
+
+    // 9) finally, argc
+    push64(argv_ptrs.len() as u64);
+
+    // 10) realign to 16‐byte boundary before entry
     sp = VirtAddr::new(sp.as_u64() & !0xF);
 
-    // 6) Push envp pointers (NULL-terminated)
-    for &ptr in env_ptrs.iter().chain(core::iter::once(&0u64)) {
-        unsafe {
-            sp.as_mut_ptr::<u64>().write(ptr);
-        }
-        sp = VirtAddr::new(sp.as_u64() + 8);
-    }
-
-    // 7) Push argv pointers (NULL-terminated)
-    for &ptr in arg_ptrs.iter().chain(core::iter::once(&0u64)) {
-        unsafe {
-            sp.as_mut_ptr::<u64>().write(ptr);
-        }
-        sp = VirtAddr::new(sp.as_u64() + 8);
-    }
-
-    // 8) Finally push argc
-    let argc = arg_ptrs.len() as u64;
-    unsafe {
-        sp.as_mut_ptr::<u64>().write(argc);
-    }
-
-    // Return the new stack pointer and entry point
+    // hand back (sp, entry_point)
     (sp, elf.header.e_entry)
 }

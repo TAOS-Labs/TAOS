@@ -89,7 +89,7 @@ pub fn init() -> u32 {
                 fs.lock()
                     .await
                     .open_file(
-                        "/executables/hello",
+                        "/executables/ret",
                         OpenFlags::O_RDONLY | OpenFlags::O_WRONLY,
                     )
                     .await

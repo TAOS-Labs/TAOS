@@ -6,8 +6,9 @@ use pc_keyboard::{DecodedKey, KeyCode, KeyState};
 use spin::Mutex;
 use x86_64::{
     align_up,
-    registers::model_specific::Msr,
+    registers::model_specific::{FsBase, Msr},
     structures::paging::{PhysFrame, Size4KiB},
+    VirtAddr,
 };
 
 use crate::{
@@ -26,7 +27,8 @@ use crate::{
     interrupts::x2apic::{send_eoi, X2APIC_IA32_FS_BASE, X2APIC_IA32_GSBASE},
     processes::{
         process::{
-            create_process, sleep_process_int, sleep_process_syscall, ProcessState, PROCESS_TABLE,
+            create_process, sleep_process_int, sleep_process_syscall, with_current_pcb,
+            ProcessState, PROCESS_TABLE,
         },
         registers::ForkingRegisters,
     },
@@ -76,6 +78,20 @@ impl<T> From<u64> for MutUserPtr<T> {
     fn from(value: u64) -> Self {
         MutUserPtr(value as *mut T)
     }
+}
+
+/// Reload IA32_FS_BASE with pcb.fs_base (called from naked stub)
+#[no_mangle]
+pub extern "C" fn reload_fs_base() {
+    use x86_64::registers::model_specific::Msr;
+
+    const IA32_FS_BASE: u32 = 0xC000_0100;
+
+    // with_current_pcb gives us &mut PCB for the thread that owns this syscall
+    with_current_pcb(|pcb| unsafe {
+        Msr::new(IA32_FS_BASE).write(pcb.fs_base);
+        FsBase::write(VirtAddr::new(pcb.fs_base));
+    });
 }
 
 /// Naked syscall handler that switches to a valid kernel stack (saving
@@ -162,7 +178,14 @@ pub unsafe extern "C" fn syscall_handler_64_naked() -> ! {
         // Swap GS back.
         "mov rsp, qword ptr gs:[20]",
         "swapgs",
-        // Return to user mode. sysretq will use RCX (which contains the user RIP)
+        // --- reload FS_BASE just before we return to user ----------------
+        "push rax",
+        "push rcx",
+        "push rdx",
+        "call reload_fs_base", // -> writes IA32_FS_BASE = pcb.fs_base
+        "pop rdx",
+        "pop rcx",
+        "pop rax", // Return to user mode. sysretq will use RCX (which contains the user RIP)
         // and R11 (which holds user RFLAGS).
         "sti",
         "sysretq",
@@ -187,6 +210,13 @@ pub unsafe extern "C" fn syscall_handler_impl(
     let reg_vals = unsafe { &*reg_vals };
 
     crate::debug!("SYS {}", syscall.number);
+    serial_println!("FS BASE: {}", Msr::new(X2APIC_IA32_FS_BASE).read());
+
+    with_current_pcb(|pcb| unsafe {
+        //Msr::new(X2APIC_IA32_FS_BASE).write(pcb.fs_base);
+        serial_println!("Saved FS BASE: {}", pcb.fs_base);
+        FsBase::write(VirtAddr::new(pcb.fs_base));
+    });
 
     match syscall.number as u32 {
         SYSCALL_EXIT => {
@@ -598,18 +628,70 @@ const ARCH_CET_PUSH_SHSTK: i32 = 0x3006;
 
 /// Emulate arch_prctl(2)
 pub fn sys_arch_prctl(code: i32, addr: u64) -> u64 {
+    serial_println!("Code: {}", code);
+    with_current_pcb(|pcb| unsafe {
+        //Msr::new(X2APIC_IA32_FS_BASE).write(pcb.fs_base);
+        FsBase::write(VirtAddr::new(pcb.fs_base));
+    });
+
+    // somewhere in kernel mode, AFTER you loaded the process’s FS_BASE
+    let mut fs_word0: u64;
+
+    unsafe {
+        core::arch::asm!(
+            "mov {out}, qword ptr fs:[0]",   // load 8-byte value at FS:0 → out
+            out = out(reg) fs_word0,
+            options(nostack, preserves_flags),
+        );
+    }
+
+    serial_println!("value @ fs:0  = {:#018x}", fs_word0);
+
+    let mut fs_plus8: u64;
+    unsafe {
+        core::arch::asm!(
+            "mov {out}, qword ptr fs:[8]",
+            out = out(reg) fs_plus8,
+            options(nostack, preserves_flags),
+        );
+    }
+    serial_println!("value @ fs:8  = {:#018x}", fs_plus8);
+
+    // If fs:+8 is non-zero, fetch the two words in that table
+    if fs_plus8 != 0 {
+        let mut dtv0: u64 = 0;
+        let mut dtv1: u64 = 0;
+        unsafe {
+            core::arch::asm!(
+                "mov rax, {ptr}",
+                "mov {o0}, qword ptr [rax]",
+                "mov {o1}, qword ptr [rax + 8]",
+                ptr = in(reg) fs_plus8,
+                o0  = out(reg) dtv0,
+                o1  = out(reg) dtv1,
+                lateout("rax") _,
+                options(nostack, preserves_flags),
+            );
+        }
+        serial_println!("dtv[0]      = {:#018x}", dtv0);
+        serial_println!("dtv[1]      = {:#018x}", dtv1);
+    }
+
     match code {
         ARCH_SET_FS => {
+            serial_println!("SET FS");
             // point %fs at user‐space TLS block
             unsafe { Msr::new(X2APIC_IA32_FS_BASE).write(addr) };
             0
         }
         ARCH_SET_GS => {
+            serial_println!("SET GS");
             // point %gs at user‐space TLS block (if used)
             unsafe { Msr::new(X2APIC_IA32_FS_BASE).write(addr) };
             0
         }
         ARCH_GET_FS => {
+            serial_println!("GET FS");
             // read current fs_base
             let fs = unsafe { Msr::new(X2APIC_IA32_FS_BASE).read() };
             // write it back into the user buffer
@@ -618,30 +700,20 @@ pub fn sys_arch_prctl(code: i32, addr: u64) -> u64 {
             0
         }
         ARCH_GET_GS => {
+            serial_println!("GET GS");
             let gs = unsafe { Msr::new(X2APIC_IA32_GSBASE).read() };
             let ptr = addr as *mut u64;
             unsafe { ptr.write_volatile(gs) };
             0
         }
-        ARCH_CET_STATUS => {
-            0
-        }
-        ARCH_CET_DISABLE => {
-            0
-        }
-        ARCH_CET_LOCK => {
-            0 
-        }
-        ARCH_CET_EXEC => {
-            0
-        }
-        ARCH_CET_ALLOC_SHSTK => {
-            0
-        }
-        ARCH_CET_PUSH_SHSTK => {
-            0
-        }
+        ARCH_CET_STATUS => 0,
+        ARCH_CET_DISABLE => 0,
+        ARCH_CET_LOCK => 0,
+        ARCH_CET_EXEC => 0,
+        ARCH_CET_ALLOC_SHSTK => 0,
+        ARCH_CET_PUSH_SHSTK => 0,
         _ => {
+            serial_println!("code unknown?");
             // unknown code
             0
         }
