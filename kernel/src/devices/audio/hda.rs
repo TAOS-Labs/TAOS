@@ -810,6 +810,8 @@ impl IntelHDA {
 
         while played < total_len {
 
+            debug_println!("played: {}/{}", played, total_len);
+
             let lpib = unsafe { read_volatile(lpib_addr) };
             let sts_val = unsafe { read_volatile(sdsts_addr) };
             if (sts_val >> 2) & 1 == 1 {
