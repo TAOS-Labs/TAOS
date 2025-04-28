@@ -1,8 +1,9 @@
 use crate::{
-    memory::{frame_allocator::alloc_frame, HHDM_OFFSET},
-    serial_println,
+    debug_println, memory::{frame_allocator::alloc_frame, HHDM_OFFSET}, serial_println
 };
 
+use alloc::vec::Vec;
+use smoltcp::phy;
 use x86_64::{
     PhysAddr, VirtAddr,
 };
@@ -26,6 +27,8 @@ impl DmaBuffer {
 
         let mut virt_addr = None;
         let mut phys_addr = None;
+
+        
 
         for i in 0..page_count {
             // serial_println!("Allocating frame {}", i);

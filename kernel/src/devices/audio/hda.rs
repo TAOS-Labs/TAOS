@@ -680,7 +680,7 @@ impl IntelHDA {
         // create BDL stuff
         
         debug_println!("starting to alloc BDL");
-        let audio_buf = DmaBuffer::new(audio_data.len).expect("Failed to allocate audio buffer");
+        let audio_buf = DmaBuffer::new(audio_data.len/3).expect("Failed to allocate audio buffer");
         let bdl_buf = DmaBuffer::new(core::mem::size_of::<BdlEntry>() * 32).expect("Failed BDL");
         assert_eq!(bdl_buf.phys_addr.as_u64() % 128, 0, "BDL not 128-byte aligned");
         
@@ -693,9 +693,21 @@ impl IntelHDA {
             core::ptr::copy_nonoverlapping(
                 audio_data.bytes.as_ptr(), 
                 audio_buf.virt_addr.as_mut_ptr::<u8>(), 
-                audio_data.len);
+                audio_data.len/3);
         }
-        assert!(false);
+        // assert!(false);
+
+        //old code back
+        // let audio_buf = DmaBuffer::new(64 * 1024).expect("Failed to allocate audio buffer");
+        // let bdl_buf = DmaBuffer::new(core::mem::size_of::<BdlEntry>() * 32).expect("Failed BDL");
+        // assert_eq!(bdl_buf.phys_addr.as_u64() % 128, 0, "BDL not 128-byte aligned");
+    
+        // for i in 0..audio_buf.size {
+        //     unsafe {
+        //         *audio_buf.virt_addr.as_mut_ptr::<u8>().add(i) =
+        //             if i % 3 == 0 { 0x00 } else if i % 3 == 1 { 0x10 } else { 0xFF };
+        //     }
+        // }
         
         debug_println!("before bdl setup");
         let bdl_ptr = bdl_buf.as_ptr::<BdlEntry>();
