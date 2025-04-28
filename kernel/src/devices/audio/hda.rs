@@ -723,10 +723,10 @@ impl IntelHDA {
         // Flush cache to ensure BDL/Audio in RAM for DMA
         unsafe { core::arch::asm!("wbinvd"); }
 
-        for i in 0..16 {
-            let b = unsafe { *(audio_buf.virt_addr.as_u64() as *const u8).add(i) };
-            debug_println!("Audio buf[{}] = {:02X}", i, b);
-        }
+        // for i in 0..16 {
+        //     let b = unsafe { *(audio_buf.virt_addr.as_u64() as *const u8).add(i) };
+        //     debug_println!("Audio buf[{}] = {:02X}", i, b);
+        // }
 
         // begin configuring stream desc
         let stream_base = self.virt_base + 0x80 + 4 * 0x20;

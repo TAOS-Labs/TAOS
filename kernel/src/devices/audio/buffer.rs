@@ -1,5 +1,7 @@
 use core::ptr::write_volatile;
 
+use crate::debug_println;
+
 /// Intel HDA Buffer Descriptor (BDL) Entry
 #[repr(C, packed)]
 #[derive(Debug, Clone, Copy)]
@@ -33,8 +35,11 @@ pub fn setup_bdl(
     total_size: u32,
     entry_size: u32,
 ) -> usize {
+    debug_println!("in setup bdl");
     let num_entries = (total_size + entry_size - 1) / entry_size;
     let mut offset = 0;
+    debug_println!("num entries: {}", num_entries);
+    debug_println!("size of each entry: {}");
 
     for i in 0..num_entries {
         let phys_addr = buffer_phys_start + offset as u64;

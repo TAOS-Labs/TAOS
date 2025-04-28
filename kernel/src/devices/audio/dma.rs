@@ -29,18 +29,6 @@ impl DmaBuffer {
         let mut phys_addr = None;
         let order = page_count.ilog2() + 1;
 
-        // with_buddy_frame_allocator(|f| {
-        //     let frames = f.allocate_block(order.try_into().unwrap());
-        //     for idx, frame in frames.enumerate() {
-
-        //     let temp_virt = *HHDM_OFFSET + frame.start_address().as_u64();
-
-        //     if i == 0 {
-        //         virt_addr = Some(temp_virt);
-        //         phys_addr = Some(frame.start_address()); 
-        //     }
-        //     }
-        // });
         with_buddy_frame_allocator(|f| {
             let frames = f.allocate_block(order.try_into().unwrap());
             for (idx, frame) in frames.iter().enumerate() {
@@ -57,39 +45,6 @@ impl DmaBuffer {
             }
         });
         
-        // for i in 0..page_count {
-        //     // serial_println!("Allocating frame {}", i);
-
-        //     let frame = match alloc_frame() {
-        //         Some(f) => f,
-        //         None => {
-        //             serial_println!("Failed to allocate frame {}", i);
-        //             if i == 0 {
-        //                 return None;
-        //             } else {
-        //                 let fallback_size = i * 0x1000;
-        //                 serial_println!("Falling back to {} bytes", fallback_size);
-        //                 return DmaBuffer::new(fallback_size);
-        //             }
-        //         }
-        //     };
-
-        //     // serial_println!("Got frame {} at physical address 0x{:X}", i, frame.start_address().as_u64());
-
-        //     let temp_virt = *HHDM_OFFSET + frame.start_address().as_u64();
-
-        //     if i == 0 {
-        //         virt_addr = Some(temp_virt);
-        //         phys_addr = Some(frame.start_address()); 
-        //     }
-
-        //     // serial_println!("Using virtual address 0x{:X} for page {}", temp_virt.as_u64(), i);
-
-        //     unsafe {
-        //         core::ptr::write_bytes(temp_virt.as_mut_ptr::<u8>(), 0, 0x1000);
-        //     }
-        // }
-
         let virt = virt_addr?;
         let phys = phys_addr?;
 
