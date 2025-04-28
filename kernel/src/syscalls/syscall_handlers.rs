@@ -276,10 +276,13 @@ pub unsafe extern "C" fn syscall_handler_impl(
             ),
             reg_vals,
         ),
-        SYSCALL_EXECVE => sys_exec(
-            syscall.arg1 as *mut u8,
-            syscall.arg2 as *mut *mut u8,
-            syscall.arg3 as *mut *mut u8,
+        SYSCALL_EXECVE => block_on(
+            sys_exec(
+                syscall.arg1 as *mut u8,
+                syscall.arg2 as *mut *mut u8,
+                syscall.arg3 as *mut *mut u8,
+            ),
+            reg_vals
         ),
         _ => {
             panic!("Unknown syscall, {}", syscall.number);
@@ -289,7 +292,7 @@ pub unsafe extern "C" fn syscall_handler_impl(
 
 /// # Safety
 /// TODO
-pub unsafe fn sys_exec(path: *mut u8, argv: *mut *mut u8, envp: *mut *mut u8) -> u64 {
+pub async unsafe fn sys_exec(path: *mut u8, argv: *mut *mut u8, envp: *mut *mut u8) -> u64 {
     if path.is_null() {
         return u64::MAX;
     }
@@ -386,17 +389,14 @@ pub unsafe fn sys_exec(path: *mut u8, argv: *mut *mut u8, envp: *mut *mut u8) ->
                     .unwrap()
                     .size()
             };
-            block_on(
-                sys_mmap(
-                    0x9000,
-                    align_up(file_len, PAGE_SIZE as u64),
-                    ProtFlags::PROT_EXEC.bits(),
-                    MmapFlags::MAP_FILE.bits(),
-                    fd as i64,
-                    0,
-                ),
-                &ForkingRegisters::default(),
-            );
+            sys_mmap(
+                0x9000,
+                align_up(file_len, PAGE_SIZE as u64),
+                ProtFlags::PROT_EXEC.bits(),
+                MmapFlags::MAP_FILE.bits(),
+                fd as i64,
+                0,
+            ).await;
 
             serial_println!("Reading file...");
 

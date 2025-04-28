@@ -32,12 +32,9 @@ use crate::{
     logging,
     memory::{self},
     net::get_ip_addr,
-    processes::{self, process::create_process, registers::ForkingRegisters},
+    processes::{self, process::create_process},
     serial_println,
-    syscalls::{
-        block::block_on,
-        memorymap::{sys_mmap, MmapFlags, ProtFlags},
-    },
+    syscalls::memorymap::{sys_mmap, MmapFlags, ProtFlags},
     trace,
 };
 extern crate alloc;

@@ -344,6 +344,8 @@ fn syscall_handler(rsp: u64) {
         }
     }
 
+    serial_println!("32 bit syscall :(");
+
     x2apic::send_eoi();
 
     if syscall_num == SYSCALL_EXIT {
