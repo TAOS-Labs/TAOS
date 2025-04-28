@@ -67,17 +67,14 @@ mod tests {
                 .unwrap()
                 .size()
         };
-        block_on(
-            sys_mmap(
-                0x9000,
-                align_up(file_len, PAGE_SIZE as u64),
-                ProtFlags::PROT_EXEC.bits(),
-                MmapFlags::MAP_FILE.bits(),
-                fd as i64,
-                0,
-            ),
-            &ForkingRegisters::default(),
-        );
+        sys_mmap(
+            0x9000,
+            align_up(file_len, PAGE_SIZE as u64),
+            ProtFlags::PROT_EXEC.bits(),
+            MmapFlags::MAP_FILE.bits(),
+            fd as i64,
+            0,
+        ).await;
 
         serial_println!("Reading file...");
 

@@ -10,7 +10,7 @@ use crate::{
     processes::registers::ForkingRegisters,
     serial_println,
     syscalls::{
-        block::block_on,
+        block::{block_on, spin_on},
         syscall_handlers::{sys_exec, sys_read, sys_write},
     },
 };
@@ -65,9 +65,8 @@ impl Shell {
     fn read_char(&mut self) -> u8 {
         let mut c: u8 = 0;
         unsafe {
-            block_on(
+            spin_on(
                 sys_read(0, &mut c as *mut u8, 1),
-                &ForkingRegisters::default(),
             )
         };
         match c {
@@ -89,9 +88,8 @@ impl Shell {
 
     fn print(&self, s: &str) {
         unsafe {
-            block_on(
-                sys_write(1, s.as_ptr() as *mut u8, s.len()),
-                &ForkingRegisters::default(),
+            spin_on(
+                sys_write(1, s.as_ptr() as *mut u8, s.len())
             )
         };
     }
