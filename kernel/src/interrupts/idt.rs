@@ -180,7 +180,7 @@ extern "x86-interrupt" fn page_fault_handler(
             if vma_arc.is_none() {
                 serial_println!("Faulting address is not part of process's virtual address space.");
                 pcb.signal_descriptor.send_signal(SignalCode::SIGSEGV, 0, SourceCode::SI_KERNEL, SigFields {fault_addr: VirtAddr::new(faulting_address)});
-                pcb.signal_descriptor.handle_signal();
+                pcb.signal_descriptor.handle_signal(stack_frame.stack_pointer.as_u64(), 0);
                 return;
             }
             let vma_arc = vma_arc.unwrap();

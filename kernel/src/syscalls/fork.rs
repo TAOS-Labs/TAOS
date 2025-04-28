@@ -64,6 +64,7 @@ pub fn sys_fork(reg_vals: &ForkingRegisters) -> u64 {
         (*child_pcb.pcb.get()).registers.rflags = reg_vals.r11;
         (*child_pcb.pcb.get()).registers.rsp = reg_vals.rsp;
         (*child_pcb.pcb.get()).state = ProcessState::Ready;
+        (*child_pcb.pcb.get()).pid = child_pid;
     }
 
     // duplicate page table for child - intermediate layers are real clones, final-level frames are COW

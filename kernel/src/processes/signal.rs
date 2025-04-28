@@ -1,4 +1,4 @@
-use core::{error, future::pending};
+use core::{arch::naked_asm, error, future::pending};
 
 use alloc::{collections::{btree_map::BTreeMap, vec_deque::{self, VecDeque}}, sync::Arc};
 use spin::Mutex;
@@ -6,7 +6,7 @@ use x86_64::VirtAddr;
 
 use crate::{constants::processes::NUM_SIGNALS, serial_println, syscalls::syscall_handlers::sys_exit};
 
-use super::registers::ForkingRegisters;
+use super::{process::{get_current_pid, PROCESS_TABLE}, registers::ForkingRegisters};
 
 #[repr(u8)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Ord, PartialOrd)]
@@ -41,7 +41,7 @@ pub enum SignalCode {
     SIGWINCH  = 28, // Window resize signal
     SIGIO     = 29, // I/O now possible
     SIGPWR    = 30, // Power supply failure
-    SIGSYS    = 31, // Bad system call (invalid syscall)
+    SIGPRINT    = 31, // Bad system call (invalid syscall)
 }
 
 bitflags::bitflags! {
@@ -72,6 +72,43 @@ pub enum SourceCode {
     SI_TIMER   = 3,  // Timer expiration
     SI_ASYNCIO = 4,  // Asynchronous I/O completion
     SI_TKILL   = 5,  // Sent by tkill() or tgkill()
+}
+
+pub fn signal_num_to_code(signal_num: u32) -> Option<SignalCode> {
+    match signal_num {
+        1 => Some(SignalCode::SIGHUP),
+        2 => Some(SignalCode::SIGINT),
+        3 => Some(SignalCode::SIGQUIT),
+        4 => Some(SignalCode::SIGILL),
+        5 => Some(SignalCode::SIGTRAP),
+        6 => Some(SignalCode::SIGABRT),
+        7 => Some(SignalCode::SIGBUS),
+        8 => Some(SignalCode::SIGFPE),
+        9 => Some(SignalCode::SIGKILL),
+        10 => Some(SignalCode::SIGUSR1),
+        11 => Some(SignalCode::SIGSEGV),
+        12 => Some(SignalCode::SIGUSR2),
+        13 => Some(SignalCode::SIGPIPE),
+        14 => Some(SignalCode::SIGALRM),
+        15 => Some(SignalCode::SIGTERM),
+        16 => Some(SignalCode::SIGSTKFLT),
+        17 => Some(SignalCode::SIGCHLD),
+        18 => Some(SignalCode::SIGCONT),
+        19 => Some(SignalCode::SIGSTOP),
+        20 => Some(SignalCode::SIGTSTP),
+        21 => Some(SignalCode::SIGTTIN),
+        22 => Some(SignalCode::SIGTTOU),
+        23 => Some(SignalCode::SIGURG),
+        24 => Some(SignalCode::SIGXCPU),
+        25 => Some(SignalCode::SIGXFSZ),
+        26 => Some(SignalCode::SIGVTALRM),
+        27 => Some(SignalCode::SIGPROF),
+        28 => Some(SignalCode::SIGWINCH),
+        29 => Some(SignalCode::SIGIO),
+        30 => Some(SignalCode::SIGPWR),
+        31 => Some(SignalCode::SIGPRINT),
+        _ => None, // Return None for invalid signal numbers
+    }
 }
 
 #[repr(C)]
@@ -134,10 +171,78 @@ pub struct SignalDescriptor {
     signal_handlers: [Arc<Mutex<SignalHandler>>; NUM_SIGNALS],
 }
 
+#[unsafe(naked)]
+#[no_mangle]
+pub unsafe extern "C" fn sigreturn_trampoline() -> ! {
+    naked_asm!(
+        // sigreturn number is 15
+        "mov rax, 15",
+        "syscall",
+    )
+}
+
+type UserspaceSignalHandler = extern "C" fn();
+
+pub fn sys_sigreturn() -> u64 {
+    panic!();
+}
+
+#[no_mangle]
+pub extern "C" fn handle_signal_in_userspace(handler: UserspaceSignalHandler, user_rsp: u64, kernel_rsp: u64) {
+    serial_println!("Handling some shit");
+    // 1. Set up user-space stack frame with just the return address
+    // Adjust user stack pointer to make room for return address (8 bytes)
+    let adjusted_user_rsp = user_rsp - 8;
+    
+    // Push the trampoline address onto the user stack as return address
+    unsafe {
+        // Address of your trampoline function
+        let trampoline_addr: u64 = sigreturn_trampoline as *const () as u64;
+        
+        // Store the trampoline address on the user stack
+        *(adjusted_user_rsp as *mut u64) = trampoline_addr;
+    }
+    
+    // 2. Set up instruction pointer to point to the signal handler
+    unsafe {
+        // Calculate offset to RIP in the saved context
+        // With your stack layout, we need to calculate the correct offset
+        // Based on 15 manually pushed registers and hardware-pushed values
+        
+        // You'll need to verify this offset in your specific implementation
+        // This assumes kernel_rsp points to the location after all pushes
+        const RIP_OFFSET: u64 = 15 * 8; // Offset from kernel_rsp to where RIP is saved
+        
+        // Cast handler to u64 address
+        let handler_addr: u64 = handler as *const () as u64;
+
+        serial_println!("handler addr is {}", handler_addr);
+        
+        // Modify the saved RIP
+        *((kernel_rsp + RIP_OFFSET) as *mut u64) = handler_addr;
+
+        serial_println!("Set up RIP in address {:X}", (kernel_rsp + RIP_OFFSET));
+        
+        // Also update the saved user stack pointer
+        const RSP_OFFSET: u64 = (15 + 3) * 8; // Offset to RSP
+        *((kernel_rsp + RSP_OFFSET) as *mut u64) = adjusted_user_rsp;
+    }
+    
+    // We're not actually calling the handler here
+    // Just setting up the context so iretq will transfer control to it
+}
+
 pub fn default_handle_sigsegv() {
     serial_println!("Segmentation fault.");
     sys_exit(-1, &ForkingRegisters::default());
 }
+
+pub extern "C" fn default_handle_sigprint() {
+    serial_println!("In SigPrint! Hello!");
+    panic!();
+}
+
+
 
 impl SignalDescriptor {
     pub fn new(
@@ -179,10 +284,10 @@ impl SignalDescriptor {
         self.pending_signals.get_mut(&signal_code).unwrap().push_back(signal_entry)
     }
 
-    pub fn handle_signal(&mut self) {
+    pub fn handle_signal(&mut self, user_rsp: u64, kernel_rsp: u64) {
         let mut signal: Option<SignalEntry> = None;
         let mut should_remove = false;
-        let mut remove_key = SignalCode::SIGSYS;
+        let mut remove_key = SignalCode::SIGPRINT;
         // iterate through BTreeMap form lowest keys to highest based off priorities to pick most pending signal
         for (signal_code, entry_queue) in self.pending_signals.iter_mut() {
             let blocked =  (self.blocked_signals >> (*signal_code as usize - 1) & 1) == 1;
@@ -207,10 +312,16 @@ impl SignalDescriptor {
 
         let signal = signal.unwrap();
         let handler = self.signal_handlers[signal.signal_code as usize - 1].lock().clone();
+
         match signal.signal_code {
             SignalCode::SIGSEGV => {
                 if let SignalHandler::Default = handler {
                     default_handle_sigsegv();
+                }
+            }
+            SignalCode::SIGPRINT => {
+                if let SignalHandler::Default = handler {
+                    handle_signal_in_userspace(default_handle_sigprint, user_rsp, kernel_rsp);
                 }
             }
 
@@ -223,4 +334,31 @@ impl SignalDescriptor {
 
 
     }
+}
+
+
+pub fn sys_kill(pid: u32, sig: u32) -> u64 {
+    serial_println!("helloooooooooooooooooooooooo");
+    let mut process = {
+        let process_table = PROCESS_TABLE.read();
+        let process = process_table
+            .get(&pid);
+        if process.is_none() {
+            return 1;
+        }
+        process.unwrap().clone()
+    };
+
+    let pcb = unsafe { &mut *process.pcb.get() };
+
+    let current_pid = get_current_pid();
+    // TODO: Figure out how to properly populate other fields
+    let sig_field = SigFields{kill_source: KillFields { si_pid: current_pid, si_uid: 0 }};
+    let signal_code = signal_num_to_code(sig);
+    if signal_code.is_none() {
+        return 1;
+    }
+    serial_println!("HELLOOO");
+    pcb.signal_descriptor.send_signal(signal_code.unwrap(), 0,SourceCode::SI_USER, sig_field);
+    0
 }

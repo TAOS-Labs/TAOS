@@ -21,7 +21,7 @@ use crate::{
     memory::frame_allocator::with_buddy_frame_allocator,
     processes::{
         process::{sleep_process_int, sleep_process_syscall, ProcessState, PROCESS_TABLE},
-        registers::ForkingRegisters,
+        registers::ForkingRegisters, signal::{sys_kill, sys_sigreturn},
     },
     serial_println,
     syscalls::{fork::sys_fork, memorymap::sys_mmap},
@@ -181,12 +181,15 @@ pub unsafe extern "C" fn syscall_handler_impl(
         SYSCALL_WAIT => block_on(sys_wait(syscall.arg1 as u32)),
         SYSCALL_MUNMAP => sys_munmap(syscall.arg1, syscall.arg2),
         SYSCALL_MPROTECT => sys_mprotect(syscall.arg1, syscall.arg2, syscall.arg3),
+        SYSCALL_SIGRETURN => sys_sigreturn(),
         SYSCALL_SOCKET => sys_socket(syscall.arg1, syscall.arg2, syscall.arg3),
         SYSCALL_BIND => sys_bind(syscall.arg1, syscall.arg2, syscall.arg3),
         SYSCALL_CONNECT => sys_connect(syscall.arg1, syscall.arg2, syscall.arg3),
+        SYSCALL_KILL => sys_kill(syscall.arg1 as u32, syscall.arg2 as u32),
         _ => {
             panic!("Unknown syscall, {}", syscall.number);
         }
+
     }
 }
 

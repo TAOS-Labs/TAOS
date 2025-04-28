@@ -11,7 +11,7 @@ use limine::{
 };
 
 use crate::{
-    constants::processes::{TEST_FORK_COW, TEST_SIGSEGV}, debug, devices::{self}, events::{register_event_runner, run_loop, schedule_process, spawn, yield_now}, filesys::{self}, interrupts::{self, idt}, ipc::{
+    constants::processes::{TEST_FORK_COW, TEST_SIGPRINT, TEST_SIGSEGV}, debug, devices::{self}, events::{register_event_runner, run_loop, schedule_process, spawn, yield_now}, filesys::{self}, interrupts::{self, idt}, ipc::{
         messages::Message,
         mnt_manager,
         namespace::Namespace,
@@ -63,7 +63,7 @@ pub fn init() -> u32 {
 
 
 
-    let pid = create_process(TEST_SIGSEGV);
+    let pid = create_process(TEST_SIGPRINT);
     schedule_process(pid);
     
     bsp_id
