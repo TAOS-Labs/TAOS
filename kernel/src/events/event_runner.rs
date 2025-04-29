@@ -85,7 +85,7 @@ impl EventRunner {
                         event.completed.swap(true, Ordering::Relaxed);
                         self.pending_events.write().remove(&event.eid.0);
 
-                        crate::debug!("Event {} done", event.eid.0);
+                        // crate::debug!("Event {} done", event.eid.0);
                     }
                 }
 

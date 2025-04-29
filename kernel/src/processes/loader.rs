@@ -1,7 +1,7 @@
 use crate::{
     constants::{
         memory::PAGE_SIZE,
-        processes::{STACK_SIZE, STACK_START},
+        processes::{STACK_SIZE, STACK_START, TRAMPOLINE_ADDR},
     },
     memory::{
         frame_allocator::with_generic_allocator,
@@ -24,6 +24,8 @@ use x86_64::{
 
 // We import our new helper
 use crate::memory::paging::map_kernel_frame;
+
+use super::signals::sigreturn_trampoline;
 
 /// Function for initializing addresss space for process using ELF executable
 ///
@@ -168,6 +170,14 @@ pub fn load_elf(
             0,
         );
     });
+
+    // Map trampoline for sigreturn to userspace
+    let trampoline_addr = sigreturn_trampoline as u64;
+    let trampoline_page: Page<Size4KiB> = Page::containing_address(VirtAddr::new(trampoline_addr));
+    let trampoline_frame = kernel_mapper.translate_page(trampoline_page).expect("Could not find trampoline frame in kernel mapper.");
+    let trampoline_flags = PageTableFlags::USER_ACCESSIBLE | PageTableFlags::PRESENT;
+    create_mapping_to_frame(Page::containing_address(VirtAddr::new(TRAMPOLINE_ADDR)), user_mapper, Some(trampoline_flags), trampoline_frame);
+
 
     // 1) Start at top of stack
     let mut sp = stack_end;

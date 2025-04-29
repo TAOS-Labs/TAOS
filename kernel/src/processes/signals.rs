@@ -2,11 +2,12 @@ use core::{arch::naked_asm, error, future::pending};
 
 use alloc::{collections::{btree_map::BTreeMap, vec_deque::{self, VecDeque}}, sync::Arc};
 use spin::Mutex;
-use x86_64::VirtAddr;
+use x86_64::{structures::paging::{OffsetPageTable, Page, PageTable, Translate}, VirtAddr};
+use zerocopy::big_endian::U64;
 
-use crate::{constants::processes::NUM_SIGNALS, serial_println, syscalls::syscall_handlers::sys_exit};
+use crate::{constants::{memory::PAGE_SIZE, processes::{NUM_SIGNALS, TRAMPOLINE_ADDR}}, memory::HHDM_OFFSET, serial_println, syscalls::syscall_handlers::sys_exit};
 
-use super::{process::{get_current_pid, PROCESS_TABLE}, registers::ForkingRegisters};
+use super::{process::{get_current_pid, with_current_pcb, PROCESS_TABLE}, registers::{ForkingRegisters, Registers}};
 
 #[repr(u8)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Ord, PartialOrd)]
@@ -74,7 +75,9 @@ pub enum SourceCode {
     SI_TKILL   = 5,  // Sent by tkill() or tgkill()
 }
 
-pub fn signal_num_to_code(signal_num: u32) -> Option<SignalCode> {
+type UserspaceSignalHandler = extern "C" fn();
+
+pub fn signal_num_to_code(signal_num: i32) -> Option<SignalCode> {
     match signal_num {
         1 => Some(SignalCode::SIGHUP),
         2 => Some(SignalCode::SIGINT),
@@ -149,7 +152,7 @@ pub struct SignalEntry {
 
 #[derive(Clone, Copy, Debug)]
 pub struct SigAction {
-    sa_handler: fn(u8),
+    sa_handler: UserspaceSignalHandler,
     sa_flags: SigActionFlags,
     sa_mask: u32,
 }
@@ -181,52 +184,38 @@ pub unsafe extern "C" fn sigreturn_trampoline() -> ! {
     )
 }
 
-type UserspaceSignalHandler = extern "C" fn();
-
 pub fn sys_sigreturn() -> u64 {
-    panic!();
+    serial_println!("MADE IT TO SIGRETURN!!!!!!");
+    0
 }
 
 #[no_mangle]
-pub extern "C" fn handle_signal_in_userspace(handler: UserspaceSignalHandler, user_rsp: u64, kernel_rsp: u64) {
+pub extern "C" fn handle_signal_in_userspace(handler: UserspaceSignalHandler, registers: &mut Registers) {
     serial_println!("Handling some shit");
     // 1. Set up user-space stack frame with just the return address
     // Adjust user stack pointer to make room for return address (8 bytes)
-    let adjusted_user_rsp = user_rsp - 8;
+    let adjusted_user_rsp = registers.rsp - 16;
+    serial_println!("USER RSP IS 0x{:x}", adjusted_user_rsp);
     
     // Push the trampoline address onto the user stack as return address
     unsafe {
         // Address of your trampoline function
         let trampoline_addr: u64 = sigreturn_trampoline as *const () as u64;
+
+        // get userspace address of trampoline function
+        let trampoline_offset = trampoline_addr % PAGE_SIZE as u64;
+        let userspace_trampoline_addr = TRAMPOLINE_ADDR + trampoline_offset;
+
         
         // Store the trampoline address on the user stack
-        *(adjusted_user_rsp as *mut u64) = trampoline_addr;
+        *(adjusted_user_rsp as *mut u64) = userspace_trampoline_addr;
+        registers.rsp -= 16;
     }
+
+    let handler_addr: u64 = handler as *const () as u64;
+        
+    registers.rip = handler_addr;
     
-    // 2. Set up instruction pointer to point to the signal handler
-    unsafe {
-        // Calculate offset to RIP in the saved context
-        // With your stack layout, we need to calculate the correct offset
-        // Based on 15 manually pushed registers and hardware-pushed values
-        
-        // You'll need to verify this offset in your specific implementation
-        // This assumes kernel_rsp points to the location after all pushes
-        const RIP_OFFSET: u64 = 15 * 8; // Offset from kernel_rsp to where RIP is saved
-        
-        // Cast handler to u64 address
-        let handler_addr: u64 = handler as *const () as u64;
-
-        serial_println!("handler addr is {}", handler_addr);
-        
-        // Modify the saved RIP
-        *((kernel_rsp + RIP_OFFSET) as *mut u64) = handler_addr;
-
-        serial_println!("Set up RIP in address {:X}", (kernel_rsp + RIP_OFFSET));
-        
-        // Also update the saved user stack pointer
-        const RSP_OFFSET: u64 = (15 + 3) * 8; // Offset to RSP
-        *((kernel_rsp + RSP_OFFSET) as *mut u64) = adjusted_user_rsp;
-    }
     
     // We're not actually calling the handler here
     // Just setting up the context so iretq will transfer control to it
@@ -260,7 +249,7 @@ impl SignalDescriptor {
         }
     }
 
-    pub fn register_sigaction(&mut self, code: SignalCode, sa_handler: fn(u8), sa_flags: SigActionFlags, sa_mask: u32) {
+    pub fn register_sigaction(&mut self, code: SignalCode, sa_handler: UserspaceSignalHandler, sa_flags: SigActionFlags, sa_mask: u32) {
         let sigaction = SigAction {
             sa_handler: sa_handler,
             sa_flags: sa_flags,
@@ -284,7 +273,7 @@ impl SignalDescriptor {
         self.pending_signals.get_mut(&signal_code).unwrap().push_back(signal_entry)
     }
 
-    pub fn handle_signal(&mut self, user_rsp: u64, kernel_rsp: u64) {
+    pub fn handle_signal(&mut self, registers: &mut Registers) -> u32 {
         let mut signal: Option<SignalEntry> = None;
         let mut should_remove = false;
         let mut remove_key = SignalCode::SIGPRINT;
@@ -307,26 +296,35 @@ impl SignalDescriptor {
         }
 
         if signal.is_none() {
-            return;
+            return 0;
         }
 
         let signal = signal.unwrap();
         let handler = self.signal_handlers[signal.signal_code as usize - 1].lock().clone();
 
+        serial_println!("accessing index {}", signal.signal_code as usize - 1);
+        serial_println!("signal handlers are {:#?}", self.signal_handlers);
+
         match signal.signal_code {
             SignalCode::SIGSEGV => {
                 if let SignalHandler::Default = handler {
                     default_handle_sigsegv();
+                    return 1;
                 }
+                return 0;
             }
             SignalCode::SIGPRINT => {
-                if let SignalHandler::Default = handler {
-                    handle_signal_in_userspace(default_handle_sigprint, user_rsp, kernel_rsp);
+                serial_println!("Handler is {:#?}", handler);
+                if let SignalHandler::Handler(sigact) = handler {
+                    serial_println!("SIGPRINT");
+                    handle_signal_in_userspace(sigact.sa_handler, registers);
+                    return 1;
                 }
+                return 0;
             }
 
             _ => {
-                return;
+                return 0;
             }
             
         }
@@ -337,9 +335,8 @@ impl SignalDescriptor {
 }
 
 
-pub fn sys_kill(pid: u32, sig: u32) -> u64 {
-    serial_println!("helloooooooooooooooooooooooo");
-    let mut process = {
+pub fn sys_kill(pid: u32, sig: i32) -> u64 {
+    let process = {
         let process_table = PROCESS_TABLE.read();
         let process = process_table
             .get(&pid);
@@ -358,7 +355,57 @@ pub fn sys_kill(pid: u32, sig: u32) -> u64 {
     if signal_code.is_none() {
         return 1;
     }
-    serial_println!("HELLOOO");
+
+    serial_println!("Sending signal {} to process {}", sig, pid);
     pcb.signal_descriptor.lock().send_signal(signal_code.unwrap(), 0,SourceCode::SI_USER, sig_field);
     0
 }
+
+pub fn sys_sigaction(signum: i32, act: *const SigAction, oldact: *mut SigAction) -> u64 {
+    with_current_pcb(|pcb| {
+        let new_pml4_phys = pcb.mm.pml4_frame.start_address();
+        let new_pml4_virt = VirtAddr::new((*HHDM_OFFSET).as_u64()) + new_pml4_phys.as_u64();
+        let new_pml4_ptr: *mut PageTable = new_pml4_virt.as_mut_ptr();
+
+        let mapper = unsafe {
+            OffsetPageTable::new(&mut *new_pml4_ptr, VirtAddr::new((*HHDM_OFFSET).as_u64()))
+        };
+
+        // Lock the signal descriptor
+        let mut signal_descriptor = pcb.signal_descriptor.lock(); 
+
+        // Step 1: handle oldact first (reading)
+        if !oldact.is_null() {
+            if let Some(_) = mapper.translate_addr(VirtAddr::new(oldact as u64)) {
+                let handler_slot_guard = signal_descriptor.signal_handlers[signum as usize - 1].lock();
+                if let SignalHandler::Handler(sigaction) = &*handler_slot_guard {
+                    unsafe {
+                        core::ptr::write(oldact, *sigaction);
+                    }
+                }
+                drop(handler_slot_guard); // Explicitly drop the lock
+            } else {
+                return 1;
+            }
+        }
+
+        // Step 2: now safe to mutate signal_descriptor (writing)
+        if !act.is_null() {
+            if let Some(_) = mapper.translate_addr(VirtAddr::new(act as u64)) {
+                let new_act = unsafe { core::ptr::read(act) };
+
+                signal_descriptor.register_sigaction(
+                    signal_num_to_code(signum).unwrap(),
+                    new_act.sa_handler,
+                    new_act.sa_flags,
+                    new_act.sa_mask,
+                );
+            } else {
+                return 1;
+            }
+        }
+
+        0
+    })
+}
+

@@ -16,6 +16,8 @@ pub const TEST_SLEEP: &[u8] = include_bytes!("../processes/test_binaries/sleep")
 
 pub const TEST_FORK_COW: &[u8] = include_bytes!("../processes/test_binaries/test_fork_cow");
 
+pub const TEST_SIGPRINT: &[u8] = include_bytes!("../processes/test_binaries/test_sigprint");
+
 pub const TEST_MMAP_ANON_SHARED: &[u8] =
     include_bytes!("../processes/test_binaries/test_mmap_anon_shared");
 
@@ -27,11 +29,12 @@ pub const TEST_MPROTECT_CHILD_WRITES: &[u8] =
 
 // Virtual memory address for the stack
 pub const STACK_START: u64 = 0x7000_0000_0000;
+pub const TRAMPOLINE_ADDR: u64 = 0x3000_0000_0000;
 
 // Maximum number of files for the process control block's file descriptor table
 // if this number is big clone fails
 pub const MAX_FILES: usize = 128;
-pub const NUM_SIGNALS: usize = 32;
+pub const NUM_SIGNALS: usize = 31;
 
 // Pre-emption time
 pub const PROCESS_NANOS: u64 = 50_000_000;

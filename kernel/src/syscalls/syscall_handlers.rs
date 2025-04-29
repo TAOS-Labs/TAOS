@@ -28,7 +28,7 @@ use crate::{
         process::{
             create_process, sleep_process_int, sleep_process_syscall, ProcessState, PROCESS_TABLE,
         },
-        registers::ForkingRegisters,
+        registers::ForkingRegisters, signals::{sys_kill, sys_sigaction, sys_sigreturn, SigAction},
     },
     serial_print, serial_println,
     syscalls::{
@@ -252,6 +252,9 @@ pub unsafe extern "C" fn syscall_handler_impl(
                 syscall.arg2 as *mut *mut u8,
                 syscall.arg3 as *mut *mut u8,
             ), reg_vals),
+        SYSCALL_KILL => sys_kill(syscall.arg1 as u32, syscall.arg2 as i32),
+        SYSCALL_SIGACTION => sys_sigaction(syscall.arg1 as i32, syscall.arg2 as *const SigAction, syscall.arg3 as *mut SigAction),
+        SYSCALL_SIGRETURN => sys_sigreturn(),
         _ => {
             panic!("Unknown syscall, {}", syscall.number);
         }

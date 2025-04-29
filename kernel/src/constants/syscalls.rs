@@ -34,5 +34,9 @@ pub const SYSCALL_GETGID: u32 = 104;
 pub const SYSCALL_GETEGID: u32 = 108;
 pub const SYSCALL_ARCH_PRCTL: u32 = 158;
 
+pub const SYSCALL_KILL: u32 = 37;
+pub const SYSCALL_SIGACTION: u32 = 13;
+pub const SYSCALL_SIGRETURN: u32 = 15;
+
 // Mmap
 pub const START_MMAP_ADDRESS: u64 = 0x0900_0000_0000;

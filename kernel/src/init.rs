@@ -13,7 +13,7 @@ use limine::{
 use x86_64::align_up;
 
 use crate::{
-    constants::memory::PAGE_SIZE,
+    constants::{memory::PAGE_SIZE, processes::TEST_SIGPRINT},
     debug,
     devices::{self},
     events::{
@@ -82,76 +82,8 @@ pub fn init() -> u32 {
 
     idt::enable();
 
-    schedule_kernel(
-        async {
-            let fs = FILESYSTEM.get().unwrap();
-            let fd = {
-                fs.lock()
-                    .await
-                    .open_file(
-                        "/executables/ret",
-                        OpenFlags::O_RDONLY | OpenFlags::O_WRONLY,
-                    )
-                    .await
-                    .expect("Could not open file")
-            };
-            let file = get_file(fd).unwrap();
-            let file_len = {
-                fs.lock()
-                    .await
-                    .filesystem
-                    .lock()
-                    .get_node(&file.lock().pathname)
-                    .await
-                    .unwrap()
-                    .size()
-            };
-            serial_println!("Reading file...");
-
-            let mut buffer = alloc::vec![0u8; file_len as usize];
-            let bytes_read = {
-                fs.lock()
-                    .await
-                    .read_file(fd, &mut buffer)
-                    .await
-                    .expect("Failed to read file")
-            };
-
-            let buf = &buffer[..bytes_read];
-
-            serial_println!("Bytes read: {}", bytes_read);
-
-            {
-                //fs.lock().await.seek_file(fd, 0).await;
-            }
-            serial_println!("Reading file...");
-            let mut buffer = alloc::vec![0u8; file_len as usize];
-
-            let bytes_read = {
-                fs.lock()
-                    .await
-                    .read_file(fd, &mut buffer)
-                    .await
-                    .expect("Failed to read file")
-            };
-
-            let buf = &buffer[..bytes_read];
-            let t2 = get_runner_time(0);
-
-            serial_println!("Bytes read: {}", bytes_read);
-
-            let pid = create_process(buf, Vec::new(), Vec::new());
-            serial_println!("Creating process");
-            schedule_process(pid);
-            let _waiter = AwaitProcess::new(
-                pid,
-                get_runner_time(3_000_000_000),
-                current_running_event().unwrap(),
-            )
-            .await;
-        },
-        3,
-    );
+    let pid = create_process(TEST_SIGPRINT, Vec::new(), Vec::new());
+    schedule_process(pid);
 
     bsp_id
 }
