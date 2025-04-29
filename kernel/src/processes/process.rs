@@ -34,7 +34,7 @@ use core::{
 use spin::{rwlock::RwLock, Mutex};
 use x86_64::{
     instructions::interrupts,
-    structures::paging::{OffsetPageTable, PageTable, PhysFrame, Size4KiB},
+    structures::paging::{OffsetPageTable, PageTable, PhysFrame, Size4KiB}, VirtAddr,
 };
 
 // process counter must be thread-safe
@@ -68,6 +68,7 @@ pub struct PCB {
     pub next_fd: Arc<Mutex<usize>>,
     pub mm: Mm,
     pub namespace: Namespace,
+    pub signal_descriptor: Arc<Mutex<SignalDescriptor>>,
 }
 
 pub struct UnsafePCB {
@@ -193,6 +194,7 @@ pub fn create_placeholder_process() -> u32 {
         next_preemption_time: 0,
         mm,
         namespace: Namespace::new(),
+        signal_descriptor: Arc::new(Mutex::new(SignalDescriptor::new(0, VirtAddr::new(0),0))),
     }));
     PROCESS_TABLE.write().insert(pid, Arc::clone(&process));
     pid
@@ -257,6 +259,7 @@ pub fn create_process(elf_bytes: &[u8], args: Vec<String>, envs: Vec<String>) ->
         next_fd: Arc::new(Mutex::new(2)),
         mm,
         namespace: Namespace::new(),
+        signal_descriptor: Arc::new(Mutex::new(SignalDescriptor::new(0, VirtAddr::new(0),0))),
     }));
     PROCESS_TABLE.write().insert(pid, Arc::clone(&process));
     debug!("Created process with PID: {}", pid);
@@ -339,7 +342,7 @@ unsafe fn free_page_table(frame: PhysFrame, level: u8, hhdm_offset: u64) {
 use core::arch::asm;
 use x86_64::registers::control::{Cr3, Cr3Flags};
 
-use super::registers::ForkingRegisters;
+use super::{registers::ForkingRegisters, signals::SignalDescriptor};
 
 /// run a process in ring 3
 /// # Safety

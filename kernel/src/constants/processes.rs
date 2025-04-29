@@ -31,6 +31,7 @@ pub const STACK_START: u64 = 0x7000_0000_0000;
 // Maximum number of files for the process control block's file descriptor table
 // if this number is big clone fails
 pub const MAX_FILES: usize = 128;
+pub const NUM_SIGNALS: usize = 32;
 
 // Pre-emption time
 pub const PROCESS_NANOS: u64 = 50_000_000;
