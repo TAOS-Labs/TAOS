@@ -126,17 +126,17 @@ impl IntelHDA {
             let after = read_volatile(intctl_addr);
             serial_println!("INTCTL after write:  0x{:08X}", after);
 
-            if (after & (1 << 31)) != 0 {
-                serial_println!("Global interrupts are enabled.");
-            } else {
-                serial_println!("Global interrupts are not enabled.");
-            }
+            // if (after & (1 << 31)) != 0 {
+            //     serial_println!("Global interrupts are enabled.");
+            // } else {
+            //     serial_println!("Global interrupts are not enabled.");
+            // }
 
-            if (after & (1 << 4)) != 0 {
-                serial_println!("Interrupt for stream 4 is enabled.");
-            } else {
-                serial_println!("Interrupt for stream 4 is not enabled.");
-            }
+            // if (after & (1 << 4)) != 0 {
+            //     serial_println!("Interrupt for stream 4 is enabled.");
+            // } else {
+            //     serial_println!("Interrupt for stream 4 is not enabled.");
+            // }
         }
         
         // test we can play some audio
@@ -632,6 +632,7 @@ impl IntelHDA {
         // response.print_response();
 
         let audio_data = load_wav().await.expect("Wav error");
+        debug_println!("data len: {}", audio_data.len);
 
         let widget_list = self.probe_afg_and_widgets().await;
         debug_println!("Total widgets discovered: {}", widget_list.len());
@@ -653,6 +654,7 @@ impl IntelHDA {
             self.receive_response().await.expect("No response to SetAmplifierGain");
         
             // Configure the DAC format to 48kHz, 16-bit, stereoo
+            debug_println!("<1>");
             self.send_command(0, dac_node as u32, HdaVerb::SetConverterFormat, audio_data.fmt).await.expect("Failed to send SetConverterFormat");
             self.receive_response().await.expect("No response to SetConverterFormat");
         
@@ -675,15 +677,12 @@ impl IntelHDA {
             debug_println!("Could not trace a valid path from pin to DAC.");
         }
         
-        
-        
         // create BDL stuff
         
         debug_println!("starting to alloc BDL");
         let audio_buf = DmaBuffer::new(audio_data.len).expect("Failed to allocate audio buffer");
         let bdl_buf = DmaBuffer::new(core::mem::size_of::<BdlEntry>() * 16).expect("Failed BDL");
 
-        let bdl_buf_1 = DmaBuffer::new(core::mem::size_of::<BdlEntry>() * 16).expect("Failed BDL");
         assert_eq!(bdl_buf.phys_addr.as_u64() % 128, 0, "BDL not 128-byte aligned");
         
         debug_println!("audio data len: {}", audio_data.len);
@@ -697,42 +696,42 @@ impl IntelHDA {
                 audio_buf.virt_addr.as_mut_ptr::<u8>(), 
                 audio_data.len);
         }
-        let mut last_byte_written = audio_buf.clone();
+        // let mut last_byte_written = audio_buf.clone();
         
         debug_println!("before first bdl setup");
         let bdl_ptr = bdl_buf.as_ptr::<BdlEntry>();
-        let mut num_entries = setup_bdl(
+        let num_entries = setup_bdl(
             bdl_ptr,
-            last_byte_written.phys_addr.as_u64(),
-            last_byte_written.size as u32,
+            audio_buf.phys_addr.as_u64(),
+            audio_buf.size as u32,
             0x1000,
         );
         debug_println!("setup_bdl returned {} entries", num_entries);
-        let mut num_bytes_bdl = (num_entries * 0x1000) as u32;
-
-        last_byte_written.offset(num_entries as u64);
-    
-
-        let bdl_ptr_2 = bdl_buf.as_ptr::<BdlEntry>();
-        num_entries = setup_bdl(
-            bdl_ptr_2,
-            last_byte_written.phys_addr.as_u64(),
-            last_byte_written.size as u32,
-            0x1000,
-        );
-
-        last_byte_written.offset(num_entries as u64);
-
-        debug_println!("setup_bdl_2 returned {} entries", num_entries);
-
-
+        // let mut num_bytes_bdl = (num_entries * 0x1000) as u32;
+        
+        // last_byte_written.offset(num_entries as u64);
+        
+        
+        // let bdl_ptr_2 = bdl_buf.as_ptr::<BdlEntry>();
+        // num_entries = setup_bdl(
+        //     bdl_ptr_2,
+        //     last_byte_written.phys_addr.as_u64(),
+        //     last_byte_written.size as u32,
+        //     0x1000,
+        // );
+        
+        // last_byte_written.offset(num_entries as u64);
+        
+        // debug_println!("setup_bdl_2 returned {} entries", num_entries);
+        
+        
         // begin configuring stream desc
         let stream_base = self.virt_base + 0x80 + 4 * 0x20;
         let lpib_addr = (stream_base + 0x04) as *const u32;
         
         // Flush cache to ensure BDL/Audio in RAM for DMA
         unsafe { core::arch::asm!("wbinvd"); }
-
+        
         // first make sure that the stream is stopped and then reset it
         let ctl0_addr = stream_base as *mut u8;
         let mut ctl0_val = unsafe { read_volatile(ctl0_addr) };
@@ -749,6 +748,7 @@ impl IntelHDA {
                 read_volatile(ctl0_addr)
             };
         }
+
         // now clear SRST
         unsafe {
             write_volatile(ctl0_addr, ctl0_val & !1);
@@ -759,7 +759,15 @@ impl IntelHDA {
                 read_volatile(ctl0_addr)
             };
         }
-
+        
+        // lettuce clear our status bits
+        let sdsts_addr = (stream_base + 0x3) as *const u8;
+        
+        unsafe {
+            write_volatile(sdsts_addr.cast_mut(), 0x1C);
+            debug_println!("first sts: 0x{:X}", read_volatile(sdsts_addr));
+        }
+        
         // write bdl address
         let bdladr_addr = (stream_base + 0x18) as *mut u64;
         let bdladr_val: u64;
@@ -769,10 +777,11 @@ impl IntelHDA {
         }
         debug_println!("address: {:X}", bdladr_val);
 
+        // write the cbl
         let cbl_addr = (stream_base + 0x8) as *mut u32;
         let cbl_val: u32;
         unsafe {
-            write_volatile(cbl_addr, num_bytes_bdl);
+            write_volatile(cbl_addr, audio_buf.size as u32);
             cbl_val = read_volatile(cbl_addr);
         }
         debug_println!("cbl: {:X}", cbl_val);
@@ -791,76 +800,31 @@ impl IntelHDA {
         }
         debug_println!("fmt_val: {:X}", fmt_val);
 
+        // set the stream num
         let ctl2_addr = (stream_base + 2) as *mut u8;
-        unsafe {write_volatile(ctl2_addr, 1 << 4);}
+        unsafe { write_volatile(ctl2_addr, 1 << 4); }
         let ctl2_val = unsafe {read_volatile(ctl2_addr)};
         debug_println!("ctl2: {:X}", ctl2_val);
+        
+        unsafe { 
+            debug_println!("sts: {:X}", read_volatile(sdsts_addr));
+        }
 
         // now set the run bit and hope that the thing works (gonna set some interrupt bits as well)
         unsafe {
-            write_volatile(ctl0_addr, 0x6);
+            write_volatile(ctl0_addr, 0x2);
         }
-        
 
-        let mut current_bdl = 0;
-        let mut played = 0;
-        let chunk_size = 4096;
-        let total_len = audio_buf.size as u32;
-        let sdsts_addr = (self.virt_base + 0x83) as *const u8;
-
-        while played < total_len {
-
-            debug_println!("played: {}/{}", played, total_len);
-
-            let lpib = unsafe { read_volatile(lpib_addr) };
-            let sts_val = unsafe { read_volatile(sdsts_addr) };
-            if (sts_val >> 2) & 1 == 1 {
-                debug_println!("ioc bit: {}", (sts_val >> 2) & 1);
-            }
-
-            let next_chunk_len = core::cmp::min(chunk_size, total_len - played); //(lpib_addr) };
-            if lpib >= played + chunk_size  {
-                let (bdl_ptr, bdl_phys) = if current_bdl == 0 {
-                    (bdl_buf.as_ptr::<BdlEntry>(), bdl_buf.phys_addr.as_u64())
-                } else {
-                    (bdl_buf_1.as_ptr::<BdlEntry>(), bdl_buf_1.phys_addr.as_u64())
-                };
-            
-                let entry_count = setup_bdl(
-                    bdl_ptr,
-                    last_byte_written.phys_addr.as_u64(),
-                    last_byte_written.size as u32,
-                    chunk_size,
-                );
-
-                unsafe {
-                    write_volatile(bdladr_addr, bdl_phys);
-                    write_volatile(cbl_addr, next_chunk_len);
-                    write_volatile(lvi_addr, entry_count as u16 - 1);
-                }
-        
-                if played + next_chunk_len <= audio_buf.size as u32 {
-                    last_byte_written.offset(next_chunk_len as u64);
-                }
-                
-                played += next_chunk_len;
-                current_bdl ^= 1;
-
-                // debug_println!(
-                //     "Swapped BDL: now playing {} bytes, played = {} / {}",
-                //     next_chunk_len,
-                //     played,
-                //     total_len
-                // );
-        
-
-            }             
-        
-        }
-        
+        let cbl = unsafe { read_volatile(cbl_addr) };
         for _ in 0..10 {
             unsafe{
-                debug_println!("lpib: {}", read_volatile((stream_base + 0x4) as *const u32));
+                debug_println!("sts: 0x{:X}", read_volatile((stream_base + 0x3) as *const u8));
+                let lpib = read_volatile((stream_base + 0x4) as *const u32);
+                debug_println!("lpib: {}", lpib);
+                if lpib == cbl {
+                    // stop stream
+                    write_volatile(stream_base as *mut u8, 0x0);
+                }
             }
             nanosleep_current_event(1_000_000_000).unwrap().await;
         }
