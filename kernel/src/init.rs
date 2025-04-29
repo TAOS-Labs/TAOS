@@ -31,11 +31,10 @@ use crate::{
     },
     logging,
     memory::{self},
-    net::get_ip_addr,
-    processes::{self, process::create_process, registers::ForkingRegisters},
+    processes::{self, process::create_process},
     serial_println,
     syscalls::{
-        block::block_on,
+        block::spin_on,
         memorymap::{sys_mmap, MmapFlags, ProtFlags},
     },
     trace,
@@ -106,6 +105,18 @@ pub fn init() -> u32 {
                     .unwrap()
                     .size()
             };
+
+            spin_on(async {
+                sys_mmap(
+                    0x9000,
+                    align_up(file_len, PAGE_SIZE as u64),
+                    ProtFlags::PROT_EXEC.bits(),
+                    MmapFlags::MAP_FILE.bits(),
+                    fd as i64,
+                    0,
+                )
+                .await;
+            });
             serial_println!("Reading file...");
 
             let mut buffer = alloc::vec![0u8; file_len as usize];
