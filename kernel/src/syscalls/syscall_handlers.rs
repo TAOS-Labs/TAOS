@@ -1,4 +1,4 @@
-use core::ffi::CStr;
+use core::{ffi::CStr, mem::offset_of};
 
 use alloc::{collections::btree_map::BTreeMap, slice, string::ToString, vec};
 use lazy_static::lazy_static;
@@ -285,7 +285,7 @@ pub unsafe extern "C" fn syscall_handler_impl(
         SYSCALL_SCHED_YIELD => block_on(sys_sched_yield(), reg_vals),
         SYSCALL_MUNMAP => sys_munmap(syscall.arg1, syscall.arg2),
         SYSCALL_MPROTECT => sys_mprotect(syscall.arg1, syscall.arg2, syscall.arg3),
-        SYSCALL_UNAME => sys_uname(syscall.arg1 as *mut u8),
+        SYSCALL_UNAME => sys_uname(syscall.arg1 as *mut Utsname),
         SYSCALL_GETEUID => sys_geteuid(),
         SYSCALL_GETUID => sys_getuid(),
         SYSCALL_GETEGID => sys_getegid(),
@@ -562,6 +562,15 @@ pub async unsafe fn sys_writev(fd: u32, iovec: *const Iovec, iovcnt: usize) -> u
             }
         }
         iovcnt as u64
+    } else if fd == 2 {
+        // STDERR
+        unsafe {
+            for _ in 0..iovcnt {
+                let slice = core::slice::from_raw_parts((*iovec).iov_base, (*iovec).iov_len);
+                serial_print!("{}", core::str::from_utf8_unchecked(slice));
+            }
+        }
+        iovcnt as u64
     } else {
         u64::MAX // Error
     }
@@ -821,9 +830,30 @@ pub fn sys_arch_prctl(code: i32, addr: u64) -> u64 {
     }
 }
 
+#[repr(C)]
+pub struct Utsname {
+    sysname: [u8; 65],
+    nodename: [u8; 65],
+    release: [u8; 65],
+    version: [u8; 65],
+    machine: [u8; 65],
+}
+
+unsafe fn strcpy(dst: *mut u8, src: &str) {
+    core::ptr::copy_nonoverlapping(src.as_ptr(), dst, src.len());
+    *(dst.add(src.len())) = b'\0';   
+}
+
 // Unimplemented for now
 // TODO fill ptr with OS information
-pub fn sys_uname(_buf: *mut u8) -> u64 {
+pub fn sys_uname(_buf: *mut Utsname) -> u64 {
+    unsafe {
+        strcpy((*_buf).sysname.as_mut_ptr(), "TAOS");
+        strcpy((*_buf).sysname.as_mut_ptr(), "localhost");
+        strcpy((*_buf).sysname.as_mut_ptr(), "6.8.0");
+        strcpy((*_buf).sysname.as_mut_ptr(), "#1 SMP PREEMPT_DYNAMIC");
+        strcpy((*_buf).sysname.as_mut_ptr(), "x86_64");
+    }
     0
 }
 
