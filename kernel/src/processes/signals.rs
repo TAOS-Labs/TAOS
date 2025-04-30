@@ -2,7 +2,7 @@ use core::{arch::naked_asm, error, future::pending};
 
 use alloc::{collections::{btree_map::BTreeMap, vec_deque::{self, VecDeque}}, sync::Arc};
 use spin::Mutex;
-use x86_64::{structures::paging::{OffsetPageTable, Page, PageTable, Translate}, VirtAddr};
+use x86_64::{align_up, structures::paging::{OffsetPageTable, Page, PageTable, Translate}, VirtAddr};
 use zerocopy::big_endian::U64;
 
 use crate::{constants::{memory::PAGE_SIZE, processes::{NUM_SIGNALS, TRAMPOLINE_ADDR}}, memory::HHDM_OFFSET, serial_println, syscalls::syscall_handlers::sys_exit};
@@ -184,36 +184,69 @@ pub unsafe extern "C" fn sigreturn_trampoline() -> ! {
     )
 }
 
-pub fn sys_sigreturn() -> u64 {
-    serial_println!("MADE IT TO SIGRETURN!!!!!!");
+pub fn sys_sigreturn(rsp: u64) -> u64 {
+
+    unsafe {
+        core::arch::asm!(
+            "mov rsp, {0}",
+            "pop rax",
+            "pop rbx",
+            "pop rcx",
+            "pop rdx",
+            "pop rsi",
+            "pop rdi",
+            "pop r8",
+            "pop r9",
+            "pop r10",
+            "pop r11",
+            "pop r12",
+            "pop r13",
+            "pop r14",
+            "pop r15",
+            "pop rbp",
+            "pop rsp",
+            "add rsp, 16",
+            "swapgs",
+            "sti",
+            "sysretq",    
+            in(reg) rsp,
+            options(nostack)
+        );
+    }
+
     0
 }
 
 #[no_mangle]
 pub extern "C" fn handle_signal_in_userspace(handler: UserspaceSignalHandler, registers: &mut Registers) {
-    serial_println!("Handling some shit");
-    // 1. Set up user-space stack frame with just the return address
-    // Adjust user stack pointer to make room for return address (8 bytes)
-    let adjusted_user_rsp = registers.rsp - 16;
-    serial_println!("USER RSP IS 0x{:x}", adjusted_user_rsp);
+
+    // Set up user-space stack frame with all register values and return address
+    let signal_stack_frame_size = align_up(size_of_val(registers) as u64 + 8, 16);
+    let adjusted_user_rsp = registers.rsp - signal_stack_frame_size;
     
-    // Push the trampoline address onto the user stack as return address
+    // Push the trampoline address and all regvals onto the user stack as return address
     unsafe {
-        // Address of your trampoline function
-        let trampoline_addr: u64 = sigreturn_trampoline as *const () as u64;
+
 
         // get userspace address of trampoline function
+        let trampoline_addr: u64 = sigreturn_trampoline as *const () as u64;
         let trampoline_offset = trampoline_addr % PAGE_SIZE as u64;
         let userspace_trampoline_addr = TRAMPOLINE_ADDR + trampoline_offset;
+
+        // To meet sysretq convention, modify RCX and R11 with correct values.
+        registers.rcx = registers.rip;
+        registers.r11 = registers.rflags;
 
         
         // Store the trampoline address on the user stack
         *(adjusted_user_rsp as *mut u64) = userspace_trampoline_addr;
-        registers.rsp -= 16;
+        // Push register values on the user stack
+        *((adjusted_user_rsp + 8) as *mut Registers) = *registers;
+        registers.rsp = adjusted_user_rsp;
     }
 
     let handler_addr: u64 = handler as *const () as u64;
-        
+    // whenever it is next scheduled,     
     registers.rip = handler_addr;
     
     
@@ -302,9 +335,6 @@ impl SignalDescriptor {
         let signal = signal.unwrap();
         let handler = self.signal_handlers[signal.signal_code as usize - 1].lock().clone();
 
-        serial_println!("accessing index {}", signal.signal_code as usize - 1);
-        serial_println!("signal handlers are {:#?}", self.signal_handlers);
-
         match signal.signal_code {
             SignalCode::SIGSEGV => {
                 if let SignalHandler::Default = handler {
@@ -314,9 +344,7 @@ impl SignalDescriptor {
                 return 0;
             }
             SignalCode::SIGPRINT => {
-                serial_println!("Handler is {:#?}", handler);
                 if let SignalHandler::Handler(sigact) = handler {
-                    serial_println!("SIGPRINT");
                     handle_signal_in_userspace(sigact.sa_handler, registers);
                     return 1;
                 }
@@ -356,7 +384,6 @@ pub fn sys_kill(pid: u32, sig: i32) -> u64 {
         return 1;
     }
 
-    serial_println!("Sending signal {} to process {}", sig, pid);
     pcb.signal_descriptor.lock().send_signal(signal_code.unwrap(), 0,SourceCode::SI_USER, sig_field);
     0
 }

@@ -459,12 +459,7 @@ pub unsafe fn resume_process_ring3(pid: u32) {
 
     let registers: &mut Registers = &mut (*process).registers;
     
-    let x = (*process).signal_descriptor.lock().handle_signal(registers);
-    if x != 0 {
-        serial_println!("TRIED HANDLING SIGNAL");
-
-        serial_println!("Registers are {:#?}", registers);
-    }
+    (*process).signal_descriptor.lock().handle_signal(registers);
 
     (*process).kernel_rip = return_process as usize as u64;
     (*process).next_preemption_time = runner_timestamp() + nanos_to_ticks(PROCESS_TIMESLICE);
