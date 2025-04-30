@@ -849,10 +849,10 @@ unsafe fn strcpy(dst: *mut u8, src: &str) {
 pub fn sys_uname(_buf: *mut Utsname) -> u64 {
     unsafe {
         strcpy((*_buf).sysname.as_mut_ptr(), "TAOS");
-        strcpy((*_buf).sysname.as_mut_ptr(), "localhost");
-        strcpy((*_buf).sysname.as_mut_ptr(), "6.8.0");
-        strcpy((*_buf).sysname.as_mut_ptr(), "#1 SMP PREEMPT_DYNAMIC");
-        strcpy((*_buf).sysname.as_mut_ptr(), "x86_64");
+        strcpy((*_buf).nodename.as_mut_ptr(), "localhost");
+        strcpy((*_buf).release.as_mut_ptr(), "6.8.0");
+        strcpy((*_buf).version.as_mut_ptr(), "#1 SMP PREEMPT_DYNAMIC");
+        strcpy((*_buf).machine.as_mut_ptr(), "x86_64");
     }
     0
 }
