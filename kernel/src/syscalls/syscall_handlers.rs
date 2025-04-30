@@ -12,33 +12,25 @@ use x86_64::{
 };
 
 use crate::{
-    constants::{memory::PAGE_SIZE, syscalls::*},
-    devices::ps2_dev::keyboard,
-    events::{
+    constants::{memory::PAGE_SIZE, syscalls::*}, debug, devices::ps2_dev::keyboard, events::{
         current_running_event, current_running_event_info, futures::await_on::AwaitProcess,
         get_runner_time, nanosleep_current_event, schedule_kernel, schedule_process, yield_now,
         EventInfo,
-    },
-    filesys::{
+    }, filesys::{
         get_file,
         syscalls::{sys_creat, sys_open},
         FileSystem, OpenFlags, FILESYSTEM,
-    },
-    interrupts::x2apic::{send_eoi, X2APIC_IA32_FS_BASE, X2APIC_IA32_GSBASE},
-    memory::paging::create_mapping,
-    processes::{
+    }, interrupts::x2apic::{send_eoi, X2APIC_IA32_FS_BASE, X2APIC_IA32_GSBASE}, memory::paging::create_mapping, processes::{
         process::{
             create_process, sleep_process_int, sleep_process_syscall,
             with_current_pcb, ProcessState, PROCESS_TABLE,
         },
         registers::ForkingRegisters,
-    },
-    serial, serial_print, serial_println,
-    syscalls::{
+    }, serial, serial_print, serial_println, syscalls::{
         block::block_on,
         fork::sys_fork,
         memorymap::{sys_mmap, MmapFlags, ProtFlags},
-    },
+    }
 };
 
 use core::arch::naked_asm;
@@ -436,6 +428,7 @@ pub fn sys_sbrk(incr: isize) -> u64 {
     let old_brk = with_current_pcb(|pcb| pcb.brk);
 
     if incr == 0 {
+        debug!("Old break was 0x{old_brk:X}");
         return old_brk;
     }
 
