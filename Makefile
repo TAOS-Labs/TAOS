@@ -46,7 +46,7 @@ fmt:
 
 .PHONY: objdump
 objdump:
-	@cd kernel && objdump -D target/iso_root/boot/kernel/kernel > kernel.objdump 
+	@cd kernel && objdump -M intel -D target/iso_root/boot/kernel/kernel > ../kernel.od 
 
 .PHONY: blank_drive
 blank_drive:

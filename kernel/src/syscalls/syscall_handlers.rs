@@ -277,7 +277,7 @@ pub unsafe extern "C" fn syscall_handler_impl(
             ),
             reg_vals,
         ),
-        SYSCALL_SBRK => sys_sbrk(syscall.arg1 as isize),
+        SYSCALL_SBRK => sys_sbrk(syscall.arg1 as u64),
         _ => {
             panic!("Unknown syscall, {}", syscall.number);
         }
@@ -422,7 +422,7 @@ pub async unsafe fn sys_exec(path: *mut u8, argv: *mut *mut u8, envp: *mut *mut 
     0
 }
 
-pub fn sys_sbrk(incr: isize) -> u64 {
+pub fn sys_sbrk(incr: u64) -> u64 {
     serial_println!("SBRK w/ inc: {:#x}", incr);
 
     let old_brk = with_current_pcb(|pcb| pcb.brk);
