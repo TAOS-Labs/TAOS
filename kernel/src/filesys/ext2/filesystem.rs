@@ -3,6 +3,8 @@ use core::sync::atomic::{AtomicBool, Ordering};
 use spin::{Mutex, RwLock};
 use zerocopy::FromBytes;
 
+use crate::debug_println;
+
 use super::{
     allocator::Allocator,
     block_io::{BlockError, BlockIO},
@@ -122,6 +124,7 @@ impl Ext2 {
         let mut bgdt = Vec::with_capacity(block_groups as usize);
 
         let block_size: usize = superblock_block_size.try_into().unwrap();
+        debug_println!("Block size = {block_size}");
         let block_group_desc_size = core::mem::size_of::<BlockGroupDescriptor>();
         let descriptors_per_block = block_size / block_group_desc_size;
 

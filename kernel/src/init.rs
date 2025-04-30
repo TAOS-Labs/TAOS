@@ -31,7 +31,7 @@ use crate::{
     },
     logging,
     memory::{self},
-    net::get_ip_addr,
+    // net::get_ip_addr,
     processes::{self, process::create_process},
     serial_println,
     syscalls::memorymap::{sys_mmap, MmapFlags, ProtFlags},
@@ -71,7 +71,7 @@ pub fn init() -> u32 {
     // Should be kept after devices in case logging gets complicated
     // Right now log writes to serial, but if it were to switch to VGA, this would be important
     logging::init(0);
-    get_ip_addr().unwrap();
+    // get_ip_addr().unwrap();
     processes::init(0);
 
     debug!("Waking cores");
@@ -110,7 +110,8 @@ pub fn init() -> u32 {
                 MmapFlags::MAP_FILE.bits(),
                 fd as i64,
                 0,
-            ).await;
+            )
+            .await;
 
             serial_println!("Reading file...");
 

@@ -10,6 +10,8 @@ base_args = [
     # SMP settings
     "-smp", "2",
     "-cpu", "Conroe-v1,+x2apic,+invtsc",
+    # "-cpu", "host",
+    # "-accel", "kvm",
 
     # USB
     "-device", "qemu-xhci",
@@ -29,7 +31,10 @@ base_args = [
 
     # Graphics
     "-vga", "std",
-"-serial", "stdio",
+
+    # Debug logs
+#    "-d", "int,cpu_reset",
+
     # Debugging traces
     # USB
     # "-trace", "usb*",

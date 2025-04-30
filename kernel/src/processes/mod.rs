@@ -74,7 +74,8 @@ mod tests {
             MmapFlags::MAP_FILE.bits(),
             fd as i64,
             0,
-        ).await;
+        )
+        .await;
 
         serial_println!("Reading file...");
 

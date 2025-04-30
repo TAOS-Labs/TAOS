@@ -6,7 +6,7 @@
 //! - Timer interrupt handling
 //! - Functions to enable/disable interrupts
 
-use core::arch::naked_asm;
+use core::arch::{asm, naked_asm};
 
 use lazy_static::lazy_static;
 use x86_64::{
@@ -141,6 +141,11 @@ extern "x86-interrupt" fn double_fault_handler(
     stack_frame: InterruptStackFrame,
     _error_code: u64,
 ) -> ! {
+    // unsafe {
+    //     asm!("mov ax, 50", "mov bx, 0", "div bx");
+
+    // }
+    // core::hint::black_box(50 / 0);
     panic!("EXCEPTION: DOUBLE FAULT\n{:#?}", stack_frame);
 }
 
@@ -163,6 +168,7 @@ extern "x86-interrupt" fn page_fault_handler(
     stack_frame: InterruptStackFrame,
     error_code: PageFaultErrorCode,
 ) {
+    // panic!("Page fault!");
     let faulting_address = Cr2::read().expect("Cannot read faulting address").as_u64();
     serial_println!("Page fault");
     serial_println!("Stack pointer: 0x{:X}", stack_frame.stack_pointer);

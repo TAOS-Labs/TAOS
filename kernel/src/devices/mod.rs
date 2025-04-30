@@ -8,7 +8,7 @@
 use crate::serial_println;
 use pci::walk_pci_bus;
 use sd_card::{find_sd_card, initalize_sd_card};
-use xhci::{find_xhci_inferface, initalize_xhci_hub};
+// use xhci::{find_xhci_inferface, initalize_xhci_hub};
 pub mod graphics;
 use graphics::framebuffer::{self, colors};
 pub mod mmio;
@@ -16,7 +16,7 @@ pub mod pci;
 pub mod ps2_dev;
 pub mod sd_card;
 pub mod serial;
-pub mod xhci;
+// pub mod xhci;
 
 /// Initialize hardware devices.
 ///
@@ -69,9 +69,9 @@ pub fn init(cpu_id: u32) {
         initalize_sd_card(&sd_card_device).unwrap();
         serial_println!("Sd card initialized");
 
-        let xhci_device =
-            find_xhci_inferface(&devices).expect("Build system currently sets up xhci device");
-        initalize_xhci_hub(&xhci_device).unwrap();
+        // let xhci_device =
+            // find_xhci_inferface(&devices).expect("Build system currently sets up xhci device");
+        // initalize_xhci_hub(&xhci_device).unwrap();
 
         ps2_dev::init();
     }

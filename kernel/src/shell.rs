@@ -64,11 +64,7 @@ impl Shell {
 
     fn read_char(&mut self) -> u8 {
         let mut c: u8 = 0;
-        unsafe {
-            spin_on(
-                sys_read(0, &mut c as *mut u8, 1),
-            )
-        };
+        unsafe { spin_on(sys_read(0, &mut c as *mut u8, 1)) };
         match c {
             b'\n' => {
                 // Enter handled separately
@@ -87,11 +83,7 @@ impl Shell {
     }
 
     fn print(&self, s: &str) {
-        unsafe {
-            spin_on(
-                sys_write(1, s.as_ptr() as *mut u8, s.len()),
-            )
-        };
+        unsafe { spin_on(sys_write(1, s.as_ptr() as *mut u8, s.len())) };
     }
 
     fn handle_char(&mut self, c: u8) {

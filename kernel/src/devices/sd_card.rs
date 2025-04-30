@@ -2,19 +2,14 @@ use alloc::{boxed::Box, sync::Arc, vec::Vec};
 use async_trait::async_trait;
 use spin::Mutex;
 use x86_64::PhysAddr;
+use zerocopy::IntoBytes;
 
 use crate::{
-    constants::devices::SD_REQ_TIMEOUT_NANOS,
-    debug_println,
+    constants::{devices::SD_REQ_TIMEOUT_NANOS, x2apic::CPU_FREQUENCY},
+    debug, debug_println,
     devices::pci::write_pci_command,
     events::{current_running_event, futures::devices::SDCardReq, get_runner_time},
-    filesys::{
-        ext2::{
-            block_io::{BlockError, BlockIO, BlockResult},
-            filesystem::{FilesystemError, FilesystemResult},
-        },
-        BlockDevice,
-    },
+    filesys::ext2::block_io::{BlockError, BlockIO, BlockResult},
     memory::KERNEL_MAPPER,
 };
 use bitflags::bitflags;
@@ -193,6 +188,28 @@ bitflags! {
     }
 }
 
+bitflags! {
+    #[derive(Debug, Clone, Copy)]
+    pub struct NormalInterupts: u16 {
+        const ErrorInterrupt =  1 << 15;
+        const FXEvent = 1 << 13;
+        const ReTuningEvent = 1 << 12;
+        const INT_C = 1 << 11;
+        const INT_B = 1 << 10;
+        const INT_A = 1 << 9;
+        const CardInterrupt = 1 << 8;
+        const CardRemoval = 1 << 7;
+        const CardInsertion = 1 << 6;
+        const BufferReadReady = 1 << 5;
+        const BufferWriteReady = 1 << 4;
+        const DMAInterrupt = 1 << 3;
+        const BlockGapEvent=  1 << 2;
+        const TransferComplete = 1 << 1;
+        const CommandComplete = 1;
+        const _ = !0;
+    }
+}
+
 const SD_CLASS_CODE: u8 = 0x8;
 const SD_SUB_CLASS: u8 = 0x5;
 const SD_NO_DMA_INTERFACE: u8 = 0x0;
@@ -200,54 +217,7 @@ const SD_DMA_INTERFACE: u8 = 0x1;
 const MAX_ITERATIONS: usize = 1_000;
 const SD_SECTOR_SIZE: u32 = 512;
 
-#[async_trait]
-impl BlockDevice for SDCardInfo {
-    async fn read_block(&self, block_num: u64, buf: &mut [u8]) -> FilesystemResult<u8> {
-        if block_num > self.total_sectors {
-            return Result::Err(FilesystemError::DeviceError(BlockError::InvalidBlock));
-        }
-        let data = read_sd_card(
-            self,
-            block_num
-                .try_into()
-                .expect("Maxumum block number should not be greater than 32 bits"),
-        )
-        .await
-        .map_err(|_| FilesystemError::DeviceError(BlockError::DeviceError))?;
-
-        buf.copy_from_slice(&data);
-
-        Result::Ok(0)
-    }
-
-    async fn write_block(&mut self, block_num: u64, buf: &[u8]) -> FilesystemResult<u8> {
-        if block_num > self.total_sectors {
-            return Result::Err(FilesystemError::DeviceError(BlockError::InvalidBlock));
-        }
-        let mut data: [u8; 512] = [0; 512];
-        data.copy_from_slice(buf);
-        write_sd_card(
-            self,
-            block_num
-                .try_into()
-                .expect("Maximum block number should not be greater than 32 bits"),
-            data,
-        )
-        .await
-        .map_err(|_| FilesystemError::DeviceError(BlockError::DeviceError))?;
-        Result::Ok(0)
-    }
-
-    fn block_size(&self) -> usize {
-        SD_SECTOR_SIZE.try_into().expect("To be on 64 bit system")
-    }
-
-    fn total_blocks(&self) -> u64 {
-        self.total_sectors
-    }
-}
-
-const SECTORS_PER_BLOCK: u32 = 2;
+const SECTORS_PER_BLOCK: u32 = 8;
 const SD_BLOCK_IO_SIZE: u32 = SD_SECTOR_SIZE * SECTORS_PER_BLOCK;
 
 #[async_trait]
@@ -256,18 +226,52 @@ impl BlockIO for SDCardInfo {
         if (block_num + 1) * SECTORS_PER_BLOCK as u64 > self.total_sectors {
             return BlockResult::Err(BlockError::InvalidBlock);
         }
-        for start_block in 0..SECTORS_PER_BLOCK {
-            let block_num_32: u32 = block_num
-                .try_into()
-                .expect("Total blocks is less than 32 bits long");
-            let data = read_sd_card(self, block_num_32 * SECTORS_PER_BLOCK + start_block)
-                .await
-                .map_err(|_| BlockError::DeviceError)?;
-            let start_block_size: usize = (start_block * SD_SECTOR_SIZE).try_into().unwrap();
-            // Copy the data from buff to data (Blame clippy for this abomination)
-            buf[start_block_size..(SD_SECTOR_SIZE as usize + start_block_size)]
-                .copy_from_slice(&data[..(SD_SECTOR_SIZE as usize)]);
+        assert!(buf.len() >= SD_BLOCK_IO_SIZE.try_into().unwrap());
+        // let start = get_runner_time(0);
+        let block_num_32: u32 = block_num
+            .try_into()
+            .expect("Total blocks is less than 32 bits long");
+        read_sd_card(
+            self,
+            block_num_32 * SECTORS_PER_BLOCK,
+            SECTORS_PER_BLOCK.try_into().unwrap(),
+            buf,
+        )
+        .await
+        .map_err(|_| BlockError::DeviceError)?;
+        debug!("Read block {block_num}");
+        // let end = get_runner_time(0);
+        // let elapsed_time = end - start;
+
+        // debug!(
+        //     "Reading a block took {} ticks, throughput {} bytes / second ",
+        //     end - start,
+        //     (SD_BLOCK_IO_SIZE * CPU_FREQUENCY) as u64 / elapsed_time
+        // );
+
+        Result::Ok(())
+    }
+
+    async fn read_sector(&self, sector_num: u64, buf: &mut [u8]) -> BlockResult<()> {
+        if (sector_num + 1) > self.total_sectors {
+            return BlockResult::Err(BlockError::InvalidBlock);
         }
+        // let start = get_runner_time(0);
+        let sector_num_32: u32 = sector_num
+            .try_into()
+            .expect("Total blocks is less than 32 bits long");
+        read_sd_card(self, sector_num_32, 1, buf)
+            .await
+            .map_err(|_| BlockError::DeviceError)?;
+        // let end = get_runner_time(0);
+        // let elapsed_time = end - start;
+
+        // debug!(
+        //     "Reading a sector took {} ticks, throughput {} bytes / sec",
+        //     end - start,
+        //     (SD_SECTOR_SIZE * CPU_FREQUENCY) as u64 / elapsed_time
+        // );
+        debug!("Read sector {sector_num}");
 
         Result::Ok(())
     }
@@ -294,7 +298,7 @@ impl BlockIO for SDCardInfo {
     }
 
     fn block_size(&self) -> u64 {
-        SD_BLOCK_IO_SIZE as u64 //.try_into().expect("To be on 64 bit system")
+        SD_BLOCK_IO_SIZE as u64
     }
 
     fn size_in_bytes(&self) -> u64 {
@@ -338,6 +342,7 @@ pub fn initalize_sd_card(sd_arc: &Arc<Mutex<DeviceInfo>>) -> Result<(), SDCardEr
     // Determine the Base Address, and setup a mapping
     let base_address_register = read_config(sd_card.bus, sd_card.device, 0, 0x10);
     let bar_address: u64 = (base_address_register & 0xFFFFFF00).into();
+    debug_println!("Mapping sd card as uncachable");
     let base_virtual_addr = map_page_as_uncacheable(PhysAddr::new(bar_address), &mut mapper)
         .map_err(|_| SDCardError::GenericSDError)?;
     let offset_bar = base_virtual_addr.as_u64();
@@ -394,12 +399,12 @@ fn enable_sd_card_interrupts(sd_card: &SDCardInfoInternal) -> Result<(), SDCardE
     let error_intr_status_addr = (sd_card.base_address_register + 0x36) as *mut u16;
     unsafe { core::ptr::write_volatile(error_intr_status_addr, 0x0FB) };
     sending_command_valid(sd_card)?;
-    let normal_intr_enable_addr = (sd_card.base_address_register + 0x38) as *mut u16;
-    unsafe { core::ptr::write_volatile(normal_intr_enable_addr, 0x1FF) };
-    sending_command_valid(sd_card)?;
-    let error_intr_enable_addr = (sd_card.base_address_register + 0x3A) as *mut u16;
-    unsafe { core::ptr::write_volatile(error_intr_enable_addr, 0x0FB) };
-    sending_command_valid(sd_card)?;
+    // let normal_intr_enable_addr = (sd_card.base_address_register + 0x38) as *mut u16;
+    // unsafe { core::ptr::write_volatile(normal_intr_enable_addr, 0x1FF) };
+    // sending_command_valid(sd_card)?;
+    // let error_intr_enable_addr = (sd_card.base_address_register + 0x3A) as *mut u16;
+    // unsafe { core::ptr::write_volatile(error_intr_enable_addr, 0x0FB) };
+    // sending_command_valid(sd_card)?;
     Result::Ok(())
 }
 
@@ -714,12 +719,26 @@ fn determine_sd_card_response(
 
 /// Reads data from a sd card, returning it as  a return value unless an Error
 /// Occurred
-pub async fn read_sd_card(sd_card: &SDCardInfo, block: u32) -> Result<[u8; 512], SDCardError> {
+pub async fn read_sd_card(
+    sd_card: &SDCardInfo,
+    block: u32,
+    sectors: u16,
+    buff: &mut [u8],
+) -> Result<(), SDCardError> {
+    debug!("Reading {sectors} sectors from block {block}");
     let internal_info = &sd_card.internal_info;
+    let normal_interrupts_base_address_reg =
+        (internal_info.base_address_register + 0x30) as *mut u16;
+    unsafe {
+        core::ptr::write_volatile(
+            normal_interrupts_base_address_reg,
+            NormalInterupts::TransferComplete.bits(),
+        );
+    }
     let block_size_register_addr = (internal_info.base_address_register + 0x4) as *mut u16;
     unsafe { core::ptr::write_volatile(block_size_register_addr, 0x200) };
     let block_count_register_addr = (internal_info.base_address_register + 0x6) as *mut u16;
-    unsafe { core::ptr::write_volatile(block_count_register_addr, 1) };
+    unsafe { core::ptr::write_volatile(block_count_register_addr, sectors) };
     sending_command_valid(internal_info)?;
     let argument_register_addr = (internal_info.base_address_register + 0x8) as *mut u32;
     unsafe { core::ptr::write_volatile(argument_register_addr, block) };
@@ -727,41 +746,119 @@ pub async fn read_sd_card(sd_card: &SDCardInfo, block: u32) -> Result<[u8; 512],
     unsafe {
         core::ptr::write_volatile(
             transfer_mode_register_adder,
-            TransferModeFlags::ReadToCard.bits(),
+            (TransferModeFlags::ReadToCard
+                | TransferModeFlags::MultipleBlockSelect
+                | TransferModeFlags::BlockCountEnable)
+                .bits(),
         )
     };
 
-    // Send command
+    let argument_register_addr = (internal_info.base_address_register + 0x8) as *mut u32;
+    unsafe { core::ptr::write_volatile(argument_register_addr, sectors as u32) };
     send_sd_command(
         internal_info,
-        17,
+        23,
+        SDResponseTypes::R1,
+        CommandFlags::empty(),
+    )?;
+    // Read Multiple Block
+    let argument_register_addr = (internal_info.base_address_register + 0x8) as *mut u32;
+    unsafe { core::ptr::write_volatile(argument_register_addr, block) };
+    send_sd_command(
+        internal_info,
+        18,
         SDResponseTypes::R1,
         CommandFlags::DataPresentSelect,
     )?;
 
-    let present_state_register_addr = (internal_info.base_address_register + 0x24) as *const u32;
+    let mut sectors_read = 0;
+    while sectors_read < sectors {
+        let normal_interrupts_base_address_reg =
+            (internal_info.base_address_register + 0x30) as *mut u16;
+        loop {
+            let interrupt_status = unsafe {
+                NormalInterupts::from_bits_retain(core::ptr::read_volatile(
+                    normal_interrupts_base_address_reg,
+                ))
+            };
+            if interrupt_status.intersects(NormalInterupts::BufferReadReady) {
+                unsafe {
+                    core::ptr::write_volatile(
+                        normal_interrupts_base_address_reg,
+                        NormalInterupts::BufferReadReady.bits(),
+                    );
+                }
+                break;
+            }
+        }
+        // SDCardReq::new(
+        //     NormalInterupts::BufferReadReady,
+        //     normal_interrupts_base_address_reg,
+        //     get_runner_time(SD_REQ_TIMEOUT_NANOS),
+        //     current_running_event().expect("Reading from SD outside event"),
+        // )
+        // .await?;
 
-    let read_ready = SDCardReq::new(
-        PresentState::BufferReadEnable,
-        present_state_register_addr,
-        get_runner_time(SD_REQ_TIMEOUT_NANOS),
-        current_running_event().expect("Reading from SD outside event"),
-    )
-    .await;
+        // let normal_interrupts_base_address_reg =
+        //     (internal_info.base_address_register + 0x30) as *mut u16;
+        // unsafe {
+        //     core::ptr::write_volatile(
+        //         normal_interrupts_base_address_reg,
+        //         NormalInterupts::BufferReadReady.bits(),
+        //     );
+        // }
 
-    if read_ready.is_err() {
-        debug_println!("Timedout");
-        return Result::Err(SDCardError::SDTimeout);
+        let buffer_data_port_reg_addr = (internal_info.base_address_register + 0x20) as *const u32;
+
+        for i in (0..SD_SECTOR_SIZE as usize).step_by(4) {
+            let data = unsafe { core::ptr::read_volatile(buffer_data_port_reg_addr) };
+            let data_bits = data.as_bytes();
+            let buff_idx = i + (sectors_read as usize * SD_SECTOR_SIZE as usize);
+            buff[buff_idx..(buff_idx + 4)].copy_from_slice(data_bits);
+        }
+        sectors_read += 1;
     }
+    // Wait to transfer to complete before returning
 
-    let mut data = [0; 128];
-    let buffer_data_port_reg_addr = (internal_info.base_address_register + 0x20) as *const u32;
-    for item in &mut data {
-        *item = unsafe { core::ptr::read_volatile(buffer_data_port_reg_addr) };
+    loop {
+        let interrupt_status = unsafe {
+            NormalInterupts::from_bits_retain(core::ptr::read_volatile(
+                normal_interrupts_base_address_reg,
+            ))
+        };
+        if interrupt_status.intersects(NormalInterupts::TransferComplete) {
+            unsafe {
+                core::ptr::write_volatile(
+                    normal_interrupts_base_address_reg,
+                    NormalInterupts::TransferComplete.bits(),
+                );
+            }
+            break;
+        }
     }
+    // let normal_interrupts_base_address_reg =
+    //     (internal_info.base_address_register + 0x30) as *const u16;
+    // let event_complete = SDCardReq::new(
+    //     NormalInterupts::TransferComplete,
+    //     normal_interrupts_base_address_reg,
+    //     get_runner_time(SD_REQ_TIMEOUT_NANOS),
+    //     current_running_event().expect("Reading from SD outside event"),
+    // )
+    // .await;
 
-    let new_data = unsafe { core::mem::transmute::<[u32; 128], [u8; 512]>(data) };
-    Result::Ok(new_data)
+    // if event_complete.is_err() {
+    //     debug_println!("Timedout waiting for transfer to complete");
+    //     return Result::Err(SDCardError::SDTimeout);
+    // }
+    let normal_interrupts_base_address_reg =
+        (internal_info.base_address_register + 0x30) as *mut u16;
+    unsafe {
+        core::ptr::write_volatile(
+            normal_interrupts_base_address_reg,
+            NormalInterupts::TransferComplete.bits(),
+        );
+    }
+    Result::Ok(())
 }
 
 /// Writes data to block of sd card
@@ -770,47 +867,56 @@ pub async fn write_sd_card(
     block: u32,
     data: [u8; 512],
 ) -> Result<(), SDCardError> {
-    let internal_info = &sd_card.internal_info;
-    let block_size_register_addr = (internal_info.base_address_register + 0x4) as *mut u16;
-    unsafe { core::ptr::write_volatile(block_size_register_addr, 0x200) };
-    let block_count_register_addr = (internal_info.base_address_register + 0x6) as *mut u16;
-    unsafe { core::ptr::write_volatile(block_count_register_addr, 1) };
-    sending_command_valid(internal_info)?;
-    let argument_register_addr = (internal_info.base_address_register + 0x8) as *mut u32;
-    unsafe { core::ptr::write_volatile(argument_register_addr, block) };
-    let transfer_mode_register_adder = (internal_info.base_address_register + 0xC) as *mut u16;
-    unsafe { core::ptr::write_volatile(transfer_mode_register_adder, 0) };
+    todo!();
+    // let internal_info = &sd_card.internal_info;
+    // let block_size_register_addr = (internal_info.base_address_register + 0x4) as *mut u16;
+    // unsafe { core::ptr::write_volatile(block_size_register_addr, 0x200) };
+    // let block_count_register_addr = (internal_info.base_address_register + 0x6) as *mut u16;
+    // unsafe { core::ptr::write_volatile(block_count_register_addr, 1) };
+    // sending_command_valid(internal_info)?;
+    // let argument_register_addr = (internal_info.base_address_register + 0x8) as *mut u32;
+    // unsafe { core::ptr::write_volatile(argument_register_addr, block) };
+    // let transfer_mode_register_adder = (internal_info.base_address_register + 0xC) as *mut u16;
+    // unsafe { core::ptr::write_volatile(transfer_mode_register_adder, 0) };
 
-    // Send command
-    send_sd_command(
-        internal_info,
-        24,
-        SDResponseTypes::R1,
-        CommandFlags::DataPresentSelect,
-    )?;
+    // // Send command
+    // send_sd_command(
+    //     internal_info,
+    //     24,
+    //     SDResponseTypes::R1,
+    //     CommandFlags::DataPresentSelect,
+    // )?;
 
-    let present_state_register_addr = (internal_info.base_address_register + 0x24) as *const u32;
+    // let normal_interrupts_base_address_reg =
+    //     (internal_info.base_address_register + 0x30) as *const u16;
 
-    let write_ready = SDCardReq::new(
-        PresentState::BufferWriteEnable,
-        present_state_register_addr,
-        get_runner_time(SD_REQ_TIMEOUT_NANOS),
-        current_running_event().expect("Writing to SD outside event"),
-    )
-    .await;
+    // let write_ready = SDCardReq::new(
+    //     NormalInterupts::BufferWriteReady,
+    //     normal_interrupts_base_address_reg,
+    //     get_runner_time(SD_REQ_TIMEOUT_NANOS),
+    //     current_running_event().expect("Reading from SD outside event"),
+    // )
+    // .await;
+    // if write_ready.is_err() {
+    //     debug_println!("Timedout");
+    //     return Result::Err(SDCardError::SDTimeout);
+    // }
+    // let normal_interrupts_base_address_reg =
+    //     (internal_info.base_address_register + 0x30) as *mut u16;
+    // unsafe {
+    //     core::ptr::write_volatile(
+    //         normal_interrupts_base_address_reg,
+    //         NormalInterupts::BufferWriteReady.bits(),
+    //     );
+    // }
 
-    if write_ready.is_err() {
-        debug_println!("Timedout");
-        return Result::Err(SDCardError::SDTimeout);
-    }
+    // let data_32_bits: [u32; 128] = unsafe { core::mem::transmute(data) };
+    // let buffer_data_port_reg_addr = (internal_info.base_address_register + 0x20) as *mut u32;
+    // for item in data_32_bits {
+    //     unsafe {
+    //         core::ptr::write_volatile(buffer_data_port_reg_addr, item);
+    //     }
+    // }
 
-    let data_32_bits: [u32; 128] = unsafe { core::mem::transmute(data) };
-    let buffer_data_port_reg_addr = (internal_info.base_address_register + 0x20) as *mut u32;
-    for item in data_32_bits {
-        unsafe {
-            core::ptr::write_volatile(buffer_data_port_reg_addr, item);
-        }
-    }
-
-    Result::Ok(())
+    // Result::Ok(())
 }

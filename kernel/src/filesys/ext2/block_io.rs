@@ -42,6 +42,12 @@ pub trait BlockIO: Send + Sync {
     /// * `buffer` - Buffer to read into, must be at least block_size() bytes
     async fn read_block(&self, block_number: u64, buffer: &mut [u8]) -> BlockResult<()>;
 
+    /// Read a sector into the provided buffer
+    ///
+    /// # Arguments
+    /// * `block_number` - The block number to read
+    /// * `buffer` - Buffer to read into, must be at least block_size() bytes
+    async fn read_sector(&self, block_number: u64, buffer: &mut [u8]) -> BlockResult<()>;
     /// Read bytes from a specific offset
     ///
     /// # Arguments
@@ -60,7 +66,8 @@ pub trait BlockIO: Send + Sync {
                 Err(BlockError::OffsetOutOfBounds)
             };
         }
-
+        assert!(buffer.len() >= self.block_size().try_into().unwrap());
+        assert!(self.block_size() == 4096);
         let n = min(buffer.len() as u64, sz - offset);
         let block_number = offset / self.block_size();
         let offset_in_block = offset % self.block_size();
@@ -177,6 +184,10 @@ impl BlockIO for MockDevice {
             buffer[..self.block_size as usize].fill(0);
             Ok(())
         }
+    }
+
+    async fn read_sector(&self, block_number: u64, buffer: &mut [u8]) -> BlockResult<()> {
+        self.read_block(block_number, buffer).await
     }
 
     async fn write_block(&self, block_number: u64, buffer: &[u8]) -> BlockResult<()> {
