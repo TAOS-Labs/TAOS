@@ -707,6 +707,15 @@ impl IntelHDA {
             0x1000,
         );
         debug_println!("setup_bdl returned {} entries", num_entries);
+        // TODO: I think the rest of the song can currently fit into just one more bdl so just set that up and then do all of the stuff to switch the bdl once the ioc sts bit is set
+        // I think the steps to do the switch are fairly straight forward?
+        // Step one: TURN OFF STREAM (I already do this at the bottom)
+        // Step two: prolly wanna clear the sts bits (specifically bit 2). do this by writing a one to whatever bit to reset
+        // Step three: set the new cbl (? it says to not modify this until a reset but also says that it can be modified if RUN is 0, im just gonna assume that it is good to modify tbh)
+        // Step 4: set the lvi depending on the number of entries
+        // step five: write the new bdl pointer
+        // step final: turn the stream back on (make sure that the ioc enable is true)
+
         // let mut num_bytes_bdl = (num_entries * 0x1000) as u32;
         
         // last_byte_written.offset(num_entries as u64);
@@ -816,12 +825,15 @@ impl IntelHDA {
         }
 
         let cbl = unsafe { read_volatile(cbl_addr) };
-        for _ in 0..10 {
+        let mut lpib = unsafe { read_volatile((stream_base + 0x4) as *const u32) };
+        let mut sts = unsafe { read_volatile((stream_base + 0x3) as *const u8) };
+        while (sts >> 2) & 1 != 1 {
             unsafe{
-                debug_println!("sts: 0x{:X}", read_volatile((stream_base + 0x3) as *const u8));
-                let lpib = read_volatile((stream_base + 0x4) as *const u32);
-                debug_println!("lpib: {}", lpib);
-                if lpib == cbl {
+                sts = read_volatile((stream_base + 0x3) as *const u8);
+                debug_println!("sts: 0x{:X}", sts);
+                lpib = read_volatile((stream_base + 0x4) as *const u32);
+                debug_println!("lpib: {} / {}", lpib, cbl);
+                if (sts >> 2) & 1 == 1 {
                     // stop stream
                     write_volatile(stream_base as *mut u8, 0x0);
                 }
