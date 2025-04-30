@@ -237,7 +237,26 @@ pub unsafe extern "C" fn syscall_handler_impl(
         SYSCALL_PRINT => sys_print(syscall.arg1 as *const u8),
         // SYSCALL_NANOSLEEP => sys_nanosleep_64(syscall.arg1, reg_vals),
         SYSCALL_NANOSLEEP => block_on(sys_nanosleep(syscall.arg1), reg_vals),
-        // Filesystem syscalls
+        SYSCALL_RT_SIGPROCMASK => sys_rt_sigprocmask(
+            syscall.arg1 as i32,
+            ConstUserPtr::from(syscall.arg2),
+            MutUserPtr::from(syscall.arg3),
+            syscall.arg4 as usize,
+        ),
+        SYSCALL_GETPID => sys_getpid(),
+        SYSCALL_GETTID => sys_gettid(),
+        SYSCALL_TGKILL => sys_tgkill(
+            syscall.arg1 as u32, // tgid (thread group ID / process ID)
+            syscall.arg2 as u32, // tid (thread ID)
+            syscall.arg3 as i32, // sig (signal number)
+        ),
+        SYSCALL_RT_SIGACTION => sys_rt_sigaction(
+            syscall.arg1 as i32,
+            syscall.arg2,
+            syscall.arg3,
+            syscall.arg4 as usize,
+        ),
+                // Filesystem syscalls
         SYSCALL_OPEN => block_on(
             sys_open(
                 ConstUserPtr::from(syscall.arg1),
@@ -805,5 +824,52 @@ pub fn sys_arch_prctl(code: i32, addr: u64) -> u64 {
 // Unimplemented for now
 // TODO fill ptr with OS information
 pub fn sys_uname(_buf: *mut u8) -> u64 {
+    0
+}
+
+pub fn sys_rt_sigprocmask(
+    how: i32,
+    set: ConstUserPtr<u8>,
+    oldset: MutUserPtr<u8>,
+    sigsetsize: usize,
+) -> u64 {
+    // In a real implementation, this would manage the signal mask
+    0
+}
+
+pub fn sys_getpid() -> u64 {
+    // Return the pid of the current process
+    with_current_pcb(|pcb| pcb.pid as u64)
+}
+
+pub fn sys_gettid() -> u64 {
+    // In a single-threaded process, the thread ID is the same as the process ID
+    with_current_pcb(|pcb| pcb.pid as u64)
+}
+
+pub fn sys_tgkill(tgid: u32, tid: u32, sig: i32) -> u64 {
+    // Minimal stub implementation
+    // In a real implementation, this would:
+    // 1. Validate that tgid is a valid process ID
+    // 2. Validate that tid is a valid thread ID within that process
+    // 3. Check if the caller has permission to send the signal
+    // 4. Deliver the signal to the specified thread
+    // Return 0 for success
+    0
+}
+
+pub fn sys_rt_sigaction(
+    _signum: i32,
+    _act_ptr: u64,
+    _oldact_ptr: u64,
+    _sigsetsize: usize,
+) -> u64 {
+    // Minimal stub implementation
+    // In a real implementation, this would:
+    // 1. Validate the signal number
+    // 2. Set up a new handler if 'act' is not null
+    // 3. Return the old handler if 'oldact' is not null
+    // 4. Validate sigsetsize
+
     0
 }

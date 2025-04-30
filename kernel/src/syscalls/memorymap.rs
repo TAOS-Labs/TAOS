@@ -147,7 +147,8 @@ pub fn mmap_prot_to_vma_flags(prot: u64, mmap_flags: MmapFlags) -> VmAreaFlags {
 pub async fn sys_mmap(_addr: u64, len: u64, prot: u64, flags: u64, fd: i64, offset: u64) -> u64 {
     // Basic sanity check.
     if len == 0 {
-        panic!("mmap called with zero length");
+        //panic!("mmap called with zero length");
+        return u64::max_value();
     }
 
     let event: EventInfo = current_running_event_info();
