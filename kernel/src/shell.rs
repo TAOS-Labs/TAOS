@@ -217,7 +217,7 @@ impl Shell {
                 unsafe {
                     spin_on(
                         // TODO use schedule_kernel
-                        sys_exec(argv[0], argv.as_mut_ptr(), envp.as_mut_ptr())
+                        sys_exec(argv[0], argv.as_mut_ptr(), envp.as_mut_ptr()),
                     );
                 }
             }

@@ -10,6 +10,7 @@ pub const SYSCALL_WRITE: u32 = 1;
 pub const SYSCALL_OPEN: u32 = 2;
 pub const SYSCALL_CLOSE: u32 = 3;
 
+pub const SYSCALL_WRITEV: u32 = 20;
 pub const SYSCALL_ACCESS: u32 = 21;
 
 pub const SYSCALL_SCHED_YIELD: u32 = 24;
@@ -21,12 +22,14 @@ pub const SYSCALL_OPENAT: u32 = 257;
 
 pub const SYSCALL_GETRANDOM: u32 = 318;
 
-pub const SYSCALL_MMAP: u32 = 4;
+pub const SYSCALL_MMAP: u32 = 9;
 pub const SYSCALL_MPROTECT: u32 = 10;
 pub const SYSCALL_MUNMAP: u32 = 11;
-pub const SYSCALL_FORK: u32 = 5;
-pub const SYSCALL_WAIT: u32 = 6;
+pub const SYSCALL_FORK: u32 = 57;
+pub const SYSCALL_WAIT: u32 = 61;
 pub const SYSCALL_EXECVE: u32 = 59;
+
+pub const SYSCALL_UNAME: u32 = 63;
 
 pub const SYSCALL_GETUID: u32 = 102;
 pub const SYSCALL_GETEUID: u32 = 107;

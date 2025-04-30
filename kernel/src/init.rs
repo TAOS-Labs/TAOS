@@ -65,18 +65,6 @@ pub fn init() -> u32 {
     memory::init(0);
     interrupts::init(0);
 
-    // unsafe {
-    //     core::arch::asm!(
-    //         "mov rax, cr0",
-    //         "and rax, 0xFFFFFFFFFFFFFFFB",
-    //         "or  rax, 0x2",                 
-    //         "mov cr0, rax",
-    //         "mov rax, cr4",
-    //         "or  rax, 0x600",
-    //         "mov cr4, rax",
-    //     );
-    // }
-
     register_event_runner();
     devices::init(0);
     filesys::init(0);
@@ -85,6 +73,19 @@ pub fn init() -> u32 {
     logging::init(0);
     // get_ip_addr().unwrap();
     processes::init(0);
+
+    unsafe {
+        core::arch::asm!(
+            "mov {0}, cr0",
+            "and {0}, 0xFFFFFFFFFFFFFFFB",
+            "or  {0}, 0x2",
+            "mov cr0, {0}",
+            "mov {0}, cr4",
+            "or  {0}, 0x600",
+            "mov cr4, {0}",
+            out(reg) _
+        );
+    }
 
     debug!("Waking cores");
     let bsp_id = wake_cores();

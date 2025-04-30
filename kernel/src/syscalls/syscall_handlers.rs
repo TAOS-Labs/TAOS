@@ -12,25 +12,33 @@ use x86_64::{
 };
 
 use crate::{
-    constants::{memory::PAGE_SIZE, syscalls::*}, devices::ps2_dev::keyboard, events::{
+    constants::{memory::PAGE_SIZE, syscalls::*},
+    devices::ps2_dev::keyboard,
+    events::{
         current_running_event, current_running_event_info, futures::await_on::AwaitProcess,
         get_runner_time, nanosleep_current_event, schedule_kernel, schedule_process, yield_now,
         EventInfo,
-    }, filesys::{
+    },
+    filesys::{
         get_file,
         syscalls::{sys_creat, sys_open},
         FileSystem, OpenFlags, FILESYSTEM,
-    }, interrupts::x2apic::{send_eoi, X2APIC_IA32_FS_BASE, X2APIC_IA32_GSBASE}, memory::paging::create_mapping, processes::{
+    },
+    interrupts::x2apic::{send_eoi, X2APIC_IA32_FS_BASE, X2APIC_IA32_GSBASE},
+    memory::paging::create_mapping,
+    processes::{
         process::{
-            create_process, sleep_process_int, sleep_process_syscall,
-            with_current_pcb, ProcessState, PROCESS_TABLE,
+            create_process, sleep_process_int, sleep_process_syscall, with_current_pcb,
+            ProcessState, PROCESS_TABLE,
         },
         registers::ForkingRegisters,
-    }, serial_print, serial_println, syscalls::{
+    },
+    serial_print, serial_println,
+    syscalls::{
         block::block_on,
         fork::sys_fork,
         memorymap::{sys_mmap, MmapFlags, ProtFlags},
-    }
+    },
 };
 
 use core::arch::naked_asm;
@@ -258,6 +266,7 @@ pub unsafe extern "C" fn syscall_handler_impl(
         SYSCALL_SCHED_YIELD => block_on(sys_sched_yield(), reg_vals),
         SYSCALL_MUNMAP => sys_munmap(syscall.arg1, syscall.arg2),
         SYSCALL_MPROTECT => sys_mprotect(syscall.arg1, syscall.arg2, syscall.arg3),
+        SYSCALL_UNAME => sys_uname(syscall.arg1 as *mut u8),
         SYSCALL_GETEUID => sys_geteuid(),
         SYSCALL_GETUID => sys_getuid(),
         SYSCALL_GETEGID => sys_getegid(),
@@ -279,6 +288,14 @@ pub unsafe extern "C" fn syscall_handler_impl(
             ),
             reg_vals,
         ),
+        SYSCALL_WRITEV => block_on(
+            sys_writev(
+                syscall.arg1 as u32,
+                syscall.arg2 as *const Iovec,
+                syscall.arg3 as usize,
+            ),
+            reg_vals,
+        ),
         SYSCALL_EXECVE => block_on(
             sys_exec(
                 syscall.arg1 as *mut u8,
@@ -287,7 +304,7 @@ pub unsafe extern "C" fn syscall_handler_impl(
             ),
             reg_vals,
         ),
-        SYSCALL_BRK => sys_brk(syscall.arg1 as u64),
+        SYSCALL_BRK => sys_brk(syscall.arg1),
         _ => {
             panic!("Unknown syscall, {}", syscall.number);
         }
@@ -503,6 +520,29 @@ pub async unsafe fn sys_write(fd: u32, buf: *const u8, count: usize) -> u64 {
             serial_print!("{}", core::str::from_utf8_unchecked(slice));
         }
         count as u64
+    } else {
+        u64::MAX // Error
+    }
+}
+
+#[repr(C)]
+pub struct Iovec {
+    iov_base: *mut u8,
+    iov_len: usize,
+}
+
+/// # Safety
+/// TODO
+pub async unsafe fn sys_writev(fd: u32, iovec: *const Iovec, iovcnt: usize) -> u64 {
+    if fd == 1 {
+        // STDOUT
+        unsafe {
+            for _ in 0..iovcnt {
+                let slice = core::slice::from_raw_parts((*iovec).iov_base, (*iovec).iov_len);
+                serial_print!("{}", core::str::from_utf8_unchecked(slice));
+            }
+        }
+        iovcnt as u64
     } else {
         u64::MAX // Error
     }
@@ -760,4 +800,10 @@ pub fn sys_arch_prctl(code: i32, addr: u64) -> u64 {
             0
         }
     }
+}
+
+// Unimplemented for now
+// TODO fill ptr with OS information
+pub fn sys_uname(_buf: *mut u8) -> u64 {
+    0
 }

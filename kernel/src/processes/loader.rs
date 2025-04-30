@@ -7,7 +7,8 @@ use crate::{
         frame_allocator::with_generic_allocator,
         mm::{Mm, VmAreaBackings, VmAreaFlags},
         paging::{create_mapping, create_mapping_to_frame, update_permissions},
-    }, serial_println,
+    },
+    serial_println,
 };
 use alloc::{string::String, sync::Arc, vec::Vec};
 use core::ptr::{copy_nonoverlapping, write_bytes};
@@ -55,7 +56,7 @@ pub fn load_elf(
                 let virt_addr = VirtAddr::new(ph.p_vaddr);
                 if ph.p_offset == 0 && phdr_runtime == 0 {
                     // this PT_LOAD starts at file off 0, so load_base = virt_addr
-                    phdr_runtime = virt_addr.as_u64() + elf.header.e_phoff as u64;
+                    phdr_runtime = virt_addr.as_u64() + elf.header.e_phoff;
                 }
 
                 let mem_size = ph.p_memsz as usize;
@@ -162,11 +163,10 @@ pub fn load_elf(
         let tls_p_vaddr = ph.p_vaddr;
         let _tls_memsz = ph.p_memsz as usize;
         let tls_filesz = ph.p_filesz as usize;
-        let tls_align = ph.p_align as u64;
+        let tls_align = ph.p_align;
 
         // round up for tp_offset
-        let _tp_offset =
-            ((tls_filesz + (tls_align as usize) - 1) / (tls_align as usize)) * (tls_align as usize);
+        let _tp_offset = tls_filesz.div_ceil(tls_align as usize) * (tls_align as usize);
 
         let template_start = VirtAddr::new(tls_p_vaddr);
 
@@ -178,11 +178,10 @@ pub fn load_elf(
             let tls_start = VirtAddr::new(ph.p_vaddr);
             let _tls_memsz = ph.p_memsz as usize;
             let tls_filesz = ph.p_filesz as usize;
-            let tls_align = ph.p_align as u64;
+            let tls_align = ph.p_align;
 
             // compute where FS:0 / FS:8 go
-            let tp_offset =
-                ((tls_filesz + tls_align as usize - 1) / tls_align as usize) * tls_align as usize;
+            let tp_offset = tls_filesz.div_ceil(tls_align as usize) * tls_align as usize;
             let tcb_base = tls_start.as_u64() + tp_offset as u64;
             let dtv_base = tcb_base + 16;
 

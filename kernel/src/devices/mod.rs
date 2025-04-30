@@ -70,7 +70,7 @@ pub fn init(cpu_id: u32) {
         serial_println!("Sd card initialized");
 
         // let xhci_device =
-            // find_xhci_inferface(&devices).expect("Build system currently sets up xhci device");
+        // find_xhci_inferface(&devices).expect("Build system currently sets up xhci device");
         // initalize_xhci_hub(&xhci_device).unwrap();
 
         ps2_dev::init();

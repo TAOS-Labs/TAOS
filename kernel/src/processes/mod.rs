@@ -13,7 +13,6 @@ pub fn init(cpu_id: u32) {
 #[cfg(test)]
 mod tests {
     use alloc::vec::Vec;
-    
 
     use crate::{
         constants::processes::TEST_SIMPLE_PROCESS,

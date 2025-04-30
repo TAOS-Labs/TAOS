@@ -11,8 +11,7 @@ use core::arch::naked_asm;
 use lazy_static::lazy_static;
 use x86_64::{
     instructions::interrupts,
-    registers::control::Cr2
-    ,
+    registers::control::Cr2,
     structures::idt::{InterruptDescriptorTable, InterruptStackFrame, PageFaultErrorCode},
 };
 
@@ -144,9 +143,7 @@ extern "x86-interrupt" fn double_fault_handler(
 }
 
 /// Handles invalid opcode exceptions by panicking with debug information.
-extern "x86-interrupt" fn invalid_opcode_handler(
-    stack_frame: InterruptStackFrame,
-) -> () {
+extern "x86-interrupt" fn invalid_opcode_handler(stack_frame: InterruptStackFrame) {
     panic!("EXCEPTION: Invalid Opcode\n{:#?}", stack_frame);
 }
 
