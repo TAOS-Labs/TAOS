@@ -12,7 +12,7 @@ use x86_64::{
 };
 
 use crate::{
-    constants::{memory::PAGE_SIZE, syscalls::*}, debug, devices::ps2_dev::keyboard, events::{
+    constants::{memory::PAGE_SIZE, syscalls::*}, devices::ps2_dev::keyboard, events::{
         current_running_event, current_running_event_info, futures::await_on::AwaitProcess,
         get_runner_time, nanosleep_current_event, schedule_kernel, schedule_process, yield_now,
         EventInfo,
@@ -173,11 +173,23 @@ pub unsafe extern "C" fn syscall_handler_64_naked() -> ! {
         "swapgs",
         // --- reload FS_BASE just before we return to user ----------------
         "push rax",
-        "push rcx",
+        "push rdi",
+        "push rsi",
         "push rdx",
+        "push rcx",
+        "push r8",
+        "push r9",
+        "push r10",
+        "push r11",
         "call reload_fs_base", // -> writes IA32_FS_BASE = pcb.fs_base
-        "pop rdx",
+        "pop r11",
+        "pop r10",
+        "pop r9",
+        "pop r8",
         "pop rcx",
+        "pop rdx",
+        "pop rsi",
+        "pop rdi",
         "pop rax", // Return to user mode. sysretq will use RCX (which contains the user RIP)
         // and R11 (which holds user RFLAGS).
         "sti",
@@ -203,11 +215,9 @@ pub unsafe extern "C" fn syscall_handler_impl(
     let reg_vals = unsafe { &*reg_vals };
 
     crate::debug!("SYS {}", syscall.number);
-    serial_println!("FS BASE: {}", Msr::new(X2APIC_IA32_FS_BASE).read());
 
     with_current_pcb(|pcb| {
         //Msr::new(X2APIC_IA32_FS_BASE).write(pcb.fs_base);
-        serial_println!("Saved FS BASE: {}", pcb.fs_base);
         FsBase::write(VirtAddr::new(pcb.fs_base));
     });
 
@@ -277,7 +287,7 @@ pub unsafe extern "C" fn syscall_handler_impl(
             ),
             reg_vals,
         ),
-        SYSCALL_SBRK => sys_sbrk(syscall.arg1 as u64),
+        SYSCALL_BRK => sys_brk(syscall.arg1 as u64),
         _ => {
             panic!("Unknown syscall, {}", syscall.number);
         }
@@ -422,17 +432,16 @@ pub async unsafe fn sys_exec(path: *mut u8, argv: *mut *mut u8, envp: *mut *mut 
     0
 }
 
-pub fn sys_sbrk(incr: u64) -> u64 {
-    serial_println!("SBRK w/ inc: {:#x}", incr);
-
+pub fn sys_brk(addr: u64) -> u64 {
     let old_brk = with_current_pcb(|pcb| pcb.brk);
 
-    if incr == 0 {
-        debug!("Old break was 0x{old_brk:X}");
+    if addr == 0 {
         return old_brk;
     }
 
-    let new_brk = old_brk.checked_add(incr as u64).unwrap();
+    // TODO error checking, for now just trust da user :)
+
+    let new_brk = addr;
     let old_page =
         Page::<Size4KiB>::containing_address(VirtAddr::new(align_up(old_brk, PAGE_SIZE as u64)));
     let new_page =
@@ -451,6 +460,9 @@ pub fn sys_sbrk(incr: u64) -> u64 {
                 ),
             );
         }
+
+        // TODO zero out pages (inclusive?)
+
         pcb.brk = new_brk;
     });
 
