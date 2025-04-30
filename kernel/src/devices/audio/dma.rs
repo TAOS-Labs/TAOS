@@ -74,6 +74,11 @@ impl DmaBuffer {
 
     /// offsets the dma buffer by offset bytes
     pub fn offset(&mut self, offset: u64) {
+        debug_println!("offset: 0x{:X}", offset);
+        debug_println!("virt: 0x{:X}", self.virt_addr.as_u64());
+        debug_println!("phys: 0x{:X}", self.phys_addr.as_u64());
+        debug_println!("size: 0x{:X}", self.size);
+
         self.virt_addr += offset;
         self.phys_addr += offset;
         self.size -= offset as usize;

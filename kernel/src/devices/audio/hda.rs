@@ -681,9 +681,11 @@ impl IntelHDA {
         
         debug_println!("starting to alloc BDL");
         let audio_buf = DmaBuffer::new(audio_data.len).expect("Failed to allocate audio buffer");
-        let bdl_buf = DmaBuffer::new(core::mem::size_of::<BdlEntry>() * 16).expect("Failed BDL");
+        let bdl_buf1 = DmaBuffer::new(core::mem::size_of::<BdlEntry>() * 16).expect("Failed BDL");
+        let bdl_buf2 = DmaBuffer::new(core::mem::size_of::<BdlEntry>() * 16).expect("Failed BDL");
 
-        assert_eq!(bdl_buf.phys_addr.as_u64() % 128, 0, "BDL not 128-byte aligned");
+        assert_eq!(bdl_buf1.phys_addr.as_u64() % 128, 0, "BDL 1 not 128-byte aligned");
+        assert_eq!(bdl_buf2.phys_addr.as_u64() % 128, 0, "BDL 2 not 128-byte aligned");
         
         debug_println!("audio data len: {}", audio_data.len);
         debug_println!("audio buf size: {}", audio_buf.size);
@@ -696,17 +698,20 @@ impl IntelHDA {
                 audio_buf.virt_addr.as_mut_ptr::<u8>(), 
                 audio_data.len);
         }
-        // let mut last_byte_written = audio_buf.clone();
+        let mut last_byte_written = audio_buf.clone();
+        debug_println!("audio buf len: 0x{:X}", audio_buf.size);
         
         debug_println!("before first bdl setup");
-        let bdl_ptr = bdl_buf.as_ptr::<BdlEntry>();
-        let num_entries = setup_bdl(
-            bdl_ptr,
-            audio_buf.phys_addr.as_u64(),
-            audio_buf.size as u32,
+        let bdl_ptr_1 = bdl_buf1.as_ptr::<BdlEntry>();
+        let mut num_entries = setup_bdl(
+            bdl_ptr_1,
+            last_byte_written.phys_addr.as_u64(),
+            last_byte_written.size as u32,
             0x1000,
         );
         debug_println!("setup_bdl returned {} entries", num_entries);
+        let num_entries_1 = num_entries;
+        // last_byte_written.offset((num_entries * 0x1000) as u64);
         // TODO: I think the rest of the song can currently fit into just one more bdl so just set that up and then do all of the stuff to switch the bdl once the ioc sts bit is set
         // I think the steps to do the switch are fairly straight forward?
         // Step one: TURN OFF STREAM (I already do this at the bottom)
@@ -716,22 +721,23 @@ impl IntelHDA {
         // step five: write the new bdl pointer
         // step final: turn the stream back on (make sure that the ioc enable is true)
 
-        // let mut num_bytes_bdl = (num_entries * 0x1000) as u32;
+        let mut num_bytes_bdl = (num_entries * 0x1000) as u32;
         
-        // last_byte_written.offset(num_entries as u64);
+        last_byte_written.offset(num_bytes_bdl as u64);
         
+        let bdl_ptr_2 = bdl_buf2.as_ptr::<BdlEntry>();
+        num_entries = setup_bdl(
+            bdl_ptr_2,
+            last_byte_written.phys_addr.as_u64(),
+            last_byte_written.size as u32,
+            0x1000,
+        );
+
+        // num_bytes_bdl = (num_entries * 0x1000) as u32;
+        debug_println!("<2>");
+        last_byte_written.offset((num_entries * 0x1000) as u64);
         
-        // let bdl_ptr_2 = bdl_buf.as_ptr::<BdlEntry>();
-        // num_entries = setup_bdl(
-        //     bdl_ptr_2,
-        //     last_byte_written.phys_addr.as_u64(),
-        //     last_byte_written.size as u32,
-        //     0x1000,
-        // );
-        
-        // last_byte_written.offset(num_entries as u64);
-        
-        // debug_println!("setup_bdl_2 returned {} entries", num_entries);
+        debug_println!("setup_bdl_2 returned {} entries", num_entries);
         
         
         // begin configuring stream desc
@@ -781,7 +787,7 @@ impl IntelHDA {
         let bdladr_addr = (stream_base + 0x18) as *mut u64;
         let bdladr_val: u64;
         unsafe {
-            write_volatile(bdladr_addr, bdl_buf.phys_addr.as_u64());
+            write_volatile(bdladr_addr, bdl_buf1.phys_addr.as_u64());
             bdladr_val = read_volatile(bdladr_addr);
         }
         debug_println!("address: {:X}", bdladr_val);
@@ -790,14 +796,14 @@ impl IntelHDA {
         let cbl_addr = (stream_base + 0x8) as *mut u32;
         let cbl_val: u32;
         unsafe {
-            write_volatile(cbl_addr, audio_buf.size as u32);
+            write_volatile(cbl_addr, num_bytes_bdl);
             cbl_val = read_volatile(cbl_addr);
         }
         debug_println!("cbl: {:X}", cbl_val);
 
         // write the LVI
         let lvi_addr = (stream_base + 0xC) as *mut u16;
-        unsafe {write_volatile(lvi_addr, num_entries as u16 - 1);}
+        unsafe {write_volatile(lvi_addr, num_entries_1 as u16 - 1);}
 
         // now lets congifure the fmt reg
         let fmt_addr = (stream_base + 0x12) as *mut u16;
@@ -827,18 +833,41 @@ impl IntelHDA {
         let cbl = unsafe { read_volatile(cbl_addr) };
         let mut lpib = unsafe { read_volatile((stream_base + 0x4) as *const u32) };
         let mut sts = unsafe { read_volatile((stream_base + 0x3) as *const u8) };
+        let mut flag = true;
         while (sts >> 2) & 1 != 1 {
             unsafe{
                 sts = read_volatile((stream_base + 0x3) as *const u8);
-                debug_println!("sts: 0x{:X}", sts);
+                // debug_println!("sts: 0x{:X}", sts);
                 lpib = read_volatile((stream_base + 0x4) as *const u32);
-                debug_println!("lpib: {} / {}", lpib, cbl);
+                // debug_println!("lpib: {} / {}", lpib, cbl);
                 if (sts >> 2) & 1 == 1 {
+                    debug_println!("ioc");
+
                     // stop stream
                     write_volatile(stream_base as *mut u8, 0x0);
+                    if flag {
+                        // clear sts
+                        write_volatile((stream_base + 0x3) as *mut u8, 0x40);
+                        sts = read_volatile((stream_base + 0x3) as *const u8);
+    
+                        // update cbl
+                        num_bytes_bdl = 0x1000 * num_entries as u32;
+                        write_volatile((stream_base + 0x8) as *mut u32, num_bytes_bdl);
+    
+                        // update lvi
+                        write_volatile((stream_base + 0xC) as *mut u16, num_entries as u16 - 1);
+    
+                        // update bdl ptr
+                        write_volatile((stream_base + 0x18) as *mut u64, bdl_buf2.phys_addr.as_u64());
+                        
+                        // start stream
+                        write_volatile(stream_base as *mut u8, 0x2);
+                        debug_println!("switched bdls");
+                        flag = false;
+                    }
                 }
             }
-            nanosleep_current_event(1_000_000_000).unwrap().await;
+            // nanosleep_current_event(1_000_000_000).unwrap().await;
         }
     }
     

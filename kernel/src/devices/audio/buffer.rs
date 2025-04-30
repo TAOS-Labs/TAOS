@@ -36,7 +36,7 @@ pub fn setup_bdl(
     entry_size: u32,
 ) -> usize {
     // debug_println!("in setup bdl");
-    let num_entries_needed = ((total_size / entry_size) + 1) as u64;
+    let num_entries_needed = ((total_size + entry_size - 1) / entry_size) as u64;
     let num_entries: u64;
     if num_entries_needed > 256 {
         num_entries = 256;
