@@ -59,3 +59,10 @@ fn rust_panic(info: &core::panic::PanicInfo) -> ! {
 fn rust_panic(info: &core::panic::PanicInfo) -> ! {
     taos::test_panic_handler(info);
 }
+
+#[cfg(miri)]
+#[unsafe(no_mangle)]
+fn miri_start(argc: isize, argv: *const *const u8) -> isize {
+    _start();
+    return  -1;
+}

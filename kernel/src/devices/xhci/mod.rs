@@ -3,9 +3,9 @@
 //! XHCI Spec refers to Revision 1.2 found here
 //! https://www.intel.com/content/dam/www/public/us/en/documents/technical-specifications/extensible-host-controler-interface-usb-xhci.pdf
 
-pub mod context;
-pub mod ecm;
-pub mod ring_buffer;
+// pub mod context;
+// pub mod ecm;
+// pub mod ring_buffer;
 
 use core::{cmp::min, mem::MaybeUninit};
 

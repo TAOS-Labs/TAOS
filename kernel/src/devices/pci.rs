@@ -109,11 +109,6 @@ fn get_pci_addres(bus: u8, device: u8, function: u8, offset: u8) -> u32 {
 /// Reads from pci config and returns the result into a u32. Note: device must be
 /// less than 32, function must be less than 8, and offset must be a multiple
 /// of 4.
-///
-/// # Safety
-///
-/// This function is unsafe because it directly accesses the pci bus without
-/// synch
 pub fn read_config(bus: u8, device: u8, function: u8, offset: u8) -> u32 {
     let address = get_pci_addres(bus, device, function, offset);
 

@@ -1,6 +1,8 @@
 //! The Kernel Heap
 //! Contains the initialization for the kernel heap using the Talc allocator
 
+use core::sync::atomic::AtomicBool;
+
 use crate::{
     constants::memory::{HEAP_SIZE, HEAP_START},
     memory::{
@@ -9,7 +11,7 @@ use crate::{
     },
     serial_println,
 };
-use talc::{ClaimOnOom, Span, Talc, Talck};
+use talc::{ErrOnOom, OomHandler, Span, Talc, Talck};
 use x86_64::{
     structures::paging::{mapper::MapToError, Page, Size4KiB},
     VirtAddr,
@@ -18,10 +20,7 @@ use x86_64::{
 use super::frame_allocator::GlobalFrameAllocator;
 
 #[global_allocator]
-static ALLOCATOR: Talck<spin::Mutex<()>, ClaimOnOom> = Talc::new(unsafe {
-    ClaimOnOom::new(Span::new(HEAP_START, HEAP_START.wrapping_add(HEAP_SIZE)))
-})
-.lock();
+static ALLOCATOR: Talck<spin::Mutex<()>, ErrOnOom> = Talc::new(ErrOnOom).lock();
 
 /// Initialize the heap and switch to using the bitmap frame_allocator
 ///
@@ -39,7 +38,12 @@ pub fn init_heap() -> Result<(), MapToError<Size4KiB>> {
     for page in page_range {
         create_mapping(page, &mut *KERNEL_MAPPER.lock(), None);
     }
-
+    unsafe {
+        ALLOCATOR
+            .lock()
+            .claim(Span::new(HEAP_START, HEAP_START.wrapping_add(HEAP_SIZE)))
+            .unwrap();
+    }
     switch_allocator();
 
     serial_println!("Allocator switched to buddy allocator");

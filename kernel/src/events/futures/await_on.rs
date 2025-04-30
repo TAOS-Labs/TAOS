@@ -21,7 +21,7 @@ pub struct Await {
     event: Arc<Event>,
 }
 
-unsafe impl Send for Await {}
+// unsafe impl Send for Await {}
 
 impl Await {
     /// Creates a new AwaitProcess. Use U64 max for effectively no timeout
@@ -106,7 +106,7 @@ pub struct AwaitProcess {
     event: Arc<Event>,
 }
 
-unsafe impl Send for AwaitProcess {}
+// unsafe impl Send for AwaitProcess {}
 
 impl AwaitProcess {
     /// Creates a new AwaitProcess. Use U64 max for effectively no timeout

@@ -4,7 +4,8 @@
 //! page cache
 
 use crate::{
-    constants::{memory::PAGE_SIZE, processes::MAX_FILES},
+    constants::{memory::PAGE_SIZE, processes::MAX_FILES, x2apic::CPU_FREQUENCY},
+    debug,
     events::{
         current_running_event,
         futures::sync::{BlockMutex, Condition},
@@ -498,6 +499,7 @@ impl FileSystem for Ext2Wrapper {
         let mut remaining = buf.len();
         let mut total_read = 0;
         let mut file_pos = locked_file.position;
+        // remaining = min(remaining, )
         let mut iter = 0;
         while remaining > 0 {
             let start = get_runner_time(0);
@@ -505,20 +507,25 @@ impl FileSystem for Ext2Wrapper {
             let page_offset_in_buf = file_pos % PAGE_SIZE;
             let copy_len = core::cmp::min(PAGE_SIZE - page_offset_in_buf, remaining);
             // Load the page into cache if not already present
+            // debug!("Before getting virt");
             let virt = match self
                 .page_cache_get_mapping(locked_file.clone(), page_offset)
                 .await
             {
                 Ok(va) => va,
                 Err(_) => {
+                    // debug!("Before adding to pg cache");
                     self.add_entry_to_page_cache(locked_file.clone(), page_offset)
                         .await?;
+                    // debug!("after adding to pg cache");
                     let temp = self
                         .page_cache_get_mapping(locked_file.clone(), page_offset)
                         .await?;
                     temp
                 }
             };
+            let end = get_runner_time(0);
+            // debug!("after getting virt");
             unsafe {
                 let page_ptr = virt.as_ptr::<u8>().add(page_offset_in_buf);
                 let dst_ptr = buf.as_mut_ptr().add(total_read);
@@ -529,9 +536,8 @@ impl FileSystem for Ext2Wrapper {
             total_read += copy_len;
             remaining -= copy_len;
             iter += 1;
-            let end = get_runner_time(0);
 
-            serial_println!("looping {} times, took {} ticks", iter, end - start);
+            serial_println!("looping {} times, took {} ticks, throughput = {} bytes / sec", iter, end - start, (4096 * CPU_FREQUENCY) as u64 / (end - start));
             // serial_println!("looping {} times", iter);
         }
 

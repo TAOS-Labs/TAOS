@@ -7,7 +7,7 @@ use x86_64::{
     PhysAddr, VirtAddr,
 };
 
-use crate::memory::paging;
+use crate::{debug_println, memory::paging};
 
 /// An error occured when setting up a frame as uncacheable
 #[derive(Debug)]
@@ -28,7 +28,11 @@ pub fn map_page_as_uncacheable(
             flags,
         } => match frame {
             MappedFrame::Size4KiB(_) => {
-                // debug_println!("mapped 4KB from {:X}", requested_phys_addr);
+                debug_println!(
+                    "mapped 4KB from 0x{:X} to 0x{:X}",
+                    requested_phys_addr,
+                    offset_bar
+                );
                 let page: Page<Size4KiB> = Page::containing_address(VirtAddr::new(offset_bar));
                 unsafe {
                     mapper
@@ -41,7 +45,16 @@ pub fn map_page_as_uncacheable(
                 }
             }
             MappedFrame::Size2MiB(_) => {
-                // debug_println!("mapped 2MB from {:X}", requested_phys_addr);
+                debug_println!(
+                    "mapped 2MB from 0x{:X} to 0x{:X}",
+                    requested_phys_addr,
+                    offset_bar
+                );
+                debug_println!(
+                    "Virt Range is 0x{:X} to 0x{:X}",
+                    (offset_bar >> 21) << 21,
+                    ((offset_bar >> 21) + 1) << 21
+                );
                 let page: Page<Size2MiB> = Page::containing_address(VirtAddr::new(offset_bar));
                 unsafe {
                     mapper

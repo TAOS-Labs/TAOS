@@ -3,8 +3,6 @@ use bitflags::bitflags;
 use core::mem::size_of;
 use zerocopy::{FromBytes, Immutable, KnownLayout};
 
-use crate::debug;
-
 use super::{
     block_io::BlockIO,
     filesystem::{FilesystemError, FilesystemResult},

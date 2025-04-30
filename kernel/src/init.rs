@@ -33,7 +33,7 @@ use crate::{
     },
     logging,
     memory::{self},
-    net::get_ip_addr,
+    // net::get_ip_addr,
     processes::{self, process::create_process, registers::ForkingRegisters},
     serial_println,
     syscalls::{
@@ -76,7 +76,7 @@ pub fn init() -> u32 {
     // Should be kept after devices in case logging gets complicated
     // Right now log writes to serial, but if it were to switch to VGA, this would be important
     logging::init(0);
-    get_ip_addr().unwrap();
+    // get_ip_addr().unwrap();
     processes::init(0);
 
     debug!("Waking cores");
@@ -115,42 +115,102 @@ pub fn init() -> u32 {
                     .unwrap()
                     .size()
             };
-            block_on(
-                sys_mmap(
-                    0x9000,
-                    align_up(file_len, PAGE_SIZE as u64),
-                    ProtFlags::PROT_EXEC.bits(),
-                    MmapFlags::MAP_FILE.bits(),
-                    fd as i64,
-                    0,
-                ),
-                &ForkingRegisters::default(),
-            );
-
             serial_println!("Reading file...");
 
             let mut buffer = alloc::vec![0u8; file_len as usize];
-            let bytes_read = {
+            debug!("Finished allocation");
+            let start_time = get_runner_time(0);
+            let _bytes_read = {
                 fs.lock()
                     .await
                     .read_file(fd, &mut buffer)
                     .await
                     .expect("Failed to read file")
             };
+            let end_time = get_runner_time(0);
+            debug!("Finished reading , took {} ticks", end_time - start_time);
+            let mut buffer2 = alloc::vec![0u8; file_len as usize];
+            let start_time_2 = get_runner_time(0);
+            debug!("Finished allocation");
+            fs.lock()
+                .await
+                .read_file(fd, &mut buffer2)
+                .await
+                .expect("Failed to read file");
+            let end_time_2 = get_runner_time(0);
+            debug!("Finished 2nd read");
+            debug!(
+                "Finished reading , took {} ticks",
+                end_time_2 - start_time_2
+            );
 
-            let buf = &buffer[..bytes_read];
+            // let fd = {
+            //     fs.lock()
+            //         .await
+            //         .open_file(
+            //             "/executables/hello",
+            //             OpenFlags::O_RDONLY | OpenFlags::O_WRONLY,
+            //         )
+            //         .await
+            //         .expect("Could not open file")
+            // };
+            // let file = get_file(fd).unwrap();
+            // let file_len = {
+            //     fs.lock()
+            //         .await
+            //         .filesystem
+            //         .lock()
+            //         .get_node(&file.lock().pathname)
+            //         .await
+            //         .unwrap()
+            //         .size()
+            // };
+            // block_on(
+            //     sys_mmap(
+            //         0x9000,
+            //         align_up(file_len, PAGE_SIZE as u64),
+            //         ProtFlags::PROT_EXEC.bits(),
+            //         MmapFlags::MAP_FILE.bits(),
+            //         fd as i64,
+            //         0,
+            //     ),
+            //     &ForkingRegisters::default(),
+            // );
 
-            serial_println!("Bytes read: {:#?}", bytes_read);
+            // serial_println!("Reading file...");
 
-            let pid = create_process(buf, Vec::new(), Vec::new());
-            serial_println!("Creating process");
-            schedule_process(pid);
-            let _waiter = AwaitProcess::new(
-                pid,
-                get_runner_time(3_000_000_000),
-                current_running_event().unwrap(),
-            )
-            .await;
+            // let mut buffer = alloc::vec![0u8; file_len as usize];
+            // debug!("Finished allocation");
+            // let bytes_read = {
+            //     fs.lock()
+            //         .await
+            //         .read_file(fd, &mut buffer)
+            //         .await
+            //         .expect("Failed to read file")
+            // };
+            // debug!("Finished reading ");
+            // let mut buffer2 = alloc::vec![0u8; file_len as usize];
+
+            // debug!("Finished allocation");
+            // fs.lock()
+            //     .await
+            //     .read_file(fd, &mut buffer2)
+            //     .await
+            //     .expect("Failed to read file");
+            // debug!("Finished 2nd read");
+            // let buf = &buffer[..bytes_read];
+
+            // serial_println!("Bytes read: {:#?}", bytes_read);
+
+            // let pid = create_process(buf, Vec::new(), Vec::new());
+            // serial_println!("Creating process");
+            // schedule_process(pid);
+            // let _waiter = AwaitProcess::new(
+            //     pid,
+            //     get_runner_time(3_000_000_000),
+            //     current_running_event().unwrap(),
+            // )
+            // .await;
         },
         3,
     );
@@ -226,6 +286,7 @@ static TEST_MOUNT_ID: AtomicU32 = AtomicU32::new(0);
 static mut PLOCK: bool = true;
 
 pub async fn run_server(server_rx: Receiver<Bytes>, server_tx: Sender<Bytes>) {
+    todo!();
     serial_println!("Server starting");
     loop {
         match server_rx.try_recv() {

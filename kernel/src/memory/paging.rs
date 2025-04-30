@@ -249,7 +249,7 @@ pub fn map_kernel_frame(
         NEXT_EPH_OFFSET += 0x1000; // move up by a page
         current
     };
-    // debug!("offset is {offset}");
+    debug!("offset is 0x{offset:X}");
     let temp_virt = VirtAddr::new(EPHEMERAL_KERNEL_MAPPINGS_START + offset);
     let temp_page = Page::containing_address(temp_virt);
 

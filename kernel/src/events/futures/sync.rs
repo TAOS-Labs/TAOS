@@ -206,7 +206,9 @@ impl<T> BlockMutex<T> {
             .unlocked
             .compare_exchange(true, false, Ordering::Relaxed, Ordering::Relaxed)
             .is_err()
-        {}
+        {
+            core::hint::spin_loop();
+        }
 
         BlockMutexGuard {
             mutex: self,
@@ -231,7 +233,7 @@ pub struct BlockMutexGuard<'a, T> {
 }
 
 unsafe impl<T> Send for BlockMutexGuard<'_, T> {}
-unsafe impl<T> Sync for BlockMutexGuard<'_, T> {}
+unsafe impl<T> Sync for BlockMutexGuard<'_, T> where T: Sync {}
 
 impl<T> Deref for BlockMutexGuard<'_, T> {
     type Target = T;

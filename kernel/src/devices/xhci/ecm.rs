@@ -154,6 +154,7 @@ impl phy::TxToken for ECMDeviceTxToken<'_> {
     where
         F: FnOnce(&mut [u8]) -> R,
     {
+        compile_error!("This code should not be generated");
         let out_ptr: *mut u8 = self.out_data_addr.as_mut_ptr();
         let out_buf = unsafe { slice::from_raw_parts_mut(out_ptr, len) };
         let result = f(out_buf);
