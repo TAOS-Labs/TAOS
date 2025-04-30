@@ -6,15 +6,13 @@
 //! - Timer interrupt handling
 //! - Functions to enable/disable interrupts
 
-use core::arch::{asm, naked_asm};
+use core::arch::naked_asm;
 
 use lazy_static::lazy_static;
 use x86_64::{
     instructions::interrupts,
-    registers::{
-        control::Cr2,
-        model_specific::{FsBase, Msr},
-    },
+    registers::control::Cr2
+    ,
     structures::idt::{InterruptDescriptorTable, InterruptStackFrame, PageFaultErrorCode},
 };
 
@@ -27,7 +25,7 @@ use crate::{
     },
     devices::ps2_dev::{keyboard_interrupt_handler, mouse_interrupt_handler},
     events::inc_runner_clock,
-    interrupts::x2apic::{self, current_core_id, TLB_SHOOTDOWN_ADDR, X2APIC_IA32_FS_BASE},
+    interrupts::x2apic::{self, current_core_id, TLB_SHOOTDOWN_ADDR},
     memory::{
         mm::Mm,
         page_fault::{

@@ -7,10 +7,9 @@ use alloc::{
 use crate::{
     devices::ps2_dev::keyboard,
     events::schedule_kernel,
-    processes::registers::ForkingRegisters,
     serial_println,
     syscalls::{
-        block::{block_on, spin_on},
+        block::spin_on,
         syscall_handlers::{sys_exec, sys_read, sys_write},
     },
 };
@@ -216,7 +215,10 @@ impl Shell {
                 envp.push(core::ptr::null_mut());
                 serial_println!("EXECUTING");
                 unsafe {
-                    sys_exec(argv[0], argv.as_mut_ptr(), envp.as_mut_ptr());
+                    spin_on(
+                        // TODO use schedule_kernel
+                        sys_exec(argv[0], argv.as_mut_ptr(), envp.as_mut_ptr())
+                    );
                 }
             }
 

@@ -5,7 +5,7 @@ use x86_64::PhysAddr;
 use zerocopy::IntoBytes;
 
 use crate::{
-    constants::{devices::SD_REQ_TIMEOUT_NANOS, x2apic::CPU_FREQUENCY},
+    constants::devices::SD_REQ_TIMEOUT_NANOS,
     debug, debug_println,
     devices::pci::write_pci_command,
     events::{current_running_event, futures::devices::SDCardReq, get_runner_time},

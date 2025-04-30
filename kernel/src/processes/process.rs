@@ -13,7 +13,7 @@ use crate::{
     filesys::File,
     interrupts::{
         gdt,
-        x2apic::{self, nanos_to_ticks, X2APIC_IA32_FS_BASE},
+        x2apic::{self, nanos_to_ticks},
     },
     ipc::namespace::Namespace,
     memory::{
@@ -27,14 +27,13 @@ use crate::{
 use alloc::{collections::BTreeMap, string::String, sync::Arc, vec::Vec};
 use core::{
     arch::naked_asm,
-    borrow::BorrowMut,
     cell::UnsafeCell,
     sync::atomic::{AtomicU32, Ordering},
 };
 use spin::{rwlock::RwLock, Mutex};
 use x86_64::{
     instructions::interrupts,
-    registers::model_specific::{FsBase, Msr},
+    registers::model_specific::FsBase,
     structures::paging::{OffsetPageTable, PageTable, PhysFrame, Size4KiB},
     VirtAddr,
 };
@@ -212,7 +211,7 @@ pub fn create_process(elf_bytes: &[u8], args: Vec<String>, envs: Vec<String>) ->
     });
     // Build a new process address space
     let process_pml4_frame = unsafe { create_process_page_table() };
-    let mut mm = Mm::new(process_pml4_frame);
+    let mm = Mm::new(process_pml4_frame);
     let mut mapper = unsafe {
         let virt = *HHDM_OFFSET + process_pml4_frame.start_address().as_u64();
         let ptr = virt.as_mut_ptr::<PageTable>();
@@ -387,7 +386,7 @@ pub async unsafe fn run_process_ring3(pid: u32) {
         if (*process).state == ProcessState::Blocked || (*process).state == ProcessState::Ready {
             interrupts::disable();
 
-            with_current_pcb(|pcb| unsafe {
+            with_current_pcb(|pcb| {
                 //Msr::new(X2APIC_IA32_FS_BASE).write((pcb).fs_base);
                 FsBase::write(VirtAddr::new(pcb.fs_base));
             });
@@ -798,18 +797,18 @@ pub fn sleep_process_syscall(nanos: u64, reg_vals: &ForkingRegisters) {
 
 #[cfg(test)]
 mod tests {
-    use crate::{
-        constants::processes::TEST_EXIT_CODE,
-        memory::{mm::Mm, HHDM_OFFSET},
-        processes::loader::load_elf,
-    };
+    // use crate::{
+    //     constants::processes::TEST_EXIT_CODE,
+    //     memory::{mm::Mm, HHDM_OFFSET},
+    //     processes::loader::load_elf,
+    // };
 
-    use super::*;
-    use core::slice;
-    use x86_64::{
-        structures::paging::{OffsetPageTable, PageTable, PhysFrame},
-        PhysAddr,
-    };
+    // use super::*;
+    // use core::slice;
+    // use x86_64::{
+    //     structures::paging::{OffsetPageTable, PageTable, PhysFrame},
+    //     PhysAddr,
+    // };
 
     //#[test_case]
     //async fn verify_stack_args_envs() {

@@ -7,7 +7,7 @@ use spin::Mutex;
 use x86_64::{
     align_up,
     registers::model_specific::{FsBase, Msr},
-    structures::paging::{Mapper, OffsetPageTable, Page, PageTableFlags, PhysFrame, Size4KiB},
+    structures::paging::{Page, PageTableFlags, PhysFrame, Size4KiB},
     VirtAddr,
 };
 
@@ -26,7 +26,7 @@ use crate::{
             with_current_pcb, ProcessState, PROCESS_TABLE,
         },
         registers::ForkingRegisters,
-    }, serial, serial_print, serial_println, syscalls::{
+    }, serial_print, serial_println, syscalls::{
         block::block_on,
         fork::sys_fork,
         memorymap::{sys_mmap, MmapFlags, ProtFlags},
@@ -205,7 +205,7 @@ pub unsafe extern "C" fn syscall_handler_impl(
     crate::debug!("SYS {}", syscall.number);
     serial_println!("FS BASE: {}", Msr::new(X2APIC_IA32_FS_BASE).read());
 
-    with_current_pcb(|pcb| unsafe {
+    with_current_pcb(|pcb| {
         //Msr::new(X2APIC_IA32_FS_BASE).write(pcb.fs_base);
         serial_println!("Saved FS BASE: {}", pcb.fs_base);
         FsBase::write(VirtAddr::new(pcb.fs_base));
@@ -441,7 +441,7 @@ pub fn sys_sbrk(incr: isize) -> u64 {
         let mut pt = pcb.create_mapper();
 
         for page in Page::range_inclusive(old_page, new_page) {
-            let frame = create_mapping(
+            let _frame = create_mapping(
                 page,
                 &mut pt,
                 Some(
@@ -659,7 +659,7 @@ const ARCH_CET_PUSH_SHSTK: i32 = 0x3006;
 /// Emulate arch_prctl(2)
 pub fn sys_arch_prctl(code: i32, addr: u64) -> u64 {
     serial_println!("Code: {}", code);
-    with_current_pcb(|pcb| unsafe {
+    with_current_pcb(|pcb| {
         //Msr::new(X2APIC_IA32_FS_BASE).write(pcb.fs_base);
         FsBase::write(VirtAddr::new(pcb.fs_base));
     });
@@ -689,22 +689,22 @@ pub fn sys_arch_prctl(code: i32, addr: u64) -> u64 {
 
     // If fs:+8 is non-zero, fetch the two words in that table
     if fs_plus8 != 0 {
-        let mut dtv0: u64 = 0;
-        let mut dtv1: u64 = 0;
+        let mut _dtv0: u64 = 0;
+        let mut _dtv1: u64 = 0;
         unsafe {
             core::arch::asm!(
                 "mov rax, {ptr}",
                 "mov {o0}, qword ptr [rax]",
                 "mov {o1}, qword ptr [rax + 8]",
                 ptr = in(reg) fs_plus8,
-                o0  = out(reg) dtv0,
-                o1  = out(reg) dtv1,
+                o0  = out(reg) _dtv0,
+                o1  = out(reg) _dtv1,
                 lateout("rax") _,
                 options(nostack, preserves_flags),
             );
         }
-        serial_println!("dtv[0]      = {:#018x}", dtv0);
-        serial_println!("dtv[1]      = {:#018x}", dtv1);
+        serial_println!("dtv[0]      = {:#018x}", _dtv0);
+        serial_println!("dtv[1]      = {:#018x}", _dtv1);
     }
 
     match code {

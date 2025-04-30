@@ -7,8 +7,7 @@ use crate::{
         frame_allocator::with_generic_allocator,
         mm::{Mm, VmAreaBackings, VmAreaFlags},
         paging::{create_mapping, create_mapping_to_frame, update_permissions},
-    },
-    serial_print, serial_println,
+    }, serial_println,
 };
 use alloc::{string::String, sync::Arc, vec::Vec};
 use core::ptr::{copy_nonoverlapping, write_bytes};
@@ -161,12 +160,12 @@ pub fn load_elf(
     }
     if let Some(ph) = tls_ph {
         let tls_p_vaddr = ph.p_vaddr;
-        let tls_memsz = ph.p_memsz as usize;
+        let _tls_memsz = ph.p_memsz as usize;
         let tls_filesz = ph.p_filesz as usize;
         let tls_align = ph.p_align as u64;
 
         // round up for tp_offset
-        let tp_offset =
+        let _tp_offset =
             ((tls_filesz + (tls_align as usize) - 1) / (tls_align as usize)) * (tls_align as usize);
 
         let template_start = VirtAddr::new(tls_p_vaddr);
@@ -177,7 +176,7 @@ pub fn load_elf(
             .is_ok();
         if is_static {
             let tls_start = VirtAddr::new(ph.p_vaddr);
-            let tls_memsz = ph.p_memsz as usize;
+            let _tls_memsz = ph.p_memsz as usize;
             let tls_filesz = ph.p_filesz as usize;
             let tls_align = ph.p_align as u64;
 
