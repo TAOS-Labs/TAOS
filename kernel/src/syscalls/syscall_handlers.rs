@@ -256,7 +256,7 @@ pub unsafe extern "C" fn syscall_handler_impl(
             syscall.arg3,
             syscall.arg4 as usize,
         ),
-                // Filesystem syscalls
+        // Filesystem syscalls
         SYSCALL_OPEN => block_on(
             sys_open(
                 ConstUserPtr::from(syscall.arg1),
@@ -841,7 +841,7 @@ pub struct Utsname {
 
 unsafe fn strcpy(dst: *mut u8, src: &str) {
     core::ptr::copy_nonoverlapping(src.as_ptr(), dst, src.len());
-    *(dst.add(src.len())) = b'\0';   
+    *(dst.add(src.len())) = b'\0';
 }
 
 // Unimplemented for now
@@ -888,12 +888,7 @@ pub fn sys_tgkill(tgid: u32, tid: u32, sig: i32) -> u64 {
     0
 }
 
-pub fn sys_rt_sigaction(
-    _signum: i32,
-    _act_ptr: u64,
-    _oldact_ptr: u64,
-    _sigsetsize: usize,
-) -> u64 {
+pub fn sys_rt_sigaction(_signum: i32, _act_ptr: u64, _oldact_ptr: u64, _sigsetsize: usize) -> u64 {
     // Minimal stub implementation
     // In a real implementation, this would:
     // 1. Validate the signal number

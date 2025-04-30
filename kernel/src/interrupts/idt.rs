@@ -135,11 +135,11 @@ extern "x86-interrupt" fn breakpoint_handler(stack_frame: InterruptStackFrame) {
     serial_println!("EXCEPTION: BREAKPOINT\n{:#?}", stack_frame);
 }
 
-extern "x86-interrupt" fn gpf_handler(
-    stack_frame: InterruptStackFrame,
-    error_code: u64,
-) {
-    panic!("EXCEPTION: GENERAL PROTECTION FAULT\nError code: {}\n{:#?}", error_code, stack_frame);
+extern "x86-interrupt" fn gpf_handler(stack_frame: InterruptStackFrame, error_code: u64) {
+    panic!(
+        "EXCEPTION: GENERAL PROTECTION FAULT\nError code: {}\n{:#?}",
+        error_code, stack_frame
+    );
 }
 
 /// Handles double fault exceptions by panicking with debug information.
