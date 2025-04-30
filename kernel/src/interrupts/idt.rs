@@ -52,6 +52,7 @@ lazy_static! {
     static ref IDT: InterruptDescriptorTable = {
         let mut idt = InterruptDescriptorTable::new();
         idt.breakpoint.set_handler_fn(breakpoint_handler);
+        idt.general_protection_fault.set_handler_fn(gpf_handler);
         idt.page_fault.set_handler_fn(page_fault_handler);
         idt.invalid_opcode.set_handler_fn(invalid_opcode_handler);
         unsafe {
@@ -132,6 +133,13 @@ where
 /// Handles breakpoint exceptions by printing debug information.
 extern "x86-interrupt" fn breakpoint_handler(stack_frame: InterruptStackFrame) {
     serial_println!("EXCEPTION: BREAKPOINT\n{:#?}", stack_frame);
+}
+
+extern "x86-interrupt" fn gpf_handler(
+    stack_frame: InterruptStackFrame,
+    error_code: u64,
+) {
+    panic!("EXCEPTION: GENERAL PROTECTION FAULT\nError code: {}\n{:#?}", error_code, stack_frame);
 }
 
 /// Handles double fault exceptions by panicking with debug information.
