@@ -396,6 +396,7 @@ pub fn load_elf(
     }
 
     // 9) finally, argc
+    push64(0);
     push64(argv_ptrs.len() as u64);
 
     serial_println!("Placed ARGC @ {:#x}", sp);
