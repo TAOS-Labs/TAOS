@@ -43,10 +43,13 @@ pub const SYSCALL_SET_TID_ADDRESS: u32 = 218;
 pub const SYSCALL_TGKILL: u32 = 234;
 pub const SYSCALL_OPENAT: u32 = 257;
 
-// pub const SYSCALL_SET_ROBUST_LIST: u32 = 273;
-// pub const SYSCALL_GET_ROBUST_LIST: u32 = 274;
+pub const SYSCALL_SET_ROBUST_LIST: u32 = 273;
+pub const SYSCALL_GET_ROBUST_LIST: u32 = 274;
 
 pub const SYSCALL_GETRANDOM: u32 = 318;
+
+pub const SYSCALL_RSEQ: u32 = 334;
+
 
 // Mmap
 pub const START_MMAP_ADDRESS: u64 = 0x0900_0000_0000;

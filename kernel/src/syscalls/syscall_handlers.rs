@@ -326,15 +326,21 @@ pub unsafe extern "C" fn syscall_handler_impl(
         ),
         SYSCALL_BRK => sys_brk(syscall.arg1),
         SYSCALL_SET_TID_ADDRESS => sys_set_tid_address(syscall.arg1 as *mut i32),
-        // SYSCALL_SET_ROBUST_LIST => sys_set_robust_list(
-        //     syscall.arg1 as *const u8, 
-        //     syscall.arg2 as usize
-        // ),
-        // SYSCALL_GET_ROBUST_LIST => sys_get_robust_list(
-        //     syscall.arg1 as i32,
-        //     syscall.arg2 as *const u8, 
-        //     syscall.arg3 as usize
-        // ),
+        SYSCALL_SET_ROBUST_LIST => sys_set_robust_list(
+            syscall.arg1 as *const u8, 
+            syscall.arg2 as usize
+        ),
+        SYSCALL_GET_ROBUST_LIST => sys_get_robust_list(
+            syscall.arg1 as i32,
+            syscall.arg2 as *const u8, 
+            syscall.arg3 as usize
+        ),
+        SYSCALL_RSEQ => sys_rseq(
+            syscall.arg1 as *const u8,
+            syscall.arg2 as u32,
+            syscall.arg3 as i32,
+            syscall.arg4 as u32
+        ),
         _ => {
             panic!("Unknown syscall, {}", syscall.number);
         }
@@ -919,5 +925,9 @@ pub fn sys_set_robust_list(_head_ptr: *const u8, _len: usize) -> u64 {
 }
 
 pub fn sys_get_robust_list(_pid: i32, _head_ptr: *const u8, _len: usize) -> u64 {
+    0
+}
+
+pub fn sys_rseq(_rseq: *const u8, _rseq_len: u32, _flags: i32, _sig: u32) -> u64 {
     0
 }
