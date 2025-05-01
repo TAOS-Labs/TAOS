@@ -39,6 +39,7 @@ pub const SYSCALL_ARCH_PRCTL: u32 = 158;
 
 pub const SYSCALL_GETTID: u32 = 186;
 pub const SYSCALL_FUTEX: u32 = 202;
+pub const SYSCALL_SET_TID_ADDRESS: u32 = 218;
 pub const SYSCALL_TGKILL: u32 = 234;
 pub const SYSCALL_OPENAT: u32 = 257;
 

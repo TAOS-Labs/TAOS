@@ -180,26 +180,27 @@ pub unsafe extern "C" fn syscall_handler_64_naked() -> ! {
         "mov rsp, qword ptr gs:[20]",
         "swapgs",
         // --- reload FS_BASE just before we return to user ----------------
-        "push rax",
-        "push rdi",
-        "push rsi",
-        "push rdx",
-        "push rcx",
-        "push r8",
-        "push r9",
-        "push r10",
-        "push r11",
-        "call reload_fs_base", // -> writes IA32_FS_BASE = pcb.fs_base
-        "pop r11",
-        "pop r10",
-        "pop r9",
-        "pop r8",
-        "pop rcx",
-        "pop rdx",
-        "pop rsi",
-        "pop rdi",
-        "pop rax", // Return to user mode. sysretq will use RCX (which contains the user RIP)
-        // and R11 (which holds user RFLAGS).
+        // REMOVED THIS AS IT BREAKS THINGS WITH NEW RET; ESSENITALLY UNDOES ARCH_PRCTL
+        // "push rax",
+        // "push rdi",
+        // "push rsi",
+        // "push rdx",
+        // "push rcx",
+        // "push r8",
+        // "push r9",
+        // "push r10",
+        // "push r11",
+        // "call reload_fs_base", // -> writes IA32_FS_BASE = pcb.fs_base
+        // "pop r11",
+        // "pop r10",
+        // "pop r9",
+        // "pop r8",
+        // "pop rcx",
+        // "pop rdx",
+        // "pop rsi",
+        // "pop rdi",
+        // "pop rax", // Return to user mode. sysretq will use RCX (which contains the user RIP)
+        // // and R11 (which holds user RFLAGS).
         "sti",
         "sysretq",
     );
@@ -324,6 +325,7 @@ pub unsafe extern "C" fn syscall_handler_impl(
             reg_vals,
         ),
         SYSCALL_BRK => sys_brk(syscall.arg1),
+        SYSCALL_SET_TID_ADDRESS => sys_set_tid_address(syscall.arg1 as *mut i32),
         _ => {
             panic!("Unknown syscall, {}", syscall.number);
         }
@@ -896,5 +898,9 @@ pub fn sys_rt_sigaction(_signum: i32, _act_ptr: u64, _oldact_ptr: u64, _sigsetsi
     // 3. Return the old handler if 'oldact' is not null
     // 4. Validate sigsetsize
 
+    0
+}
+
+pub fn sys_set_tid_address(_tidptr: *mut i32) -> u64 {
     0
 }
