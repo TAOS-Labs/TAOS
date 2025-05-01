@@ -21,8 +21,7 @@ use crate::{
         mm::Mm,
         HHDM_OFFSET, KERNEL_MAPPER,
     },
-    processes::{loader::load_elf, registers::Registers},
-    serial_print, serial_println,
+    processes::{loader::load_elf, registers::Registers}, serial_println,
 };
 use alloc::{collections::BTreeMap, string::String, sync::Arc, vec::Vec};
 use core::{
@@ -292,7 +291,7 @@ unsafe fn create_process_page_table() -> PhysFrame<Size4KiB> {
         (*ptr).zero();
         let kernel_pml4 = mapper.level_4_table();
         for i in 256..512 {
-            (*ptr)[i].set_addr(kernel_pml4[i].addr(), kernel_pml4[i].flags());
+            (&mut (*ptr))[i].set_addr(kernel_pml4[i].addr(), kernel_pml4[i].flags());
         }
     }
 
@@ -360,7 +359,6 @@ use super::registers::ForkingRegisters;
 /// This process is unsafe because it directly modifies registers
 #[no_mangle]
 pub async unsafe fn run_process_ring3(pid: u32) {
-    serial_print!("Running process: {}", pid);
     resume_process_ring3(pid);
 
     loop {

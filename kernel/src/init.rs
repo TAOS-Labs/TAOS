@@ -17,17 +17,12 @@ use crate::{
     debug,
     devices::{self},
     events::{
-        current_running_event, futures::await_on::AwaitProcess, get_runner_time,
         register_event_runner, run_loop, schedule_kernel, schedule_process, spawn, yield_now,
     },
     filesys::{self, get_file, FileSystem, OpenFlags, FILESYSTEM},
     interrupts::{self, idt},
     ipc::{
-        messages::Message,
-        mnt_manager,
-        namespace::Namespace,
-        responses::Rattach,
-        spsc::{Receiver, Sender},
+        messages::Message, mnt_manager, namespace::Namespace, responses::Rattach, spsc::{Receiver, Sender}
     },
     logging,
     memory::{self},
@@ -144,15 +139,16 @@ pub fn init() -> u32 {
             let pid = create_process(buf, Vec::new(), Vec::new());
             serial_println!("Creating process");
             schedule_process(pid);
-            let _waiter = AwaitProcess::new(
-                pid,
-                get_runner_time(3_000_000_000),
-                current_running_event().unwrap(),
-            )
-            .await;
+            // let _waiter = AwaitProcess::new(
+            //     pid,
+            //     get_runner_time(3_000_000_000),
+            //     current_running_event().unwrap(),
+            // )
+            // .await;
         },
         3,
     );
+
     bsp_id
 }
 

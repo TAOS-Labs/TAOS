@@ -4,11 +4,10 @@ use alloc::sync::Arc;
 use x86_64::structures::paging::{PageTable, PageTableFlags, PhysFrame};
 
 use crate::{
-    events::{current_running_event_info, schedule_process_on},
+    events::{current_running_event_info, schedule_process},
     memory::{
         frame_allocator::{alloc_frame, with_buddy_frame_allocator},
-        mm::Mm,
-        HHDM_OFFSET,
+        mm::Mm, HHDM_OFFSET,
     },
     processes::{
         process::{ProcessState, UnsafePCB, NEXT_PID, PROCESS_TABLE},
@@ -96,7 +95,7 @@ pub fn sys_fork(reg_vals: &ForkingRegisters) -> u64 {
         PROCESS_TABLE.write().insert(child_pid, child_pcb);
     }
 
-    schedule_process_on(1, child_pid);
+    schedule_process(child_pid);
 
     child_pid as u64
 }

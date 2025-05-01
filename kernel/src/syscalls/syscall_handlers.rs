@@ -1,4 +1,4 @@
-use core::{ffi::CStr, mem::offset_of};
+use core::ffi::CStr;
 
 use alloc::{collections::btree_map::BTreeMap, slice, string::ToString, vec};
 use lazy_static::lazy_static;
@@ -858,10 +858,10 @@ pub fn sys_uname(_buf: *mut Utsname) -> u64 {
 }
 
 pub fn sys_rt_sigprocmask(
-    how: i32,
-    set: ConstUserPtr<u8>,
-    oldset: MutUserPtr<u8>,
-    sigsetsize: usize,
+    _how: i32,
+    _set: ConstUserPtr<u8>,
+    _oldset: MutUserPtr<u8>,
+    _sigsetsize: usize,
 ) -> u64 {
     // In a real implementation, this would manage the signal mask
     0
@@ -877,7 +877,7 @@ pub fn sys_gettid() -> u64 {
     with_current_pcb(|pcb| pcb.pid as u64)
 }
 
-pub fn sys_tgkill(tgid: u32, tid: u32, sig: i32) -> u64 {
+pub fn sys_tgkill(_tgid: u32, _tid: u32, _sig: i32) -> u64 {
     // Minimal stub implementation
     // In a real implementation, this would:
     // 1. Validate that tgid is a valid process ID

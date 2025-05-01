@@ -1,7 +1,7 @@
 ; test_wait.asm
 
-%define SYS_FORK   5
-%define SYS_WAIT   6
+%define SYS_FORK   57
+%define SYS_WAIT   61
 %define SYS_EXIT   60
 
 section .text

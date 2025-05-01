@@ -447,6 +447,12 @@ fn timer_handler(rsp: u64) {
     x2apic::send_eoi();
 }
 
+#[no_mangle]
+#[allow(unused)]
+extern "x86-interrupt" fn simple_timer_handler(_: InterruptStackFrame) {
+    x2apic::send_eoi();
+}
+
 // TODO Technically, this design means that when TLB Shootdows happen, each core must sequentially
 // invalidate its TLB rather than doing this in parallel. While this is slow, this is of low
 // priority to fix
