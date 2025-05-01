@@ -10,10 +10,10 @@ pub const FRAME_SIZE: usize = 4096;
 pub const HEAP_START: *mut u8 = 0x_FFFF_8100_0000_0000 as *mut u8;
 
 /// Initial size of the kernel heap (10 MB).
-pub const HEAP_SIZE: usize = 1024 * 1024 * 10;
+pub const HEAP_SIZE: usize = 1024 * 1024 * 20;
 
 /// Maximum number of frames that can be allocated.
-pub const MAX_ALLOCATED_FRAMES: usize = 1024 * 5;
+pub const MAX_ALLOCATED_FRAMES: usize = 1024 * 10;
 
 /// Size of each bitmap entry in bits.
 pub const BITMAP_ENTRY_SIZE: usize = 64;

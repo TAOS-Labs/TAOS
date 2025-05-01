@@ -17,7 +17,7 @@ use crate::{
     debug,
     devices::{self},
     events::{
-        register_event_runner, run_loop, schedule_kernel, schedule_process, spawn, yield_now,
+        register_event_runner, run_loop, schedule_kernel, schedule_process, spawn, yield_now
     },
     filesys::{self, get_file, FileSystem, OpenFlags, FILESYSTEM},
     interrupts::{self, idt},

@@ -326,6 +326,15 @@ pub unsafe extern "C" fn syscall_handler_impl(
         ),
         SYSCALL_BRK => sys_brk(syscall.arg1),
         SYSCALL_SET_TID_ADDRESS => sys_set_tid_address(syscall.arg1 as *mut i32),
+        // SYSCALL_SET_ROBUST_LIST => sys_set_robust_list(
+        //     syscall.arg1 as *const u8, 
+        //     syscall.arg2 as usize
+        // ),
+        // SYSCALL_GET_ROBUST_LIST => sys_get_robust_list(
+        //     syscall.arg1 as i32,
+        //     syscall.arg2 as *const u8, 
+        //     syscall.arg3 as usize
+        // ),
         _ => {
             panic!("Unknown syscall, {}", syscall.number);
         }
@@ -902,5 +911,13 @@ pub fn sys_rt_sigaction(_signum: i32, _act_ptr: u64, _oldact_ptr: u64, _sigsetsi
 }
 
 pub fn sys_set_tid_address(_tidptr: *mut i32) -> u64 {
+    0
+}
+
+pub fn sys_set_robust_list(_head_ptr: *const u8, _len: usize) -> u64 {
+    0
+}
+
+pub fn sys_get_robust_list(_pid: i32, _head_ptr: *const u8, _len: usize) -> u64 {
     0
 }

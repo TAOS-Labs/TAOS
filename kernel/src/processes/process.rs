@@ -267,7 +267,7 @@ pub fn create_process(elf_bytes: &[u8], args: Vec<String>, envs: Vec<String>) ->
         envs,
     );
 
-    pcb.registers.rsp = stack_top.as_u64() - 16;
+    pcb.registers.rsp = stack_top.as_u64(); // REMOVED A - 16
     pcb.registers.rip = entry_point;
 
     PROCESS_TABLE.write().insert(pid, Arc::clone(&process));

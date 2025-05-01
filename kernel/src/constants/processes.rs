@@ -29,7 +29,7 @@ pub const TEST_MPROTECT_CHILD_WRITES: &[u8] =
 pub const STACK_START: u64 = 0x7000_0000_0000;
 
 // User Heaps
-pub const USR_HEAP_START: u64 = 0x5000_0000;
+pub const USR_HEAP_START: u64 = 0x5_000_0000;
 
 // Maximum number of files for the process control block's file descriptor table
 // if this number is big clone fails
@@ -39,6 +39,6 @@ pub const MAX_FILES: usize = 128;
 pub const PROCESS_NANOS: u64 = 50_000_000;
 
 // Size of the process stack - 2 pages
-pub const STACK_SIZE: usize = 2 * 4096;
+pub const STACK_SIZE: usize = 10 * 4096;
 
 pub const PROCESS_TIMESLICE: u64 = 50_000_000; // 50 ms, to change later

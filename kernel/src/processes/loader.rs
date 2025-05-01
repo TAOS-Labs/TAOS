@@ -318,6 +318,7 @@ pub fn load_elf(
 
     // 1) start at top of the stack space
     let mut sp = VirtAddr::new(STACK_START + STACK_SIZE as u64);
+
     // 2) align down to 16 bytes
     sp = VirtAddr::new(sp.as_u64() & !0xF);
 
@@ -396,6 +397,8 @@ pub fn load_elf(
 
     // 9) finally, argc
     push64(argv_ptrs.len() as u64);
+
+    serial_println!("Placed ARGC @ {:#x}", sp);
 
     // 10) realign to 16‐byte boundary before entry
     sp = VirtAddr::new(sp.as_u64() & !0xF);
