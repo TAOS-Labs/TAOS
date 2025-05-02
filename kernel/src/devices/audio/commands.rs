@@ -69,36 +69,35 @@ pub struct CorbEntry {
     /// - `[27:20]`: Node Index
     /// - `[19:8]`: Command
     /// - `[7:0]`: Data
-    pub cmd: u32
+    pub cmd: u32,
 }
 
 impl CorbEntry {
     /// creates a new corb entry
-    /// 
+    ///
     /// # Arguments
     /// * `codec`: the address of the target codec
     /// * `nid`: the id of the target node
     /// * `command`: the command to be sent
     /// * `data`: the data to be sent with the command
-    /// 
+    ///
     /// # Returns
     /// `self` initialized with the values passed in
     pub fn create_entry(codec: u32, nid: u32, command: HdaVerb, data: u16) -> Self {
         let command_num = command.as_u32();
-        let cmd_lo: u32;
-        
-        if command_num == HdaVerb::SetAmplifierGain.as_u32() || command_num == HdaVerb::SetConverterFormat.as_u32() {
-            cmd_lo = (command_num << 16) | (data as u32 & 0xFFFF);
+        let cmd_lo = if command_num == HdaVerb::SetAmplifierGain.as_u32()
+            || command_num == HdaVerb::SetConverterFormat.as_u32()
+        {
+            (command_num << 16) | (data as u32 & 0xFFFF)
         } else {
-            cmd_lo = (command_num << 8) | ((data & 0xFF) as u32);
-        }
+            (command_num << 8) | ((data & 0xFF) as u32)
+        };
+
         let cmd = (codec << 28) | (nid << 20) | cmd_lo;
-        
-        Self {
-            cmd
-        }
+
+        Self { cmd }
     }
-    
+
     /// returns cmd for debugging
     pub fn get_cmd(&self) -> u32 {
         self.cmd
@@ -117,7 +116,7 @@ pub struct RirbEntry {
 
 impl RirbEntry {
     /// gets the codec's response
-    /// 
+    ///
     /// # Returns
     /// `response`
     pub fn get_response(&self) -> u32 {
@@ -129,7 +128,7 @@ impl RirbEntry {
     }
 
     /// gets the codec address from this entry
-    /// 
+    ///
     /// # Returns
     /// bits `[3:0]` of `resp_ex`
     pub fn get_codec_address(&self) -> u8 {
@@ -137,7 +136,7 @@ impl RirbEntry {
     }
 
     /// checks if this response is unsolicited
-    /// 
+    ///
     /// # Returns
     /// * `true` if bit `4` of `resp_ex` is set, indicating that this was an unsolicited response.
     /// * `false` otherwise, indicating that this was a solicited response.
@@ -147,6 +146,10 @@ impl RirbEntry {
 
     /// prints out the contents of self, this is used for debugging purposes
     pub fn print_response(&self) {
-        debug_println!("Response: 0x{:X}, resp_ex: {:X}", self.response, self.resp_ex);
+        debug_println!(
+            "Response: 0x{:X}, resp_ex: {:X}",
+            self.response,
+            self.resp_ex
+        );
     }
 }

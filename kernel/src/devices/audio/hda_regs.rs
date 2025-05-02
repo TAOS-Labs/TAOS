@@ -46,7 +46,6 @@ pub struct HdaRegisters {
     pub stream_regs: [StreamDescriptor; 30],
 }
 
-
 #[repr(C)]
 pub struct StreamDescriptor {
     pub ctl0: u8,

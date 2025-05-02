@@ -4,20 +4,36 @@ pub struct MMioPtr<T>(pub *mut T);
 unsafe impl<T> Send for MMioPtr<T> {}
 
 impl<T> MMioPtr<T> {
+    /// reads a pointer
+    ///
+    /// # Safety
+    /// preforms a pointer access
     pub unsafe fn read(&self) -> T {
         core::ptr::read_volatile(self.0)
     }
 
     #[allow(dead_code)]
+    /// preforms a read with a potentially unaligned pointer
+    ///
+    /// # Safety
+    /// preforms a pointer access
     pub unsafe fn read_unaliged(&self) -> T {
         core::ptr::read_unaligned(self.0)
     }
 
+    /// writes a val to a pointer
+    ///
+    /// # Safety
+    /// preforms a pointer access and modifies the val of the memory pointed to
     pub unsafe fn write(&self, val: T) {
         core::ptr::write_volatile(self.0, val);
     }
 
     #[allow(dead_code)]
+    /// writes a val to a potentially unaligned pointer
+    ///
+    /// # Safety
+    /// preforms a pointer access and modifies the val of the memory pointed to
     pub unsafe fn write_unaligned(&self, val: T) {
         core::ptr::write_unaligned(self.0, val);
     }
@@ -27,6 +43,10 @@ impl<T> MMioPtr<T> {
     }
 
     #[allow(dead_code)]
+    /// adds an offset to this pointer
+    ///
+    /// # Safety
+    /// adds an offset directly to a pointer
     pub unsafe fn add<EndType>(&self, offset: usize) -> MMioPtr<EndType> {
         MMioPtr(self.0.add(offset) as *mut EndType)
     }
@@ -39,11 +59,19 @@ unsafe impl<T> Send for MMioConstPtr<T> {}
 
 impl<T> MMioConstPtr<T> {
     #[allow(dead_code)]
+    /// reads a pointer
+    ///
+    /// # Safety
+    /// preforms a pointer access
     pub unsafe fn read(&self) -> T {
         core::ptr::read_volatile(self.0)
     }
 
     #[allow(dead_code)]
+    /// preforms a read with a potentially unaligned pointer
+    ///
+    /// # Safety
+    /// preforms a pointer access
     pub unsafe fn read_unaligned(&self) -> T {
         core::ptr::read_unaligned(self.0)
     }
@@ -54,6 +82,10 @@ impl<T> MMioConstPtr<T> {
     }
 
     #[allow(dead_code)]
+    /// adds an offset to this pointer
+    ///
+    /// # Safety
+    /// adds an offset directly to a pointer
     pub unsafe fn add<EndType>(&self, offset: usize) -> MMioConstPtr<EndType> {
         MMioConstPtr(self.0.add(offset) as *mut EndType)
     }

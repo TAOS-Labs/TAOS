@@ -76,7 +76,6 @@ pub fn init(cpu_id: u32) {
 
         ps2_dev::init();
 
-        serial_println!("before init audio");
         schedule_kernel(
             async {
                 if let Some(hda) = audio::hda::IntelHDA::init().await {

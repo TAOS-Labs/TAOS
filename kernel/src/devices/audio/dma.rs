@@ -1,8 +1,6 @@
 use crate::memory::{frame_allocator::with_buddy_frame_allocator, HHDM_OFFSET};
 
-use x86_64::{
-    PhysAddr, VirtAddr,
-};
+use x86_64::{PhysAddr, VirtAddr};
 
 #[derive(Clone)]
 /// DMA buffer that is physically contiguous and mapped to virtual memory
@@ -15,7 +13,7 @@ pub struct DmaBuffer {
 impl DmaBuffer {
     /// Allocates `size` bytes of DMA-safe memory, shhould be page aligned
     pub fn new(size: usize) -> Option<Self> {
-        let page_count = (size + 0xFFF) / 0x1000;
+        let page_count = size.div_ceil(0x1000);
 
         let mut virt_addr = None;
         let mut phys_addr = None;
@@ -36,7 +34,7 @@ impl DmaBuffer {
                 }
             }
         });
-        
+
         let virt = virt_addr?;
         let phys = phys_addr?;
 

@@ -1,5 +1,5 @@
-use core::ptr::{read_volatile, write_volatile};
 use crate::devices::audio::dma::DmaBuffer;
+use core::ptr::{read_volatile, write_volatile};
 
 use super::commands::{CorbEntry, RirbEntry};
 
@@ -35,11 +35,11 @@ unsafe impl Sync for CorbBuffer {}
 
 impl CorbBuffer {
     /// Initializes a new CORB
-    /// 
+    ///
     /// # Arguments
     /// * `base`: a DmaBuffer object that points to the memory that the CORB is on
     /// * `size`: The number of entries that are contained in this CORB
-    /// 
+    ///
     /// # Returns
     /// `self`
     pub fn new(base: &DmaBuffer, size: u16) -> Self {
@@ -68,10 +68,10 @@ impl CorbBuffer {
     }
 
     /// Checks to see if the CORB is full
-    /// 
+    ///
     /// # Returns
     /// * `true` if `write_idx + 1 == read_idx`
-    /// * `false` otherwise 
+    /// * `false` otherwise
     pub fn is_full(&self) -> bool {
         let mut next_write = self.write_idx + 1;
         if next_write == self.size {
@@ -81,10 +81,10 @@ impl CorbBuffer {
     }
 
     /// Sends a cmd onto the CORB and increments the write index
-    /// 
+    ///
     /// # Arguments
     /// * `cmd`: the command to be written onto the CORB
-    /// 
+    ///
     /// # Safety
     /// This function preforms a raw pointer write to write the command to the CORB. This function assumes that the CORB is not full.
     pub async unsafe fn send(&mut self, cmd: CorbEntry) {
@@ -120,11 +120,11 @@ unsafe impl Sync for RirbBuffer {}
 
 impl RirbBuffer {
     /// Initializes a new RIRB
-    /// 
+    ///
     /// # Arguments
     /// * `base`: a DmaBuffer object that points to the memory that the RIRB is on
     /// * `size`: The number of entries that are contained in this RIRB
-    /// 
+    ///
     /// # Returns
     /// `self`
     pub fn new(base: &DmaBuffer, size: u16) -> Self {
@@ -153,7 +153,7 @@ impl RirbBuffer {
     }
 
     /// Checks to see if the RIRB is empty
-    /// 
+    ///
     /// # Returns
     /// * `true` if `write_idx == read_idx`
     /// * `false` otherwise
@@ -162,10 +162,10 @@ impl RirbBuffer {
     }
 
     /// Reads the next response from the RIRB and increments the read index
-    /// 
+    ///
     /// # Returns
     /// Returns the 8 byte response that is on the RIRB
-    /// 
+    ///
     /// # Safety
     /// This function preforms a raw pointer read to read from the RIRB. This function assumes that the RIRB is not empty.
     pub async unsafe fn read(&mut self) -> RirbEntry {
@@ -178,7 +178,4 @@ impl RirbBuffer {
         self.read_idx = next_idx;
         response
     }
-
-
-    
 }

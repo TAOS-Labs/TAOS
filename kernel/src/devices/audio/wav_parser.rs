@@ -1,17 +1,17 @@
-use wavv::{Wav, Data};
-use crate::constants::devices::TEST_WAV;
-use crate::devices::mmio::MMioConstPtr;
-use crate::filesys::ext2::filesystem::{Ext2, FilesystemError};
+use crate::{
+    constants::devices::TEST_WAV,
+    devices::mmio::MMioConstPtr,
+    filesys::ext2::filesystem::{Ext2, FilesystemError},
+};
+use wavv::{Data, Wav};
 
 use super::hda::AudioData;
-
-
 
 pub async fn read_wav(fs: &Ext2, path: &str) -> Result<Wav, FilesystemError> {
     let wav_bytes = fs.read_file(path).await?;
     match Wav::from_bytes(&wav_bytes) {
         Ok(wav) => Ok(wav),
-        Err(_) => Err(FilesystemError::InvalidFd)
+        Err(_) => Err(FilesystemError::InvalidFd),
     }
 }
 
@@ -24,9 +24,14 @@ pub async fn write_wav(fs: &Ext2, path: &str, wav: &Wav) -> Result<(), Filesyste
 pub async fn load_wav(/*fs: &Ext2*/) -> Result<AudioData, FilesystemError> {
     let input_path = "kernel/src/devices/audio/new_romantics_swift.wav";
 
-    match Wav::from_bytes(&TEST_WAV) {
+    match Wav::from_bytes(TEST_WAV) {
         Ok(wav) => {
-            crate::debug!("WAV loaded: {} ch, {} bit, {} Hz", wav.fmt.num_channels, wav.fmt.bit_depth, wav.fmt.sample_rate);
+            crate::debug!(
+                "WAV loaded: {} ch, {} bit, {} Hz",
+                wav.fmt.num_channels,
+                wav.fmt.bit_depth,
+                wav.fmt.sample_rate
+            );
 
             let (samples, len) = match &wav.data {
                 Data::BitDepth8(samples) => (samples.as_ptr(), samples.len()),
@@ -38,9 +43,9 @@ pub async fn load_wav(/*fs: &Ext2*/) -> Result<AudioData, FilesystemError> {
 
             Ok(AudioData {
                 bytes: MMioConstPtr(samples),
-                len: len,
+                len,
                 data: wav.data, // holding onto data to prevent deallocation of buffer
-                fmt: fmt
+                fmt,
             })
         }
         Err(e) => {
@@ -57,7 +62,7 @@ pub fn get_fmt(wav: &Wav) -> u16 {
         20 => 2,
         24 => 3,
         32 => 4,
-        _ => 5
+        _ => 5,
     };
 
     let channels = wav.fmt.num_channels - 1;
@@ -90,11 +95,11 @@ pub fn get_fmt(wav: &Wav) -> u16 {
     crate::debug!("samples        = {:#X}", bit_depth);
     crate::debug!("channels       = {:#X}", channels);
 
-    let fmt: u16 = ((sample_base as u16) << 14) 
-                 | ((multiplier as u16) << 11) 
-                 | ((divider as u16) << 8) 
-                 | ((bit_depth as u16) << 4) 
-                 | channels;
+    let fmt: u16 = ((sample_base as u16) << 14)
+        | ((multiplier as u16) << 11)
+        | ((divider as u16) << 8)
+        | ((bit_depth as u16) << 4)
+        | channels;
 
     crate::debug!("FMT: {:#X}", fmt);
 

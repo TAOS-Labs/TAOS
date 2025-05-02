@@ -60,13 +60,6 @@ talc = "4.4.2"
 uart_16550 = "0.3.2"
 x86_64 = "0.15.2"
 zerocopy = { version = "0.8", features = ["derive"] }
-pc-keyboard = "0.8.0"
-futures-util = { version = "0.3.31", default-features = false, features = [
-    "alloc",
-    "async-await",
-    "async-await-macro",
-    "futures-macro",
-] }
 
 [patch.crates-io]
 wavv = { git = 'https://github.com/samuelleeuwenburg/wavv.git' }
