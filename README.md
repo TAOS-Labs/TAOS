@@ -16,3 +16,4 @@ Compilation has been tested with WSL, Linux, and Mac. We provide no guarantees t
 - To run tests: make test
 - To ensure compliance with clippy and formatting: make check
 - To format: make fmt
+- If you want to hear audio, uncomment [kernel/src/devices/audio/hda.rs:137](kernel/src/devices/audio/hda.rs#L137) and run in terminal mode

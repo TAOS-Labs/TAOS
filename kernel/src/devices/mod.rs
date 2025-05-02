@@ -5,12 +5,13 @@
 //! - Frame buffer for screen output
 //! - Future device support will be added here
 
-use crate::serial_println;
+use crate::{events::schedule_kernel, serial_println};
 use pci::walk_pci_bus;
 use sd_card::{find_sd_card, initalize_sd_card};
 use xhci::{find_xhci_inferface, initalize_xhci_hub};
 pub mod graphics;
 use graphics::framebuffer::{self, colors};
+pub mod audio;
 pub mod mmio;
 pub mod pci;
 pub mod ps2_dev;
@@ -74,5 +75,16 @@ pub fn init(cpu_id: u32) {
         initalize_xhci_hub(&xhci_device).unwrap();
 
         ps2_dev::init();
+
+        schedule_kernel(
+            async {
+                if let Some(hda) = audio::hda::IntelHDA::init().await {
+                    serial_println!("HDA initialized at base address 0x{:X}", hda.base);
+                } else {
+                    serial_println!("HDA controller not found.");
+                }
+            },
+            0,
+        );
     }
 }

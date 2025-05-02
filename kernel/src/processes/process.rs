@@ -295,7 +295,7 @@ unsafe fn create_process_page_table() -> PhysFrame<Size4KiB> {
         (*ptr).zero();
         let kernel_pml4 = mapper.level_4_table();
         for i in 256..512 {
-            (*ptr)[i].set_addr(kernel_pml4[i].addr(), kernel_pml4[i].flags());
+            (&mut (*ptr))[i].set_addr(kernel_pml4[i].addr(), kernel_pml4[i].flags());
         }
     }
 
