@@ -11,7 +11,7 @@ base_args = [
     "-smp", "2",
     "-cpu", "Conroe-v1,+x2apic,+invtsc",
 
-    "-enable-kvm", 
+    # "-enable-kvm", 
 
     # USB
     "-device", "qemu-xhci",
@@ -21,7 +21,7 @@ base_args = [
     "-device", "usb-net,netdev=net0",
 
     # Audio
-    "-audiodev", "pa,id=snd0",
+    "-audiodev", "wav,id=snd0",
     "-device", "intel-hda,debug=0",
     "-device", "hda-duplex,audiodev=snd0",
 
