@@ -11,9 +11,7 @@ use alloc::vec;
 use alloc::vec::Vec;
 
 use wavv::Data;
-// use goblin::elf::reloc::R_AARCH64_TLSLE_LDST8_TPREL_LO12;
 use x86_64::structures::idt::InterruptStackFrame;
-// use crate::devices::audio::command_buffer::{CommandBuffer, WidgetAddr};
 use crate::devices::audio::dma::DmaBuffer;
 
 
@@ -22,11 +20,10 @@ use super::{command_buffer::CorbBuffer, commands::RirbEntry, widget_info::Widget
 /// Physical BAR address (used during development before PCI scan)
 /// TODO - need to find a betterr way so this variable doesnt exist
 const HDA_BAR_PHYS: u32 = 0x81010000;
-const DELAY_NS: u64 = 100_000;
 
 pub struct AudioData {
     pub bytes: MMioConstPtr<u8>,
-    pub len: usize,
+    pub len: usize, 
     pub data: Data,
     pub fmt: u16
 }
@@ -76,9 +73,14 @@ pub struct IntelHDA {
 }
 
 impl IntelHDA {
-    /// Initializes HDA controller:
-    /// - Finds the PCI device
-    /// - Maps BAR to virtual address (hhdm ofset + address)
+    //// Initializes the Intel HDA controller.
+    ///
+    /// Steps:
+    /// - Locates the HDA-compatible PCI device (Class 0x04, Subclass 0x03).
+    /// - Maps the controller registers into virtual memory.
+    /// - Resets the HDA controller via `reset()`.
+    /// - Initializes CORB and RIRB buffers.
+    /// - Enables interrupt delivery.
     pub async fn init() -> Option<Self> {
         let device = find_hda_device()?;
         let bar = get_bar(&device)?;
@@ -86,6 +88,7 @@ impl IntelHDA {
         let virt = *HHDM_OFFSET + bar as u64;
         let regs = unsafe {&mut *(virt.as_u64() as *mut HdaRegisters)};
 
+        // Just gonna keep this one
         debug_println!(
             "Intel HDA found: vendor=0x{:X}, device=0x{:X}, BAR=0x{:X} (virt: 0x{:X})",
             device.vendor_id,
@@ -105,38 +108,17 @@ impl IntelHDA {
         };
 
         // reset the HDA
-        debug_println!("resetting the hda");
         hda.reset().await;
 
-        debug_println!("initializing the corb");
         hda.init_corb().await;
 
-        debug_println!("initializing the rirb");
         hda.init_rirb().await;
 
         // enable interrupts
         let intctl_addr = (hda.virt_base + 0x20) as *mut u32;
-        let intctl_val = ((1 << 31) | (1 << 4)) as u32; // TODO check the correct stream int is enabled, idk if 4 is the right num to shift by
+        let intctl_val = ((1 << 31) | (1 << 4)) as u32;
         unsafe {
-            let before = read_volatile(intctl_addr);
-            serial_println!("INTCTL before write: 0x{:08X}", before);
-
             write_volatile(intctl_addr, intctl_val);
-
-            let after = read_volatile(intctl_addr);
-            serial_println!("INTCTL after write:  0x{:08X}", after);
-
-            // if (after & (1 << 31)) != 0 {
-            //     serial_println!("Global interrupts are enabled.");
-            // } else {
-            //     serial_println!("Global interrupts are not enabled.");
-            // }
-
-            // if (after & (1 << 4)) != 0 {
-            //     serial_println!("Interrupt for stream 4 is enabled.");
-            // } else {
-            //     serial_println!("Interrupt for stream 4 is not enabled.");
-            // }
         }
         
         // test we can play some audio
@@ -146,6 +128,12 @@ impl IntelHDA {
     } 
 
     /// Initializes the CORB
+    /// Steps:
+    /// - Stops the CORB DMA engine and waits for the confirmation
+    /// - Selects and configures the CORB size
+    /// - Allocates a DMA bufferr and sets base address reegisterrs
+    /// - Resets thehardwarer rerad/write pointerrs
+    /// - Starts theCORB engines.
     pub async fn init_corb(&mut self) {
         // stop the CORB DMA engine
         let corbctl_addr = (self.virt_base + 0x4c) as *mut u8;
@@ -177,7 +165,6 @@ impl IntelHDA {
             corb_size_val = 0;
         }
         // now actually write the size
-        debug_println!("setting the corb size");
         unsafe { write_volatile(corbsize_addr, corb_size_val); } // TODO: This line isnt actually needed since qemu only suports one size so remove maybe?
 
         // Allocate a buffer
@@ -189,15 +176,12 @@ impl IntelHDA {
         // program the CORB base registers
         let corbbase = corb_buf.phys_addr.as_u64() & !(128 - 1);
         let corbbase_addr = (self.virt_base + 0x40) as *mut u32;
-        debug_println!("writing the corb base addr");
         unsafe {
             write_volatile(corbbase_addr, (corbbase & 0xFFFFFFC0) as u32);
             write_volatile(corbbase_addr.add(1), ((corbbase >> 32) & 0xFFFFFFFF) as u32);
         }
 
-        // TODO: might need to mess with the sizes that we are writing, we will see if qemu gets mad at us
         // reset the hw read pointer
-        debug_println!("resetting the read pointer");
         let rp_addr = (self.virt_base + 0x4a) as *mut u16;
         unsafe { write_volatile(rp_addr, 1 << 15); }
     
@@ -212,26 +196,26 @@ impl IntelHDA {
         while rp_val >> 15 != 0 {
             rp_val = unsafe { read_volatile(rp_addr) };
         }
-        debug_println!("read pointer val: {:X}", rp_val);
 
         // set the write pointer to 0
-        debug_println!("clear the write pointer reg");
         let wp_addr = (self.virt_base + 0x48) as *mut u8;
         unsafe { write_volatile(wp_addr, 0); }
 
         // set the run bit
-        debug_println!("setting the run bit");
         unsafe { write_volatile(corbctl_addr, 2); } // TODO: figure out if this is needed or do we only set the run bit if there are commands to process?
         corbctl_val = unsafe { read_volatile(corbctl_addr) };
         // TODO: fix this spin loop
         while (corbctl_val >> 1) & 1 != 1 {
             corbctl_val = unsafe { read_volatile(corbctl_addr) };
         }
-        debug_println!("finished initializing the corb");
-        debug_println!();
     }
 
     /// initializes the RIRB
+    /// Steps:
+    /// - Disables the RIRB DMA engine
+    /// - Deterrmines supported RIRB size and allocates buffer
+    /// - Sets RIRB baseaddressregisterrs and configures interrupt count
+    /// - Starts the RIRB engine
     pub async fn init_rirb(&mut self) {
         // stop the DMA engine
         let rirbctl_addr = (self.virt_base + 0x5c) as *mut u8;
@@ -267,14 +251,12 @@ impl IntelHDA {
         // program the RIRB base registers
         let rirbbase = rirb_buf.phys_addr.as_u64() & !(128 - 1);
         let rirbbase_addr = (self.virt_base + 0x50) as *mut u32;
-        debug_println!("writing the rirb base addr");
         unsafe {
             write_volatile(rirbbase_addr, (rirbbase & 0xFFFFFFC0) as u32);
             write_volatile(rirbbase_addr.add(1), ((rirbbase >> 32) & 0xFFFFFFFF) as u32);
         }
 
         // reset the hw write pointer
-        debug_println!("resetting the write pointer");
         let wp_addr = (self.virt_base + 0x58) as *mut u16;
         unsafe { write_volatile(wp_addr, 0); }
         // no need to check and wait like in corb cause this bit is always read a 0 for some reason
@@ -284,32 +266,34 @@ impl IntelHDA {
         unsafe { write_volatile(intcnt_addr, rirb_size / 2); }
 
         // set the run bit
-        debug_println!("setting the run bit");
         unsafe { write_volatile(rirbctl_addr, 2); }
         ctl_val = unsafe { read_volatile(rirbctl_addr) };
         // TODO: fix this spin loop
         while (ctl_val >> 1) & 1 != 1 {
             ctl_val = unsafe { read_volatile(rirbctl_addr) };
         }
-        debug_println!("finished initializing the rirb");
-        debug_println!();
     }
 
     /// sends a command if the buffer is not full
-    /// TODO: docs
+    /// 
+    /// # Arguments
+    /// * `codec_address`: ID of the codec on the HDA link
+    /// * `node_id`: NID of the codec node to target
+    /// * `command`: The verb of the opcode (e.g GetParameter, SetStream, etc)
+    /// * `data`: Additional data or sub-verb argument
+    /// 
+    /// # Returns
+    /// `None` if the CORB is full and sending the command failed, otherwise retuns `Some(())`
     pub async fn send_command(&mut self, codec_address: u32, node_id: u32, command: HdaVerb, data: u16) -> Option<()> {
         let corb = self.cmd_buf.as_mut().unwrap();
-        // first gotta check if the buffer is full
-        // debug_println!("checking if the buffer is full");
+        // first check if the buffer is full
         let corbrp_addr = (self.virt_base + 0x4A) as *mut u8;
         let corbrp_val = unsafe { read_volatile(corbrp_addr) };
         corb.set_read_idx(corbrp_val as u16);
         if corb.is_full() {
-            debug_println!("buffer is full :(");
             return None
         }
 
-        // debug_println!("sending a command to the corb");
         let cmd = CorbEntry::create_entry(codec_address, node_id, command, data);
         unsafe {
             corb.send(cmd).await;
@@ -321,9 +305,10 @@ impl IntelHDA {
     }
 
     /// receive a response from the RIRB
-    /// TODO: docs
+    /// 
+    /// # Returns
+    /// the next available `RirbEntry` if present and `None` if a timeout occurs
     pub async fn receive_response(&mut self) -> Option<RirbEntry> {
-        // debug_println!("waiting for a response on the RIRB");
         let rirb = self.rirb_buf.as_mut().unwrap();
         let rirbwp_addr = (self.virt_base + 0x58) as *mut u16;
         let mut rirbwp_val = unsafe { read_volatile(rirbwp_addr) };
@@ -345,25 +330,20 @@ impl IntelHDA {
 
         unsafe { Some(rirb.read().await) }
     }
-    
 
-    fn decode_widget_type(val: u32) -> &'static str {
-        match val & 0xF {
-            0x0 => "Audio Output (DAC)",
-            0x1 => "Audio Input (ADC)",
-            0x2 => "Mixer",
-            0x3 => "Selector",
-            0x4 => "Pin Complex",
-            0x5 => "Power",
-            0x6 => "Volume Knob",
-            0x7 => "Beep Generator",
-            0x8 => "Vendor Specific",
-            _ => "Unknown",
-        }
-    }
-
+    /// Probes the audio function group and its widgets
+    /// - Identifies the AFG node in thecodec
+    /// - Queries its child nodes and their widget types and capabilities.
+    /// - Populates a list of WidgetInffo structswith
+    ///      - Widget type
+    ///      - Connection List
+    ///      - Amplifier capabipities
+    ///      - Pin configurations
+    ///      - Default configuration and volume controle
+    /// 
+    /// # Returns
+    /// a vector of `WidgetInfo` representing the widget topology
     pub async fn probe_afg_and_widgets(&mut self) -> Vec<WidgetInfo> {
-        debug_println!("probing afg and widgets");
         let mut widgets = Vec::new();
     
         self.send_command(0, 0, HdaVerb::GetParameter, NodeParams::NodeCount.as_u16())
@@ -374,7 +354,6 @@ impl IntelHDA {
             .get_response();
     
         let fg_count = fg_count_raw & 0xFF;
-        debug_println!("Function group count: {}", fg_count);
     
         let mut afg_nid = None;
         for i in 1..=fg_count {
@@ -385,8 +364,6 @@ impl IntelHDA {
                 .expect("Failed to receive FunctionGroupType response")
                 .get_response();
     
-            debug_println!("Func group node {} type: 0x{:X}", i, group_type);
-    
             if (group_type & 0xF) == 0x01 {
                 afg_nid = Some(i as u8);
                 break;
@@ -396,41 +373,25 @@ impl IntelHDA {
         let afg_node = match afg_nid {
             Some(nid) => nid,
             None => {
-                debug_println!("No AFG found!");
                 return widgets;
             }
         };
-        debug_println!("AFG found at node {}", afg_node);
     
         self.send_command(0, afg_node as u32, HdaVerb::GetParameter, NodeParams::NodeCount.as_u16())
             .await.expect("Failed to send GetParameter NodeCount for AFG");
     
         let list_length = self.receive_response().await
             .expect("Failed to receive NodeCount for AFG");
-        // list_length.print_response();
     
         let total_nodes = (list_length.get_response() & 0xFF) as u8;
         let start_id = ((list_length.get_response() >> 16) & 0xFF) as u8;
     
-        if total_nodes == 0 {
-            debug_println!("AFG {} has 0 subnodes — using brute-force widget scan", afg_node);
-        } else {
-            debug_println!(
-                "AFG {} has {} subnodes starting at {}",
-                afg_node,
-                total_nodes,
-                start_id
-            );
-        }
-    
         for node in 0..total_nodes {
             let nid = start_id + node;
-            debug_println!("node: {}", nid);
     
             self.send_command(0, nid as u32, HdaVerb::GetParameter, NodeParams::AudioWidgetCap.as_u16()).await.expect("Failed to send GetParameter AudioWidgetCap");
     
             let val = self.receive_response().await.expect("Failed to receive AudioWidgetCap");
-            // val.print_response();
     
             let wtype = (val.get_response() >> 20) & 0xF;
     
@@ -467,26 +428,20 @@ impl IntelHDA {
                 w.conn_list.push(conn);
             }
     
-            debug_println!(
-                "Discovered widget: NID={} type=0x{:X}, connections={:?}, node_count=0x{:X}",
-                w.nid,
-                w.widget_type,
-                w.conn_list,
-                w.node_count
-            );
-    
             widgets.push(w);
-        }
-    
-        let nonzero_widgets: Vec<_> = widgets.iter().filter(|w| w.widget_type != 0).collect();
-        if nonzero_widgets.is_empty() {
-            debug_println!("All widgets returned 0 — codec likely not present or not initialized correctly.");
         }
     
         widgets
     }
     
-
+    /// Recursively traces a valid signal path from a pin node to a DAC node.
+    /// 
+    /// # Arguments
+    /// - `pin_node`: Node ID of the output pin.
+    /// 
+    /// # Returns:
+    /// - `Some((pin_node, dac_node))` if a DAC is found along the connection path.
+    /// - `None` if no DAC is reachable.
     pub async fn trace_path_to_dac(&mut self, pin_node: u8) -> Option<(u8, u8)> {
         let mut stack: Vec<(u8, Vec<u8>)> = vec![(pin_node, vec![pin_node])];
     
@@ -495,9 +450,7 @@ impl IntelHDA {
             let widget_type = self.receive_response().await.expect("Failed to receive AudioWidgetCap").get_response();
             let wtype = (widget_type >> 20) & 0xF;
     
-            debug_println!("trace: node {} has type 0x{:X}", node, wtype);
             if wtype == 0x0 {
-                debug_println!("trace: found DAC at node {}", node);
                 return Some((pin_node, node));
             }
     
@@ -516,7 +469,6 @@ impl IntelHDA {
             }
         }
     
-        debug_println!("trace: no path to DAC found");
         None
     }
         
@@ -527,87 +479,26 @@ impl IntelHDA {
             let gctl_ptr = MMioPtr((self.regs as *const _ as *const u8).add(offset_of!(HdaRegisters, gctl)) as *mut u32);
             let gctl = gctl_ptr.read();
 
-            debug_println!("GCTL before clearing CRST: 0x{:X}", gctl_ptr.read());
-
-
             gctl_ptr.write(gctl & !(1 << 0));
             HWRegisterWrite::new(gctl_ptr.as_ptr(), 0x1, 0).await;
 
             let gctl = gctl_ptr.read();
-            debug_println!("GCTL after clearing CRST:  0x{:X}", gctl);
             
             gctl_ptr.write(gctl | (1 << 0));
-            debug_println!(
-                "GCTL after setting CRST:   0x{:X}",
-                 gctl_ptr.read()
-            );
 
             HWRegisterWrite::new(gctl_ptr.as_ptr(), 0x1, 1).await;
             nanosleep_current_event(500_000).unwrap().await; // wait 0.5 ms
 
-
-            debug_println!("CRST acknowledged by controller");
-
             // Delay 0.1 ms for codecs to get initialized (can we safely go smaller?)
             nanosleep_current_event(1_000_000).unwrap().await;
-
-
-            let statests_ptr = (self.regs as *const _ as *const u8).add(offset_of!(HdaRegisters, statests)) as *const u16;
-            let statests = core::ptr::read_volatile(statests_ptr);
-            debug_println!("STATESTS (chheckking codec presence): 0x{:X}", statests);
         }
     }
-
-    /// Enables pin widget output (sets EAPD bit in pin control)
-    // pub async fn enable_pin(&mut self, node: u8) {
-    //     let pin_cntl = unsafe {
-    //         self.cmd_buf.as_mut().unwrap().cmd12(WidgetAddr(0, node), GetPinControl as u32, 0).await
-    //     } | 0x40; // Set EAPD bit
-    
-    //     unsafe {
-    //         self.cmd_buf.as_mut().unwrap().cmd12(WidgetAddr(0, node), SetPinControl as u32, (pin_cntl & 0xFF) as u8).await;
-    //     }
-    
-    //     serial_println!("Pin widget control set for node {}", node);
-    // }
-    
-
-    /// Sets stream/channel for node (verb 0x706)
-    // pub async fn set_stream_channel(&mut self, node: u8, channel: u8) {
-    //     unsafe {
-    //         self.cmd_buf.as_mut().unwrap().cmd12(WidgetAddr(0, node), SetStreamChannel as u32, channel).await;
-    //     }
-    
-    //     serial_println!("Stream channel set for node {}", node);
-    // }
-    
-
-    /// Sets amplifier gain (extended verb 0x03)
-    // pub async fn set_amplifier_gain(&mut self, node: u8, value: u16) {
-    //     unsafe {
-    //         self.cmd_buf.as_mut().unwrap().cmd4(WidgetAddr(0, node), SetAmplifierGain as u32, value).await;
-    //     }
-    
-    //     serial_println!("Amplifier gain set for node {}", node);
-    // }
-    
-
-    /// Sets converter format (extended verb 0x02)
-    // pub async fn set_converter_format(&mut self, node: u8, fmt: u16) {
-    //     unsafe {
-    //         self.cmd_buf.as_mut().unwrap().cmd4(WidgetAddr(0, node), SetConverterFormat as u32, fmt).await;
-    //     }
-    
-    //     serial_println!("Converter format set for node {}", node);
-    // }
-    
 
     /// Starts audio stream (sets RUN bit in SDxCTL)
     pub fn start_stream(&mut self, stream_idx: usize) {
         unsafe {
             let ctl = &mut self.regs.stream_regs[stream_idx].ctl0;
             write_volatile(ctl, read_volatile(ctl) | (1 << 1)); // RUN RUN RUN PLZ
-            serial_println!("Stream {} started", stream_idx);
         }
     }
 
@@ -616,30 +507,30 @@ impl IntelHDA {
         unsafe {
             let ctl = &mut self.regs.stream_regs[stream_idx].ctl0;
             write_volatile(ctl, read_volatile(ctl) & !(1 << 1)); // RUN STOPPPP
-            serial_println!("Stream {} stopped", stream_idx);
         }
     }
 
+    /// Plays a WAV file throughh the audio output usning DMA.
+    /// Steps:
+    /// - Powers up codecs and discovers the pin-to-DAC signal path
+    /// - Sends configuration verbs
+    /// - Allocates and sets up BDLs for streaming audio chunks
+    /// - Initializes the stream descriptor with control info
+    /// - ALterrnates between the BDLs based on the IOC bit
+    /// - 
     pub async fn test_dma_transfer(&mut self) {
         // turn on the nodes
         self.send_command(0, 0, HdaVerb::SetPowerState, 0).await.expect("Failed to send command to the CORB");
-        let mut response = self.receive_response().await.expect("Failed to receive response from the RIRB");
-        // response.print_response();
+        self.receive_response().await.expect("Failed to receive response from the RIRB");
         
-        // do the get param thingy
         self.send_command(0, 0, HdaVerb::GetParameter, NodeParams::NodeCount.as_u16()).await.expect("Failed to send command to the CORB");
-        response = self.receive_response().await.expect("Failed to receive response from the RIRB");
-        // response.print_response();
+        self.receive_response().await.expect("Failed to receive response from the RIRB");
 
         let audio_data = load_wav().await.expect("Wav error");
-        debug_println!("data len: {}", audio_data.len);
 
-        let widget_list = self.probe_afg_and_widgets().await;
-        debug_println!("Total widgets discovered: {}", widget_list.len());
+        self.probe_afg_and_widgets().await;
 
-        debug_println!("___________TRACE_____________");
         if let Some((pin_node, dac_node)) = self.trace_path_to_dac(3).await {
-            debug_println!("Traced path from pin {} to DAC {}", pin_node, dac_node);
         
             self.send_command(0, dac_node as u32, HdaVerb::SetPowerState, 0x00).await.expect("Failed to send SetPowerState to DAC");
             self.receive_response().await.expect("No response to SetPowerState");
@@ -654,7 +545,6 @@ impl IntelHDA {
             self.receive_response().await.expect("No response to SetAmplifierGain");
         
             // Configure the DAC format to 48kHz, 16-bit, stereoo
-            debug_println!("<1>");
             self.send_command(0, dac_node as u32, HdaVerb::SetConverterFormat, audio_data.fmt).await.expect("Failed to send SetConverterFormat");
             self.receive_response().await.expect("No response to SetConverterFormat");
         
@@ -663,23 +553,14 @@ impl IntelHDA {
             let mut pin_ctrl = self.receive_response().await.expect("No response to GetPinControl").get_response();
         
             // Enable output and EAPD by setting bbbits 6 and 7 (0xC0)
-            // Idk if this actually does anything, it does not look like qemu actually changes any values?
             pin_ctrl |= 0xC0;
             self.send_command(0, pin_node as u32, HdaVerb::SetPinControl, (pin_ctrl & 0xFF) as u16).await.expect("Failed to send SetPinControl");
             self.receive_response().await.expect("No response to SetPinControl");
-
-            // self.send_command(0, pin_node as u32, HdaVerb::GetEAPDBTLEnable, 0).await.expect("failed");
-            // let temp = self.receive_response().await.expect("no response to geteapdbtl cmd");
-            // temp.print_response();
-
-            debug_println!("Playback path [Pin {} → DAC {}] configured successfully.", pin_node, dac_node);
         } else {
             debug_println!("Could not trace a valid path from pin to DAC.");
         }
         
         // create BDL stuff
-        
-        debug_println!("starting to alloc BDL");
         let audio_buf = DmaBuffer::new(audio_data.len).expect("Failed to allocate audio buffer");
         let bdl_buf1 = DmaBuffer::new(core::mem::size_of::<BdlEntry>() * 16).expect("Failed BDL");
         let bdl_buf2 = DmaBuffer::new(core::mem::size_of::<BdlEntry>() * 16).expect("Failed BDL");
@@ -687,22 +568,15 @@ impl IntelHDA {
         assert_eq!(bdl_buf1.phys_addr.as_u64() % 128, 0, "BDL 1 not 128-byte aligned");
         assert_eq!(bdl_buf2.phys_addr.as_u64() % 128, 0, "BDL 2 not 128-byte aligned");
         
-        debug_println!("audio data len: 0x{:X}", audio_data.len);
-        debug_println!("audio buf size: 0x{:X}", audio_buf.size);
-
-        debug_println!("audio_data.bytes.asptr 0x{:X}", audio_data.bytes.as_ptr() as u64);
-        debug_println!("audio bug virt addrress 0x{:X}", audio_buf.virt_addr.as_mut_ptr::<u8>() as u64);
         unsafe {
             core::ptr::copy_nonoverlapping(
                 audio_data.bytes.as_ptr(), 
                 audio_buf.virt_addr.as_mut_ptr::<u8>(), 
                 audio_data.len);
         }
-        let mut last_byte_written = audio_buf.clone();
-        debug_println!("audio buf len: 0x{:X}", audio_buf.size);
-        debug_println!("our copy len:  0x{:X}", last_byte_written.size);
-        
-        debug_println!("before first bdl setup");
+
+        let mut last_byte_written = audio_buf.clone(); // tbh this probably does not need to exist but it is wtv atp
+
         let bdl_ptr_1 = bdl_buf1.as_ptr::<BdlEntry>();
         let mut num_entries = setup_bdl(
             bdl_ptr_1,
@@ -710,18 +584,8 @@ impl IntelHDA {
             last_byte_written.size as u32,
             0x1000,
         );
-        debug_println!("setup_bdl returned {} entries", num_entries);
         let num_entries_1 = num_entries;
-        // last_byte_written.offset((num_entries * 0x1000) as u64);
-        // TODO: I think the rest of the song can currently fit into just one more bdl so just set that up and then do all of the stuff to switch the bdl once the ioc sts bit is set
-        // I think the steps to do the switch are fairly straight forward?
-        // Step one: TURN OFF STREAM (I already do this at the bottom)
-        // Step two: prolly wanna clear the sts bits (specifically bit 2). do this by writing a one to whatever bit to reset
-        // Step three: set the new cbl (? it says to not modify this until a reset but also says that it can be modified if RUN is 0, im just gonna assume that it is good to modify tbh)
-        // Step 4: set the lvi depending on the number of entries
-        // step five: write the new bdl pointer
-        // step final: turn the stream back on (make sure that the ioc enable is true)
-
+        
         let mut num_bytes_bdl = (num_entries * 0x1000) as u32;
         
         last_byte_written.offset(num_bytes_bdl as u64);
@@ -734,16 +598,11 @@ impl IntelHDA {
             0x1000,
         );
 
-        // num_bytes_bdl = (num_entries * 0x1000) as u32;
-        debug_println!("<2>");
         last_byte_written.offset((num_entries * 0x1000) as u64);
-        
-        debug_println!("setup_bdl_2 returned {} entries", num_entries);
         
         
         // begin configuring stream desc
         let stream_base = self.virt_base + 0x80 + 4 * 0x20;
-        let lpib_addr = (stream_base + 0x04) as *const u32;
         
         // Flush cache to ensure BDL/Audio in RAM for DMA
         unsafe { core::arch::asm!("wbinvd"); }
@@ -781,26 +640,19 @@ impl IntelHDA {
         
         unsafe {
             write_volatile(sdsts_addr.cast_mut(), 0x1C);
-            debug_println!("first sts: 0x{:X}", read_volatile(sdsts_addr));
         }
         
         // write bdl address
         let bdladr_addr = (stream_base + 0x18) as *mut u64;
-        let bdladr_val: u64;
         unsafe {
             write_volatile(bdladr_addr, bdl_buf1.phys_addr.as_u64());
-            bdladr_val = read_volatile(bdladr_addr);
         }
-        debug_println!("address: {:X}", bdladr_val);
 
         // write the cbl
         let cbl_addr = (stream_base + 0x8) as *mut u32;
-        let cbl_val: u32;
         unsafe {
             write_volatile(cbl_addr, num_bytes_bdl);
-            cbl_val = read_volatile(cbl_addr);
         }
-        debug_println!("cbl: {:X}", cbl_val);
 
         // write the LVI
         let lvi_addr = (stream_base + 0xC) as *mut u16;
@@ -809,45 +661,31 @@ impl IntelHDA {
         // now lets congifure the fmt reg
         let fmt_addr = (stream_base + 0x12) as *mut u16;
         let fmt_write = audio_data.fmt; // 8 bits per sample
-        let fmt_val: u16;
         unsafe {
             write_volatile(fmt_addr, fmt_write);
-            fmt_val = read_volatile(fmt_addr);
         }
-        debug_println!("fmt_val: {:X}", fmt_val);
 
         // set the stream num
         let ctl2_addr = (stream_base + 2) as *mut u8;
         unsafe { write_volatile(ctl2_addr, 1 << 4); }
-        let ctl2_val = unsafe {read_volatile(ctl2_addr)};
-        debug_println!("ctl2: {:X}", ctl2_val);
-        
-        unsafe { 
-            debug_println!("sts: {:X}", read_volatile(sdsts_addr));
-        }
 
         // now set the run bit and hope that the thing works (gonna set some interrupt bits as well)
         unsafe {
             write_volatile(ctl0_addr, 0x2);
         }
 
-        let cbl = unsafe { read_volatile(cbl_addr) };
-        let mut lpib = unsafe { read_volatile((stream_base + 0x4) as *const u32) };
         let mut sts = unsafe { read_volatile((stream_base + 0x3) as *const u8) };
         let mut flag = true;
         let mut counter = 0;
         while (sts >> 2) & 1 != 1 {
             unsafe{
+                // check for an IOC
                 sts = read_volatile((stream_base + 0x3) as *const u8);
-                // debug_println!("sts: 0x{:X}", sts);
-                lpib = read_volatile((stream_base + 0x4) as *const u32);
-                // debug_println!("lpib: {} / {}", lpib, cbl);
-                if (sts >> 2) & 1 == 1 {
-                    debug_println!("ioc");
 
+                if (sts >> 2) & 1 == 1 {
                     // stop stream
                     write_volatile(stream_base as *mut u8, 0x0);
-                    debug_println!("flag: {}", flag);
+
                     if flag {
                         // clear sts
                         write_volatile((stream_base + 0x3) as *mut u8, 0x40);
@@ -869,7 +707,6 @@ impl IntelHDA {
                         
                         // start stream
                         write_volatile(stream_base as *mut u8, 0x2);
-                        debug_println!("switched bdls");
                         
                         // now we gotta load up the next buffer
                         if counter % 2 == 0 {
@@ -902,11 +739,8 @@ impl IntelHDA {
                     }
                 }
             }
-            // nanosleep_current_event(1_000_000_000).unwrap().await;
         }
     }
-    
-    
     
 }
 

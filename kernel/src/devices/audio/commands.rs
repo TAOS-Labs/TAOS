@@ -84,18 +84,16 @@ impl CorbEntry {
     /// # Returns
     /// `self` initialized with the values passed in
     pub fn create_entry(codec: u32, nid: u32, command: HdaVerb, data: u16) -> Self {
-        // debug_println!("creating a command with codec address: 0x{:X}, nid: 0x{:X}, command: {:?}, data: 0x{:X}", codec, nid, command, data);
         let command_num = command.as_u32();
         let cmd_lo: u32;
+        
         if command_num == HdaVerb::SetAmplifierGain.as_u32() || command_num == HdaVerb::SetConverterFormat.as_u32() {
-            // debug_println!("cmd4");
             cmd_lo = (command_num << 16) | (data as u32 & 0xFFFF);
         } else {
-            // debug_println!("cmd12");
             cmd_lo = (command_num << 8) | ((data & 0xFF) as u32);
         }
         let cmd = (codec << 28) | (nid << 20) | cmd_lo;
-        // debug_println!("setting the cmd field as: 0x{:X}", cmd);
+        
         Self {
             cmd
         }
@@ -147,6 +145,7 @@ impl RirbEntry {
         self.resp_ex & 0x10 != 0
     }
 
+    /// prints out the contents of self, this is used for debugging purposes
     pub fn print_response(&self) {
         debug_println!("Response: 0x{:X}, resp_ex: {:X}", self.response, self.resp_ex);
     }

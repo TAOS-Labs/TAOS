@@ -22,9 +22,8 @@ pub async fn write_wav(fs: &Ext2, path: &str, wav: &Wav) -> Result<(), Filesyste
 
 /// Call this from hda.rs to load and re-save a WAV file
 pub async fn load_wav(/*fs: &Ext2*/) -> Result<AudioData, FilesystemError> {
-    let input_path = "kernel/src/devices/audio/myfile.wav";
+    let input_path = "kernel/src/devices/audio/new_romantics_swift.wav";
 
-    // match read_wav(fs, input_path).await {
     match Wav::from_bytes(&TEST_WAV) {
         Ok(wav) => {
             crate::debug!("WAV loaded: {} ch, {} bit, {} Hz", wav.fmt.num_channels, wav.fmt.bit_depth, wav.fmt.sample_rate);

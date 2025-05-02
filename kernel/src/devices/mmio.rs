@@ -26,6 +26,7 @@ impl<T> MMioPtr<T> {
         self.0
     }
 
+    #[allow(dead_code)]
     pub unsafe fn add<EndType>(&self, offset: usize) -> MMioPtr<EndType> {
         MMioPtr(self.0.add(offset) as *mut EndType)
     }
