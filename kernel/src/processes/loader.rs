@@ -383,6 +383,8 @@ pub fn load_elf(
     push64(phdr_runtime);
     push64(AT_PHDR);
 
+    serial_println!("ENVP, ARGV: {}, {}", env_ptrs.len(), argv_ptrs.len());
+
     // 7) envp pointers (NULL‐terminated)
     push64(0);
     for &p in env_ptrs.iter().rev() {
@@ -396,13 +398,13 @@ pub fn load_elf(
     }
 
     // 9) finally, argc
-    push64(0);
+    // push64(0);
     push64(argv_ptrs.len() as u64);
 
     serial_println!("Placed ARGC @ {:#x}", sp);
 
     // 10) realign to 16‐byte boundary before entry
-    sp = VirtAddr::new(sp.as_u64() & !0xF);
+    // sp = VirtAddr::new(sp.as_u64() & !0xF);  (LIBC handles this for us...)
 
     // hand back (sp, entry_point)
     (sp, elf.header.e_entry)
