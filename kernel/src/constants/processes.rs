@@ -40,6 +40,6 @@ pub const PROCESS_NANOS: u64 = 50_000_000;
 
 // Size of the process stack - 2 pages
 pub const STACK_SIZE: usize = 10 * 4096;
-pub const STACK_MAX_SIZE: usize = (STACK_END - 0x7000_000_000) as usize;
+pub const STACK_MAX_SIZE: usize = (STACK_END - 0x7000_0000_0000) as usize;
 
 pub const PROCESS_TIMESLICE: u64 = 50_000_000; // 50 ms, to change later
