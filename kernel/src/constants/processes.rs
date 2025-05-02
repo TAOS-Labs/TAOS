@@ -26,7 +26,7 @@ pub const TEST_MPROTECT_CHILD_WRITES: &[u8] =
     include_bytes!("../processes/test_binaries/test_mprotect_child_writes");
 
 // Virtual memory address for the stack
-pub const STACK_START: u64 = 0x7000_0000_0000;
+pub const STACK_END: u64 = 0x7FFF_FFFF_0000;
 
 // User Heaps
 pub const USR_HEAP_START: u64 = 0x5_000_0000;
@@ -40,5 +40,6 @@ pub const PROCESS_NANOS: u64 = 50_000_000;
 
 // Size of the process stack - 2 pages
 pub const STACK_SIZE: usize = 10 * 4096;
+pub const STACK_MAX_SIZE: usize = (STACK_END - 0x7000_000_000) as usize;
 
 pub const PROCESS_TIMESLICE: u64 = 50_000_000; // 50 ms, to change later

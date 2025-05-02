@@ -46,6 +46,8 @@ pub const SYSCALL_OPENAT: u32 = 257;
 pub const SYSCALL_SET_ROBUST_LIST: u32 = 273;
 pub const SYSCALL_GET_ROBUST_LIST: u32 = 274;
 
+pub const SYSCALL_PRLIMIT: u32 = 302;
+
 pub const SYSCALL_GETRANDOM: u32 = 318;
 
 pub const SYSCALL_RSEQ: u32 = 334;

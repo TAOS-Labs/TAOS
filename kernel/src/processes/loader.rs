@@ -1,7 +1,7 @@
 use crate::{
     constants::{
         memory::PAGE_SIZE,
-        processes::{STACK_SIZE, STACK_START},
+        processes::{STACK_END, STACK_SIZE},
     },
     memory::{
         frame_allocator::with_generic_allocator,
@@ -275,8 +275,8 @@ pub fn load_elf(
     }
 
     // Map user stack
-    let stack_start = VirtAddr::new(STACK_START);
-    let stack_end = VirtAddr::new(STACK_START + STACK_SIZE as u64);
+    let stack_start = VirtAddr::new(STACK_END - STACK_SIZE as u64);
+    let stack_end = VirtAddr::new(STACK_END as u64);
     let start_page: Page<Size4KiB> = Page::containing_address(stack_start);
     let end_page: Page<Size4KiB> = Page::containing_address(stack_end);
 
@@ -307,8 +307,8 @@ pub fn load_elf(
     pcb.mm.with_vma_tree_mutable(|tree| {
         Mm::insert_vma(
             tree,
-            STACK_START,
-            STACK_START + STACK_SIZE as u64,
+            STACK_END - STACK_SIZE as u64,
+            STACK_END,
             anon_vma_stack,
             VmAreaFlags::WRITABLE | VmAreaFlags::GROWS_DOWN,
             usize::MAX,
@@ -317,7 +317,7 @@ pub fn load_elf(
     });
 
     // 1) start at top of the stack space
-    let mut sp = VirtAddr::new(STACK_START + STACK_SIZE as u64);
+    let mut sp = VirtAddr::new(STACK_END as u64);
 
     // 2) align down to 16 bytes
     sp = VirtAddr::new(sp.as_u64() & !0xF);

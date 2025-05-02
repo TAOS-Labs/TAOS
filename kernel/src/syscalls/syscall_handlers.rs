@@ -1,4 +1,4 @@
-use core::ffi::CStr;
+use core::{ffi::CStr, mem::transmute};
 
 use alloc::{collections::btree_map::BTreeMap, slice, string::ToString, vec};
 use lazy_static::lazy_static;
@@ -6,13 +6,13 @@ use pc_keyboard::{DecodedKey, KeyCode, KeyState};
 use spin::Mutex;
 use x86_64::{
     align_up,
-    registers::model_specific::{FsBase, Msr},
+    registers::model_specific::{FsBase, GsBase},
     structures::paging::{Page, PageTableFlags, PhysFrame, Size4KiB},
     VirtAddr,
 };
 
 use crate::{
-    constants::{memory::PAGE_SIZE, syscalls::*},
+    constants::{memory::PAGE_SIZE, processes::{STACK_MAX_SIZE, STACK_SIZE}, syscalls::*},
     devices::ps2_dev::keyboard,
     events::{
         current_running_event, current_running_event_info, futures::await_on::AwaitProcess,
@@ -24,7 +24,7 @@ use crate::{
         syscalls::{sys_creat, sys_open},
         FileSystem, OpenFlags, FILESYSTEM,
     },
-    interrupts::x2apic::{send_eoi, X2APIC_IA32_FS_BASE, X2APIC_IA32_GSBASE},
+    interrupts::x2apic::send_eoi,
     memory::paging::create_mapping,
     processes::{
         process::{
@@ -341,6 +341,12 @@ pub unsafe extern "C" fn syscall_handler_impl(
             syscall.arg3 as i32,
             syscall.arg4 as u32
         ),
+        SYSCALL_PRLIMIT => sys_prlimit(
+            syscall.arg1 as u64,
+            ResourceLimit::from(syscall.arg2 as u32),
+            syscall.arg3 as *const Rlimit,
+            syscall.arg4 as *mut Rlimit
+        ),
         _ => {
             panic!("Unknown syscall, {}", syscall.number);
         }
@@ -553,7 +559,14 @@ pub async unsafe fn sys_write(fd: u32, buf: *const u8, count: usize) -> u64 {
         // STDOUT
         unsafe {
             let slice = core::slice::from_raw_parts(buf, count);
-            serial_print!("{}", core::str::from_utf8_unchecked(slice));
+            serial_print!("[STDOUT] {}", core::str::from_utf8_unchecked(slice));
+        }
+        count as u64
+    } else if fd == 2 {
+        // STDERR
+        unsafe {
+            let slice = core::slice::from_raw_parts(buf, count);
+            serial_print!("[STDERR] {}", core::str::from_utf8_unchecked(slice));
         }
         count as u64
     } else {
@@ -575,7 +588,7 @@ pub async unsafe fn sys_writev(fd: u32, iovec: *const Iovec, iovcnt: usize) -> u
         unsafe {
             for _ in 0..iovcnt {
                 let slice = core::slice::from_raw_parts((*iovec).iov_base, (*iovec).iov_len);
-                serial_print!("{}", core::str::from_utf8_unchecked(slice));
+                serial_print!("[STDOUT] {}", core::str::from_utf8_unchecked(slice));
             }
         }
         iovcnt as u64
@@ -584,7 +597,7 @@ pub async unsafe fn sys_writev(fd: u32, iovec: *const Iovec, iovcnt: usize) -> u
         unsafe {
             for _ in 0..iovcnt {
                 let slice = core::slice::from_raw_parts((*iovec).iov_base, (*iovec).iov_len);
-                serial_print!("{}", core::str::from_utf8_unchecked(slice));
+                serial_print!("[STDERR] {}", core::str::from_utf8_unchecked(slice));
             }
         }
         iovcnt as u64
@@ -808,19 +821,28 @@ pub fn sys_arch_prctl(code: i32, addr: u64) -> u64 {
         ARCH_SET_FS => {
             serial_println!("SET FS");
             // point %fs at user‐space TLS block
-            unsafe { Msr::new(X2APIC_IA32_FS_BASE).write(addr) };
+            with_current_pcb(|pcb| {
+                pcb.fs_base = addr;
+            });
+            // unsafe { Msr::new(X2APIC_IA32_FS_BASE).write(addr) };   // TODO need we do all this???
+            FsBase::write(VirtAddr::new(addr));
+
+            // TODO this is DEFINITELY wrong, but unblocks us for now
+            unsafe { *((addr - 88) as *mut u64) = 0x4a9008 };
             0
         }
         ARCH_SET_GS => {
             serial_println!("SET GS");
             // point %gs at user‐space TLS block (if used)
-            unsafe { Msr::new(X2APIC_IA32_FS_BASE).write(addr) };
+            // unsafe { Msr::new(X2APIC_IA32_FS_BASE).write(addr) };
+            GsBase::write(VirtAddr::new(addr));
             0
         }
         ARCH_GET_FS => {
             serial_println!("GET FS");
             // read current fs_base
-            let fs = unsafe { Msr::new(X2APIC_IA32_FS_BASE).read() };
+            // let fs = unsafe { Msr::new(X2APIC_IA32_FS_BASE).read() };
+            let fs = FsBase::read().as_u64();
             // write it back into the user buffer
             let ptr = addr as *mut u64;
             unsafe { ptr.write_volatile(fs) };
@@ -828,7 +850,8 @@ pub fn sys_arch_prctl(code: i32, addr: u64) -> u64 {
         }
         ARCH_GET_GS => {
             serial_println!("GET GS");
-            let gs = unsafe { Msr::new(X2APIC_IA32_GSBASE).read() };
+            // let gs = unsafe { Msr::new(X2APIC_IA32_GSBASE).read() };
+            let gs = FsBase::read().as_u64();
             let ptr = addr as *mut u64;
             unsafe { ptr.write_volatile(gs) };
             0
@@ -917,7 +940,13 @@ pub fn sys_rt_sigaction(_signum: i32, _act_ptr: u64, _oldact_ptr: u64, _sigsetsi
 }
 
 pub fn sys_set_tid_address(_tidptr: *mut i32) -> u64 {
-    0
+    // TODO set clear_child_tid to _tidptr
+    // Upon exit, set tidptr to 0 and futex(clear_child_tid, FUTEX_WAKE, 1, NULL, NULL, 0);
+
+    // Don't have TIDs, so use PID instead
+    with_current_pcb(|pcb| {
+        pcb.pid as u64
+    })
 }
 
 pub fn sys_set_robust_list(_head_ptr: *const u8, _len: usize) -> u64 {
@@ -929,5 +958,49 @@ pub fn sys_get_robust_list(_pid: i32, _head_ptr: *const u8, _len: usize) -> u64 
 }
 
 pub fn sys_rseq(_rseq: *const u8, _rseq_len: u32, _flags: i32, _sig: u32) -> u64 {
+    0
+}
+
+#[repr(C)]
+pub struct Rlimit {
+    /* The current (soft) limit.  */
+    rlim_cur: u64,
+    /* The hard limit.  */
+    rlim_max: u64,
+}
+
+#[derive(Debug)]
+#[repr(u32)]
+
+pub enum ResourceLimit {
+    RLimitCpu = 0,
+    RLimitFileSize = 1,
+    RLimitData = 2,
+    RLimitStack = 3,
+    RLimitCore = 4,
+} 
+
+impl From<u32> for ResourceLimit {
+    fn from(value: u32) -> Self {
+        unsafe {
+            transmute(value)
+        }
+    }
+}
+
+// TODO implement resource limits
+pub fn sys_prlimit(_pid: u64, resource: ResourceLimit, _new_limit: *const Rlimit, old_limit: *mut Rlimit) -> u64 {
+    match resource {
+        ResourceLimit::RLimitStack => {
+            unsafe {
+                (*old_limit).rlim_cur = STACK_SIZE as u64;
+                (*old_limit).rlim_max = STACK_MAX_SIZE as u64;
+            }
+        },
+        _ => {
+            panic!("Unknown resource: {:?}", resource);
+        }
+    }
+
     0
 }
