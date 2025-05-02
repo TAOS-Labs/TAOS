@@ -1,5 +1,5 @@
 #[repr(transparent)]
-pub(crate) struct MMioPtr<T>(pub *mut T);
+pub struct MMioPtr<T>(pub *mut T);
 
 unsafe impl<T> Send for MMioPtr<T> {}
 
@@ -33,7 +33,7 @@ impl<T> MMioPtr<T> {
 }
 
 #[repr(transparent)]
-pub(crate) struct MMioConstPtr<T>(pub *const T);
+pub struct MMioConstPtr<T>(pub *const T);
 
 unsafe impl<T> Send for MMioConstPtr<T> {}
 
