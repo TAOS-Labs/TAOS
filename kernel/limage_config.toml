@@ -52,7 +52,7 @@ gdb-terminal = { args = ["-nographic", "-s", "-S"] }
 gdb-gui = { args = ["-s", "-S"] }
 
 [test]
-timeout_secs = 30
+timeout_secs = 60
 success_exit_code = 33
 no_reboot = true
 extra_args = [

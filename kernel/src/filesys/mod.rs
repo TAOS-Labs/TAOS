@@ -12,7 +12,7 @@ use crate::{
         paging::map_kernel_frame,
         KERNEL_MAPPER,
     },
-    processes::process::with_current_pcb,
+    processes::process::{with_current_pcb, FakeFile},
 };
 use alloc::{
     boxed::Box,
@@ -21,7 +21,10 @@ use alloc::{
     sync::Arc,
     vec::Vec,
 };
-use core::sync::atomic::{AtomicBool, Ordering};
+use core::{
+    cmp,
+    sync::atomic::{AtomicBool, Ordering},
+};
 use ext2::{
     filesystem::{Ext2, FilesystemError, FilesystemResult},
     node::{DirEntry, NodeError},
@@ -221,7 +224,17 @@ pub fn get_file(fd: usize) -> FilesystemResult<Arc<Mutex<File>>> {
     if file.is_none() {
         return Err(FilesystemError::InvalidFd);
     }
-    Ok(file.unwrap())
+    let file = file.unwrap().clone();
+
+    // let file_guard = file.lock();
+    if let FakeFile::File(f) = file {
+        return Ok(f);
+    }
+    // match file_guard {
+    //     FakeFile::File(f) => {return Ok(Arc::new(Mutex::new(f)))}
+    //     _ => Err(FilesystemError::InvalidFd)
+    // }
+    Err(FilesystemError::InvalidFd)
 }
 
 /// Gets the file descriptor from the file path
@@ -231,9 +244,11 @@ pub fn get_fd(filepath: &str) -> FilesystemResult<usize> {
     with_current_pcb(|pcb| {
         for (fd, file_opt) in pcb.fd_table.iter().enumerate() {
             if let Some(file_arc) = file_opt {
-                let file = file_arc.lock();
-                if file.pathname == filepath {
-                    return Ok(fd);
+                if let FakeFile::File(f) = file_arc.clone() {
+                    let file_guard = f.lock();
+                    if file_guard.pathname == filepath {
+                        return Ok(fd);
+                    }
                 }
             }
         }
@@ -320,22 +335,24 @@ impl FileSystem for Ext2Wrapper {
             self.filesystem.lock().get_node(path).await?.number()
         };
 
-        let fd = with_current_pcb(|pcb| {
-            let mut next_fd_guard = pcb.next_fd.lock();
-            let fd = *next_fd_guard;
-            *next_fd_guard += 1;
-
+        let fd: Option<usize> = with_current_pcb(|pcb| {
+            let fd = pcb.find_next_fd()?;
             let file = File::new(path.to_string(), fd, 0, flags, inode_number);
-            pcb.fd_table[fd] = Some(Arc::new(Mutex::new(file)));
+            pcb.fd_table[fd] = Some(FakeFile::File(Arc::new(Mutex::new(file))));
 
-            fd
+            Option::Some(fd)
         });
-        self.refcount
-            .lock()
-            .entry(inode_number)
-            .and_modify(|v| *v += 1)
-            .or_insert(1);
-        Ok(fd)
+        match fd {
+            Option::None => Err(FilesystemError::NoFd),
+            Option::Some(file) => {
+                self.refcount
+                    .lock()
+                    .entry(inode_number)
+                    .and_modify(|v| *v += 1)
+                    .or_insert(1);
+                Ok(file)
+            }
+        }
     }
 
     async fn remove(&mut self, fd: usize) -> FilesystemResult<()> {
@@ -498,7 +515,6 @@ impl FileSystem for Ext2Wrapper {
         let mut remaining = buf.len();
         let mut total_read = 0;
         let mut file_pos = locked_file.position;
-
         while remaining > 0 {
             let page_offset = file_pos & !(PAGE_SIZE - 1);
             let page_offset_in_buf = file_pos % PAGE_SIZE;
@@ -596,7 +612,11 @@ impl FileSystem for Ext2Wrapper {
         // Do raw pointer write *after* .await to avoid Send violation
         unsafe {
             let buf_ptr = kernel_va.as_mut_ptr();
-            core::ptr::copy_nonoverlapping(file_buf.as_ptr(), buf_ptr, file_buf.len());
+            core::ptr::copy_nonoverlapping(
+                file_buf.as_ptr(),
+                buf_ptr,
+                cmp::min(PAGE_SIZE, file_buf.len()),
+            );
         }
 
         file_mappings.insert(offset, Page::containing_address(kernel_va));
@@ -704,7 +724,7 @@ mod tests {
             .open_file("./temp/test.txt", OpenFlags::O_WRONLY | OpenFlags::O_CREAT)
             .await
             .unwrap();
-        assert!(active_fd_count() > 0);
+        assert!(active_fd_count() == 4);
 
         user_fs.write_file(fd, b"Test 123").await.unwrap();
         user_fs.seek_file(fd, 0).await.unwrap();
@@ -715,7 +735,7 @@ mod tests {
         assert_eq!(&buf[..8], b"Test 123");
 
         user_fs.close_file(fd).await.unwrap();
-        assert_eq!(active_fd_count(), 0);
+        assert_eq!(active_fd_count(), 3);
     }
 
     #[test_case]
@@ -780,7 +800,7 @@ mod tests {
         {
             let meta = user_fs.metadata(fd).await.unwrap();
             assert_eq!(meta.pathname, "./temp/meta.txt");
-            assert_eq!(meta.fd, 0);
+            assert_eq!(meta.fd, 3);
             assert_eq!(meta.flags, OpenFlags::O_WRONLY | OpenFlags::O_CREAT);
         }
 

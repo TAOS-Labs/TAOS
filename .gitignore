@@ -4,9 +4,8 @@
 *.hdd
 *.img
 *.txt
-*.od
-
-*zig*
 
 /target
+
+.DS_Store
 kernel/qemu.wav
