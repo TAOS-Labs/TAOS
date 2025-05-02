@@ -687,8 +687,8 @@ impl IntelHDA {
         assert_eq!(bdl_buf1.phys_addr.as_u64() % 128, 0, "BDL 1 not 128-byte aligned");
         assert_eq!(bdl_buf2.phys_addr.as_u64() % 128, 0, "BDL 2 not 128-byte aligned");
         
-        debug_println!("audio data len: {}", audio_data.len);
-        debug_println!("audio buf size: {}", audio_buf.size);
+        debug_println!("audio data len: 0x{:X}", audio_data.len);
+        debug_println!("audio buf size: 0x{:X}", audio_buf.size);
 
         debug_println!("audio_data.bytes.asptr 0x{:X}", audio_data.bytes.as_ptr() as u64);
         debug_println!("audio bug virt addrress 0x{:X}", audio_buf.virt_addr.as_mut_ptr::<u8>() as u64);
@@ -700,6 +700,7 @@ impl IntelHDA {
         }
         let mut last_byte_written = audio_buf.clone();
         debug_println!("audio buf len: 0x{:X}", audio_buf.size);
+        debug_println!("our copy len:  0x{:X}", last_byte_written.size);
         
         debug_println!("before first bdl setup");
         let bdl_ptr_1 = bdl_buf1.as_ptr::<BdlEntry>();
@@ -834,6 +835,7 @@ impl IntelHDA {
         let mut lpib = unsafe { read_volatile((stream_base + 0x4) as *const u32) };
         let mut sts = unsafe { read_volatile((stream_base + 0x3) as *const u8) };
         let mut flag = true;
+        let mut counter = 0;
         while (sts >> 2) & 1 != 1 {
             unsafe{
                 sts = read_volatile((stream_base + 0x3) as *const u8);
@@ -845,6 +847,7 @@ impl IntelHDA {
 
                     // stop stream
                     write_volatile(stream_base as *mut u8, 0x0);
+                    debug_println!("flag: {}", flag);
                     if flag {
                         // clear sts
                         write_volatile((stream_base + 0x3) as *mut u8, 0x40);
@@ -858,12 +861,44 @@ impl IntelHDA {
                         write_volatile((stream_base + 0xC) as *mut u16, num_entries as u16 - 1);
     
                         // update bdl ptr
-                        write_volatile((stream_base + 0x18) as *mut u64, bdl_buf2.phys_addr.as_u64());
+                        if counter % 2 == 0 {
+                            write_volatile((stream_base + 0x18) as *mut u64, bdl_buf2.phys_addr.as_u64());
+                        } else {
+                            write_volatile((stream_base + 0x18) as *mut u64, bdl_buf1.phys_addr.as_u64());
+                        }
                         
                         // start stream
                         write_volatile(stream_base as *mut u8, 0x2);
                         debug_println!("switched bdls");
-                        flag = false;
+                        
+                        // now we gotta load up the next buffer
+                        if counter % 2 == 0 {
+                            // load up buf1
+                            num_entries = setup_bdl(
+                                bdl_ptr_1,
+                                last_byte_written.phys_addr.as_u64(),
+                                last_byte_written.size as u32,
+                                0x1000,
+                            );
+                        } else {
+                            // load up buf2
+                            num_entries = setup_bdl(
+                                bdl_ptr_1,
+                                last_byte_written.phys_addr.as_u64(),
+                                last_byte_written.size as u32,
+                                0x1000,
+                            );
+                        }
+
+                        // move the copy of the audio data
+                        num_bytes_bdl = (num_entries * 0x1000) as u32;
+        
+                        last_byte_written.offset(num_bytes_bdl as u64);
+
+                        if last_byte_written.size == 0 {
+                            flag = false;
+                        }
+                        counter += 1;
                     }
                 }
             }

@@ -82,6 +82,7 @@ impl DmaBuffer {
         self.virt_addr += offset;
         self.phys_addr += offset;
         self.size -= offset as usize;
+        debug_println!("new size: 0x{:X}", self.size);
     }
 
     /// Interpret buffer as pointer to `T`
