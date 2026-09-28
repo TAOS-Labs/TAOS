@@ -172,6 +172,26 @@ pub fn current_running_event() -> Option<Arc<Event>> {
 ///
 /// # Returns
 /// * `u32` - The PID of the event (0 for kernel tasks)
+/// Mark the currently-running event as blocked.
+///
+/// A blocked event is not re-queued when it pends; it stays asleep until
+/// woken via its Waker (waking also removes it from the blocked set).
+/// This is how a task that waits on hardware (e.g. the keyboard reader)
+/// sleeps instead of busy-polling.
+pub fn block_current_event() {
+    if let Some(event) = current_running_event() {
+        event.blocked_events.write().insert(event.eid.0);
+    }
+}
+
+/// Remove the currently-running event from the blocked set: it is making
+/// progress again.
+pub fn unblock_current_event() {
+    if let Some(event) = current_running_event() {
+        event.blocked_events.write().remove(&event.eid.0);
+    }
+}
+
 pub fn current_running_event_pid() -> u32 {
     let cpuid = x2apic::current_core_id() as u32;
     let runners = EVENT_RUNNERS.read();

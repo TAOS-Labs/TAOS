@@ -142,14 +142,14 @@ impl KeyboardState {
             self.full = true;
         }
 
-        // Wake the waiting reader. wake_by_ref() now uses try_write(),
-        // so it is safe in IRQ context (skips if contended).
-        without_interrupts(|| {
-            let mut waker = KEYBOARD_WAKER.lock();
-            if let Some(w) = waker.take() {
-                w.wake();
-            }
-        });
+        // Wake the waiting reader. The waker is cloned, not taken: if
+        // this wake is dropped (wake_by_ref uses try_write and may skip
+        // under contention), the next scancode's wake retries instead of
+        // stranding the reader asleep forever.
+        let waker = without_interrupts(|| KEYBOARD_WAKER.lock().clone());
+        if let Some(w) = waker {
+            w.wake();
+        }
 
         Ok(())
     }
@@ -250,17 +250,41 @@ pub fn keyboard_handler() {
 
             match controller.read_data() {
                 Ok(scancode) => {
-                    if let Some(mut keyboard) = KEYBOARD.try_lock() {
-                        if let Err(e) = keyboard.process_scancode(scancode) {
+                    // Spin (bounded) for the keyboard lock instead of dropping
+                    // the scancode: every holder only takes it for a tiny,
+                    // non-blocking critical section (read_event /
+                    // process_scancode), so waiting briefly cannot deadlock.
+                    // Dropping here lost keys under rapid input, when the
+                    // shell task's poll loop contends on the lock.
+                    let mut spins = 0u32;
+                    let locked = loop {
+                        match KEYBOARD.try_lock() {
+                            Some(k) => break Some(k),
+                            None => {
+                                core::hint::spin_loop();
+                                spins += 1;
+                                if spins >= 100_000 {
+                                    break None;
+                                }
+                            }
+                        }
+                    };
+                    match locked {
+                        Some(mut keyboard) => {
+                            if let Err(e) = keyboard.process_scancode(scancode) {
+                                serial_println!(
+                                    "Error processing keyboard scancode: {:?}",
+                                    e
+                                );
+                            }
+                        }
+                        None => {
                             serial_println!(
-                                "Error processing keyboard scancode: {:?}",
-                                e
+                                "keyboard: dropped scancode {:02x} (lock contention)",
+                                scancode
                             );
                         }
                     }
-                    // If the lock is contended, drop the scancode rather than
-                    // spin in IRQ context. The key will be lost, but we won't
-                    // deadlock.
                 }
                 Err(_) => {
                     // If we can't read data despite OUTPUT_FULL being set
@@ -290,27 +314,26 @@ pub fn flush_buffer() {
 impl Stream for KeyboardStream {
     type Item = KeyboardEvent;
 
-    fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-        // Register the waker BEFORE attempting the lock. If try_lock fails
-        // below, we still return Pending, but a scancode processed in the
-        // meantime will wake us via the registered waker instead of being
-        // missed forever.
+    fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<KeyboardEvent>> {
+        // Register the waker, check the buffer, and go to sleep as one
+        // atomic step (interrupts disabled): no IRQ can slip an event in
+        // between the check and blocking, so no wake is ever missed.
+        // If the buffer is empty, mark this task blocked so the executor
+        // does not busy-poll it; the next IRQ's wake unblocks it.
+        // Taking KEYBOARD's lock here is safe: IRQs are disabled on this
+        // CPU, and any other CPU only holds it for a tiny non-blocking
+        // section, so at most we spin briefly.
         without_interrupts(|| {
-            let mut waker = KEYBOARD_WAKER.lock();
-            *waker = Some(cx.waker().clone());
-        });
+            *KEYBOARD_WAKER.lock() = Some(cx.waker().clone());
 
-        let mut keyboard = match KEYBOARD.try_lock() {
-            Some(keyboard) => keyboard,
-            None => {
-                return Poll::Pending;
+            let mut keyboard = KEYBOARD.lock();
+            if let Some(event) = keyboard.read_event() {
+                crate::events::unblock_current_event();
+                Poll::Ready(Some(event))
+            } else {
+                crate::events::block_current_event();
+                Poll::Pending
             }
-        };
-
-        if let Some(event) = keyboard.read_event() {
-            return Poll::Ready(Some(event));
-        }
-
-        Poll::Pending
+        })
     }
 }
