@@ -336,6 +336,30 @@ impl Ext2 {
         self.read_file_at(path, 0).await
     }
 
+    /// Read up to len bytes from a file at the given offset
+    pub async fn read_file_range(
+        &self,
+        path: &str,
+        pos: usize,
+        len: usize,
+    ) -> FilesystemResult<Vec<u8>> {
+        let node = self.get_node(path).await?;
+        if !node.is_file() {
+            return Err(FilesystemError::NodeError(NodeError::NotFile));
+        }
+        let size = node.size() as usize;
+        if pos >= size {
+            return Ok(Vec::new());
+        }
+        // Only read one page, not the whole tail of the file
+        let read_len = core::cmp::min(len, size - pos);
+        let mut buffer = vec![0; read_len];
+        node.read_at(pos as u64, &mut buffer)
+            .await
+            .map_err(FilesystemError::NodeError)?;
+        Ok(buffer)
+    }
+
     /// Get filesystem statistics
     pub fn stats(&self) -> FilesystemResult<FilesystemStats> {
         if !self.mounted.load(Ordering::Acquire) {

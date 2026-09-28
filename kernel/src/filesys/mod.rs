@@ -606,8 +606,12 @@ impl FileSystem for Ext2Wrapper {
         // clone the pathname before await
         let path = file.pathname.clone();
 
-        // read file buffer
-        let file_buf = self.filesystem.lock().read_file_at(&path, offset).await?;
+        // read only the needed page, not the whole tail of the file
+        let file_buf = self
+            .filesystem
+            .lock()
+            .read_file_range(&path, offset, PAGE_SIZE)
+            .await?;
 
         // Do raw pointer write *after* .await to avoid Send violation
         unsafe {
