@@ -5,7 +5,6 @@
 
 use crate::{
     devices::ps2_dev::controller,
-    events::{futures::sync::BlockMutex, schedule_kernel, yield_now},
     interrupts::idt::without_interrupts,
     serial_println,
 };
@@ -26,7 +25,7 @@ const KEYBOARD_BUFFER_SIZE: usize = 32;
 
 lazy_static! {
     /// The global keyboard state
-    pub static ref KEYBOARD: BlockMutex<KeyboardState> = BlockMutex::new(KeyboardState::new());
+    pub static ref KEYBOARD: spin::Mutex<KeyboardState> = spin::Mutex::new(KeyboardState::new());
 }
 
 /// The number of keyboard interrupts received
@@ -143,6 +142,8 @@ impl KeyboardState {
             self.full = true;
         }
 
+        // Wake the waiting reader. wake_by_ref() now uses try_write(),
+        // so it is safe in IRQ context (skips if contended).
         without_interrupts(|| {
             let mut waker = KEYBOARD_WAKER.lock();
             if let Some(w) = waker.take() {
@@ -213,8 +214,8 @@ pub async fn next_event() -> KeyboardEvent {
 /// Try to read a keyboard event without waiting
 pub async fn try_read_event() -> Option<KeyboardEvent> {
     without_interrupts(|| match KEYBOARD.try_lock() {
-        Ok(mut keyboard) => keyboard.read_event(),
-        Err(_) => None,
+        Some(mut keyboard) => keyboard.read_event(),
+        None => None,
     })
 }
 
@@ -227,8 +228,19 @@ pub fn get_interrupt_count() -> u64 {
 pub fn keyboard_handler() {
     KEYBOARD_INTERRUPT_COUNT.fetch_add(1, Ordering::SeqCst);
 
-    controller::with_controller(|controller| {
-        // Read from the controller as long as the OUTPUT_FULL bit is set
+    // Use try_with_controller, not with_controller: the latter blocks on a
+    // spinlock, and if the IRQ fires while non-interrupt code holds it, the
+    // handler would spin forever with interrupts disabled (deadlock).
+    // If the lock is held, we skip this IRQ; the scancode stays in the
+    // controller's output buffer and the level-triggered IRQ will re-fire.
+    controller::try_with_controller(|controller| {
+        // Read from the controller as long as the OUTPUT_FULL bit is set.
+        // Process scancodes directly here (no async task per scancode):
+        // the decode is just table lookups with no heap allocation, and
+        // scheduling a task per byte was too slow — the 1-byte PS/2 output
+        // buffer would overrun and drop keys under rapid input.
+        // Interrupts are already disabled in handler context, so taking the
+        // spinlock here cannot deadlock.
         loop {
             let status = controller.read_status();
             if !status.contains(ps2::flags::ControllerStatusFlags::OUTPUT_FULL) {
@@ -238,29 +250,17 @@ pub fn keyboard_handler() {
 
             match controller.read_data() {
                 Ok(scancode) => {
-                    schedule_kernel(
-                        async move {
-                            // Use try_lock with yield-retry instead of lock().await:
-                            // BlockMutex::lock() waits on a Condition that is
-                            // never woken when the guard is dropped, so it can
-                            // sleep forever if the lock is contended.
-                            loop {
-                                match KEYBOARD.try_lock() {
-                                    Ok(mut keyboard) => {
-                                        if let Err(e) = keyboard.process_scancode(scancode) {
-                                            serial_println!(
-                                                "Error processing keyboard scancode: {:?}",
-                                                e
-                                            );
-                                        }
-                                        break;
-                                    }
-                                    Err(_) => yield_now().await,
-                                }
-                            }
-                        },
-                        0,
-                    );
+                    if let Some(mut keyboard) = KEYBOARD.try_lock() {
+                        if let Err(e) = keyboard.process_scancode(scancode) {
+                            serial_println!(
+                                "Error processing keyboard scancode: {:?}",
+                                e
+                            );
+                        }
+                    }
+                    // If the lock is contended, drop the scancode rather than
+                    // spin in IRQ context. The key will be lost, but we won't
+                    // deadlock.
                 }
                 Err(_) => {
                     // If we can't read data despite OUTPUT_FULL being set
@@ -272,9 +272,11 @@ pub fn keyboard_handler() {
     });
 }
 pub fn flush_buffer() {
-    if let Ok(mut state) = KEYBOARD.try_lock() {
-        state.clear_buffer();
-    }
+    without_interrupts(|| {
+        if let Some(mut state) = KEYBOARD.try_lock() {
+            state.clear_buffer();
+        }
+    })
     // controller::with_controller(|ctrl| {
     //     while ctrl
     //         .read_status()
@@ -299,8 +301,8 @@ impl Stream for KeyboardStream {
         });
 
         let mut keyboard = match KEYBOARD.try_lock() {
-            Ok(keyboard) => keyboard,
-            Err(_) => {
+            Some(keyboard) => keyboard,
+            None => {
                 return Poll::Pending;
             }
         };

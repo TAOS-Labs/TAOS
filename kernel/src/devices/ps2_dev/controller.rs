@@ -101,6 +101,17 @@ where
     (*lock).as_mut().map(f)
 }
 
+/// Try to access the controller without blocking. Returns None if the lock
+/// is held. Safe to call from interrupt context — unlike `with_controller`,
+/// this will never spin forever with interrupts disabled.
+pub fn try_with_controller<F, R>(f: F) -> Option<R>
+where
+    F: FnOnce(&mut Controller) -> R,
+{
+    let mut lock = PS2_CONTROLLER.try_lock()?;
+    (*lock).as_mut().map(f)
+}
+
 /// Check if the PS/2 controller is initialized
 pub fn is_initialized() -> bool {
     CONTROLLER_INITIALIZED.load(Ordering::SeqCst)

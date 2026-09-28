@@ -29,8 +29,17 @@ impl Event {
 impl ArcWake for Event {
     /// Push event back on the queue it is to awaken at
     /// And remove event from set of blocked events, if applicable
+    ///
+    /// Uses try_write() instead of write(): this is called from IRQ context
+    /// (e.g. keyboard handler waking a reader), where blocking on a lock
+    /// would deadlock with interrupts disabled. If the lock is contended,
+    /// the wake is skipped — the next event will retry.
     fn wake_by_ref(arc: &Arc<Self>) {
-        arc.rewake_queue.write().push_back(arc.clone());
-        arc.blocked_events.write().remove(&arc.eid.0);
+        if let Some(mut queue) = arc.rewake_queue.try_write() {
+            queue.push_back(arc.clone());
+        }
+        if let Some(mut blocked) = arc.blocked_events.try_write() {
+            blocked.remove(&arc.eid.0);
+        }
     }
 }

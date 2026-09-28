@@ -53,6 +53,7 @@ impl Shell {
     async fn read_char(&mut self) -> u8 {
         // Wait for the next keypress that maps to ASCII. next_event() pends
         // and yields to the scheduler while idle instead of busy-spinning.
+        // The IRQ handler wakes us via the Waker (now IRQ-safe with try_write).
         let c = loop {
             let event = keyboard::next_event().await;
             if let Some(c) = event_to_ascii(&event) {
