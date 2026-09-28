@@ -287,15 +287,13 @@ pub unsafe fn sys_exec(path: *mut u8, argv: *mut *mut u8, envp: *mut *mut u8) ->
     serial_println!("PATHNAME: {:#?}", pathname);
     serial_println!("CMD ARGS: {:#?}", args);
     serial_println!("ENV VARS: {:#?}", envs);
+    let pathname = pathname.clone();
     schedule_kernel(
-        async {
+        async move {
             let fs = FILESYSTEM.get().unwrap();
             let fd = {
                 fs.lock()
-                    .open_file(
-                        "/executables/hello",
-                        OpenFlags::O_RDONLY | OpenFlags::O_WRONLY,
-                    )
+                    .open_file(&pathname, OpenFlags::O_RDONLY | OpenFlags::O_WRONLY)
                     .await
             };
             // if fd.is_err() {
