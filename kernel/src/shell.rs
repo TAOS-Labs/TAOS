@@ -8,7 +8,7 @@ use crate::{
     devices::ps2_dev::keyboard,
     events::schedule_kernel,
     serial_println,
-    syscalls::syscall_handlers::{sys_exec, sys_read, sys_write},
+    syscalls::syscall_handlers::{event_to_ascii, sys_exec, sys_write},
 };
 
 pub struct Shell {
@@ -27,25 +27,17 @@ impl Shell {
     pub fn run(self) {
         serial_println!("SHELL RUNNING");
         self.print_prompt();
-        let mut i = 0;
-
         schedule_kernel(
             async move {
                 let mut shell = self;
                 loop {
-                    let c = shell.read_char();
+                    let c = shell.read_char().await;
                     match c {
                         b'\n' | b'\r' => {
                             shell.execute_command().await;
                             keyboard::flush_buffer();
                             shell.print_prompt();
                             serial_println!("ENVS: {:#?}", shell.env);
-                            // TODO: Until the heap allocation error is fixed arbitrary number of
-                            // commands allowed to run
-                            i += 1;
-                            if i == 5 {
-                                return;
-                            }
                         }
                         0x08 => shell.handle_backspace(),
                         _ if c.is_ascii_graphic() || c == b' ' => shell.handle_char(c),
@@ -58,9 +50,15 @@ impl Shell {
         );
     }
 
-    fn read_char(&mut self) -> u8 {
-        let mut c: u8 = 0;
-        unsafe { sys_read(0, &mut c as *mut u8, 1) };
+    async fn read_char(&mut self) -> u8 {
+        // Wait for the next keypress that maps to ASCII. next_event() pends
+        // and yields to the scheduler while idle instead of busy-spinning.
+        let c = loop {
+            let event = keyboard::next_event().await;
+            if let Some(c) = event_to_ascii(&event) {
+                break c;
+            }
+        };
         match c {
             b'\n' => {
                 // Enter handled separately
@@ -169,11 +167,20 @@ impl Shell {
             }
 
             t if t.starts_with("export ") => {
-                // export KEY=VAL
+                // export KEY=VAL; replace the existing entry if the key
+                // already exists instead of accumulating duplicates
                 if let Some(rest) = t.strip_prefix("export ") {
                     if let Some((k, v)) = rest.split_once('=') {
                         let pair = format(format_args!("{}={}", k, v));
-                        self.env.push(pair);
+                        if let Some(existing) = self
+                            .env
+                            .iter_mut()
+                            .find(|kv| kv.splitn(2, '=').next() == Some(k))
+                        {
+                            *existing = pair;
+                        } else {
+                            self.env.push(pair);
+                        }
                     }
                 }
             }
@@ -185,11 +192,12 @@ impl Shell {
                 let mut argc = 0;
                 let mut start = 0;
 
-                // split buffer on spaces
+                // split buffer on spaces, skipping empty segments so that
+                // consecutive spaces don't produce empty arguments
                 for i in 0..=self.position {
                     if i == self.position || self.buffer[i] == b' ' {
                         self.buffer[i] = 0;
-                        if argc < MAX_ARGS {
+                        if start < i && argc < MAX_ARGS {
                             argv[argc] = unsafe { self.buffer.as_mut_ptr().add(start) };
                             argc += 1;
                         }
@@ -199,14 +207,16 @@ impl Shell {
                 // end
                 argv[argc] = core::ptr::null_mut();
 
-                // build envp[]
-                let mut envp: Vec<*mut u8> = self
+                // build envp[] from temporary NUL-terminated copies; the
+                // shell's persistent environment strings are never mutated
+                let env_strings: Vec<String> = self
                     .env
-                    .iter_mut()
-                    .map(|s| {
-                        s.push('\0');
-                        s.as_mut_ptr()
-                    })
+                    .iter()
+                    .map(|kv| format(format_args!("{}\0", kv)))
+                    .collect();
+                let mut envp: Vec<*mut u8> = env_strings
+                    .iter()
+                    .map(|kv| kv.as_ptr() as *mut u8)
                     .collect();
                 // end
                 envp.push(core::ptr::null_mut());

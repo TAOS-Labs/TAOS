@@ -195,11 +195,13 @@ pub unsafe extern "C" fn syscall_handler_impl(
         SYSCALL_SOCKET => sys_socket(syscall.arg1, syscall.arg2, syscall.arg3),
         SYSCALL_BIND => sys_bind(syscall.arg1, syscall.arg2, syscall.arg3),
         SYSCALL_CONNECT => sys_connect(syscall.arg1, syscall.arg2, syscall.arg3),
-        SYSCALL_READ => sys_read(
-            syscall.arg1 as u32,
-            syscall.arg2 as *mut u8,
-            syscall.arg3 as usize,
-        ),
+        SYSCALL_READ => {
+            block_on(sys_read(
+                syscall.arg1 as u32,
+                syscall.arg2 as *mut u8,
+                syscall.arg3 as usize,
+            ))
+        }
         SYSCALL_WRITE => sys_write(
             syscall.arg1 as u32,
             syscall.arg2 as *mut u8,
@@ -353,20 +355,18 @@ pub unsafe fn sys_exec(path: *mut u8, argv: *mut *mut u8, envp: *mut *mut u8) ->
 
 /// # Safety
 /// TODO
-pub unsafe fn sys_read(fd: u32, buf: *mut u8, count: usize) -> u64 {
+pub async unsafe fn sys_read(fd: u32, buf: *mut u8, count: usize) -> u64 {
     if fd == 0 {
         let mut i = 0;
         while i < count {
-            unsafe {
-                match keyboard::try_read_event() {
-                    Some(event) => {
-                        if let Some(c) = event_to_ascii(&event) {
-                            *buf.add(i) = c;
-                            i += 1;
-                        }
-                    }
-                    None => break, // Exit early
+            // Wait for the next keypress; the event stream pends and yields
+            // to the scheduler while idle instead of busy-spinning.
+            let event = keyboard::next_event().await;
+            if let Some(c) = event_to_ascii(&event) {
+                unsafe {
+                    *buf.add(i) = c;
                 }
+                i += 1;
             }
         }
         i as u64

@@ -5,7 +5,7 @@
 
 use crate::{
     devices::ps2_dev::controller,
-    events::{futures::sync::BlockMutex, schedule_kernel},
+    events::{futures::sync::BlockMutex, schedule_kernel, yield_now},
     interrupts::idt::without_interrupts,
     serial_println,
 };
@@ -240,9 +240,23 @@ pub fn keyboard_handler() {
                 Ok(scancode) => {
                     schedule_kernel(
                         async move {
-                            let mut keyboard = KEYBOARD.lock().await;
-                            if let Err(e) = keyboard.process_scancode(scancode) {
-                                serial_println!("Error processing keyboard scancode: {:?}", e);
+                            // Use try_lock with yield-retry instead of lock().await:
+                            // BlockMutex::lock() waits on a Condition that is
+                            // never woken when the guard is dropped, so it can
+                            // sleep forever if the lock is contended.
+                            loop {
+                                match KEYBOARD.try_lock() {
+                                    Ok(mut keyboard) => {
+                                        if let Err(e) = keyboard.process_scancode(scancode) {
+                                            serial_println!(
+                                                "Error processing keyboard scancode: {:?}",
+                                                e
+                                            );
+                                        }
+                                        break;
+                                    }
+                                    Err(_) => yield_now().await,
+                                }
                             }
                         },
                         0,
@@ -258,8 +272,9 @@ pub fn keyboard_handler() {
     });
 }
 pub fn flush_buffer() {
-    let mut state = KEYBOARD.lock();
-    state.clear_buffer();
+    if let Ok(mut state) = KEYBOARD.try_lock() {
+        state.clear_buffer();
+    }
     // controller::with_controller(|ctrl| {
     //     while ctrl
     //         .read_status()
@@ -274,6 +289,15 @@ impl Stream for KeyboardStream {
     type Item = KeyboardEvent;
 
     fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        // Register the waker BEFORE attempting the lock. If try_lock fails
+        // below, we still return Pending, but a scancode processed in the
+        // meantime will wake us via the registered waker instead of being
+        // missed forever.
+        without_interrupts(|| {
+            let mut waker = KEYBOARD_WAKER.lock();
+            *waker = Some(cx.waker().clone());
+        });
+
         let mut keyboard = match KEYBOARD.try_lock() {
             Ok(keyboard) => keyboard,
             Err(_) => {
@@ -284,12 +308,6 @@ impl Stream for KeyboardStream {
         if let Some(event) = keyboard.read_event() {
             return Poll::Ready(Some(event));
         }
-
-        // No event available, register waker for notification
-        without_interrupts(|| {
-            let mut waker = KEYBOARD_WAKER.lock();
-            *waker = Some(cx.waker().clone());
-        });
 
         Poll::Pending
     }
