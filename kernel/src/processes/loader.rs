@@ -139,22 +139,18 @@ pub fn load_elf(
         }
     }
 
-    // Map user stack
+    // Map user stack (every page in the range, not just the top)
     let stack_start = VirtAddr::new(STACK_START);
     let stack_end = VirtAddr::new(STACK_START + STACK_SIZE as u64);
-    let _start_page: Page<Size4KiB> = Page::containing_address(stack_start);
-    let _end_page: Page<Size4KiB> = Page::containing_address(stack_end);
-    let frame = create_mapping(
-        _end_page,
-        user_mapper,
-        Some(PageTableFlags::PRESENT | PageTableFlags::USER_ACCESSIBLE | PageTableFlags::WRITABLE),
+    let start_page: Page<Size4KiB> = Page::containing_address(stack_start);
+    let end_page: Page<Size4KiB> = Page::containing_address(stack_end - 1u64);
+    let stack_flags = Some(
+        PageTableFlags::PRESENT | PageTableFlags::USER_ACCESSIBLE | PageTableFlags::WRITABLE,
     );
-    create_mapping_to_frame(
-        _end_page,
-        kernel_mapper,
-        Some(PageTableFlags::PRESENT | PageTableFlags::USER_ACCESSIBLE | PageTableFlags::WRITABLE),
-        frame,
-    );
+    for page in Page::range_inclusive(start_page, end_page) {
+        let frame = create_mapping(page, user_mapper, stack_flags);
+        create_mapping_to_frame(page, kernel_mapper, stack_flags, frame);
+    }
     // new anon_vma that corresponds to this stack
     let anon_vma_stack = Arc::new(VmAreaBackings::new());
 
@@ -181,7 +177,7 @@ pub fn load_elf(
     for s in args.into_iter().rev() {
         let bytes = s.into_bytes();
         let len = bytes.len() + 1; // +1 for '\0'
-        sp = VirtAddr::new(sp.as_u64() + len as u64);
+        sp = VirtAddr::new(sp.as_u64() - len as u64);
         unsafe {
             let dst = sp.as_mut_ptr::<u8>();
             core::ptr::copy_nonoverlapping(bytes.as_ptr(), dst, bytes.len());
@@ -196,7 +192,7 @@ pub fn load_elf(
     for s in envs.into_iter().rev() {
         let bytes = s.into_bytes();
         let len = bytes.len() + 1;
-        sp = VirtAddr::new(sp.as_u64() + len as u64);
+        sp = VirtAddr::new(sp.as_u64() - len as u64);
         unsafe {
             let dst = sp.as_mut_ptr::<u8>();
             core::ptr::copy_nonoverlapping(bytes.as_ptr(), dst, bytes.len());
@@ -218,23 +214,24 @@ pub fn load_elf(
     // 5) Align down again before pushing pointer arrays
     sp = VirtAddr::new(sp.as_u64() & !0xF);
 
-    // 6) Push envp pointers (NULL-terminated)
-    for &ptr in env_ptrs.iter().chain(core::iter::once(&0u64)) {
+    // 6) Push envp pointers (NULL-terminated), stack grows down
+    for &ptr in env_ptrs.iter().chain(core::iter::once(&0u64)).rev() {
+        sp = VirtAddr::new(sp.as_u64() - 8);
         unsafe {
             sp.as_mut_ptr::<u64>().write(ptr);
         }
-        sp = VirtAddr::new(sp.as_u64() + 8);
     }
 
-    // 7) Push argv pointers (NULL-terminated)
-    for &ptr in arg_ptrs.iter().chain(core::iter::once(&0u64)) {
+    // 7) Push argv pointers (NULL-terminated), stack grows down
+    for &ptr in arg_ptrs.iter().chain(core::iter::once(&0u64)).rev() {
+        sp = VirtAddr::new(sp.as_u64() - 8);
         unsafe {
             sp.as_mut_ptr::<u64>().write(ptr);
         }
-        sp = VirtAddr::new(sp.as_u64() + 8);
     }
 
     // 8) Finally push argc
+    sp = VirtAddr::new(sp.as_u64() - 8);
     let argc = arg_ptrs.len() as u64;
     unsafe {
         sp.as_mut_ptr::<u64>().write(argc);

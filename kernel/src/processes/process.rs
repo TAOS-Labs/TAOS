@@ -267,7 +267,7 @@ pub fn create_process(elf_bytes: &[u8], args: Vec<String>, envs: Vec<String>) ->
             r14: 0,
             r15: 0,
             rbp: 0,
-            rsp: stack_top.as_u64() - 16,
+            rsp: stack_top.as_u64(),
             rip: entry_point,
             rflags: 0x202,
         },
