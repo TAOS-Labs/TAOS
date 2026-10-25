@@ -122,7 +122,9 @@ impl<T> BoundedBuffer<T> {
     }
 
     pub fn put(&self, value: T) {
-        while self.count.load(Ordering::Acquire) == self.capacity {}
+        while self.count.load(Ordering::Acquire) == self.capacity {
+            core::hint::spin_loop();
+        }
 
         let tail = self.tail.load(Ordering::Relaxed) % self.capacity;
         {
@@ -136,7 +138,9 @@ impl<T> BoundedBuffer<T> {
     }
 
     pub fn get(&self) -> Option<T> {
-        while self.count.load(Ordering::Acquire) == 0 {}
+        while self.count.load(Ordering::Acquire) == 0 {
+            core::hint::spin_loop();
+        }
 
         let head = self.head.load(Ordering::Relaxed) % self.capacity;
         let val = {
@@ -162,6 +166,7 @@ unsafe impl<T> Sync for BlockMutex<T> {}
 
 pub enum BlockMutexError {
     WouldBlock,
+    NoCurrentEvent,
 }
 
 impl<T> BlockMutex<T> {
@@ -172,23 +177,23 @@ impl<T> BlockMutex<T> {
         }
     }
 
-    pub async fn lock(&self) -> BlockMutexGuard<T> {
+    pub async fn lock(&self) -> Result<BlockMutexGuard<'_, T>, BlockMutexError> {
         while self
             .unlocked
             .compare_exchange(true, false, Ordering::Relaxed, Ordering::Relaxed)
             .is_err()
         {
-            let event = current_running_event().expect("Using BlockMutex outside event");
+            let event = current_running_event().ok_or(BlockMutexError::NoCurrentEvent)?;
             Condition::new(self.unlocked.clone(), event).await;
         }
 
-        BlockMutexGuard {
+        Ok(BlockMutexGuard {
             mutex: self,
             data: self.data.get(),
-        }
+        })
     }
 
-    pub fn try_lock(&self) -> Result<BlockMutexGuard<T>, BlockMutexError> {
+    pub fn try_lock(&self) -> Result<BlockMutexGuard<'_, T>, BlockMutexError> {
         match self
             .unlocked
             .compare_exchange(true, false, Ordering::Relaxed, Ordering::Relaxed)
@@ -201,7 +206,7 @@ impl<T> BlockMutex<T> {
         }
     }
 
-    pub fn spin(&self) -> BlockMutexGuard<T> {
+    pub fn spin(&self) -> BlockMutexGuard<'_, T> {
         while self
             .unlocked
             .compare_exchange(true, false, Ordering::Relaxed, Ordering::Relaxed)

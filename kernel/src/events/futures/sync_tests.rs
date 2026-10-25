@@ -211,24 +211,26 @@ mod tests {
         // This event should acquire the lock first and perform 10 + 5 = 5
         let write_event = schedule_kernel(
             async {
-                let mut val = unsafe { MUTEX.as_mut().unwrap().lock().await };
+                let mut val = unsafe { MUTEX.as_mut().unwrap().lock().await.unwrap() };
                 nanosleep_current_event(20_000_000).unwrap().await;
 
                 *val += 5;
             },
             1,
-        );
+        )
+        .expect("test event should schedule");
 
         // This event should acquire the lock second and read 15
         let read_event = schedule_kernel(
             async {
                 nanosleep_current_event(5_000_000).unwrap().await;
-                let val = unsafe { MUTEX.as_mut().unwrap().lock().await };
+                let val = unsafe { MUTEX.as_mut().unwrap().lock().await.unwrap() };
 
                 assert_eq!(*val, 15);
             },
             1,
-        );
+        )
+        .expect("test event should schedule");
 
         let write_res = Await::new(
             write_event,

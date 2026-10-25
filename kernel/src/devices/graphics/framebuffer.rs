@@ -243,7 +243,7 @@ impl FrameBuffer {
         let rgba = color.to_rgba();
 
         // For faster clearing, fill 4 bytes at a time when possible
-        if self.bytes_per_pixel == 4 && self.pitch % 4 == 0 {
+        if self.bytes_per_pixel == 4 && self.pitch.is_multiple_of(4) {
             let pixels = self.back_buffer.as_mut_ptr() as *mut u32;
             let count = self.size / 4;
 

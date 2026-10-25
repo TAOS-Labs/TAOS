@@ -161,7 +161,7 @@ pub fn map_page_as_uncacheable(
             }
         },
         TranslateResult::InvalidFrameAddress(_) => {
-            panic!("Invalid physical address in SD BAR")
+            return Err(MMIOError);
         }
         TranslateResult::NotMapped => {
             // debug_println!("notmapped");
@@ -170,7 +170,8 @@ pub fn map_page_as_uncacheable(
                 mapper,
                 bar_frame,
                 PageTableFlags::PRESENT | PageTableFlags::NO_CACHE | PageTableFlags::WRITABLE,
-            );
+            )
+            .map_err(|_| MMIOError)?;
             offset_bar = new_va.as_u64();
         }
     }

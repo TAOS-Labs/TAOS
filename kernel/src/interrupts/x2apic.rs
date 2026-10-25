@@ -165,12 +165,12 @@ impl X2ApicManager {
         let kernel_cs = gdt::GDT.1.code_selector.0 as u64;
         let star: u64 = ((user_cs - 16) << 48) | (kernel_cs << 32);
 
-        let sys_addr = syscall_handler_64_naked as usize;
+        let sys_addr = syscall_handler_64_naked as *const () as usize;
 
         // Set up MSRs for syscall
         unsafe {
             Msr::new(X2APIC_IA32_EFER).write(Msr::new(X2APIC_IA32_EFER).read() | 1);
-            Msr::new(X2APIC_IA32_LSTAR).write(sys_addr.try_into().unwrap());
+            Msr::new(X2APIC_IA32_LSTAR).write(sys_addr as u64);
             Msr::new(X2APIC_IA32_FMASK).write(fmask);
             Msr::new(X2APIC_IA32_STAR).write(star);
             Msr::new(X2APIC_IA32_KERNEL_GSBASE).write(KernelGsBase::read().as_u64());
@@ -381,7 +381,9 @@ pub fn init_ap() -> Result<(), X2ApicError> {
 /// Send EOI signal to acknowledge the current interrupt
 #[inline(always)]
 pub fn send_eoi() {
-    X2ApicManager::send_eoi().expect("Failed sending interrupt");
+    if let Err(error) = X2ApicManager::send_eoi() {
+        crate::serial_println!("Failed to acknowledge interrupt: {:?}", error);
+    }
 }
 
 /// Get the ID of the current CPU core
@@ -393,19 +395,25 @@ pub fn current_core_id() -> usize {
 /// Send IPI to a specific core
 #[inline(always)]
 pub fn send_ipi(target_id: u32, vector: u8) {
-    X2ApicManager::send_ipi(target_id, vector).expect("Failed sending IPI");
+    if let Err(error) = X2ApicManager::send_ipi(target_id, vector) {
+        crate::serial_println!("Failed to send IPI to CPU {}: {:?}", target_id, error);
+    }
 }
 
 /// Mask the APIC timer
 #[inline(always)]
 pub fn mask_timer() {
-    X2ApicManager::mask_timer().expect("Failed to mask timer");
+    if let Err(error) = X2ApicManager::mask_timer() {
+        crate::serial_println!("Failed to mask APIC timer: {:?}", error);
+    }
 }
 
 /// Unmask the APIC timer
 #[inline(always)]
 pub fn unmask_timer() {
-    X2ApicManager::unmask_timer().expect("Failed to unmask timer");
+    if let Err(error) = X2ApicManager::unmask_timer() {
+        crate::serial_println!("Failed to unmask APIC timer: {:?}", error);
+    }
 }
 
 #[inline(always)]

@@ -111,8 +111,10 @@ pub struct Selectors {
 ///
 /// # Panics
 /// Panics if cpu_id >= MAX_CORES
-pub fn init(cpu_id: u32) {
-    assert!(cpu_id < MAX_CORES as u32, "CPU ID exceeds MAX_CORES");
+pub fn init(cpu_id: u32) -> Result<(), &'static str> {
+    if cpu_id >= MAX_CORES as u32 {
+        return Err("CPU ID exceeds MAX_CORES");
+    }
 
     GDT.0.load();
 
@@ -128,4 +130,5 @@ pub fn init(cpu_id: u32) {
         load_tss(GDT.1.tss_selectors[cpu_id as usize]);
     }
     KernelGsBase::write(VirtAddr::new(&TSSS[cpu_id as usize] as *const _ as u64));
+    Ok(())
 }

@@ -167,9 +167,8 @@ impl USBDeviceInfo {
         data_addr: PhysAddr,
         data_addr_size: usize,
     ) -> Result<(), XHCIError> {
-        assert!(data_addr_size < u16::MAX.into());
         let transfer_length: u16 = 8;
-        let info = XHCI.lock().clone().unwrap();
+        let info = XHCI.lock().clone().ok_or(XHCIError::NoFrameAllocator)?;
 
         let setup_trb = TransferRequestBlock {
             parameters: setup_params,
@@ -184,7 +183,8 @@ impl USBDeviceInfo {
                 .map_err(|_| XHCIError::TransferRingError)?;
         }
 
-        let transfer_length: u16 = data_addr_size.try_into().expect("Asserted would fit");
+        let transfer_length =
+            u16::try_from(data_addr_size).map_err(|_| XHCIError::TransferRingError)?;
         let td_size: u8 = 0;
         let data_trb = TransferRequestBlock {
             parameters: data_addr.as_u64(),
@@ -220,7 +220,7 @@ impl USBDeviceInfo {
 
     pub fn send_command_no_data(&mut self, setup_params: u64) -> Result<(), XHCIError> {
         let transfer_length: u16 = 8;
-        let info = XHCI.lock().clone().unwrap();
+        let info = XHCI.lock().clone().ok_or(XHCIError::NoFrameAllocator)?;
 
         let setup_trb = TransferRequestBlock {
             parameters: setup_params,
@@ -415,13 +415,11 @@ pub fn initalize_xhci_hub(device: &Arc<Mutex<DeviceInfo>>) -> Result<(), XHCIErr
         dealloc_frame(data_frame);
     }
     // Now look for devices
-    let slot_config = find_cdc_device(&mut devices).unwrap();
+    let slot_config = find_cdc_device(&mut devices).ok_or(XHCIError::NoInterface)?;
     let slot = slot_config.0;
     let configuration = slot_config.1;
-    let mut device = init_cdc_device(
-        find_device_in_slot(&mut devices, slot).expect("Found device should be in list of devices"),
-        configuration,
-    )?;
+    let selected_device = find_device_in_slot(&mut devices, slot).ok_or(XHCIError::NoInterface)?;
+    let mut device = init_cdc_device(selected_device, configuration)?;
     let hw_address = device.get_eth_addr()?;
     set_interface(device, hw_address);
     Result::Ok(())
@@ -531,8 +529,8 @@ fn reset_xchi_controller(operational_registers: u64) {
 }
 
 fn initalize_xhci_info(full_bar: u64, mapper: &mut OffsetPageTable) -> Result<XHCIInfo, XHCIError> {
-    let base_virtual_address =
-        mmio::map_page_as_uncacheable(PhysAddr::new(full_bar), mapper).unwrap();
+    let base_virtual_address = mmio::map_page_as_uncacheable(PhysAddr::new(full_bar), mapper)
+        .map_err(|_| XHCIError::MemoryAllocationFailure)?;
     let capablities = get_host_controller_cap_regs(base_virtual_address.as_u64());
     let extended_reg_length: u64 = capablities.register_length.into();
     let operational_start = base_virtual_address.as_u64() + extended_reg_length;
@@ -578,10 +576,10 @@ fn initalize_xhci_info(full_bar: u64, mapper: &mut OffsetPageTable) -> Result<XH
         cmd_frame.start_address(),
         1,
         ring_buffer::RingType::Command,
-        PAGE_SIZE.try_into().unwrap(),
+        PAGE_SIZE as isize,
         mapper.phys_offset(),
     )
-    .expect("Error initializing producer ring.");
+    .map_err(|_| XHCIError::CommandRingError)?;
 
     mmio::map_page_as_uncacheable(
         PhysAddr::new(full_bar + (capablities.runtime_register_space_offset as u64)),
@@ -596,7 +594,7 @@ fn initalize_xhci_info(full_bar: u64, mapper: &mut OffsetPageTable) -> Result<XH
     .map_err(|_| XHCIError::MemoryAllocationFailure)?;
 
     let primary_event_ring =
-        create_device_event_ring_no_info(base_virtual_address, capablities, mapper, 0).unwrap();
+        create_device_event_ring_no_info(base_virtual_address, capablities, mapper, 0)?;
 
     Result::Ok(XHCIInfo {
         base_address: base_virtual_address,
@@ -710,7 +708,7 @@ fn boot_up_usb_port(
     drop(primary_event_ring);
     // Now wait for response
     let event = wait_for_events_including_command_completion(info, mapper)?;
-    let slot: u8 = (event.control >> 24).try_into().expect("Masked out bits");
+    let slot = ((event.control >> 24) & 0xff) as u8;
     Result::Ok(slot)
 }
 
@@ -732,10 +730,10 @@ fn address_device(
         buffer_frame.start_address(),
         1,
         RingType::Transfer,
-        (PAGE_SIZE).try_into().unwrap(),
+        PAGE_SIZE as isize,
         mapper.phys_offset(),
     )
-    .expect("Everything should be alligned");
+    .map_err(|_| XHCIError::TransferRingError)?;
 
     // For device context see Figure 4-1 of xhci spec (Page 95)
     let device_context_frame = alloc_frame().ok_or(XHCIError::MemoryAllocationFailure)?;
@@ -748,8 +746,10 @@ fn address_device(
     // Start with the input control context (ICC in this code)
     let input_control_context_ptr: *mut InputControlContext = device_context_address.as_mut_ptr();
     let mut icc = unsafe { *input_control_context_ptr };
-    icc.set_add_flag(0, 1);
-    icc.set_add_flag(1, 1);
+    icc.set_add_flag(0, 1)
+        .map_err(|_| XHCIError::CommandRingError)?;
+    icc.set_add_flag(1, 1)
+        .map_err(|_| XHCIError::CommandRingError)?;
     unsafe { core::ptr::write_volatile(input_control_context_ptr, icc) };
 
     // Now handle slot context
@@ -757,9 +757,15 @@ fn address_device(
     let slot_context_va = device_context_address + 0x20;
     let slot_context_ptr: *mut SlotContext = slot_context_va.as_mut_ptr();
     let mut slot_context = unsafe { core::ptr::read_volatile(slot_context_ptr) };
-    slot_context.set_root_hub_port(slot.into());
-    slot_context.set_context_entries(1);
-    slot_context.set_route_string(0);
+    slot_context
+        .set_root_hub_port(slot.into())
+        .map_err(|_| XHCIError::CommandRingError)?;
+    slot_context
+        .set_context_entries(1)
+        .map_err(|_| XHCIError::CommandRingError)?;
+    slot_context
+        .set_route_string(0)
+        .map_err(|_| XHCIError::CommandRingError)?;
     unsafe {
         core::ptr::write_volatile(slot_context_ptr, slot_context);
     }
@@ -775,10 +781,16 @@ fn address_device(
     endpoint_zero_context.set_max_burst_size(0);
     endpoint_zero_context.set_dcs(1);
     endpoint_zero_context.set_interval(0);
-    endpoint_zero_context.set_maxpstreams(0);
-    endpoint_zero_context.set_mult(0);
+    endpoint_zero_context
+        .set_maxpstreams(0)
+        .map_err(|_| XHCIError::CommandRingError)?;
+    endpoint_zero_context
+        .set_mult(0)
+        .map_err(|_| XHCIError::CommandRingError)?;
     endpoint_zero_context.set_cerr(3);
-    endpoint_zero_context.set_trdequeue_ptr(buffer_address - mapper.phys_offset());
+    endpoint_zero_context
+        .set_trdequeue_ptr(buffer_address - mapper.phys_offset())
+        .map_err(|_| XHCIError::CommandRingError)?;
     unsafe {
         core::ptr::write_volatile(ep0_context_ptr, endpoint_zero_context);
     }
@@ -832,7 +844,9 @@ fn create_device_event_ring_no_info(
     mapper: &mut OffsetPageTable,
     interrupter: u16,
 ) -> Result<ConsumerRingBuffer, XHCIError> {
-    assert!(interrupter < 1024);
+    if interrupter >= 1024 {
+        return Err(XHCIError::UnknownPort);
+    }
 
     // Allocate space for the primary event ring
     let erst_frame = alloc_frame().ok_or(XHCIError::MemoryAllocationFailure)?;
@@ -860,7 +874,7 @@ fn create_device_event_ring_no_info(
         er_segment_frame.start_address(),
         4096 / 16,
     )
-    .expect("Error initializing consumer ring.");
+    .map_err(|_| XHCIError::CommandRingError)?;
 
     // write the necessary data to the event ring fields of the specifified interrupter register
     let erstsz_addr = (base_address.as_u64()
@@ -906,16 +920,15 @@ fn wait_for_events(
 
     // if this is a command completion event, update the command ring's dequeue ptr
     let trb_type = event.get_trb_type();
-    assert!(
-        trb_type != TrbTypes::CmdCompleteEvent as u32,
-        "Use wait_for_events_including command completion if there is a command completion event"
-    );
+    if trb_type == TrbTypes::CmdCompleteEvent as u32 {
+        return Err(XHCIError::CommandRingError);
+    }
     let erdp_addr = info.base_address
         + info.capablities.runtime_register_space_offset as u64
         + 0x38
         + (32 * interrupter as u64);
     unsafe {
-        update_deque_ptr(erdp_addr.as_mut_ptr(), event_ring, mapper);
+        update_deque_ptr(erdp_addr.as_mut_ptr(), event_ring, mapper)?;
     }
     Result::Ok(event)
 }
@@ -947,7 +960,7 @@ fn wait_for_events_including_command_completion(
         let mut command_ring = command_ring_lock.lock();
         command_ring
             .set_dequeue(new_dequeue)
-            .expect("address was unaligned");
+            .map_err(|_| XHCIError::CommandRingError)?;
     }
 
     let erdp_addr =
@@ -955,7 +968,7 @@ fn wait_for_events_including_command_completion(
     let event_ring_lock = info.primary_event_ring.clone();
     let event_ring = event_ring_lock.lock();
     unsafe {
-        update_deque_ptr(erdp_addr.as_mut_ptr(), &event_ring, mapper);
+        update_deque_ptr(erdp_addr.as_mut_ptr(), &event_ring, mapper)?;
     }
     Result::Ok(event)
 }
@@ -970,7 +983,7 @@ pub unsafe fn update_deque_ptr(
     deque_pointer_register: *mut u64,
     event_ring: &ConsumerRingBuffer,
     mapper: &OffsetPageTable,
-) {
+) -> Result<(), XHCIError> {
     let deque = event_ring.get_dequeue();
     // Now we need the physical addr of the deque ptr, so we grab mapper
     let result = mapper.translate(VirtAddr::new(deque));
@@ -982,12 +995,10 @@ pub unsafe fn update_deque_ptr(
         } => {
             let deque_physical = frame.start_address() + offset;
             unsafe { core::ptr::write_volatile(deque_pointer_register, deque_physical.as_u64()) };
+            Ok(())
         }
-        TranslateResult::InvalidFrameAddress(_) => {
-            panic!("dequeue pointer should always point to valid memory")
-        }
-        TranslateResult::NotMapped => {
-            panic!("dequeue pointer should always point to valid memory")
+        TranslateResult::InvalidFrameAddress(_) | TranslateResult::NotMapped => {
+            Err(XHCIError::TransferRingError)
         }
     }
 }

@@ -91,9 +91,10 @@ pub fn get_ip_addr() -> Result<(), NetError> {
     if !packets_sent {
         return Result::Err(NetError::NoPackets);
     }
+    let dhcp_handle = device_interface.dhcp_handle.ok_or(NetError::NoInterface)?;
     let event = device_interface
         .sockets
-        .get_mut::<dhcpv4::Socket>(device_interface.dhcp_handle.unwrap())
+        .get_mut::<dhcpv4::Socket>(dhcp_handle)
         .poll();
     match event {
         None => {
@@ -111,7 +112,7 @@ pub fn get_ip_addr() -> Result<(), NetError> {
                     .interface
                     .routes_mut()
                     .add_default_ipv4_route(router)
-                    .unwrap();
+                    .map_err(|_| NetError::DeviceError)?;
             } else {
                 debug!("Default gateway: None");
                 device_interface
@@ -143,7 +144,9 @@ pub fn get_ip_addr() -> Result<(), NetError> {
 fn set_ipv4_addr(iface: &mut Interface, cidr: Ipv4Cidr) {
     iface.update_ip_addrs(|addrs| {
         addrs.clear();
-        addrs.push(IpCidr::Ipv4(cidr)).unwrap();
+        if addrs.push(IpCidr::Ipv4(cidr)).is_err() {
+            debug_println!("Network address table is full; IPv4 address was not installed");
+        }
     });
 }
 

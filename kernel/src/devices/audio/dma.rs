@@ -13,14 +13,18 @@ pub struct DmaBuffer {
 impl DmaBuffer {
     /// Allocates `size` bytes of DMA-safe memory, shhould be page aligned
     pub fn new(size: usize) -> Option<Self> {
+        if size == 0 {
+            return None;
+        }
         let page_count = size.div_ceil(0x1000);
 
         let mut virt_addr = None;
         let mut phys_addr = None;
-        let order = page_count.ilog2() + 1;
+        let order = page_count.checked_next_power_of_two()?.trailing_zeros();
 
         with_buddy_frame_allocator(|f| {
-            let frames = f.allocate_block(order.try_into().unwrap());
+            let order = u16::try_from(order).ok()?;
+            let frames = f.allocate_block(order)?;
             for (idx, frame) in frames.iter().enumerate() {
                 let temp_virt = *HHDM_OFFSET + frame.start_address().as_u64();
 
@@ -33,7 +37,8 @@ impl DmaBuffer {
                     core::ptr::write_bytes(temp_virt.as_mut_ptr::<u8>(), 0, 0x1000);
                 }
             }
-        });
+            Some(())
+        })??;
 
         let virt = virt_addr?;
         let phys = phys_addr?;

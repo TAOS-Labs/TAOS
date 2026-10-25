@@ -37,10 +37,13 @@ lazy_static! {
     pub static ref KERNEL_MAPPER: Mutex<OffsetPageTable<'static>> = Mutex::new(unsafe { paging::init() });
     // Start of kernel virtual memory
     pub static ref HHDM_OFFSET: VirtAddr = VirtAddr::new(
-        HHDM_REQUEST
-            .get_response()
-            .expect("HHDM request failed")
-            .offset()
+        match HHDM_REQUEST.get_response() {
+            Some(response) => response.offset(),
+            None => {
+                crate::serial_println!("Bootloader did not provide the required HHDM response");
+                crate::idle_loop();
+            }
+        }
     );
 }
 
@@ -50,8 +53,11 @@ lazy_static! {
 pub fn init(cpu_id: u32) {
     if cpu_id == 0 {
         unsafe {
-            *FRAME_ALLOCATOR.lock() =
-                Some(GlobalFrameAllocator::Boot(BootIntoFrameAllocator::init()));
+            let Some(allocator) = BootIntoFrameAllocator::init() else {
+                crate::serial_println!("Bootloader memory information is unavailable");
+                crate::idle_loop();
+            };
+            *FRAME_ALLOCATOR.lock() = Some(GlobalFrameAllocator::Boot(allocator));
         }
 
         unsafe {
@@ -61,6 +67,9 @@ pub fn init(cpu_id: u32) {
                 flags.insert(EferFlags::NO_EXECUTE_ENABLE);
             });
         }
-        heap::init_heap().expect("Failed to initialize heap");
+        if let Err(error) = heap::init_heap() {
+            crate::serial_println!("Failed to initialize heap: {:?}", error);
+            crate::idle_loop();
+        }
     }
 }

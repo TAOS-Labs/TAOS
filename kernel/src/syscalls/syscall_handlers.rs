@@ -13,6 +13,7 @@ use core::{
 
 use crate::{
     constants::syscalls::*,
+    error::Errno,
     events::{
         current_running_event, current_running_event_info, futures::await_on::AwaitProcess,
         get_runner_time, yield_now, EventInfo,
@@ -164,8 +165,7 @@ pub unsafe extern "C" fn syscall_handler_impl(
 
     match syscall.number as u32 {
         SYSCALL_EXIT => {
-            sys_exit(syscall.arg1 as i64, reg_vals);
-            unreachable!("sys_exit does not return");
+            sys_exit(syscall.arg1 as i64, reg_vals).unwrap_or_else(Errno::as_syscall_return)
         }
         SYSCALL_PRINT => sys_print(syscall.arg1 as *const u8),
         SYSCALL_NANOSLEEP => sys_nanosleep_64(syscall.arg1, reg_vals),
@@ -184,30 +184,19 @@ pub unsafe extern "C" fn syscall_handler_impl(
         SYSCALL_SOCKET => sys_socket(syscall.arg1, syscall.arg2, syscall.arg3),
         SYSCALL_BIND => sys_bind(syscall.arg1, syscall.arg2, syscall.arg3),
         SYSCALL_CONNECT => sys_connect(syscall.arg1, syscall.arg2, syscall.arg3),
-        _ => {
-            panic!("Unknown syscall, {}", syscall.number);
-        }
+        _ => Errno::NotImplemented.as_syscall_return(),
     }
 }
 
-pub fn sys_exit(code: i64, reg_vals: &ForkingRegisters) -> Option<u64> {
+pub fn sys_exit(code: i64, reg_vals: &ForkingRegisters) -> Result<u64, Errno> {
     // TODO handle hierarchy (parent processes), resources, threads, etc.
-
-    // Used for testing
-    if code == -1 {
-        panic!("Exited with code -1");
-    }
 
     let event: EventInfo = current_running_event_info();
 
     serial_println!("Process {} exited with code {}", event.pid, code);
-    // This is for testing; this way, we can write binaries that conditionally fail tests
-    if code == -1 {
-        panic!("Unknown exit code, something went wrong")
-    }
 
     if event.pid == 0 {
-        panic!("Calling exit from outside of process");
+        return Err(Errno::NoSuchProcess);
     }
 
     // Get PCB from PID
@@ -215,7 +204,7 @@ pub fn sys_exit(code: i64, reg_vals: &ForkingRegisters) -> Option<u64> {
         let mut process_table = PROCESS_TABLE.write();
         let process = process_table
             .get_mut(&event.pid)
-            .expect("Process not found");
+            .ok_or(Errno::NoSuchProcess)?;
 
         let pcb = process.pcb.get();
 
@@ -251,13 +240,19 @@ pub fn sys_exit(code: i64, reg_vals: &ForkingRegisters) -> Option<u64> {
         core::arch::asm!("ret");
     }
 
-    Some(code as u64)
+    Ok(code as u64)
 }
 
 // Not a real system call, but useful for testing
 pub fn sys_print(buffer: *const u8) -> u64 {
+    if buffer.is_null() {
+        return Errno::Fault.as_syscall_return();
+    }
     let c_str = unsafe { CStr::from_ptr(buffer as *const i8) };
-    let str_slice = c_str.to_str().expect("Invalid UTF-8 string");
+    let str_slice = match c_str.to_str() {
+        Ok(value) => value,
+        Err(_) => return Errno::IllegalByteSequence.as_syscall_return(),
+    };
     serial_println!("Buffer: {}", str_slice);
 
     0
@@ -282,14 +277,22 @@ pub fn sys_nanosleep_64(nanos: u64, reg_vals: &ForkingRegisters) -> u64 {
 
 /// Wait on a process to finish
 pub async fn sys_wait(pid: u32) -> u64 {
-    let _waiter = AwaitProcess::new(
-        pid,
-        get_runner_time(3_000_000_000),
-        current_running_event().unwrap(),
-    )
-    .await;
+    let Some(event) = current_running_event() else {
+        return Errno::NoSuchProcess.as_syscall_return();
+    };
+    if AwaitProcess::new(pid, get_runner_time(3_000_000_000), event)
+        .await
+        .is_err()
+    {
+        return Errno::NoChild.as_syscall_return();
+    }
 
-    return *(EXIT_CODES.lock().get(&pid).unwrap()) as u64;
+    EXIT_CODES
+        .lock()
+        .get(&pid)
+        .copied()
+        .map(|code| code as u64)
+        .unwrap_or_else(|| Errno::NoChild.as_syscall_return())
 }
 
 /// Helper function for sys_wait, not sure if necessary

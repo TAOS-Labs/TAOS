@@ -12,7 +12,7 @@ use crate::{
         paging::map_kernel_frame,
         KERNEL_MAPPER,
     },
-    processes::process::{with_current_pcb, FakeFile},
+    processes::process::{try_with_current_pcb, FakeFile},
 };
 use alloc::{
     boxed::Box,
@@ -42,6 +42,14 @@ use async_trait::async_trait;
 use bitflags::bitflags;
 
 use crate::{devices::sd_card::SD_CARD, serial_println};
+
+async fn wait_until_initialized() -> FilesystemResult<()> {
+    if !FS_INIT_COMPLETE.load(Ordering::Relaxed) {
+        let event = current_running_event().ok_or(FilesystemError::CacheError)?;
+        Condition::new(FS_INIT_COMPLETE.clone(), event).await;
+    }
+    Ok(())
+}
 
 lazy_static! {
     /// Whether the filesystem has finished initialization
@@ -216,15 +224,13 @@ pub fn get_file(fd: usize) -> FilesystemResult<Arc<Mutex<File>>> {
     if fd >= MAX_FILES {
         return Err(FilesystemError::InvalidFd);
     }
-    let file = with_current_pcb(|pcb| {
+    let file = try_with_current_pcb(|pcb| {
         let fd_table = &pcb.fd_table;
         fd_table[fd].clone()
-    });
+    })
+    .map_err(|_| FilesystemError::InvalidFd)?;
 
-    if file.is_none() {
-        return Err(FilesystemError::InvalidFd);
-    }
-    let file = file.unwrap().clone();
+    let file = file.ok_or(FilesystemError::InvalidFd)?;
 
     // let file_guard = file.lock();
     if let FakeFile::File(f) = file {
@@ -241,7 +247,7 @@ pub fn get_file(fd: usize) -> FilesystemResult<Arc<Mutex<File>>> {
 ///
 /// * `filepath`: The relevant file path to get the File for
 pub fn get_fd(filepath: &str) -> FilesystemResult<usize> {
-    with_current_pcb(|pcb| {
+    try_with_current_pcb(|pcb| {
         for (fd, file_opt) in pcb.fd_table.iter().enumerate() {
             if let Some(file_arc) = file_opt {
                 if let FakeFile::File(f) = file_arc.clone() {
@@ -254,6 +260,7 @@ pub fn get_fd(filepath: &str) -> FilesystemResult<usize> {
         }
         Err(FilesystemError::InvalidFd)
     })
+    .map_err(|_| FilesystemError::InvalidFd)?
 }
 
 /// Convert between the ChmodMode and the FileMode
@@ -295,13 +302,7 @@ impl Ext2Wrapper {
 #[async_trait]
 impl FileSystem for Ext2Wrapper {
     async fn create_dir(&mut self, path: &str, chmod_flags: ChmodMode) -> FilesystemResult<()> {
-        if !FS_INIT_COMPLETE.load(Ordering::Relaxed) {
-            Condition::new(
-                FS_INIT_COMPLETE.clone(),
-                current_running_event().expect("Fat16 action outside event"),
-            )
-            .await;
-        }
+        wait_until_initialized().await?;
 
         let mode = chmod_to_filemode(chmod_flags);
 
@@ -311,13 +312,7 @@ impl FileSystem for Ext2Wrapper {
     }
 
     async fn open_file(&mut self, path: &str, flags: OpenFlags) -> FilesystemResult<usize> {
-        if !FS_INIT_COMPLETE.load(Ordering::Relaxed) {
-            Condition::new(
-                FS_INIT_COMPLETE.clone(),
-                current_running_event().expect("Fat16 action outside event"),
-            )
-            .await;
-        }
+        wait_until_initialized().await?;
 
         let inode_number = if flags.contains(OpenFlags::O_CREAT) {
             let file_mode = FileMode::REG
@@ -335,13 +330,14 @@ impl FileSystem for Ext2Wrapper {
             self.filesystem.lock().get_node(path).await?.number()
         };
 
-        let fd: Option<usize> = with_current_pcb(|pcb| {
+        let fd: Option<usize> = try_with_current_pcb(|pcb| {
             let fd = pcb.find_next_fd()?;
             let file = File::new(path.to_string(), fd, 0, flags, inode_number);
             pcb.fd_table[fd] = Some(FakeFile::File(Arc::new(Mutex::new(file))));
 
             Option::Some(fd)
-        });
+        })
+        .map_err(|_| FilesystemError::InvalidFd)?;
         match fd {
             Option::None => Err(FilesystemError::NoFd),
             Option::Some(file) => {
@@ -356,20 +352,10 @@ impl FileSystem for Ext2Wrapper {
     }
 
     async fn remove(&mut self, fd: usize) -> FilesystemResult<()> {
-        if !FS_INIT_COMPLETE.load(Ordering::Relaxed) {
-            Condition::new(
-                FS_INIT_COMPLETE.clone(),
-                current_running_event().expect("Fat16 action outside event"),
-            )
-            .await;
-        }
-        let file = get_file(fd);
-        if file.is_err() {
-            return Err(FilesystemError::InvalidFd);
-        }
+        wait_until_initialized().await?;
 
         // remove the file from the filesystem
-        let file = file.unwrap();
+        let file = get_file(fd)?;
         self.filesystem
             .lock()
             .remove(file.lock().pathname.as_str())
@@ -379,13 +365,7 @@ impl FileSystem for Ext2Wrapper {
     }
 
     async fn close_file(&mut self, fd: usize) -> FilesystemResult<()> {
-        if !FS_INIT_COMPLETE.load(Ordering::Relaxed) {
-            Condition::new(
-                FS_INIT_COMPLETE.clone(),
-                current_running_event().expect("Fat16 action outside event"),
-            )
-            .await;
-        }
+        wait_until_initialized().await?;
 
         if fd >= MAX_FILES {
             return Err(FilesystemError::InvalidFd);
@@ -413,30 +393,27 @@ impl FileSystem for Ext2Wrapper {
                     fs.write_file_at(&path, _buffer, *offset).await?;
 
                     let mapper = KERNEL_MAPPER.lock();
-                    let frame = mapper.translate_page(*page).unwrap();
+                    let frame = mapper
+                        .translate_page(*page)
+                        .map_err(|_| FilesystemError::CacheError)?;
                     dealloc_frame(frame);
                 }
             }
         }
 
-        with_current_pcb(|pcb| {
+        try_with_current_pcb(|pcb| {
             if pcb.fd_table[fd].is_none() {
                 return Err(FilesystemError::InvalidFd);
             }
             pcb.fd_table[fd] = None;
             Ok(())
-        })?;
+        })
+        .map_err(|_| FilesystemError::InvalidFd)??;
         Ok(())
     }
 
     async fn write_file(&mut self, fd: usize, buf: &[u8]) -> FilesystemResult<usize> {
-        if !FS_INIT_COMPLETE.load(Ordering::Relaxed) {
-            Condition::new(
-                FS_INIT_COMPLETE.clone(),
-                current_running_event().expect("Fat16 action outside event"),
-            )
-            .await;
-        }
+        wait_until_initialized().await?;
 
         let file = get_file(fd)?;
         let (locked_file, bytes_written, old_size) = {
@@ -465,7 +442,7 @@ impl FileSystem for Ext2Wrapper {
             let page_cache_guard = self.page_cache.lock();
             let mut inner_mapping = page_cache_guard
                 .get(&locked_file.inode_number)
-                .unwrap()
+                .ok_or(FilesystemError::CacheError)?
                 .lock();
             inner_mapping.remove(&start_offset);
         }
@@ -482,13 +459,7 @@ impl FileSystem for Ext2Wrapper {
     }
 
     async fn seek_file(&mut self, fd: usize, pos: usize) -> FilesystemResult<()> {
-        if !FS_INIT_COMPLETE.load(Ordering::Relaxed) {
-            Condition::new(
-                FS_INIT_COMPLETE.clone(),
-                current_running_event().expect("Fat16 action outside event"),
-            )
-            .await;
-        }
+        wait_until_initialized().await?;
         let file_lock = get_file(fd)?;
         let mut file = file_lock.lock();
         let fs = self.filesystem.lock();
@@ -502,13 +473,7 @@ impl FileSystem for Ext2Wrapper {
     }
 
     async fn read_file(&mut self, fd: usize, buf: &mut [u8]) -> FilesystemResult<usize> {
-        if !FS_INIT_COMPLETE.load(Ordering::Relaxed) {
-            Condition::new(
-                FS_INIT_COMPLETE.clone(),
-                current_running_event().expect("Fat16 action outside event"),
-            )
-            .await;
-        }
+        wait_until_initialized().await?;
 
         let file = get_file(fd)?;
         let mut locked_file = { file.lock() };
@@ -551,13 +516,7 @@ impl FileSystem for Ext2Wrapper {
     }
 
     async fn read_dir(&self, path: &str) -> FilesystemResult<Vec<DirEntry>> {
-        if !FS_INIT_COMPLETE.load(Ordering::Relaxed) {
-            Condition::new(
-                FS_INIT_COMPLETE.clone(),
-                current_running_event().expect("Fat16 action outside event"),
-            )
-            .await;
-        }
+        wait_until_initialized().await?;
         // let file = get_file(fd)?;
         // let locked_file = file.lock();
         // let path = &locked_file.pathname;
@@ -571,38 +530,30 @@ impl FileSystem for Ext2Wrapper {
     }
 
     async fn metadata(&self, fd: usize) -> FilesystemResult<File> {
-        if !FS_INIT_COMPLETE.load(Ordering::Relaxed) {
-            Condition::new(
-                FS_INIT_COMPLETE.clone(),
-                current_running_event().expect("Fat16 action outside event"),
-            )
-            .await;
-        }
+        wait_until_initialized().await?;
         let file = get_file(fd)?;
         let locked_file = file.lock();
         Ok(locked_file.clone())
     }
 
     async fn add_entry_to_page_cache(&mut self, file: File, offset: usize) -> FilesystemResult<()> {
-        if !FS_INIT_COMPLETE.load(Ordering::Relaxed) {
-            Condition::new(
-                FS_INIT_COMPLETE.clone(),
-                current_running_event().expect("Fat16 action outside event"),
-            )
-            .await;
-        }
+        wait_until_initialized().await?;
 
         let inode_number = file.inode_number;
         let mut pg_cache = self.page_cache.lock();
         pg_cache
             .entry(inode_number)
             .or_insert_with(|| Arc::new(Mutex::new(BTreeMap::new())));
-        let mut file_mappings = pg_cache.get(&inode_number).unwrap().lock();
+        let mut file_mappings = pg_cache
+            .get(&inode_number)
+            .ok_or(FilesystemError::CacheError)?
+            .lock();
 
         // allocate and map frame
         let frame = alloc_frame().ok_or(FilesystemError::CacheError)?;
         let default_flags = PageTableFlags::PRESENT | PageTableFlags::WRITABLE;
-        let kernel_va = map_kernel_frame(&mut *KERNEL_MAPPER.lock(), frame, default_flags);
+        let kernel_va = map_kernel_frame(&mut *KERNEL_MAPPER.lock(), frame, default_flags)
+            .map_err(|_| FilesystemError::CacheError)?;
         // clone the pathname before await
         let path = file.pathname.clone();
 
@@ -628,19 +579,12 @@ impl FileSystem for Ext2Wrapper {
         file: File,
         offset: usize,
     ) -> FilesystemResult<VirtAddr> {
-        if !FS_INIT_COMPLETE.load(Ordering::Relaxed) {
-            Condition::new(
-                FS_INIT_COMPLETE.clone(),
-                current_running_event().expect("Fat16 action outside event"),
-            )
-            .await;
-        }
+        wait_until_initialized().await?;
         let inode_number = file.inode_number;
         let pg_cache = self.page_cache.lock();
-        if pg_cache.contains_key(&inode_number) {
-            let map = { pg_cache.get(&inode_number).unwrap().lock() };
-            if map.contains_key(&offset) {
-                let page = map.get(&offset).unwrap();
+        if let Some(entries) = pg_cache.get(&inode_number) {
+            let map = entries.lock();
+            if let Some(page) = map.get(&offset) {
                 return Ok(page.start_address());
             }
         }
@@ -652,12 +596,24 @@ pub fn init(cpu_id: u32) {
     serial_println!("INITING FS");
     if cpu_id == 0 {
         serial_println!("CPU ID 0");
-        schedule_kernel_on(
+        if let Err(error) = schedule_kernel_on(
             0,
             async {
-                let sd_card = Arc::new(SD_CARD.lock().clone().unwrap());
-                let fs = Ext2::new(sd_card).await.unwrap();
-                fs.mount().await.unwrap();
+                let Some(sd_card) = SD_CARD.lock().clone() else {
+                    serial_println!("Filesystem unavailable: SD card was not initialized");
+                    return;
+                };
+                let fs = match Ext2::new(Arc::new(sd_card)).await {
+                    Ok(fs) => fs,
+                    Err(error) => {
+                        serial_println!("Filesystem initialization failed: {:?}", error);
+                        return;
+                    }
+                };
+                if let Err(error) = fs.mount().await {
+                    serial_println!("Filesystem mount failed: {:?}", error);
+                    return;
+                }
                 let page_cache = Mutex::new(BTreeMap::new());
                 let refcount = Mutex::new(BTreeMap::new());
                 let ext2_wrapper = Ext2Wrapper::new(page_cache, Mutex::new(fs), refcount);
@@ -665,7 +621,9 @@ pub fn init(cpu_id: u32) {
                 FILESYSTEM.call_once(|| ext2_wrapper.into());
             },
             0,
-        );
+        ) {
+            serial_println!("Failed to schedule filesystem initialization: {:?}", error);
+        }
     }
 }
 
@@ -677,13 +635,14 @@ mod tests {
     use crate::{
         devices::sd_card::SD_CARD,
         filesys::{get_file, ChmodMode, FileSystem, OpenFlags},
-        processes::process::with_current_pcb,
+        processes::process::try_with_current_pcb,
     };
 
     use super::{ext2::filesystem::Ext2, Ext2Wrapper};
 
     fn active_fd_count() -> usize {
-        with_current_pcb(|pcb| pcb.fd_table.iter().filter(|entry| entry.is_some()).count())
+        try_with_current_pcb(|pcb| pcb.fd_table.iter().filter(|entry| entry.is_some()).count())
+            .expect("test requires a current process")
     }
 
     pub async fn setup_fs() -> Ext2Wrapper {

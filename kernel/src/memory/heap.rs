@@ -10,10 +10,7 @@ use crate::{
     serial_println,
 };
 use talc::{ClaimOnOom, Span, Talc, Talck};
-use x86_64::{
-    structures::paging::{mapper::MapToError, Page, Size4KiB},
-    VirtAddr,
-};
+use x86_64::{structures::paging::Page, VirtAddr};
 
 use super::frame_allocator::GlobalFrameAllocator;
 
@@ -23,11 +20,17 @@ static ALLOCATOR: Talck<spin::Mutex<()>, ClaimOnOom> = Talc::new(unsafe {
 })
 .lock();
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HeapInitError {
+    WrongFrameAllocator,
+    MappingFailed,
+}
+
 /// Initialize the heap and switch to using the bitmap frame_allocator
 ///
 /// # Returns
 /// An error, whether the heap was created successfully or not
-pub fn init_heap() -> Result<(), MapToError<Size4KiB>> {
+pub fn init_heap() -> Result<(), HeapInitError> {
     let page_range = {
         let heap_start = VirtAddr::new(HEAP_START as u64);
         let heap_end = heap_start + HEAP_SIZE as u64 - 1u64;
@@ -37,10 +40,11 @@ pub fn init_heap() -> Result<(), MapToError<Size4KiB>> {
     };
 
     for page in page_range {
-        create_mapping(page, &mut *KERNEL_MAPPER.lock(), None);
+        create_mapping(page, &mut *KERNEL_MAPPER.lock(), None)
+            .map_err(|_| HeapInitError::MappingFailed)?;
     }
 
-    switch_allocator();
+    switch_allocator()?;
 
     serial_println!("Allocator switched to buddy allocator");
 
@@ -48,7 +52,7 @@ pub fn init_heap() -> Result<(), MapToError<Size4KiB>> {
 }
 
 /// Switches the allocator from the boot into frame allocator to the bitmap frame allocator
-fn switch_allocator() {
+fn switch_allocator() -> Result<(), HeapInitError> {
     let mut alloc = FRAME_ALLOCATOR.lock();
     match *alloc {
         Some(GlobalFrameAllocator::Boot(ref boot_alloc)) => {
@@ -59,8 +63,9 @@ fn switch_allocator() {
 
                 serial_println!("new frame allocator set");
             };
+            Ok(())
         }
-        _ => panic!("We must be using Boot Frame Allocator at this point"),
+        _ => Err(HeapInitError::WrongFrameAllocator),
     }
 }
 

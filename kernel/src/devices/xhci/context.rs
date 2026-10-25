@@ -16,6 +16,9 @@ pub struct SlotContext {
     offset_7: u32,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ContextError;
+
 impl SlotContext {
     /// Retrieves the route string from the slot contex.
     /// The route string is only 20 bits wide and is used
@@ -27,9 +30,12 @@ impl SlotContext {
     /// Retrieves the route string from the slot contex.
     /// The route string is only 20 bits wide and is used
     /// by hubs to route packets.
-    pub fn set_route_string(&mut self, value: u32) {
-        assert!((0..=0xFFFFF).contains(&value));
+    pub fn set_route_string(&mut self, value: u32) -> Result<(), ContextError> {
+        if value > 0xFFFFF {
+            return Err(ContextError);
+        }
         self.offset_0 = (self.offset_0 & !0xFFFFF) | value;
+        Ok(())
     }
 
     /// Retrieves the speed from the slot context.
@@ -47,9 +53,12 @@ impl SlotContext {
 
     /// Sets the MTT field to value.
     /// value is expected to be one bit.
-    pub fn set_mtt(&mut self, value: u32) {
-        assert!(value == 0 || value == 1);
+    pub fn set_mtt(&mut self, value: u32) -> Result<(), ContextError> {
+        if value > 1 {
+            return Err(ContextError);
+        }
         self.offset_0 = (self.offset_0 & !0x2000000) | (value << 25);
+        Ok(())
     }
 
     /// Retrieves the hub bit from the slot context.
@@ -60,9 +69,12 @@ impl SlotContext {
 
     /// Sets the hub field to value.
     /// value is expected to be one bit.
-    pub fn set_hub(&mut self, value: u32) {
-        assert!(value == 0 || value == 1);
+    pub fn set_hub(&mut self, value: u32) -> Result<(), ContextError> {
+        if value > 1 {
+            return Err(ContextError);
+        }
         self.offset_0 = (self.offset_0 & !0x4000000) | (value << 26);
+        Ok(())
     }
 
     /// Retrieves the context entries from the slot context.
@@ -75,9 +87,12 @@ impl SlotContext {
     /// Sets the context entries field to value.
     /// value is expected to be 5 bits.
     /// This method should only be used if this is an input context entries.
-    pub fn set_context_entries(&mut self, value: u32) {
-        assert!((0..=0b11111).contains(&value));
+    pub fn set_context_entries(&mut self, value: u32) -> Result<(), ContextError> {
+        if value > 0b11111 {
+            return Err(ContextError);
+        }
         self.offset_0 = (self.offset_0 & 0x7FFFFFF) | (value << 27);
+        Ok(())
     }
 
     /// Retrieves the max exit latency from the slot context.
@@ -97,9 +112,12 @@ impl SlotContext {
     /// Retrieves the root hub port number from the slot context.
     /// This field is only 8 bits wide and identifies the root hub port number
     /// used to access the device.
-    pub fn set_root_hub_port(&mut self, value: u32) {
-        assert!((0..=0xFF).contains(&value));
+    pub fn set_root_hub_port(&mut self, value: u32) -> Result<(), ContextError> {
+        if value > 0xFF {
+            return Err(ContextError);
+        }
         self.offset_1 = (self.offset_1 & (!(0xFF << 16))) | (value << 16);
+        Ok(())
     }
 
     /// Retrieves the number of ports from the slot context.
@@ -111,9 +129,12 @@ impl SlotContext {
 
     /// Sets the number of ports field to value.
     /// value is expected to be 8 bits.
-    pub fn set_num_ports(&mut self, value: u32) {
-        assert!((0..=0xFF).contains(&value));
+    pub fn set_num_ports(&mut self, value: u32) -> Result<(), ContextError> {
+        if value > 0xFF {
+            return Err(ContextError);
+        }
         self.offset_1 = (self.offset_1 & 0xFFFFFF) | (value << 24);
+        Ok(())
     }
 
     /// Retrieves the parent hub slot id from the slot context.
@@ -199,10 +220,13 @@ impl EndpointContext {
     /// retrieves the mult field from the endpoint context.
     /// this field is only 2 bits wide and identifies the maximum number of bursts
     /// within an interval that this endpoint supports
-    pub fn set_mult(&mut self, value: u32) {
-        assert!(value <= 0x3);
+    pub fn set_mult(&mut self, value: u32) -> Result<(), ContextError> {
+        if value > 0x3 {
+            return Err(ContextError);
+        }
         self.offset_0 &= !(0x3 << 8);
         self.offset_0 |= value << 8;
+        Ok(())
     }
 
     /// retrieves the Max Primary Streams field from the endpoint context.
@@ -215,11 +239,14 @@ impl EndpointContext {
     /// retrieves the Max Primary Streams field from the endpoint context.
     /// This field is only 5 bits wide and identifies the max number of primary
     /// stream ids this endpoint supports.
-    pub fn set_maxpstreams(&mut self, value: u8) {
-        assert!(value <= 0x1F);
+    pub fn set_maxpstreams(&mut self, value: u8) -> Result<(), ContextError> {
+        if value > 0x1F {
+            return Err(ContextError);
+        }
         let value_32: u32 = value.into();
         self.offset_0 &= !(0x1F << 10);
         self.offset_0 |= value_32 << 10;
+        Ok(())
     }
 
     /// retrieves the Linear Stream Array field from the endpoint context.
@@ -329,18 +356,17 @@ impl EndpointContext {
     }
 
     /// Retrieves the TR Dequeue Pointer from the endpoint context.
-    pub fn set_trdequeue_ptr(&mut self, value: u64) {
-        assert!(value & 16 == 0);
-        let value_lo: u32 = (value & 0xFFFFFFFF)
-            .try_into()
-            .expect("Masked out high order bits");
-        let value_hi: u32 = ((value & (0xFFFFFFFF << 32)) >> 32)
-            .try_into()
-            .expect("Shifted out high order bits");
+    pub fn set_trdequeue_ptr(&mut self, value: u64) -> Result<(), ContextError> {
+        if value & 0xF != 0 {
+            return Err(ContextError);
+        }
+        let value_lo = value as u32;
+        let value_hi = (value >> 32) as u32;
 
         self.offset_2 &= 0xF;
         self.offset_2 |= value_lo;
         self.offset_3 = value_hi;
+        Ok(())
     }
 
     /// Retrieves the Averege TRB Length field from the endpoint context.
@@ -441,33 +467,37 @@ pub struct InputControlContext {
 impl InputControlContext {
     /// Retrieves the value of the Drop Context flag of the bit at the index
     /// bit position. Index must be > 1 and < 32.
-    pub fn get_drop_flag(&self, index: u32) -> u32 {
-        assert!((2..32).contains(&index));
-        (self.offset_0 >> index) & 1
+    pub fn get_drop_flag(&self, index: u32) -> Option<u32> {
+        (2..32)
+            .contains(&index)
+            .then(|| (self.offset_0 >> index) & 1)
     }
 
     /// Sets the Drop Context flag at the index bit position to value.
     /// index must be > 1 and < 32.
     /// value is expected to be 1 bit.
-    pub fn set_drop_flag(&mut self, index: u32, value: u32) {
-        assert!((2..32).contains(&index));
-        assert!(value == 0 || value == 1);
+    pub fn set_drop_flag(&mut self, index: u32, value: u32) -> Result<(), ContextError> {
+        if !(2..32).contains(&index) || value > 1 {
+            return Err(ContextError);
+        }
         self.offset_0 = (self.offset_0 & !(1 << index)) | (value << index);
+        Ok(())
     }
 
     /// Retrieves the value of the Add Context flag of the bit at the index
     /// bit position. Index must be >= 0 and < 32.
-    pub fn get_add_flag(&self, index: u32) -> u32 {
-        assert!((0..32).contains(&index));
-        (self.offset_1 >> index) & 1
+    pub fn get_add_flag(&self, index: u32) -> Option<u32> {
+        (index < 32).then(|| (self.offset_1 >> index) & 1)
     }
 
     /// Sets the Add Context flag at the index bit position to value.
     /// index must be >= 0 and < 32.
     /// value is expected to be 1 bit.
-    pub fn set_add_flag(&mut self, index: u32, value: u32) {
-        assert!((0..32).contains(&index));
-        assert!(value == 0 || value == 1);
+    pub fn set_add_flag(&mut self, index: u32, value: u32) -> Result<(), ContextError> {
+        if index >= 32 || value > 1 {
+            return Err(ContextError);
+        }
         self.offset_1 = (self.offset_1 & !(1 << index)) | (value << index);
+        Ok(())
     }
 }

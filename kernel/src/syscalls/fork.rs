@@ -4,6 +4,7 @@ use alloc::sync::Arc;
 use x86_64::structures::paging::{PageTable, PageTableFlags, PhysFrame};
 
 use crate::{
+    error::Errno,
     events::{current_running_event_info, schedule_process_on},
     memory::{
         frame_allocator::{alloc_frame, with_buddy_frame_allocator},
@@ -26,6 +27,10 @@ use crate::{
 /// # Return
 /// Returns child pid
 pub fn sys_fork(reg_vals: &ForkingRegisters) -> u64 {
+    fork_impl(reg_vals).unwrap_or_else(Errno::as_syscall_return)
+}
+
+fn fork_impl(reg_vals: &ForkingRegisters) -> Result<u64, Errno> {
     let child_pid = NEXT_PID.fetch_add(1, Ordering::SeqCst);
     let parent_pid = current_running_event_info().pid;
 
@@ -34,8 +39,8 @@ pub fn sys_fork(reg_vals: &ForkingRegisters) -> u64 {
         let process_table = PROCESS_TABLE.read();
         process_table
             .get(&parent_pid)
-            .expect("can't find pcb in process table")
-            .clone()
+            .cloned()
+            .ok_or(Errno::NoSuchProcess)?
     };
 
     let parent_pcb = process.pcb.get();
@@ -68,7 +73,7 @@ pub fn sys_fork(reg_vals: &ForkingRegisters) -> u64 {
 
     // duplicate page table for child - intermediate layers are real clones, final-level frames are COW
     let child_pml4_frame =
-        duplicate_page_table_recursive(unsafe { (*parent_pcb).mm.pml4_frame }, 4);
+        duplicate_page_table_recursive(unsafe { (*parent_pcb).mm.pml4_frame }, 4)?;
 
     // TODO: go through this logic and ensure that both parent and child VMAs are set to COW
     unsafe {
@@ -96,9 +101,9 @@ pub fn sys_fork(reg_vals: &ForkingRegisters) -> u64 {
         PROCESS_TABLE.write().insert(child_pid, child_pcb);
     }
 
-    schedule_process_on(1, child_pid);
+    schedule_process_on(1, child_pid).map_err(|_| Errno::NoDevice)?;
 
-    child_pid as u64
+    Ok(child_pid as u64)
 }
 
 /// Recursively duplicate a page table.
@@ -110,9 +115,9 @@ pub fn sys_fork(reg_vals: &ForkingRegisters) -> u64 {
 ///
 /// # Return
 /// Returns a PhysFrame that represents the new pml4 frame for child
-fn duplicate_page_table_recursive(parent_frame: PhysFrame, level: u8) -> PhysFrame {
+fn duplicate_page_table_recursive(parent_frame: PhysFrame, level: u8) -> Result<PhysFrame, Errno> {
     // Allocate a new frame for this level’s table.
-    let child_frame = alloc_frame().expect("Frame allocation failed");
+    let child_frame = alloc_frame().ok_or(Errno::OutOfMemory)?;
     // Map it into our address space using HHDM_OFFSET.
     let child_table_ptr =
         (HHDM_OFFSET.as_u64() + child_frame.start_address().as_u64()) as *mut PageTable;
@@ -145,7 +150,7 @@ fn duplicate_page_table_recursive(parent_frame: PhysFrame, level: u8) -> PhysFra
             let new_child_lower_frame = duplicate_page_table_recursive(
                 PhysFrame::containing_address(parent_entry.addr()),
                 level - 1,
-            );
+            )?;
             child_table[i].set_addr(new_child_lower_frame.start_address(), parent_entry.flags());
         } else {
             // For leaf entries, if the page is writable mark it as copy-on-write.
@@ -162,12 +167,13 @@ fn duplicate_page_table_recursive(parent_frame: PhysFrame, level: u8) -> PhysFra
 
                 with_buddy_frame_allocator(|alloc| {
                     alloc.inc_ref_count(PhysFrame::containing_address(parent_entry.addr()));
-                });
+                })
+                .ok_or(Errno::OutOfMemory)?;
             }
         }
     }
 
-    child_frame
+    Ok(child_frame)
 }
 
 #[cfg(test)]
@@ -249,8 +255,8 @@ mod tests {
 
     #[test_case]
     async fn test_simple_fork() {
-        let parent_pid = create_process(FORK_SIMPLE);
-        schedule_process(parent_pid);
+        let parent_pid = create_process(FORK_SIMPLE).expect("test process should load");
+        schedule_process(parent_pid).expect("test process should schedule");
         let _waiter = AwaitProcess::new(
             parent_pid,
             get_runner_time(3_000_000_000),

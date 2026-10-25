@@ -3,6 +3,16 @@
 #![no_std]
 #![no_main]
 #![feature(custom_test_frameworks)]
+#![cfg_attr(
+    not(test),
+    deny(
+        clippy::expect_used,
+        clippy::panic,
+        clippy::todo,
+        clippy::unimplemented,
+        clippy::unwrap_used
+    )
+)]
 #![test_runner(taos::test_runner)]
 #![reexport_test_harness_main = "test_main"]
 

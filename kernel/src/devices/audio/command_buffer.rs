@@ -87,8 +87,10 @@ impl CorbBuffer {
     ///
     /// # Safety
     /// This function preforms a raw pointer write to write the command to the CORB. This function assumes that the CORB is not full.
-    pub async unsafe fn send(&mut self, cmd: CorbEntry) {
-        assert!(!self.is_full());
+    pub async unsafe fn send(&mut self, cmd: CorbEntry) -> Option<()> {
+        if self.is_full() || self.size == 0 {
+            return None;
+        }
         let mut next_write = self.write_idx + 1;
         if next_write == self.size {
             next_write = 0;
@@ -98,6 +100,7 @@ impl CorbBuffer {
         write_volatile(write_address, cmd);
 
         self.write_idx = next_write;
+        Some(())
     }
 }
 
@@ -168,14 +171,16 @@ impl RirbBuffer {
     ///
     /// # Safety
     /// This function preforms a raw pointer read to read from the RIRB. This function assumes that the RIRB is not empty.
-    pub async unsafe fn read(&mut self) -> RirbEntry {
-        assert!(!self.is_empty());
+    pub async unsafe fn read(&mut self) -> Option<RirbEntry> {
+        if self.is_empty() || self.size == 0 {
+            return None;
+        }
         let next_idx = (self.read_idx + 1) % self.size;
 
         let read_addr = (self.base + (next_idx as u64 * 8)) as *mut RirbEntry;
         let response = read_volatile(read_addr);
 
         self.read_idx = next_idx;
-        response
+        Some(response)
     }
 }

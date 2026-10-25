@@ -9,6 +9,7 @@ use x86_64::{
 
 use crate::{
     constants::memory::PAGE_SIZE,
+    error::Errno,
     events::{current_running_event_info, EventInfo},
     memory::{
         mm::{vma_to_page_flags, Mm, VmAreaBackings, VmAreaFlags},
@@ -147,7 +148,7 @@ pub fn mmap_prot_to_vma_flags(prot: u64, mmap_flags: MmapFlags) -> VmAreaFlags {
 pub fn sys_mmap(_addr: u64, len: u64, prot: u64, flags: u64, fd: i64, offset: u64) -> u64 {
     // Basic sanity check.
     if len == 0 {
-        panic!("mmap called with zero length");
+        return Errno::InvalidArgument.as_syscall_return();
     }
 
     let event: EventInfo = current_running_event_info();
@@ -155,18 +156,21 @@ pub fn sys_mmap(_addr: u64, len: u64, prot: u64, flags: u64, fd: i64, offset: u6
 
     // For testing we hardcode to one for now.
     let process_table = PROCESS_TABLE.write();
-    let process = process_table
-        .get(&pid)
-        .expect("Could not get pcb from process table");
+    let Some(process) = process_table.get(&pid) else {
+        return Errno::NoSuchProcess.as_syscall_return();
+    };
     let pcb = process.pcb.get();
     let begin_addr = unsafe { (*pcb).mmap_address };
     let addr_to_return = begin_addr;
     let vma_backing = VmAreaBackings::new();
 
     // Make sure we have enough virtual space.
-    if begin_addr + len > (*HHDM_OFFSET).as_u64() {
+    let Some(end_addr) = begin_addr.checked_add(len) else {
+        return Errno::OutOfMemory.as_syscall_return();
+    };
+    if end_addr > (*HHDM_OFFSET).as_u64() {
         serial_println!("Ran out of virtual memory for mmap call.");
-        return 0;
+        return Errno::OutOfMemory.as_syscall_return();
     }
 
     // Create an instance of MmapFlags from the raw flags.
@@ -180,13 +184,13 @@ pub fn sys_mmap(_addr: u64, len: u64, prot: u64, flags: u64, fd: i64, offset: u6
             let _ = Mm::insert_vma(
                 tree,
                 begin_addr,
-                begin_addr + len,
+                end_addr,
                 Arc::new(vma_backing),
                 vma_flags,
                 fd as usize,
                 offset,
             );
-        })
+        });
     }
     addr_to_return
 }
@@ -205,16 +209,27 @@ pub fn sys_mmap(_addr: u64, len: u64, prot: u64, flags: u64, fd: i64, offset: u6
 /// * `len`  - the length of the region of memory we want to update
 /// * `prot` - the protection we want to updatge to; corresponds to VMA flags
 pub fn sys_mprotect(addr: u64, len: u64, prot: u64) -> u64 {
+    if len == 0 || !addr.is_multiple_of(PAGE_SIZE as u64) {
+        return Errno::InvalidArgument.as_syscall_return();
+    }
     // Round the end address up to a page boundary.
-    let end_addr = (addr + len).div_ceil(PAGE_SIZE as u64) * PAGE_SIZE as u64;
+    let Some(requested_end) = addr.checked_add(len) else {
+        return Errno::InvalidArgument.as_syscall_return();
+    };
+    let Some(end_addr) = requested_end
+        .div_ceil(PAGE_SIZE as u64)
+        .checked_mul(PAGE_SIZE as u64)
+    else {
+        return Errno::InvalidArgument.as_syscall_return();
+    };
 
     let event: EventInfo = current_running_event_info();
     let pid = event.pid;
 
     let process_table = PROCESS_TABLE.write();
-    let process = process_table
-        .get(&pid)
-        .expect("Could not get pcb from process table");
+    let Some(process) = process_table.get(&pid) else {
+        return Errno::NoSuchProcess.as_syscall_return();
+    };
     let pcb = process.pcb.get();
 
     let err = unsafe {
@@ -264,7 +279,8 @@ pub fn sys_mprotect(addr: u64, len: u64, prot: u64) -> u64 {
                                         page,
                                         &mut mapper,
                                         vma_to_page_flags(new_flags),
-                                    );
+                                    )
+                                    .map_err(|_| Errno::Fault)?;
                                 }
                             }
                             Mm::update_vma_permissions(&left_vma, new_flags);
@@ -288,7 +304,8 @@ pub fn sys_mprotect(addr: u64, len: u64, prot: u64) -> u64 {
                                         page,
                                         &mut mapper,
                                         vma_to_page_flags(new_flags),
-                                    );
+                                    )
+                                    .map_err(|_| Errno::Fault)?;
                                 }
                             }
                             Mm::update_vma_permissions(&right_vma, new_flags);
@@ -313,7 +330,8 @@ pub fn sys_mprotect(addr: u64, len: u64, prot: u64) -> u64 {
                                         page,
                                         &mut mapper,
                                         vma_to_page_flags(new_flags),
-                                    );
+                                    )
+                                    .map_err(|_| Errno::Fault)?;
                                 }
                             }
                             Mm::update_vma_permissions(&middle_vma, new_flags);
@@ -326,24 +344,35 @@ pub fn sys_mprotect(addr: u64, len: u64, prot: u64) -> u64 {
                     break;
                 }
             }
-            1
+            Ok(1)
         })
     };
 
-    err
+    err.unwrap_or_else(Errno::as_syscall_return)
 }
 
 pub fn sys_munmap(addr: u64, len: u64) -> u64 {
+    if len == 0 || !addr.is_multiple_of(PAGE_SIZE as u64) {
+        return Errno::InvalidArgument.as_syscall_return();
+    }
     // Round the end address up to a page boundary.
-    let end_addr = (addr + len).div_ceil(PAGE_SIZE as u64) * PAGE_SIZE as u64;
+    let Some(requested_end) = addr.checked_add(len) else {
+        return Errno::InvalidArgument.as_syscall_return();
+    };
+    let Some(end_addr) = requested_end
+        .div_ceil(PAGE_SIZE as u64)
+        .checked_mul(PAGE_SIZE as u64)
+    else {
+        return Errno::InvalidArgument.as_syscall_return();
+    };
 
     let event: EventInfo = current_running_event_info();
     let pid = event.pid;
 
     let process_table = PROCESS_TABLE.write();
-    let process = process_table
-        .get(&pid)
-        .expect("Could not get pcb from process table");
+    let Some(process) = process_table.get(&pid) else {
+        return Errno::NoSuchProcess.as_syscall_return();
+    };
     let pcb = process.pcb.get();
 
     let err = unsafe {
@@ -353,89 +382,91 @@ pub fn sys_munmap(addr: u64, len: u64) -> u64 {
         let mut mapper =
             OffsetPageTable::new(&mut *new_pml4_ptr, VirtAddr::new((*HHDM_OFFSET).as_u64()));
 
-        (*pcb).mm.with_vma_tree_mutable(|tree| {
-            let mut current_address = addr;
+        (*pcb)
+            .mm
+            .with_vma_tree_mutable(|tree| -> Result<u64, Errno> {
+                let mut current_address = addr;
 
-            while current_address < end_addr {
-                // Use current_address so that we progress through the unmap range
-                if let Some(vma) = Mm::find_vma(current_address, tree) {
-                    let (vma_start, vma_end) = {
-                        let v = vma.lock();
-                        (v.start, v.end)
-                    };
-
-                    // Compute the overlap between this VMA and the unmap request
-                    let unmap_start = max(vma_start, addr);
-                    let unmap_end = min(vma_end, end_addr);
-
-                    // call shrink_vma to split the vma into three portions:
-                    // left: [vma_start, unmap_start)
-                    // middle: [unmap_start, unmap_end)
-                    // right: [unmap_end, vma_end)
-                    let (left_opt, middle_opt, right_opt) =
-                        Mm::shrink_vma(vma_start, unmap_start, unmap_end, tree);
-
-                    // now, decide which portions fall within the unmap region and should be removed
-                    // (if a split portion lies entirely inside [addr, end_addr), it should be unmapped)
-                    if let Some(left_vma) = left_opt {
-                        let (l_start, l_end) = {
-                            let l = left_vma.lock();
-                            (l.start, l.end)
+                while current_address < end_addr {
+                    // Use current_address so that we progress through the unmap range
+                    if let Some(vma) = Mm::find_vma(current_address, tree) {
+                        let (vma_start, vma_end) = {
+                            let v = vma.lock();
+                            (v.start, v.end)
                         };
-                        if l_start >= addr && l_end <= end_addr {
-                            for page in Page::range_inclusive(
-                                Page::containing_address(VirtAddr::new(l_start)),
-                                Page::containing_address(VirtAddr::new(l_end)),
-                            ) {
-                                remove_mapping(page, &mut mapper);
-                            }
-                            Mm::remove_vma(l_start, tree);
-                        }
-                    }
-                    // if right_opt exists and its region is completely within [addr, end_addr]
-                    if let Some(right_vma) = right_opt {
-                        let (r_start, r_end) = {
-                            let r = right_vma.lock();
-                            (r.start, r.end)
-                        };
-                        if r_start >= addr && r_end <= end_addr {
-                            for page in Page::range_inclusive(
-                                Page::containing_address(VirtAddr::new(r_start)),
-                                Page::containing_address(VirtAddr::new(r_end)),
-                            ) {
-                                remove_mapping(page, &mut mapper);
-                            }
-                            Mm::remove_vma(r_start, tree);
-                        }
-                    }
-                    // finally, if the entire vma is within [addr, end_addr], then the surviving portion (middle)
-                    // is also to be removed.
-                    if let Some(middle_vma) = middle_opt {
-                        let (m_start, m_end) = {
-                            let m = middle_vma.lock();
-                            (m.start, m.end)
-                        };
-                        if m_start >= addr && m_end <= end_addr {
-                            for page in Page::range_inclusive(
-                                Page::containing_address(VirtAddr::new(m_start)),
-                                Page::containing_address(VirtAddr::new(m_end)),
-                            ) {
-                                remove_mapping(page, &mut mapper);
-                            }
-                            Mm::remove_vma(m_start, tree);
-                        }
-                    }
 
-                    current_address = unmap_end;
-                } else {
-                    break;
+                        // Compute the overlap between this VMA and the unmap request
+                        let unmap_start = max(vma_start, addr);
+                        let unmap_end = min(vma_end, end_addr);
+
+                        // call shrink_vma to split the vma into three portions:
+                        // left: [vma_start, unmap_start)
+                        // middle: [unmap_start, unmap_end)
+                        // right: [unmap_end, vma_end)
+                        let (left_opt, middle_opt, right_opt) =
+                            Mm::shrink_vma(vma_start, unmap_start, unmap_end, tree);
+
+                        // now, decide which portions fall within the unmap region and should be removed
+                        // (if a split portion lies entirely inside [addr, end_addr), it should be unmapped)
+                        if let Some(left_vma) = left_opt {
+                            let (l_start, l_end) = {
+                                let l = left_vma.lock();
+                                (l.start, l.end)
+                            };
+                            if l_start >= addr && l_end <= end_addr {
+                                for page in Page::range_inclusive(
+                                    Page::containing_address(VirtAddr::new(l_start)),
+                                    Page::containing_address(VirtAddr::new(l_end)),
+                                ) {
+                                    remove_mapping(page, &mut mapper).map_err(|_| Errno::Fault)?;
+                                }
+                                Mm::remove_vma(l_start, tree);
+                            }
+                        }
+                        // if right_opt exists and its region is completely within [addr, end_addr]
+                        if let Some(right_vma) = right_opt {
+                            let (r_start, r_end) = {
+                                let r = right_vma.lock();
+                                (r.start, r.end)
+                            };
+                            if r_start >= addr && r_end <= end_addr {
+                                for page in Page::range_inclusive(
+                                    Page::containing_address(VirtAddr::new(r_start)),
+                                    Page::containing_address(VirtAddr::new(r_end)),
+                                ) {
+                                    remove_mapping(page, &mut mapper).map_err(|_| Errno::Fault)?;
+                                }
+                                Mm::remove_vma(r_start, tree);
+                            }
+                        }
+                        // finally, if the entire vma is within [addr, end_addr], then the surviving portion (middle)
+                        // is also to be removed.
+                        if let Some(middle_vma) = middle_opt {
+                            let (m_start, m_end) = {
+                                let m = middle_vma.lock();
+                                (m.start, m.end)
+                            };
+                            if m_start >= addr && m_end <= end_addr {
+                                for page in Page::range_inclusive(
+                                    Page::containing_address(VirtAddr::new(m_start)),
+                                    Page::containing_address(VirtAddr::new(m_end)),
+                                ) {
+                                    remove_mapping(page, &mut mapper).map_err(|_| Errno::Fault)?;
+                                }
+                                Mm::remove_vma(m_start, tree);
+                            }
+                        }
+
+                        current_address = unmap_end;
+                    } else {
+                        break;
+                    }
                 }
-            }
-            1
-        })
+                Ok(1)
+            })
     };
 
-    err
+    err.unwrap_or_else(Errno::as_syscall_return)
 }
 
 // TODO: Mmap tests
@@ -454,8 +485,8 @@ mod tests {
 
     #[test_case]
     async fn mmap_anonymous_shared() {
-        let pid = create_process(TEST_MMAP_ANON_SHARED);
-        schedule_process(pid);
+        let pid = create_process(TEST_MMAP_ANON_SHARED).expect("test process should load");
+        schedule_process(pid).expect("test process should schedule");
 
         let waiter = AwaitProcess::new(
             pid,
@@ -474,8 +505,8 @@ mod tests {
 
     #[test_case]
     async fn mmap_anonymous_child_writes_first() {
-        let pid = create_process(TEST_MMAP_CHILD_WRITES);
-        schedule_process(pid);
+        let pid = create_process(TEST_MMAP_CHILD_WRITES).expect("test process should load");
+        schedule_process(pid).expect("test process should schedule");
 
         let waiter = AwaitProcess::new(
             pid,
@@ -494,8 +525,8 @@ mod tests {
 
     #[test_case]
     async fn mprotect_child_writes() {
-        let pid = create_process(TEST_MPROTECT_CHILD_WRITES);
-        schedule_process(pid);
+        let pid = create_process(TEST_MPROTECT_CHILD_WRITES).expect("test process should load");
+        schedule_process(pid).expect("test process should schedule");
 
         let waiter = AwaitProcess::new(
             pid,

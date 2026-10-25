@@ -64,7 +64,10 @@ impl FrameDeallocator<Size4KiB> for GlobalFrameAllocator {
 /// # Returns
 /// The allocated frame
 pub fn alloc_frame() -> Option<PhysFrame> {
-    with_generic_allocator(|allocator| allocator.allocate_frame())
+    FRAME_ALLOCATOR
+        .lock()
+        .as_mut()
+        .and_then(FrameAllocator::allocate_frame)
 }
 
 /// Exposed function to deallocate a frame that runs the global's deallocate_frame
@@ -72,7 +75,11 @@ pub fn alloc_frame() -> Option<PhysFrame> {
 /// # Arguments
 /// * `frame`: The frame to deallocate
 pub fn dealloc_frame(frame: PhysFrame<Size4KiB>) {
-    with_generic_allocator(|allocator| unsafe { allocator.deallocate_frame(frame) })
+    if let Some(allocator) = FRAME_ALLOCATOR.lock().as_mut() {
+        unsafe { allocator.deallocate_frame(frame) }
+    } else {
+        crate::serial_println!("Ignoring frame deallocation: allocator is not initialized");
+    }
 }
 
 /// Gives access to the bitmap frame allocator to any passed in closure
@@ -84,16 +91,15 @@ pub fn dealloc_frame(frame: PhysFrame<Size4KiB>) {
 /// Arguments:
 ///
 /// * `f`: The closure to run
-pub fn with_buddy_frame_allocator<F, R>(f: F) -> R
+pub fn with_buddy_frame_allocator<F, R>(f: F) -> Option<R>
 where
     F: FnOnce(&mut BuddyFrameAllocator) -> R,
 {
     let mut guard = FRAME_ALLOCATOR.lock();
-    let alloc = match &mut *guard {
-        Some(GlobalFrameAllocator::Buddy(alloc)) => alloc,
-        _ => panic!("Allocator is not a BuddyFrameAllocator"),
-    };
-    f(alloc)
+    match &mut *guard {
+        Some(GlobalFrameAllocator::Buddy(alloc)) => Some(f(alloc)),
+        _ => None,
+    }
 }
 
 /// Gives access to the bitmap frame allocator to any passed in closure
@@ -105,16 +111,15 @@ where
 /// Arguments:
 ///
 /// * `f`: The closure to run
-pub fn with_bitmap_frame_allocator<F, R>(f: F) -> R
+pub fn with_bitmap_frame_allocator<F, R>(f: F) -> Option<R>
 where
     F: FnOnce(&mut BitmapFrameAllocator) -> R,
 {
     let mut guard = FRAME_ALLOCATOR.lock();
-    let alloc = match &mut *guard {
-        Some(GlobalFrameAllocator::Bitmap(alloc)) => alloc,
-        _ => panic!("Allocator is not a BitmapFrameAllocator"),
-    };
-    f(alloc)
+    match &mut *guard {
+        Some(GlobalFrameAllocator::Bitmap(alloc)) => Some(f(alloc)),
+        _ => None,
+    }
 }
 
 /// Gives access to the boot into frame allocator to any passed in closure
@@ -126,16 +131,15 @@ where
 /// Arguments:
 ///
 /// * `f`: The closure to run
-pub fn with_boot_into_frame_allocator<F, R>(f: F) -> R
+pub fn with_boot_into_frame_allocator<F, R>(f: F) -> Option<R>
 where
     F: FnOnce(&mut BootIntoFrameAllocator) -> R,
 {
     let mut guard = FRAME_ALLOCATOR.lock();
-    let alloc = match &mut *guard {
-        Some(GlobalFrameAllocator::Boot(alloc)) => alloc,
-        _ => panic!("Allocator is not a BootIntoFrameAllocator"),
-    };
-    f(alloc)
+    match &mut *guard {
+        Some(GlobalFrameAllocator::Boot(alloc)) => Some(f(alloc)),
+        _ => None,
+    }
 }
 
 /// Gives access to the global frame allocator to any passed in closure
@@ -147,14 +151,10 @@ where
 /// Arguments:
 ///
 /// * `f`: The closure to run
-pub fn with_generic_allocator<F, R>(f: F) -> R
+pub fn with_generic_allocator<F, R>(f: F) -> Option<R>
 where
     F: FnOnce(&mut GlobalFrameAllocator) -> R,
 {
     let mut guard = FRAME_ALLOCATOR.lock();
-    if let Some(ref mut allocator) = *guard {
-        f(allocator)
-    } else {
-        panic!("Allocator does not exist.");
-    }
+    (*guard).as_mut().map(f)
 }

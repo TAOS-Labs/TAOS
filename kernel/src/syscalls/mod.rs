@@ -21,8 +21,8 @@ mod tests {
     /// The binary exits with code 0 immediately
     #[test_case]
     async fn test_exit_code() {
-        let pid = create_process(TEST_EXIT_CODE);
-        schedule_process(pid);
+        let pid = create_process(TEST_EXIT_CODE).expect("test process should load");
+        schedule_process(pid).expect("test process should schedule");
 
         let waiter = AwaitProcess::new(
             pid,
@@ -40,8 +40,8 @@ mod tests {
     /// content is correct
     #[test_case]
     async fn test_print_exit() {
-        let pid = create_process(TEST_PRINT_EXIT);
-        schedule_process(pid);
+        let pid = create_process(TEST_PRINT_EXIT).expect("test process should load");
+        schedule_process(pid).expect("test process should schedule");
 
         let waiter = AwaitProcess::new(
             pid,
@@ -62,8 +62,8 @@ mod tests {
     /// from waiting
     #[test_case]
     async fn test_fork_wait() {
-        let pid = create_process(TEST_WAIT);
-        schedule_process(pid);
+        let pid = create_process(TEST_WAIT).expect("test process should load");
+        schedule_process(pid).expect("test process should schedule");
 
         let waiter = AwaitProcess::new(
             pid,
@@ -84,8 +84,8 @@ mod tests {
     /// Currently, requires manual verification of buffer
     #[test_case]
     async fn test_fork_cow() {
-        let pid = create_process(TEST_FORK_COW);
-        schedule_process(pid);
+        let pid = create_process(TEST_FORK_COW).expect("test process should load");
+        schedule_process(pid).expect("test process should schedule");
 
         let waiter = AwaitProcess::new(
             pid,

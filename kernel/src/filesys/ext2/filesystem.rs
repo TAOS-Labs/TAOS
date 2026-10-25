@@ -9,7 +9,7 @@ use super::{
     cache::{block::CachedBlock, BlockCache, Cache, CacheStats, InodeCache},
     get_current_time,
     node::{DirEntry, Node, NodeError},
-    structures::{BlockGroupDescriptor, FileMode, FileType, Superblock, EXT2_SIGNATURE},
+    structures::{BlockGroupDescriptor, FileMode, FileType, Superblock},
 };
 
 /// Error types for filesystem operations
@@ -108,7 +108,7 @@ impl Ext2 {
 
         {
             let superblock = self.superblock.read();
-            if superblock.signature != EXT2_SIGNATURE {
+            if !superblock.is_valid() {
                 return Err(FilesystemError::InvalidSuperblock);
             }
         }
@@ -120,10 +120,13 @@ impl Ext2 {
             let bgdt_start = if block_size == 1024 { 2 } else { 1 };
             (block_groups, block_size, bgdt_start)
         };
+        if block_groups == 0 {
+            return Err(FilesystemError::InvalidSuperblock);
+        }
 
         let mut bgdt = Vec::with_capacity(block_groups as usize);
 
-        let block_size: usize = superblock_block_size.try_into().unwrap();
+        let block_size = superblock_block_size as usize;
         let block_group_desc_size = core::mem::size_of::<BlockGroupDescriptor>();
         let descriptors_per_block = block_size / block_group_desc_size;
 
@@ -139,11 +142,10 @@ impl Ext2 {
             for i in 0..descriptors_per_block {
                 let full_idx = block * descriptors_per_block + i;
                 if full_idx < block_groups as usize {
-                    bgdt.push(
-                        *BlockGroupDescriptor::ref_from_prefix(&buff[i * block_group_desc_size..])
-                            .unwrap()
-                            .0,
-                    );
+                    let descriptor =
+                        BlockGroupDescriptor::ref_from_prefix(&buff[i * block_group_desc_size..])
+                            .map_err(|_| FilesystemError::InvalidSuperblock)?;
+                    bgdt.push(*descriptor.0);
                 }
             }
         }
@@ -193,7 +195,9 @@ impl Ext2 {
                 .map_err(|_| FilesystemError::CacheError)?
         };
 
-        assert!(root_inode.lock().inode().is_directory());
+        if !root_inode.lock().inode().is_directory() {
+            return Err(FilesystemError::InvalidSuperblock);
+        }
 
         let root_node = {
             let superblock = self.superblock.read();
@@ -599,8 +603,10 @@ impl Ext2 {
                     let byte_shifted = (byte as u32) << shift; // shift our byte into position
                     inode.blocks[block_idx] = (inode.blocks[block_idx] & mask) | byte_shifted;
                 }
+            } else if let Some(block) = allocated_block {
+                inode.blocks[0] = block;
             } else {
-                inode.blocks[0] = allocated_block.unwrap();
+                return Err(FilesystemError::NodeError(NodeError::NoSpace));
             }
         }
 

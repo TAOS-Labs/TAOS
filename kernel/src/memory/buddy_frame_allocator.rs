@@ -222,7 +222,7 @@ impl BuddyFrameAllocator {
     ///
     /// # Arguments
     /// * `order` - The size of the block to allocate
-    pub fn allocate_block(&mut self, order: u16) -> Vec<PhysFrame<Size4KiB>> {
+    pub fn allocate_block(&mut self, order: u16) -> Option<Vec<PhysFrame<Size4KiB>>> {
         let mut found_order = None;
         for o in order..=self.max_order as u16 {
             if !self.free_lists[o as usize].is_empty() {
@@ -231,11 +231,9 @@ impl BuddyFrameAllocator {
             }
         }
 
-        let mut order_mut = found_order.expect("Order not found") as u16;
+        let mut order_mut = found_order? as u16;
 
-        let block_index = self.free_lists[order_mut as usize]
-            .pop()
-            .expect("Expected something to be in order list");
+        let block_index = self.free_lists[order_mut as usize].pop()?;
 
         while order_mut > order {
             order_mut -= 1;
@@ -258,7 +256,7 @@ impl BuddyFrameAllocator {
         self.allocated_count += 1 << order;
         self.free_count -= 1 << order;
 
-        frames
+        Some(frames)
     }
 
     /// Deallocate a block of memory
@@ -266,13 +264,12 @@ impl BuddyFrameAllocator {
     ///
     /// # Arguments
     /// * `block` - The physical frames that can be deallocated
-    pub fn deallocate_block(&mut self, block: Vec<PhysFrame<Size4KiB>>, order: u16) {
+    pub fn deallocate_block(&mut self, block: Vec<PhysFrame<Size4KiB>>, order: u16) -> bool {
         // given frames vec must be of 1 << order size
-        assert_eq!(
-            block.len(),
-            1 << order,
-            "Block length does not match the order"
-        );
+        if block.len() != 1 << order || block.is_empty() {
+            crate::serial_println!("Ignoring invalid buddy block deallocation");
+            return false;
+        }
 
         let base_index = block[0].start_address().as_u64() as usize / PAGE_SIZE;
 
@@ -324,6 +321,7 @@ impl BuddyFrameAllocator {
 
         self.free_count += 1 << order;
         self.allocated_count -= 1 << order;
+        true
     }
 
     /// Increments the reference count for the given physical frame.
@@ -416,9 +414,7 @@ unsafe impl FrameAllocator<Size4KiB> for BuddyFrameAllocator {
 
         let mut order = found_order? as u16;
 
-        let block_index = self.free_lists[order as usize]
-            .pop()
-            .expect("Expected something to be in list");
+        let block_index = self.free_lists[order as usize].pop()?;
 
         // if the block we found is greater than order 0, split
         while order > 0 {
@@ -484,7 +480,10 @@ impl FrameDeallocator<Size4KiB> for BuddyFrameAllocator {
             {
                 self.free_lists[order].remove(pos);
             } else {
-                panic!("Frame bookkeeping went wrong");
+                crate::serial_println!(
+                    "Refusing to free frame: buddy allocator bookkeeping is inconsistent"
+                );
+                return;
             }
 
             index = core::cmp::min(index, buddy_index);
@@ -516,7 +515,8 @@ mod tests {
     #[test_case]
     /// Tests that we can allocate and deallocate 100 frames
     async fn test_multiple_alloc_dealloc() {
-        let alloc_count_before = with_buddy_frame_allocator(|alloc| alloc.allocated_count);
+        let alloc_count_before = with_buddy_frame_allocator(|alloc| alloc.allocated_count)
+            .expect("buddy allocator should be initialized");
 
         let mut frames: Vec<PhysFrame> = Vec::with_capacity(100);
         for _ in 0..100 {
@@ -527,7 +527,8 @@ mod tests {
             dealloc_frame(frames[i]);
         });
 
-        let alloc_count_after = with_buddy_frame_allocator(|alloc| alloc.allocated_count);
+        let alloc_count_after = with_buddy_frame_allocator(|alloc| alloc.allocated_count)
+            .expect("buddy allocator should be initialized");
 
         assert_eq!(alloc_count_before, alloc_count_after);
     }
@@ -535,11 +536,13 @@ mod tests {
     #[test_case]
     /// Tests that the count of allocated frames is correct after allocation
     async fn test_alloc_frame_count() {
-        let alloc_count_before = with_buddy_frame_allocator(|alloc| alloc.allocated_count);
+        let alloc_count_before = with_buddy_frame_allocator(|alloc| alloc.allocated_count)
+            .expect("buddy allocator should be initialized");
 
         let frame = alloc_frame().expect("Frame allocation failed");
 
-        let alloc_count_after = with_buddy_frame_allocator(|alloc| alloc.allocated_count);
+        let alloc_count_after = with_buddy_frame_allocator(|alloc| alloc.allocated_count)
+            .expect("buddy allocator should be initialized");
 
         assert_eq!(alloc_count_before, alloc_count_after - 1);
 
@@ -550,11 +553,13 @@ mod tests {
     /// Tests that the count of allocated frames is correct after deallocation
     async fn test_dealloc_frame_count() {
         let frame = alloc_frame().expect("Allocation failed");
-        let alloc_count_before = with_buddy_frame_allocator(|alloc| alloc.allocated_count);
+        let alloc_count_before = with_buddy_frame_allocator(|alloc| alloc.allocated_count)
+            .expect("buddy allocator should be initialized");
 
         dealloc_frame(frame);
 
-        let alloc_count_after = with_buddy_frame_allocator(|alloc| alloc.allocated_count);
+        let alloc_count_after = with_buddy_frame_allocator(|alloc| alloc.allocated_count)
+            .expect("buddy allocator should be initialized");
 
         assert_eq!(alloc_count_before, alloc_count_after + 1);
     }
@@ -566,13 +571,15 @@ mod tests {
 
         with_buddy_frame_allocator(|alloc| {
             assert_eq!(alloc.get_ref_count(frame), 1);
-        });
+        })
+        .expect("buddy allocator should be initialized");
 
         dealloc_frame(frame);
 
         with_buddy_frame_allocator(|alloc| {
             assert_eq!(alloc.get_ref_count(frame), 0);
-        });
+        })
+        .expect("buddy allocator should be initialized");
     }
 
     #[test_case]
@@ -581,23 +588,28 @@ mod tests {
         let order = 1; // request 2 blocks of memory
         let (frames, alloc_count_before) = with_buddy_frame_allocator(|alloc| {
             let alloc_count_before = alloc.allocated_count;
-            let frames = alloc.allocate_block(order);
+            let frames = alloc
+                .allocate_block(order)
+                .expect("test block allocation should succeed");
             let alloc_count_after = alloc.allocated_count;
             assert_eq!(alloc_count_before + 2, alloc_count_after);
 
             (frames, alloc_count_before)
-        });
+        })
+        .expect("buddy allocator should be initialized");
 
         for frame in frames {
             with_buddy_frame_allocator(|alloc| {
                 assert_eq!(alloc.get_ref_count(frame), 1);
-            });
+            })
+            .expect("buddy allocator should be initialized");
             dealloc_frame(frame);
         }
         with_buddy_frame_allocator(|alloc| {
             let alloc_count_final = alloc.allocated_count;
             assert_eq!(alloc_count_before, alloc_count_final);
         })
+        .expect("buddy allocator should be initialized");
     }
 
     #[test_case]
@@ -606,23 +618,28 @@ mod tests {
         let order = 8; // request 256 frames of memory
         let (frames, alloc_count_before) = with_buddy_frame_allocator(|alloc| {
             let alloc_count_before = alloc.allocated_count;
-            let frames = alloc.allocate_block(order);
+            let frames = alloc
+                .allocate_block(order)
+                .expect("test block allocation should succeed");
             let alloc_count_after = alloc.allocated_count;
             assert_eq!(alloc_count_before + 256, alloc_count_after);
 
             (frames, alloc_count_before)
-        });
+        })
+        .expect("buddy allocator should be initialized");
 
         for frame in frames {
             with_buddy_frame_allocator(|alloc| {
                 assert_eq!(alloc.get_ref_count(frame), 1);
-            });
+            })
+            .expect("buddy allocator should be initialized");
             dealloc_frame(frame);
         }
         with_buddy_frame_allocator(|alloc| {
             let alloc_count_final = alloc.allocated_count;
             assert_eq!(alloc_count_before, alloc_count_final);
         })
+        .expect("buddy allocator should be initialized");
     }
 
     #[test_case]
@@ -631,7 +648,9 @@ mod tests {
         let order = 1;
         with_buddy_frame_allocator(|alloc| {
             let alloc_count_before = alloc.allocated_count;
-            let frames = alloc.allocate_block(order);
+            let frames = alloc
+                .allocate_block(order)
+                .expect("test block allocation should succeed");
             let alloc_count_after = alloc.allocated_count;
             assert_eq!(alloc_count_before + 2, alloc_count_after);
 
@@ -639,7 +658,8 @@ mod tests {
 
             let alloc_count_final = alloc.allocated_count;
             assert_eq!(alloc_count_before, alloc_count_final);
-        });
+        })
+        .expect("buddy allocator should be initialized");
     }
 
     #[test_case]
@@ -648,7 +668,9 @@ mod tests {
         let order = 8;
         with_buddy_frame_allocator(|alloc| {
             let alloc_count_before = alloc.allocated_count;
-            let frames = alloc.allocate_block(order);
+            let frames = alloc
+                .allocate_block(order)
+                .expect("test block allocation should succeed");
             let alloc_count_after = alloc.allocated_count;
             assert_eq!(alloc_count_before + 256, alloc_count_after);
 
@@ -660,6 +682,7 @@ mod tests {
 
             let alloc_count_final = alloc.allocated_count;
             assert_eq!(alloc_count_before, alloc_count_final);
-        });
+        })
+        .expect("buddy allocator should be initialized");
     }
 }

@@ -289,7 +289,7 @@ impl Node {
         };
 
         if node.is_symlink() {
-            node.symlink_target = Some(node.read_symlink().await.unwrap());
+            node.symlink_target = node.read_symlink().await.ok();
         }
 
         node

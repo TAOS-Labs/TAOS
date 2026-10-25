@@ -32,6 +32,12 @@ pub use tasks::{
     JoinHandle,
 };
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ScheduleError {
+    RunnerUnavailable,
+    InvalidPriority,
+}
+
 /// Thread-safe future that remains pinned to a heap address throughout its lifetime
 type SendFuture = Mutex<Pin<Box<dyn Future<Output = ()> + 'static + Send>>>;
 
@@ -82,7 +88,11 @@ static EVENT_RUNNERS: RwLock<BTreeMap<u32, RwLock<EventRunner>>> = RwLock::new(B
 /// Invoking this function should be the final step of the boot process.
 pub unsafe fn run_loop(cpuid: u32) -> ! {
     let runners = EVENT_RUNNERS.read();
-    let runner = runners.get(&cpuid).expect("No runner found").as_mut_ptr();
+    let Some(runner) = runners.get(&cpuid) else {
+        crate::serial_println!("Cannot start event loop: no runner for CPU {}", cpuid);
+        crate::idle_loop();
+    };
+    let runner = runner.as_mut_ptr();
 
     (*runner).run_loop()
 }
@@ -94,10 +104,13 @@ pub fn schedule_kernel_on(
     cpuid: u32,
     future: impl Future<Output = ()> + 'static + Send,
     priority_level: usize,
-) -> Arc<Event> {
+) -> Result<Arc<Event>, ScheduleError> {
     without_interrupts(|| {
         let runners = EVENT_RUNNERS.read();
-        let mut runner = runners.get(&cpuid).expect("No runner found").write();
+        let mut runner = runners
+            .get(&cpuid)
+            .ok_or(ScheduleError::RunnerUnavailable)?
+            .write();
 
         runner.schedule(future, priority_level, 0)
     })
@@ -109,23 +122,26 @@ pub fn schedule_kernel_on(
 pub fn schedule_kernel(
     future: impl Future<Output = ()> + 'static + Send,
     priority_level: usize,
-) -> Arc<Event> {
+) -> Result<Arc<Event>, ScheduleError> {
     let cpuid = x2apic::current_core_id() as u32;
     schedule_kernel_on(cpuid, future, priority_level)
 }
 
 /// Schedules a user process on a specific CPU core
-pub fn schedule_process_on(cpuid: u32, pid: u32) -> Arc<Event> {
+pub fn schedule_process_on(cpuid: u32, pid: u32) -> Result<Arc<Event>, ScheduleError> {
     without_interrupts(|| {
         let runners = EVENT_RUNNERS.read();
-        let mut runner = runners.get(&cpuid).expect("No runner found").write();
+        let mut runner = runners
+            .get(&cpuid)
+            .ok_or(ScheduleError::RunnerUnavailable)?
+            .write();
 
         unsafe { runner.schedule(run_process_ring3(pid), NUM_EVENT_PRIORITIES - 1, pid) }
     })
 }
 
 /// Wrapper that schedules a user process on the current CPU core
-pub fn schedule_process(pid: u32) -> Arc<Event> {
+pub fn schedule_process(pid: u32) -> Result<Arc<Event>, ScheduleError> {
     let cpuid = x2apic::current_core_id() as u32;
     schedule_process_on(cpuid, pid)
 }
@@ -133,13 +149,17 @@ pub fn schedule_process(pid: u32) -> Arc<Event> {
 /// Notifies runner of a user process,
 /// but does not immediately schedule for polling.
 /// Starts with minimum priority
-pub fn schedule_blocked_process(pid: u32, // 0 as kernel/sentinel
-) -> Arc<Event> {
+pub fn schedule_blocked_process(
+    pid: u32, // 0 as kernel/sentinel
+) -> Result<Arc<Event>, ScheduleError> {
     let cpuid = x2apic::current_core_id() as u32;
 
     without_interrupts(|| {
         let runners = EVENT_RUNNERS.read();
-        let mut runner = runners.get(&cpuid).expect("No runner found").write();
+        let mut runner = runners
+            .get(&cpuid)
+            .ok_or(ScheduleError::RunnerUnavailable)?
+            .write();
 
         unsafe {
             // TODO may need to replace with syscall variant
@@ -163,9 +183,9 @@ pub fn register_event_runner() {
 pub fn current_running_event() -> Option<Arc<Event>> {
     let cpuid = x2apic::current_core_id() as u32;
     let runners = EVENT_RUNNERS.read();
-    let runner = runners.get(&cpuid).expect("No runner found").read();
-
-    runner.current_running_event().cloned()
+    runners
+        .get(&cpuid)
+        .and_then(|runner| runner.read().current_running_event().cloned())
 }
 
 /// Finds the PID of the current event running on this core
@@ -175,12 +195,14 @@ pub fn current_running_event() -> Option<Arc<Event>> {
 pub fn current_running_event_pid() -> u32 {
     let cpuid = x2apic::current_core_id() as u32;
     let runners = EVENT_RUNNERS.read();
-    let runner = runners.get(&cpuid).expect("No runner found").read();
-
-    match runner.current_running_event() {
+    let Some(runner) = runners.get(&cpuid) else {
+        return 0;
+    };
+    let result = match runner.read().current_running_event() {
         Some(e) => e.pid,
         None => 0,
-    }
+    };
+    result
 }
 
 /// Finds the priority of the current event running on this core
@@ -190,32 +212,36 @@ pub fn current_running_event_pid() -> u32 {
 pub fn current_running_event_priority() -> usize {
     let cpuid = x2apic::current_core_id() as u32;
     let runners = EVENT_RUNNERS.read();
-    let runner = runners.get(&cpuid).expect("No runner found").read();
-
-    match runner.current_running_event() {
+    let Some(runner) = runners.get(&cpuid) else {
+        return NUM_EVENT_PRIORITIES - 1;
+    };
+    let result = match runner.read().current_running_event() {
         Some(e) => e.priority.load(Ordering::Relaxed),
         None => NUM_EVENT_PRIORITIES - 1,
-    }
+    };
+    result
 }
 
 /// Increments the system time by one tick
 pub fn inc_runner_clock() {
     let cpuid = x2apic::current_core_id() as u32;
     let runners = EVENT_RUNNERS.read();
-    unsafe {
-        let runner = runners.get(&cpuid).expect("No runner found").as_mut_ptr();
+    if let Some(runner) = runners.get(&cpuid) {
+        let runner = runner.as_mut_ptr();
 
         // Safe as long as system clock is ONLY accessed from this core
-        (*runner).inc_system_clock();
+        unsafe { (*runner).inc_system_clock() };
     }
 }
 
 pub fn get_runner_time(offset_nanos: u64) -> u64 {
     let cpuid = x2apic::current_core_id() as u32;
     let runners = EVENT_RUNNERS.read();
-    let runner = runners.get(&cpuid).expect("No runner found").read();
-
-    runner.get_system_time() + nanos_to_ticks(offset_nanos)
+    runners
+        .get(&cpuid)
+        .map(|runner| runner.read().get_system_time())
+        .unwrap_or(0)
+        .saturating_add(nanos_to_ticks(offset_nanos))
 }
 
 /// Gets the current system time (in ticks)
@@ -226,9 +252,10 @@ pub fn runner_timestamp() -> u64 {
     let cpuid = x2apic::current_core_id() as u32;
 
     let runners = EVENT_RUNNERS.read();
-    let runner = runners.get(&cpuid).expect("No runner found").read();
-
-    runner.system_clock
+    runners
+        .get(&cpuid)
+        .map(|runner| runner.read().system_clock)
+        .unwrap_or(0)
 }
 
 /// Sets the current event to sleep for a given number of nanoseconds.
@@ -244,9 +271,9 @@ pub fn nanosleep_current_event(nanos: u64) -> Option<Sleep> {
         let cpuid = x2apic::current_core_id() as u32;
 
         let runners = EVENT_RUNNERS.read();
-        let mut runner = runners.get(&cpuid).expect("No runner found").write();
-
-        runner.nanosleep_current_event(nanos)
+        runners
+            .get(&cpuid)
+            .and_then(|runner| runner.write().nanosleep_current_event(nanos))
     })
 }
 
@@ -263,10 +290,18 @@ pub fn nanosleep_current_process(
 
     without_interrupts(|| {
         let runners = EVENT_RUNNERS.read();
-        let mut runner = runners.get(&cpuid).expect("No runner found").write();
-
-        unsafe {
-            runner.nanosleep_event(run_process_ring3(pid), NUM_EVENT_PRIORITIES - 1, pid, nanos);
+        if let Some(runner) = runners.get(&cpuid) {
+            let mut runner = runner.write();
+            unsafe {
+                if let Err(error) = runner.nanosleep_event(
+                    run_process_ring3(pid),
+                    NUM_EVENT_PRIORITIES - 1,
+                    pid,
+                    nanos,
+                ) {
+                    crate::serial_println!("Could not put process {} to sleep: {:?}", pid, error);
+                }
+            }
         }
     });
 }
@@ -286,9 +321,13 @@ pub fn current_running_event_info() -> EventInfo {
     let cpuid = x2apic::current_core_id() as u32;
 
     let runners = EVENT_RUNNERS.read();
-    let runner = runners.get(&cpuid).expect("No runner found").read();
-
-    match runner.current_running_event() {
+    let Some(runner) = runners.get(&cpuid) else {
+        return EventInfo {
+            priority: NUM_EVENT_PRIORITIES - 1,
+            pid: 0,
+        };
+    };
+    let result = match runner.read().current_running_event() {
         Some(e) => EventInfo {
             priority: e.priority.load(Ordering::Relaxed),
             pid: e.pid,
@@ -297,17 +336,25 @@ pub fn current_running_event_info() -> EventInfo {
             priority: NUM_EVENT_PRIORITIES - 1,
             pid: 0,
         },
-    }
+    };
+    result
 }
 
-pub fn spawn<F, T>(cpuid: u32, future: F, priority_level: usize) -> JoinHandle<T>
+pub fn spawn<F, T>(
+    cpuid: u32,
+    future: F,
+    priority_level: usize,
+) -> Result<JoinHandle<T>, ScheduleError>
 where
     F: Future<Output = T> + Send + 'static,
     T: Send + 'static,
 {
     without_interrupts(|| {
         let runners = EVENT_RUNNERS.read();
-        let mut runner = runners.get(&cpuid).expect("No runner found").write();
+        let mut runner = runners
+            .get(&cpuid)
+            .ok_or(ScheduleError::RunnerUnavailable)?
+            .write();
 
         runner.spawn(future, priority_level)
     })

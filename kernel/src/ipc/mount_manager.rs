@@ -10,7 +10,10 @@ use crate::{
 };
 use alloc::{collections::BTreeMap, sync::Arc};
 use bytes::Bytes;
-use core::sync::atomic::{AtomicU16, AtomicU32, Ordering};
+use core::{
+    num::NonZeroUsize,
+    sync::atomic::{AtomicU16, AtomicU32, Ordering},
+};
 use futures::channel::oneshot;
 use spin::Mutex;
 
@@ -30,7 +33,7 @@ struct Mount {
 }
 
 impl Mount {
-    fn new(_mount_id: MountId, tx: Sender<Bytes>, rx: Receiver<Bytes>) -> Self {
+    fn new(_mount_id: MountId, tx: Sender<Bytes>, rx: Receiver<Bytes>) -> Result<Self, Error> {
         let pending = Arc::new(Mutex::new(BTreeMap::<u16, PendingRequest>::new()));
         let pending_clone = pending.clone();
         serial_println!("Spawning task");
@@ -56,16 +59,17 @@ impl Mount {
                 }
             },
             1,
-        );
+        )
+        .map_err(|_| Error::NoMount)?;
         serial_println!("Done");
 
-        Mount {
+        Ok(Mount {
             _mount_id,
             tx,
             pending,
             next_tag: AtomicU16::new(0),
             task,
-        }
+        })
     }
 
     async fn send_request(&self, _fid: u32, data: Message) -> Result<Message, Error> {
@@ -77,10 +81,8 @@ impl Mount {
             .lock()
             .insert(tag, PendingRequest { response_tx });
 
-        self.tx
-            .send(data.serialize().unwrap())
-            .await
-            .map_err(|_| Error::ChannelFull)?;
+        let bytes = data.serialize().map_err(|_| Error::Protocol)?;
+        self.tx.send(bytes).await.map_err(|_| Error::ChannelFull)?;
 
         response_rx.await.map_err(|_| Error::NoResponse)
     }
@@ -93,7 +95,7 @@ pub struct MountManager {
 }
 
 impl MountManager {
-    pub fn new(pool_size: usize) -> Self {
+    pub fn new(pool_size: NonZeroUsize) -> Self {
         Self {
             mounts: Mutex::new(BTreeMap::new()),
             channel_pool: ChannelPool::new(pool_size),
@@ -110,7 +112,7 @@ impl MountManager {
         serial_println!("Got channels");
         let mount_id = MountId(self.next_mount_id.fetch_add(1, Ordering::Relaxed));
         serial_println!("Added stuff");
-        let mount = Mount::new(mount_id, client_tx, client_rx);
+        let mount = Mount::new(mount_id, client_tx, client_rx)?;
         serial_println!("Mount spawned");
 
         self.mounts.lock().insert(mount_id, mount);

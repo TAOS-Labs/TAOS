@@ -33,12 +33,12 @@ use crate::{
         page_fault::{
             determine_fault_cause, handle_cow_fault, handle_existing_mapping, handle_new_mapping,
             handle_private_file_mapping, handle_shared_file_mapping, handle_shared_page_fault,
-            FaultOutcome,
+            FaultError, FaultOutcome,
         },
     },
     prelude::*,
     processes::{
-        process::{preempt_process, with_current_pcb},
+        process::{preempt_process, try_with_current_pcb},
         registers::ForkingRegisters,
     },
     syscalls::{
@@ -142,7 +142,8 @@ extern "x86-interrupt" fn double_fault_handler(
     stack_frame: InterruptStackFrame,
     _error_code: u64,
 ) -> ! {
-    panic!("EXCEPTION: DOUBLE FAULT\n{:#?}", stack_frame);
+    serial_println!("FATAL: DOUBLE FAULT\n{:#?}", stack_frame);
+    crate::idle_loop();
 }
 
 /// Handles a page fault
@@ -164,7 +165,13 @@ extern "x86-interrupt" fn page_fault_handler(
     stack_frame: InterruptStackFrame,
     error_code: PageFaultErrorCode,
 ) {
-    let faulting_address = Cr2::read().expect("Cannot read faulting address").as_u64();
+    let faulting_address = match Cr2::read() {
+        Ok(address) => address.as_u64(),
+        Err(error) => {
+            serial_println!("Unable to read page-fault address: {:?}", error);
+            return;
+        }
+    };
     serial_println!("Page fault");
     serial_println!("Stack pointer: 0x{:X}", stack_frame.stack_pointer);
     serial_println!(
@@ -179,13 +186,14 @@ extern "x86-interrupt" fn page_fault_handler(
     );
     serial_println!("Error code: {:#?}", error_code);
 
-    with_current_pcb(|pcb| {
+    let result = try_with_current_pcb(|pcb| -> Result<(), FaultError> {
         pcb.mm.with_vma_tree(|tree| {
             // Find the VMA covering the faulting address.
-            let vma_arc = Mm::find_vma(faulting_address, tree).expect("Vma not found?");
+            let vma_arc =
+                Mm::find_vma(faulting_address, tree).ok_or(FaultError::AddressOutsideSegment)?;
             let mut vma = vma_arc.lock();
 
-            let fault = determine_fault_cause(error_code, &vma);
+            let fault = determine_fault_cause(error_code, &vma)?;
 
             match fault {
                 FaultOutcome::SharedAnonMapping {
@@ -194,7 +202,7 @@ extern "x86-interrupt" fn page_fault_handler(
                     chain,
                     pt_flags,
                 } => {
-                    handle_existing_mapping(page, &mut mapper, chain, pt_flags);
+                    handle_existing_mapping(page, &mut mapper, chain, pt_flags)?;
                 }
                 FaultOutcome::NewAnonMapping {
                     page,
@@ -202,7 +210,7 @@ extern "x86-interrupt" fn page_fault_handler(
                     backing,
                     pt_flags,
                 } => {
-                    handle_new_mapping(page, &mut mapper, &backing, pt_flags, &vma);
+                    handle_new_mapping(page, &mut mapper, &backing, pt_flags, &vma)?;
                 }
                 FaultOutcome::SharedFileMapping {
                     page,
@@ -213,7 +221,7 @@ extern "x86-interrupt" fn page_fault_handler(
                 } => {
                     block_on(async {
                         handle_shared_file_mapping(page, &mut mapper, offset, pt_flags, fd).await
-                    });
+                    })?;
                 }
                 FaultOutcome::PrivateFileMapping {
                     page,
@@ -232,30 +240,47 @@ extern "x86-interrupt" fn page_fault_handler(
                             &mut vma,
                         )
                         .await
-                    });
+                    })?;
                 }
                 FaultOutcome::CopyOnWrite {
                     page,
                     mut mapper,
                     pt_flags,
                 } => {
-                    handle_cow_fault(page, &mut mapper, pt_flags);
+                    handle_cow_fault(page, &mut mapper, pt_flags)?;
                 }
                 FaultOutcome::SharedPage {
                     page,
                     mut mapper,
                     pt_flags,
                 } => {
-                    handle_shared_page_fault(page, &mut mapper, pt_flags);
+                    handle_shared_page_fault(page, &mut mapper, pt_flags)?;
                 }
                 FaultOutcome::Mapped => {
-                    panic!();
+                    return Err(FaultError::InvalidTranslation);
                 }
             }
-        });
+            Ok(())
+        })
     });
 
+    match result {
+        Ok(Ok(())) => {}
+        Ok(Err(error)) => terminate_faulting_process(error),
+        Err(_) => terminate_faulting_process(FaultError::InvalidTranslation),
+    }
+
     serial_println!("got out of page fault handler.");
+}
+
+fn terminate_faulting_process(error: FaultError) {
+    serial_println!(
+        "Terminating process after unrecoverable page fault: {:?}",
+        error
+    );
+    if let Err(exit_error) = sys_exit(128 + 11, &ForkingRegisters::default()) {
+        serial_println!("Could not terminate faulting process: {:?}", exit_error);
+    }
 }
 
 // TODO: Refactor this to follow the way 64 bit works
@@ -331,7 +356,7 @@ fn syscall_handler(rsp: u64) {
     }
     match syscall_num {
         SYSCALL_EXIT => {
-            sys_exit(p1 as i64, &ForkingRegisters::default());
+            let _ = sys_exit(p1 as i64, &ForkingRegisters::default());
         }
         SYSCALL_PRINT => {
             let success = sys_print(p1 as *const u8);
@@ -339,15 +364,15 @@ fn syscall_handler(rsp: u64) {
         SYSCALL_NANOSLEEP => {
             let success = sys_nanosleep_32(p1, rsp);
         }
-        _ => {
-            panic!("Unknown syscall, {}", syscall_num);
-        }
+        _ => unsafe {
+            *(rsp as *mut u64) = crate::error::Errno::NotImplemented.as_syscall_return();
+        },
     }
 
     x2apic::send_eoi();
 
     if syscall_num == SYSCALL_EXIT {
-        sys_exit(p1 as i64, &ForkingRegisters::default());
+        let _ = sys_exit(p1 as i64, &ForkingRegisters::default());
     } else if syscall_num == SYSCALL_MMAP {
         let val = sys_mmap(p1, p2, p3, p4, p5 as i64, p6);
         unsafe {

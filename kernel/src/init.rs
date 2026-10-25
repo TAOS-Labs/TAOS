@@ -53,17 +53,27 @@ static CPU_COUNT: AtomicU64 = AtomicU64::new(0);
 /// # Returns
 /// * `u32` - The BSP's LAPIC ID
 pub fn init() -> u32 {
-    assert!(BASE_REVISION.is_supported());
+    if !BASE_REVISION.is_supported() {
+        serial_println!("Unsupported Limine base revision; cannot boot safely");
+        crate::idle_loop();
+    }
     memory::init(0);
-    interrupts::init(0);
+    if let Err(error) = interrupts::init(0) {
+        serial_println!("Interrupt initialization failed: {}", error);
+        crate::idle_loop();
+    }
 
     register_event_runner();
     devices::init(0);
     filesys::init(0);
     // Should be kept after devices in case logging gets complicated
     // Right now log writes to serial, but if it were to switch to VGA, this would be important
-    logging::init(0);
-    get_ip_addr().unwrap();
+    if logging::init(0).is_err() {
+        serial_println!("Logger was already initialized; continuing with the existing logger");
+    }
+    if let Err(error) = get_ip_addr() {
+        serial_println!("Network initialization deferred: {:?}", error);
+    }
     processes::init(0);
 
     debug!("Waking cores");
@@ -86,9 +96,14 @@ pub fn init() -> u32 {
 #[no_mangle]
 unsafe extern "C" fn secondary_cpu_main(cpu: &Cpu) -> ! {
     CPU_COUNT.fetch_add(1, Ordering::SeqCst);
-    interrupts::init(cpu.id);
+    if let Err(error) = interrupts::init(cpu.id) {
+        serial_println!("CPU {} interrupt initialization failed: {}", cpu.id, error);
+        crate::idle_loop();
+    }
     memory::init(cpu.id);
-    logging::init(cpu.id);
+    if logging::init(cpu.id).is_err() {
+        serial_println!("Logger initialization skipped on CPU {}", cpu.id);
+    }
     processes::init(cpu.id);
 
     debug!("AP {} initialized", cpu.id);
@@ -111,7 +126,11 @@ unsafe extern "C" fn secondary_cpu_main(cpu: &Cpu) -> ! {
 /// # Returns
 /// * `u32` - The BSP's LAPIC ID
 fn wake_cores() -> u32 {
-    let smp_response = SMP_REQUEST.get_response().expect("SMP request failed");
+    let Some(smp_response) = SMP_REQUEST.get_response() else {
+        serial_println!("SMP information unavailable; continuing on bootstrap CPU only");
+        BOOT_COMPLETE.store(true, Ordering::SeqCst);
+        return 0;
+    };
     let cpu_count = smp_response.cpus().len() as u64;
     let bsp_id = smp_response.bsp_lapic_id();
 
@@ -148,9 +167,13 @@ pub async fn run_server(server_rx: Receiver<Bytes>, server_tx: Sender<Bytes>) {
                 Ok((msg, tag)) => {
                     serial_println!("Server got message: {:?}", msg);
                     let response = match msg {
-                        Message::Tattach(..) => {
-                            Message::Rattach(Rattach::new(tag, Bytes::new()).unwrap())
-                        }
+                        Message::Tattach(..) => match Rattach::new(tag, Bytes::new()) {
+                            Ok(response) => Message::Rattach(response),
+                            Err(error) => {
+                                serial_println!("Could not build attach response: {:?}", error);
+                                continue;
+                            }
+                        },
                         _ => continue,
                     };
 
@@ -209,7 +232,13 @@ pub async fn spawn_test() {
 
     yield_now().await;
 
-    let client_handle = spawn(0, run_client(mount_id.0), 0);
+    let client_handle = match spawn(0, run_client(mount_id.0), 0) {
+        Ok(handle) => handle,
+        Err(error) => {
+            serial_println!("Failed to spawn client task: {:?}", error);
+            return;
+        }
+    };
 
     if let Err(e) = client_handle.await {
         serial_println!("Client task failed: {:?}", e);

@@ -22,6 +22,9 @@ static mut NEXT_EPH_OFFSET: u64 = 0;
 /// Represents errors that can occur during SD card operation or initalization
 pub enum PagingError {
     PageNotMappedErr,
+    OutOfMemory,
+    AllocatorUnavailable,
+    MappingFailed,
 }
 
 /// initializes vmem system. activates pml4 and sets up page tables
@@ -67,13 +70,17 @@ pub fn create_mapping(
     page: Page,
     mapper: &mut impl Mapper<Size4KiB>,
     flags: Option<PageTableFlags>,
-) -> PhysFrame {
+) -> Result<PhysFrame, PagingError> {
     // TODO: Add proper failure handling (ref count increased but page not mapped)
-    let frame = alloc_frame().expect("no more frames");
+    let frame = alloc_frame().ok_or(PagingError::OutOfMemory)?;
 
-    let _ = unsafe {
-        mapper
-            .map_to(
+    let mapping = {
+        let mut allocator = FRAME_ALLOCATOR.lock();
+        let allocator = allocator
+            .as_mut()
+            .ok_or(PagingError::AllocatorUnavailable)?;
+        unsafe {
+            mapper.map_to(
                 page,
                 frame,
                 flags.unwrap_or(
@@ -81,17 +88,18 @@ pub fn create_mapping(
                         | PageTableFlags::WRITABLE
                         | PageTableFlags::USER_ACCESSIBLE,
                 ),
-                FRAME_ALLOCATOR
-                    .lock()
-                    .as_mut()
-                    .expect("Global allocator not initialized"),
+                allocator,
             )
-            .expect("Mapping failed")
+        }
     };
+    if mapping.is_err() {
+        dealloc_frame(frame);
+        return Err(PagingError::MappingFailed);
+    }
 
     tlb_shootdown(page.start_address());
 
-    frame
+    Ok(frame)
 }
 
 /// Creates a mapping to a designated physical frame
@@ -109,10 +117,14 @@ pub fn create_mapping_to_frame(
     mapper: &mut impl Mapper<Size4KiB>,
     flags: Option<PageTableFlags>,
     frame: PhysFrame,
-) -> PhysFrame {
-    let _ = unsafe {
-        mapper
-            .map_to(
+) -> Result<PhysFrame, PagingError> {
+    let mapping = {
+        let mut allocator = FRAME_ALLOCATOR.lock();
+        let allocator = allocator
+            .as_mut()
+            .ok_or(PagingError::AllocatorUnavailable)?;
+        unsafe {
+            mapper.map_to(
                 page,
                 frame,
                 flags.unwrap_or(
@@ -120,17 +132,15 @@ pub fn create_mapping_to_frame(
                         | PageTableFlags::WRITABLE
                         | PageTableFlags::USER_ACCESSIBLE,
                 ),
-                FRAME_ALLOCATOR
-                    .lock()
-                    .as_mut()
-                    .expect("Global allocator not initialized"),
+                allocator,
             )
-            .expect("Mapping failed")
+        }
     };
+    mapping.map_err(|_| PagingError::MappingFailed)?.ignore();
 
     tlb_shootdown(page.start_address());
 
-    frame
+    Ok(frame)
 }
 
 /// Updates an existing mapping
@@ -146,30 +156,30 @@ pub fn update_mapping(
     mapper: &mut impl Mapper<Size4KiB>,
     frame: PhysFrame<Size4KiB>,
     flags: Option<PageTableFlags>,
-) {
+) -> Result<(), PagingError> {
     let mut flags = flags.unwrap_or(PageTableFlags::WRITABLE);
     flags.set(PageTableFlags::PRESENT, true);
 
-    let frame_is_used = with_buddy_frame_allocator(|alloc| alloc.get_ref_count(frame) > 0);
+    let frame_is_used =
+        with_buddy_frame_allocator(|alloc| alloc.get_ref_count(frame) > 0).unwrap_or(false);
 
-    update_permissions(page, mapper, flags);
+    update_permissions(page, mapper, flags)?;
 
     let (old_frame, _) = mapper
         .unmap(page)
-        .expect("Unmap failed, frame likely was not mapped already");
+        .map_err(|_| PagingError::PageNotMappedErr)?;
 
     if old_frame != frame {
-        let _ = unsafe {
-            mapper.map_to(
-                page,
-                frame,
-                flags,
-                FRAME_ALLOCATOR
-                    .lock()
-                    .as_mut()
-                    .expect("Global allocator not initialized"),
-            )
+        let mapping = {
+            let mut allocator = FRAME_ALLOCATOR.lock();
+            let allocator = allocator
+                .as_mut()
+                .ok_or(PagingError::AllocatorUnavailable)?;
+            unsafe { mapper.map_to(page, frame, flags, allocator) }
         };
+        if mapping.is_err() {
+            return Err(PagingError::MappingFailed);
+        }
 
         with_buddy_frame_allocator(|alloc| {
             if alloc.get_ref_count(old_frame) > 0 {
@@ -182,6 +192,7 @@ pub fn update_mapping(
 
         tlb_shootdown(page.start_address());
     }
+    Ok(())
 }
 
 /// Removes an existing mapping
@@ -194,10 +205,15 @@ pub fn update_mapping(
 ///
 /// # Returns
 /// Returns the frame we unmapped
-pub fn remove_mapping(page: Page, mapper: &mut impl Mapper<Size4KiB>) -> PhysFrame<Size4KiB> {
-    let (frame, _) = mapper.unmap(page).expect("Unmap failed");
+pub fn remove_mapping(
+    page: Page,
+    mapper: &mut impl Mapper<Size4KiB>,
+) -> Result<PhysFrame<Size4KiB>, PagingError> {
+    let (frame, _) = mapper
+        .unmap(page)
+        .map_err(|_| PagingError::PageNotMappedErr)?;
     tlb_shootdown(page.start_address());
-    frame
+    Ok(frame)
 }
 
 /// Removes an existing mapping and deallocates the frame
@@ -207,10 +223,16 @@ pub fn remove_mapping(page: Page, mapper: &mut impl Mapper<Size4KiB>) -> PhysFra
 /// # Arguments
 /// * `page` - a Page that we want to map, must already be mapped
 /// * `mapper` - anything that implements a the Mapper trait
-pub fn remove_mapped_frame(page: Page, mapper: &mut impl Mapper<Size4KiB>) {
-    let (frame, _) = mapper.unmap(page).expect("map_to failed");
+pub fn remove_mapped_frame(
+    page: Page,
+    mapper: &mut impl Mapper<Size4KiB>,
+) -> Result<(), PagingError> {
+    let (frame, _) = mapper
+        .unmap(page)
+        .map_err(|_| PagingError::PageNotMappedErr)?;
     dealloc_frame(frame);
     tlb_shootdown(page.start_address());
+    Ok(())
 }
 
 pub fn get_page_flags(
@@ -242,7 +264,7 @@ pub fn map_kernel_frame(
     mapper: &mut impl Mapper<Size4KiB>,
     frame: PhysFrame,
     flags: PageTableFlags,
-) -> VirtAddr {
+) -> Result<VirtAddr, PagingError> {
     let offset = unsafe {
         let current = NEXT_EPH_OFFSET;
         NEXT_EPH_OFFSET += 0x1000; // move up by a page
@@ -253,19 +275,15 @@ pub fn map_kernel_frame(
     let temp_page = Page::containing_address(temp_virt);
 
     unsafe {
-        let result = mapper.map_to(
-            temp_page,
-            frame,
-            flags,
-            FRAME_ALLOCATOR
-                .lock()
-                .as_mut()
-                .expect("Global allocator not initialized"),
-        );
-        result.expect("Map To Failed").flush();
+        let mut allocator = FRAME_ALLOCATOR.lock();
+        let allocator = allocator
+            .as_mut()
+            .ok_or(PagingError::AllocatorUnavailable)?;
+        let result = mapper.map_to(temp_page, frame, flags, allocator);
+        result.map_err(|_| PagingError::MappingFailed)?.flush();
     }
 
-    temp_virt
+    Ok(temp_virt)
 }
 
 /// Update permissions for a specific page
@@ -278,14 +296,20 @@ pub fn map_kernel_frame(
 /// # Safety
 ///
 /// Updating the flags for a page may result in undefined behavior
-pub fn update_permissions(page: Page, mapper: &mut impl Mapper<Size4KiB>, flags: PageTableFlags) {
-    let _ = unsafe {
+pub fn update_permissions(
+    page: Page,
+    mapper: &mut impl Mapper<Size4KiB>,
+    flags: PageTableFlags,
+) -> Result<(), PagingError> {
+    unsafe {
         mapper
             .update_flags(page, flags)
-            .expect("Updating flags failed")
-    };
+            .map_err(|_| PagingError::PageNotMappedErr)?
+            .ignore();
+    }
 
     tlb_shootdown(page.start_address());
+    Ok(())
 }
 
 #[cfg(test)]
@@ -310,7 +334,7 @@ mod tests {
             mm::{Mm, VmAreaBackings, VmAreaFlags},
             KERNEL_MAPPER,
         },
-        processes::process::{get_current_pid, with_current_pcb, PROCESS_TABLE},
+        processes::process::{get_current_pid, try_with_current_pcb, PROCESS_TABLE},
     };
 
     // Used for TLB shootdown testcases.
@@ -339,7 +363,7 @@ mod tests {
         let page: Page = Page::containing_address(VirtAddr::new(0x500000000));
         let _ = create_mapping(page, &mut *mapper, None);
 
-        remove_mapped_frame(page, &mut *mapper);
+        let _ = remove_mapped_frame(page, &mut *mapper);
 
         let translate_frame_error = mapper.translate_page(page);
 
@@ -359,13 +383,14 @@ mod tests {
 
         // Use a test virtual page.
         let page: Page = Page::containing_address(VirtAddr::new(0x400001000));
-        let frame: PhysFrame = create_mapping(page, &mut *mapper, None);
+        let frame: PhysFrame =
+            create_mapping(page, &mut *mapper, None).expect("test mapping should succeed");
 
         let translate_frame = mapper.translate_page(page).expect("Translation failed");
 
         assert_eq!(frame, translate_frame);
 
-        remove_mapped_frame(page, &mut *mapper);
+        let _ = remove_mapped_frame(page, &mut *mapper);
     }
 
     /// Tests that updating page permissions works as expected.
@@ -382,14 +407,14 @@ mod tests {
 
         let flags = PageTableFlags::PRESENT; // Only present (read-only).
 
-        update_permissions(page, &mut *mapper, flags);
+        let _ = update_permissions(page, &mut *mapper, flags);
 
         let flags = get_page_flags(page, &mut mapper).expect("Getting page table flags failed");
 
         assert!(flags.contains(PageTableFlags::PRESENT));
         assert!(!flags.contains(PageTableFlags::WRITABLE));
 
-        remove_mapped_frame(page, &mut *mapper);
+        let _ = remove_mapped_frame(page, &mut *mapper);
     }
 
     /// Tests that contiguous mappings spanning multiple pages work correctly.
@@ -424,7 +449,7 @@ mod tests {
 
         // Cleanup: Unmap all pages.
         for (page, _) in frames {
-            remove_mapped_frame(page, &mut *mapper);
+            let _ = remove_mapped_frame(page, &mut *mapper);
         }
     }
 
@@ -455,7 +480,8 @@ mod tests {
         // Mapping exists now and is cached for the first core.
 
         // Schedule a read on core 1 to load the page into its TLB cache.
-        schedule_kernel_on(AP, async move { pre_read(page).await }, PRIORITY);
+        schedule_kernel_on(AP, async move { pre_read(page).await }, PRIORITY)
+            .expect("test event should schedule");
 
         while PRE_READ.load(Ordering::SeqCst) == 0 {
             core::hint::spin_loop();
@@ -467,7 +493,7 @@ mod tests {
             let new_frame = alloc_frame().expect("Could not find a new frame");
 
             // Update the mapping so that a TLB shootdown is necessary.
-            update_mapping(
+            let _ = update_mapping(
                 page,
                 &mut *mapper,
                 new_frame,
@@ -482,7 +508,8 @@ mod tests {
         }
 
         // Schedule another read on core 1 to verify that the new value is visible.
-        schedule_kernel_on(AP, async move { post_read(page).await }, PRIORITY);
+        schedule_kernel_on(AP, async move { post_read(page).await }, PRIORITY)
+            .expect("test event should schedule");
 
         while POST_READ.load(Ordering::SeqCst) == 0 {
             core::hint::spin_loop();
@@ -491,7 +518,7 @@ mod tests {
         assert_eq!(POST_READ.load(Ordering::SeqCst), 0x42);
 
         let mut mapper = KERNEL_MAPPER.lock();
-        remove_mapped_frame(page, &mut *mapper);
+        let _ = remove_mapped_frame(page, &mut *mapper);
     }
 
     // Tests the copy-on-write (COW) mechanism for a mapped page.
@@ -515,7 +542,7 @@ mod tests {
 
         let anon_area = Arc::new(VmAreaBackings::new());
 
-        with_current_pcb(|pcb| {
+        try_with_current_pcb(|pcb| {
             pcb.mm.with_vma_tree_mutable(|tree| {
                 let _vma1 = Mm::insert_vma(
                     tree,
@@ -527,10 +554,12 @@ mod tests {
                     0,
                 );
             });
-        });
+        })
+        .expect("test requires a current process");
 
         // Create mapping with read-only permission to simulate a COW mapping.
-        let init_frame = create_mapping(page, &mut *mapper, Some(PageTableFlags::PRESENT));
+        let init_frame = create_mapping(page, &mut *mapper, Some(PageTableFlags::PRESENT))
+            .expect("test mapping should succeed");
 
         // Write to the page.
         // Triggers page fault
@@ -570,7 +599,7 @@ mod tests {
 
         assert_eq!(read_value2, 0x20);
 
-        remove_mapped_frame(page, &mut *mapper);
+        let _ = remove_mapped_frame(page, &mut *mapper);
     }
 
     /// Tests the copy-on-write (COW) mechanism for a mapped page.
@@ -624,7 +653,7 @@ mod tests {
         }
 
         // Make it so we page fault on write
-        update_permissions(page, &mut *mapper, PageTableFlags::PRESENT);
+        let _ = update_permissions(page, &mut *mapper, PageTableFlags::PRESENT);
 
         // Write to the page.
         // In a real system, this would trigger a page fault to handle copy-on-write.
@@ -648,6 +677,6 @@ mod tests {
             }
         }
 
-        remove_mapped_frame(page, &mut *mapper);
+        let _ = remove_mapped_frame(page, &mut *mapper);
     }
 }

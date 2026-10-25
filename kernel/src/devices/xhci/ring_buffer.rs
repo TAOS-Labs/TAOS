@@ -212,7 +212,7 @@ impl ProducerRingBuffer {
         phys_offset: VirtAddr,
     ) -> Result<Self, ProducerRingError> {
         // ensure that the base address is aligned to 16
-        if base_addr.as_u64() % 16 != 0 {
+        if !base_addr.as_u64().is_multiple_of(16) {
             return Err(ProducerRingError::UnalignedAddress);
         }
         if size % 16 != 0 {
@@ -254,7 +254,7 @@ impl ProducerRingBuffer {
     /// - `Ok(())` on success
     /// - `Err(ProducerRingError::UnalignedAddress)` if `addr` is not aligned to 16
     pub fn set_enqueue(&mut self, addr: u64) -> Result<(), ProducerRingError> {
-        if addr % 16 != 0 {
+        if !addr.is_multiple_of(16) {
             return Err(ProducerRingError::UnalignedAddress);
         }
 
@@ -271,7 +271,7 @@ impl ProducerRingBuffer {
     /// - `Ok(())` on success
     /// - `Err(ProducerRingError::UnalignedAddress)` if `addr` is not aligned to 16
     pub fn set_dequeue(&mut self, addr: u64) -> Result<(), ProducerRingError> {
-        if addr % 16 != 0 {
+        if !addr.is_multiple_of(16) {
             return Err(ProducerRingError::UnalignedAddress);
         }
 
@@ -321,7 +321,7 @@ impl ProducerRingBuffer {
     }
 
     /// Moves the enqueue to point to the next TRB to enqueue at, following Link TRBs and toggling the cycle state if necessary
-    unsafe fn increment_enqueue(&mut self) {
+    unsafe fn increment_enqueue(&mut self) -> Result<(), ProducerRingError> {
         self.enqueue = self.enqueue.offset(1);
         // if we are now pointing to a link change self.enqueue to the address in the parameters of the link block
         if self.is_enq_link() {
@@ -331,7 +331,9 @@ impl ProducerRingBuffer {
                 self.pcs ^= 1;
             }
             let base_addr = trb.parameters;
-            assert!(base_addr & !0xF == base_addr);
+            if base_addr & 0xF != 0 {
+                return Err(ProducerRingError::UnalignedAddress);
+            }
             self.enqueue = (base_addr + self.phys_offset.as_u64()) as *mut Trb;
         } else {
             // We might need to fix up the link trb to have the correct rules
@@ -345,6 +347,7 @@ impl ProducerRingBuffer {
                 core::ptr::write_volatile(self.link_trb, link_trb);
             }
         }
+        Ok(())
     }
 
     /// Queues a TRB onto the ring.
@@ -370,7 +373,9 @@ impl ProducerRingBuffer {
         let new_block = unsafe { core::ptr::read_volatile(self.link_trb) };
 
         let ctrl = ((TransferRingTypes::Link as u32) << 10) | (1 << 1);
-        assert!(new_block.control & 0xFFFF_FFFE == ctrl);
+        if new_block.control & 0xFFFF_FFFE != ctrl {
+            return Err(ProducerRingError::InvalidType);
+        }
         match self.ring {
             RingType::Command => {
                 let trb_type = block.get_trb_type();
@@ -397,7 +402,7 @@ impl ProducerRingBuffer {
         let enqueue_addr = self.enqueue as u64;
         core::ptr::write_volatile(self.enqueue, block);
         // increment the enqueue pointer
-        self.increment_enqueue();
+        self.increment_enqueue()?;
         Result::Ok(VirtAddr::new(enqueue_addr))
     }
 }
@@ -424,16 +429,19 @@ impl EventRingSegmentTable {
     }
 
     /// Gets the entry at `index` and translates the physical address to the virtual address.
-    unsafe fn get_entry(&self, index: isize) -> Trb {
+    unsafe fn get_entry(&self, index: isize) -> Option<Trb> {
+        if index < 0 || index >= self.size {
+            return None;
+        }
         let block_addr = self.base.offset(index);
         let block = *block_addr;
         let param = block.parameters;
-        let virt_addr = *self.address_map.get(&param).unwrap();
-        Trb {
+        let virt_addr = *self.address_map.get(&param)?;
+        Some(Trb {
             parameters: virt_addr,
             status: block.status,
             control: block.control,
-        }
+        })
     }
 
     /// If the table is not full, adds another segment to the table and returns true, returns false otherwise.
@@ -661,12 +669,17 @@ impl ConsumerRingBuffer {
     /// Attempts to move the dequeue pointer to the next segment
     unsafe fn move_segment(&mut self) -> bool {
         // we need to check the next segment and see if there is something there
-        let mut entry = self.erst.get_entry(self.erst_count);
+        let Some(mut entry) = self.erst.get_entry(self.erst_count) else {
+            return false;
+        };
         let mut first_block = *(entry.parameters as *mut Trb);
         let completion_code = (first_block.status >> 24) & 0xFF;
         if completion_code == 0 {
             // xHC has not written here so check to see if the beginning of the ring has something
-            entry = self.erst.get_entry(0);
+            let Some(first_entry) = self.erst.get_entry(0) else {
+                return false;
+            };
+            entry = first_entry;
             first_block = *(entry.parameters as *mut Trb);
             if first_block.get_cycle() != (self.ccs as u32) {
                 // cycle bit does not match current cycle state so the xHC has written to it
@@ -701,7 +714,10 @@ impl ConsumerRingBuffer {
                 self.ccs ^= 1;
                 self.erst_count = 0;
                 // get the entry
-                let entry = self.erst.get_entry(self.erst_count);
+                let Some(entry) = self.erst.get_entry(self.erst_count) else {
+                    self.ers_size = 0;
+                    return;
+                };
                 // set dequeue and size
                 self.dequeue = entry.parameters as *mut Trb;
                 self.ers_size = entry.status & 0xFFFF;
@@ -1130,8 +1146,8 @@ mod test {
 
         let erst_page: Page = Page::containing_address(VirtAddr::new(0x500000000));
         let segment_page: Page = Page::containing_address(VirtAddr::new(0x600000000));
-        create_mapping(erst_page, &mut *mapper, None);
-        create_mapping(segment_page, &mut *mapper, None);
+        let _ = create_mapping(erst_page, &mut *mapper, None);
+        let _ = create_mapping(segment_page, &mut *mapper, None);
 
         let page_size = erst_page.size() as isize;
 
@@ -1238,8 +1254,8 @@ mod test {
             );
         }
 
-        remove_mapped_frame(erst_page, &mut *mapper);
-        remove_mapped_frame(segment_page, &mut *mapper);
+        let _ = remove_mapped_frame(erst_page, &mut *mapper);
+        let _ = remove_mapped_frame(segment_page, &mut *mapper);
     }
 
     #[test_case]
@@ -1254,9 +1270,9 @@ mod test {
         let erst_page: Page = Page::containing_address(VirtAddr::new(0x500000000));
         let first_segment_page: Page = Page::containing_address(VirtAddr::new(0x600000000));
         let second_segment_page: Page = Page::containing_address(VirtAddr::new(0x700000000));
-        create_mapping(erst_page, &mut *mapper, None);
-        create_mapping(first_segment_page, &mut *mapper, None);
-        create_mapping(second_segment_page, &mut *mapper, None);
+        let _ = create_mapping(erst_page, &mut *mapper, None);
+        let _ = create_mapping(first_segment_page, &mut *mapper, None);
+        let _ = create_mapping(second_segment_page, &mut *mapper, None);
 
         let page_size = erst_page.size() as isize;
 
@@ -1341,9 +1357,9 @@ mod test {
             assert_eq!(control, 0);
         }
 
-        remove_mapped_frame(erst_page, &mut *mapper);
-        remove_mapped_frame(first_segment_page, &mut *mapper);
-        remove_mapped_frame(second_segment_page, &mut *mapper);
+        let _ = remove_mapped_frame(erst_page, &mut *mapper);
+        let _ = remove_mapped_frame(first_segment_page, &mut *mapper);
+        let _ = remove_mapped_frame(second_segment_page, &mut *mapper);
     }
 
     #[test_case]
@@ -1358,9 +1374,9 @@ mod test {
         let erst_page: Page = Page::containing_address(VirtAddr::new(0x500000000));
         let first_segment_page: Page = Page::containing_address(VirtAddr::new(0x600000000));
         let second_segment_page: Page = Page::containing_address(VirtAddr::new(0x700000000));
-        create_mapping(erst_page, &mut *mapper, None);
-        create_mapping(first_segment_page, &mut *mapper, None);
-        create_mapping(second_segment_page, &mut *mapper, None);
+        let _ = create_mapping(erst_page, &mut *mapper, None);
+        let _ = create_mapping(first_segment_page, &mut *mapper, None);
+        let _ = create_mapping(second_segment_page, &mut *mapper, None);
 
         let page_size = erst_page.size() as isize;
 
@@ -1558,9 +1574,9 @@ mod test {
             );
         }
 
-        remove_mapped_frame(erst_page, &mut *mapper);
-        remove_mapped_frame(first_segment_page, &mut *mapper);
-        remove_mapped_frame(second_segment_page, &mut *mapper);
+        let _ = remove_mapped_frame(erst_page, &mut *mapper);
+        let _ = remove_mapped_frame(first_segment_page, &mut *mapper);
+        let _ = remove_mapped_frame(second_segment_page, &mut *mapper);
     }
 
     #[test_case]
@@ -1575,9 +1591,9 @@ mod test {
         let erst_page: Page = Page::containing_address(VirtAddr::new(0x500000000));
         let first_segment_page: Page = Page::containing_address(VirtAddr::new(0x600000000));
         let second_segment_page: Page = Page::containing_address(VirtAddr::new(0x700000000));
-        create_mapping(erst_page, &mut *mapper, None);
-        create_mapping(first_segment_page, &mut *mapper, None);
-        create_mapping(second_segment_page, &mut *mapper, None);
+        let _ = create_mapping(erst_page, &mut *mapper, None);
+        let _ = create_mapping(first_segment_page, &mut *mapper, None);
+        let _ = create_mapping(second_segment_page, &mut *mapper, None);
 
         let page_size = erst_page.size() as isize;
 
@@ -1713,8 +1729,8 @@ mod test {
             );
         }
 
-        remove_mapped_frame(erst_page, &mut *mapper);
-        remove_mapped_frame(first_segment_page, &mut *mapper);
-        remove_mapped_frame(second_segment_page, &mut *mapper);
+        let _ = remove_mapped_frame(erst_page, &mut *mapper);
+        let _ = remove_mapped_frame(first_segment_page, &mut *mapper);
+        let _ = remove_mapped_frame(second_segment_page, &mut *mapper);
     }
 }

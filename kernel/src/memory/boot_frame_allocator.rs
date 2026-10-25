@@ -54,19 +54,15 @@ impl BootIntoFrameAllocator {
     ///
     /// # Safety
     /// This function is unsafe as it deals directly with memory map / physmem
-    pub unsafe fn init() -> Self {
-        let memory_map: &MemoryMapResponse = MEMORY_MAP_REQUEST
-            .get_response()
-            .expect("Memory map request failed");
-        let kernel_address_response = KERNEL_ADDRESS_REQUEST
-            .get_response()
-            .expect("Kernel Address request failed");
+    pub unsafe fn init() -> Option<Self> {
+        let memory_map: &MemoryMapResponse = MEMORY_MAP_REQUEST.get_response()?;
+        let kernel_address_response = KERNEL_ADDRESS_REQUEST.get_response()?;
 
         let kernel_start: u64 = kernel_address_response.physical_base();
         let virtual_kernel_address: u64 = kernel_address_response.virtual_base();
         let kernel_end = unsafe { ((_kernel_end) - virtual_kernel_address) + kernel_start };
 
-        BootIntoFrameAllocator {
+        Some(BootIntoFrameAllocator {
             memory_map,
             next: 0,
             first_frame: None,
@@ -74,7 +70,7 @@ impl BootIntoFrameAllocator {
             allocated_count: 0,
             kernel_start,
             kernel_end,
-        }
+        })
     }
 
     /// Function that gives an iterator over sections of usable memory
@@ -101,15 +97,11 @@ impl BootIntoFrameAllocator {
     /// # Returns
     /// Returns an iterator over all frames allocated so far
     pub fn allocated_frames(&self) -> impl Iterator<Item = PhysFrame> + '_ {
-        let start_addr = self
-            .first_frame
-            .expect("No frames allocated yet")
-            .start_address()
-            .as_u64();
+        let start_addr = self.first_frame.map(|frame| frame.start_address().as_u64());
 
-        (0..self.allocated_count).map(move |i| {
-            let addr = start_addr + (i as u64 * FRAME_SIZE as u64);
-            PhysFrame::containing_address(PhysAddr::new(addr))
+        (0..self.allocated_count).filter_map(move |i| {
+            let addr = start_addr?.checked_add(i as u64 * FRAME_SIZE as u64)?;
+            Some(PhysFrame::containing_address(PhysAddr::new(addr)))
         })
     }
 }
@@ -123,7 +115,9 @@ unsafe impl FrameAllocator<Size4KiB> for BootIntoFrameAllocator {
         let frame = Some(self.usable_frames().nth(self.next)?);
         self.next += 1;
 
-        assert!(self.allocated_count < MAX_ALLOCATED_FRAMES);
+        if self.allocated_count >= MAX_ALLOCATED_FRAMES {
+            return None;
+        }
         if self.first_frame.is_none() {
             self.first_frame = frame;
         }
@@ -139,6 +133,6 @@ impl FrameDeallocator<Size4KiB> for BootIntoFrameAllocator {
     /// even though BootIntoFrameAllocator does not support
     /// deallocation
     unsafe fn deallocate_frame(&mut self, _frame: PhysFrame<Size4KiB>) {
-        panic!("Cannot deallocate frames for boot frame allocator")
+        crate::serial_println!("Ignoring frame deallocation before the runtime allocator is ready");
     }
 }

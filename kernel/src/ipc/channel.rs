@@ -79,6 +79,9 @@ pub enum RecvError {
     Closed,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct InvalidCapacity;
+
 #[derive(Debug)]
 struct ChannelState {
     senders_waker: AtomicWaker,
@@ -93,8 +96,10 @@ pub struct Channel<T> {
 }
 
 impl<T> Channel<T> {
-    pub fn new_channel(capacity: usize) -> (Sender<T>, Receiver<T>) {
-        assert!(capacity > 0, "Channel capacity must be greater than 0");
+    pub fn new_channel(capacity: usize) -> Result<(Sender<T>, Receiver<T>), InvalidCapacity> {
+        if capacity == 0 {
+            return Err(InvalidCapacity);
+        }
         let queue = Arc::new(ArrayQueue::new(capacity));
         let state = Arc::new(ChannelState {
             senders_waker: AtomicWaker::new(),
@@ -103,7 +108,7 @@ impl<T> Channel<T> {
         });
         let closed = Arc::new(AtomicBool::new(false));
 
-        (
+        Ok((
             Sender {
                 queue: Arc::clone(&queue),
                 state: Arc::clone(&state),
@@ -114,7 +119,7 @@ impl<T> Channel<T> {
                 state: Arc::clone(&state),
                 closed: Arc::clone(&closed),
             },
-        )
+        ))
     }
 
     pub fn capacity(&self) -> usize {
@@ -281,12 +286,15 @@ impl<T> Future for SendFuture<'_, T> {
         let this = unsafe { self.get_unchecked_mut() };
 
         if this.sender.closed.load(Ordering::Acquire) {
-            return Poll::Ready(Err(SendError::Closed(
-                this.value.take().expect("polled after completion"),
-            )));
+            return match this.value.take() {
+                Some(value) => Poll::Ready(Err(SendError::Closed(value))),
+                None => Poll::Pending,
+            };
         }
 
-        let value = this.value.take().expect("polled after completion");
+        let Some(value) = this.value.take() else {
+            return Poll::Pending;
+        };
 
         match this.sender.try_send(value) {
             Ok(()) => Poll::Ready(Ok(())),
@@ -370,7 +378,7 @@ mod tests {
 
     #[test_case]
     fn test_basic_operations() -> impl Future<Output = ()> + Send + 'static {
-        let (tx, rx) = Channel::new_channel(2);
+        let (tx, rx) = Channel::new_channel(2).expect("valid test capacity");
 
         async move {
             assert_eq!(tx.queue.capacity(), 2);
@@ -392,7 +400,7 @@ mod tests {
 
     #[test_case]
     fn test_send_recv_ordering() -> impl Future<Output = ()> + Send + 'static {
-        let (tx, rx) = Channel::new_channel(100);
+        let (tx, rx) = Channel::new_channel(100).expect("valid test capacity");
 
         async move {
             for i in 0..100 {
@@ -407,7 +415,7 @@ mod tests {
 
     #[test_case]
     fn test_multiple_producers() -> impl Future<Output = ()> + Send + 'static {
-        let (tx, rx) = Channel::new_channel(100);
+        let (tx, rx) = Channel::new_channel(100).expect("valid test capacity");
 
         async move {
             let mut senders = Vec::new();
@@ -434,7 +442,7 @@ mod tests {
 
     #[test_case]
     fn test_multiple_producers_full_channel() -> impl Future<Output = ()> + Send + 'static {
-        let (tx, rx) = Channel::new_channel(5);
+        let (tx, rx) = Channel::new_channel(5).expect("valid test capacity");
 
         async move {
             let mut senders = Vec::new();
@@ -467,7 +475,7 @@ mod tests {
 
     #[test_case]
     fn test_batch_operations() -> impl Future<Output = ()> + Send + 'static {
-        let (tx, rx) = Channel::new_channel(100);
+        let (tx, rx) = Channel::new_channel(100).expect("valid test capacity");
 
         async move {
             for i in 0..50 {
@@ -490,7 +498,7 @@ mod tests {
 
     #[test_case]
     fn test_close_behavior() -> impl Future<Output = ()> + Send + 'static {
-        let (tx, rx) = Channel::new_channel(10);
+        let (tx, rx) = Channel::new_channel(10).expect("valid test capacity");
 
         async move {
             tx.send(1).await.unwrap();
@@ -510,7 +518,7 @@ mod tests {
 
     #[test_case]
     fn test_drop_behavior() -> impl Future<Output = ()> + Send + 'static {
-        let (tx, rx) = Channel::new_channel(10);
+        let (tx, rx) = Channel::new_channel(10).expect("valid test capacity");
 
         async move {
             let tx2 = tx.clone();
@@ -533,7 +541,7 @@ mod tests {
 
     #[test_case]
     fn test_zero_sized_type() -> impl Future<Output = ()> + Send + 'static {
-        let (tx, rx) = Channel::new_channel(10);
+        let (tx, rx) = Channel::new_channel(10).expect("valid test capacity");
 
         async move {
             tx.send(()).await.unwrap();
@@ -543,8 +551,8 @@ mod tests {
 
     #[test_case]
     fn test_concurrent_channels() -> impl Future<Output = ()> + Send + 'static {
-        let (tx1, rx1) = Channel::new_channel(1);
-        let (tx2, rx2) = Channel::new_channel(1);
+        let (tx1, rx1) = Channel::new_channel(1).expect("valid test capacity");
+        let (tx2, rx2) = Channel::new_channel(1).expect("valid test capacity");
 
         async move {
             let send_fut1 = async {
@@ -570,7 +578,7 @@ mod tests {
 
     #[test_case]
     fn test_try_operations() -> impl Future<Output = ()> + Send + 'static {
-        let (tx, rx) = Channel::new_channel(2);
+        let (tx, rx) = Channel::new_channel(2).expect("valid test capacity");
 
         async move {
             assert!(tx.try_send(1).is_ok());

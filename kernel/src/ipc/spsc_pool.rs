@@ -1,5 +1,6 @@
 use super::spsc::{Receiver, Sender, SpscChannel, SPSC_DEFAULT_CAPACITY};
 use alloc::{sync::Arc, vec::Vec};
+use core::num::NonZeroUsize;
 use spin::Mutex;
 
 #[derive(Debug)]
@@ -33,13 +34,15 @@ pub struct ChannelPool<T> {
 }
 
 impl<T> ChannelPool<T> {
-    pub fn new(num_channels: usize) -> Self {
-        assert!(num_channels > 0, "Pool must have at least one channel");
+    pub fn new(num_channels: NonZeroUsize) -> Self {
+        let num_channels = num_channels.get();
 
         let channels = (0..num_channels)
             .map(|_| {
                 Some(ChannelEntry {
-                    channel: Arc::new(SpscChannel::new(SPSC_DEFAULT_CAPACITY)),
+                    channel: Arc::new(SpscChannel::new(unsafe {
+                        NonZeroUsize::new_unchecked(SPSC_DEFAULT_CAPACITY)
+                    })),
                     state: ChannelState::default(),
                 })
             })
@@ -160,8 +163,12 @@ impl<T> ChannelPool<T> {
 
         // Get channel references and create pairs
         let (channel1, channel2) = {
-            let entry1 = data.channels[idx1].as_ref().unwrap();
-            let entry2 = data.channels[idx2].as_ref().unwrap();
+            let entry1 = data.channels[idx1]
+                .as_ref()
+                .ok_or(PoolError::ChannelInUse)?;
+            let entry2 = data.channels[idx2]
+                .as_ref()
+                .ok_or(PoolError::ChannelInUse)?;
 
             if entry1.channel.is_fully_dropped() {
                 entry1.channel.reset();

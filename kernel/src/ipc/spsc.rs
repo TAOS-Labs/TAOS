@@ -3,6 +3,7 @@ use core::{
     cell::UnsafeCell,
     future::Future,
     mem::MaybeUninit,
+    num::NonZeroUsize,
     pin::Pin,
     sync::atomic::{AtomicUsize, Ordering},
     task::{Context, Poll, Waker},
@@ -52,13 +53,13 @@ pub enum RecvError {
 
 impl<T> Default for SpscChannel<T> {
     fn default() -> Self {
-        Self::new(SPSC_DEFAULT_CAPACITY)
+        Self::new(unsafe { NonZeroUsize::new_unchecked(SPSC_DEFAULT_CAPACITY) })
     }
 }
 
 impl<T> SpscChannel<T> {
-    pub fn new(capacity: usize) -> Self {
-        assert!(capacity > 0, "capacity must be greater than 0");
+    pub fn new(capacity: NonZeroUsize) -> Self {
+        let capacity = capacity.get();
         let buffer = (0..capacity)
             .map(|_| UnsafeCell::new(MaybeUninit::uninit()))
             .collect::<Vec<_>>()
@@ -149,7 +150,7 @@ impl<T> Sender<T> {
         }
     }
 
-    pub fn send(&self, value: T) -> SendFuture<T> {
+    pub fn send(&self, value: T) -> SendFuture<'_, T> {
         SendFuture {
             sender: self,
             value: Some(value),
@@ -179,7 +180,7 @@ impl<T> Receiver<T> {
         }
     }
 
-    pub fn recv(&self) -> RecvFuture<T> {
+    pub fn recv(&self) -> RecvFuture<'_, T> {
         RecvFuture { receiver: self }
     }
 }
@@ -221,7 +222,9 @@ impl<T> Future for SendFuture<'_, T> {
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let this = unsafe { self.get_unchecked_mut() };
 
-        let value = this.value.take().expect("polled after completion");
+        let Some(value) = this.value.take() else {
+            return Poll::Pending;
+        };
 
         match this.sender.try_send(value) {
             Ok(()) => Poll::Ready(Ok(())),

@@ -1,13 +1,21 @@
 #![feature(naked_functions_rustic_abi)]
 #![feature(abi_x86_interrupt)]
-#![feature(btree_cursors)]
 #![cfg_attr(feature = "strict", deny(warnings))]
+#![cfg_attr(
+    not(test),
+    deny(
+        clippy::expect_used,
+        clippy::panic,
+        clippy::todo,
+        clippy::unimplemented,
+        clippy::unwrap_used
+    )
+)]
 #![no_std]
 #![cfg_attr(test, no_main)]
 #![feature(custom_test_frameworks)]
 #![test_runner(crate::test_runner)]
 #![reexport_test_harness_main = "test_main"]
-#![feature(unsafe_cell_access)]
 
 //! The TAOS operating system
 extern crate alloc;
@@ -19,6 +27,7 @@ use x86_64::instructions::hlt;
 
 pub mod constants;
 pub mod devices;
+pub mod error;
 pub mod events;
 pub mod filesys;
 pub mod init;
@@ -100,7 +109,10 @@ pub fn test_runner(tests: &[&(dyn Testable + Send + Sync)]) {
         exit_qemu(QemuExitCode::Success);
     };
 
-    schedule_kernel(future, 1);
+    if let Err(error) = schedule_kernel(future, 1) {
+        serial_println!("Failed to schedule test runner: {:?}", error);
+        exit_qemu(QemuExitCode::Failed);
+    }
 }
 
 pub fn test_panic_handler(info: &core::panic::PanicInfo) -> ! {

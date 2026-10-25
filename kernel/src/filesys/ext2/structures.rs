@@ -73,7 +73,7 @@ pub struct Superblock {
 impl Superblock {
     /// Get the block size in bytes
     pub fn block_size(&self) -> u32 {
-        1024 << self.block_size_shift
+        1024u32.checked_shl(self.block_size_shift).unwrap_or(0)
     }
 
     /// Verify superblock validity
@@ -82,14 +82,23 @@ impl Superblock {
             && self.version_major >= 1  // We support version 1+
             && self.block_size() >= 1024
             && self.block_size() <= 4096 // Common size limits
+            && self.blocks_per_group != 0
+            && self.inodes_per_group != 0
+            && self.block_group_count() != 0
     }
 
     /// Calculate number of block groups
     pub fn block_group_count(&self) -> u32 {
+        if self.blocks_per_group == 0 || self.inodes_per_group == 0 {
+            return 0;
+        }
         let n = self.num_blocks.div_ceil(self.blocks_per_group);
         let n2 = self.num_inodes.div_ceil(self.inodes_per_group);
-        assert_eq!(n, n2, "Inconsistent block group counts");
-        n
+        if n == n2 {
+            n
+        } else {
+            0
+        }
     }
 
     pub async fn from_block(device: Arc<dyn BlockIO>) -> FilesystemResult<Self> {
@@ -98,7 +107,12 @@ impl Superblock {
             .read_block(1, &mut superblock_buff)
             .await
             .map_err(FilesystemError::DeviceError)?;
-        let superblock_ref = Superblock::ref_from_prefix(&superblock_buff).unwrap().0;
+        let superblock_ref = Superblock::ref_from_prefix(&superblock_buff)
+            .map_err(|_| FilesystemError::InvalidSuperblock)?
+            .0;
+        if !superblock_ref.is_valid() {
+            return Err(FilesystemError::InvalidSuperblock);
+        }
         Result::Ok(superblock_ref.clone())
     }
 }

@@ -10,8 +10,9 @@ use spin::Mutex;
 
 use crate::{
     constants::processes::MAX_FILES,
+    error::Errno,
     net::{get_eph_port, with_interface, DeviceInterface},
-    processes::process::{with_current_pcb, FakeFile},
+    processes::process::{try_with_current_pcb, FakeFile},
 };
 
 #[repr(u32)]
@@ -67,6 +68,7 @@ pub struct TCPSocket {
 #[derive(Debug, Clone)]
 pub struct RawSocket {}
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SocketError {
     // Should set errno = EINVAL
     UnsupportedProtocol,
@@ -88,15 +90,33 @@ pub enum SocketError {
     OperationNotSuppoorted,
 }
 
+impl From<SocketError> for Errno {
+    fn from(error: SocketError) -> Self {
+        match error {
+            SocketError::UnsupportedProtocol | SocketError::UnsupportedFlags => {
+                Errno::InvalidArgument
+            }
+            SocketError::NoFreeFileDescriptor => Errno::TooManyOpenFiles,
+            SocketError::NoInterface => Errno::NoDevice,
+            SocketError::NotAnOpenFile => Errno::BadFileDescriptor,
+            SocketError::NotASocket => Errno::NotSocket,
+            SocketError::AddressInUse => Errno::AddressInUse,
+            SocketError::SocketAlreadyBound => Errno::InvalidArgument,
+            SocketError::OperationNotSuppoorted => Errno::OperationNotSupported,
+        }
+    }
+}
+
 /// Implementation of the socket system call.
 /// Wraps everything up into a u64 (but keep in mind that failures will return
 /// usize::MAX ) which should have a equvilent equivilent to -1i64.
 /// If kernel code wants to use sockets, they should use socket_impl
 /// which has a much more sane error reporting syntax
 pub fn sys_socket(domain: u64, socket_type: u64, protocol: u64) -> u64 {
-    let stuff = socket_impl(domain, socket_type, protocol).unwrap_or(usize::MAX);
-    let return_64: u64 = stuff.try_into().unwrap();
-    return_64
+    match socket_impl(domain, socket_type, protocol) {
+        Ok(fd) => fd as u64,
+        Err(error) => Errno::from(error).as_syscall_return(),
+    }
 }
 
 /// Implementation of the socket system call. Returns the sockets file descriptor
@@ -106,14 +126,14 @@ pub fn socket_impl(domain: u64, socket_type: u64, protocol: u64) -> Result<usize
     let checked_domain = SocketDomain::from_u64(domain).ok_or(SocketError::UnsupportedProtocol)?;
 
     // Claim a file descriptor
-    let fd = with_current_pcb(|pcb| pcb.find_next_fd()).ok_or(SocketError::NoFreeFileDescriptor)?;
+    let fd = try_with_current_pcb(|pcb| pcb.find_next_fd())
+        .map_err(|_| SocketError::NotAnOpenFile)?
+        .ok_or(SocketError::NoFreeFileDescriptor)?;
 
     // Send off to the apppropate domain
     match checked_domain {
         SocketDomain::Inet => create_internet_socket(socket_type, protocol, fd),
-        SocketDomain::Unix => {
-            todo!()
-        }
+        SocketDomain::Unix => Err(SocketError::OperationNotSuppoorted),
         SocketDomain::Unspecified => Err(SocketError::UnsupportedProtocol),
     }
 }
@@ -138,9 +158,7 @@ fn create_internet_socket(
             };
             InternetSocket::UDP(udp_socket)
         }
-        InetSocketType::Raw => {
-            todo!();
-        }
+        InetSocketType::Raw => return Err(SocketError::OperationNotSuppoorted),
         InetSocketType::Stream => {
             let rx_buffer = tcp::SocketBuffer::new(vec![0; 4096]);
             let tx_buffer = tcp::SocketBuffer::new(vec![0; 4096]);
@@ -154,27 +172,29 @@ fn create_internet_socket(
             InternetSocket::TCP(tcp_socket)
         }
     };
-    with_current_pcb(|pcb| {
+    try_with_current_pcb(|pcb| {
         pcb.fd_table[fd] = Option::Some(FakeFile::Socket(Arc::new(Mutex::new(Socket::Internet(
             internet_socket,
         )))))
-    });
+    })
+    .map_err(|_| SocketError::NotAnOpenFile)?;
     Result::Ok(fd)
 }
 
 pub fn sys_bind(socket_fd: u64, sock_addr_ptr: u64, addrlen: u64) -> u64 {
-    if bind_impl(socket_fd, sock_addr_ptr, addrlen).is_err() {
-        return u64::MAX;
+    match bind_impl(socket_fd, sock_addr_ptr, addrlen) {
+        Ok(()) => 0,
+        Err(error) => Errno::from(error).as_syscall_return(),
     }
-    0
 }
 
 pub fn bind_impl(socket_fd: u64, sock_addr_ptr: u64, _addrlen: u64) -> Result<(), SocketError> {
-    let socket_size: usize = socket_fd.try_into().unwrap();
-    if socket_size > MAX_FILES {
+    let socket_size = usize::try_from(socket_fd).map_err(|_| SocketError::NotAnOpenFile)?;
+    if socket_size >= MAX_FILES {
         return Result::Err(SocketError::NotAnOpenFile);
     }
-    let file = with_current_pcb(|pcb| pcb.fd_table[socket_size].clone());
+    let file = try_with_current_pcb(|pcb| pcb.fd_table[socket_size].clone())
+        .map_err(|_| SocketError::NotAnOpenFile)?;
     let file = file.ok_or(SocketError::NotAnOpenFile)?;
     if let FakeFile::Socket(socket) = file {
         let socket_guard = socket.lock();
@@ -183,9 +203,7 @@ pub fn bind_impl(socket_fd: u64, sock_addr_ptr: u64, _addrlen: u64) -> Result<()
                 bind_internet_socket(inet_socket, sock_addr_ptr)?;
                 Ok(())
             }
-            Socket::Unix(_domain_socket) => {
-                todo!()
-            }
+            Socket::Unix(_domain_socket) => Err(SocketError::OperationNotSuppoorted),
         }
     } else {
         Result::Err(SocketError::NotASocket)
@@ -206,8 +224,10 @@ fn bind_internet_socket(
     inet_socket: InternetSocket,
     sock_addr_ptr: u64,
 ) -> Result<(), SocketError> {
-    let sock_addr_size: usize = sock_addr_ptr.try_into().unwrap();
-    let sock_addr_ptr = sock_addr_size as *const SockAddr;
+    if sock_addr_ptr == 0 {
+        return Err(SocketError::UnsupportedFlags);
+    }
+    let sock_addr_ptr = sock_addr_ptr as *const SockAddr;
     let sock_addr = unsafe { *sock_addr_ptr };
     let network_ports = sock_addr.port.to_be();
     let network_addr = sock_addr.sin_addr.to_be_bytes();
@@ -230,9 +250,7 @@ fn bind_internet_socket(
             with_interface(|interface| bind_tcp_socket(interface, ip_ep, tcp_socket))
                 .ok_or(SocketError::NoInterface)?
         }
-        InternetSocket::Raw(_raw_socket) => {
-            todo!()
-        }
+        InternetSocket::Raw(_raw_socket) => Err(SocketError::OperationNotSuppoorted),
     }
 }
 
@@ -263,10 +281,10 @@ fn bind_tcp_socket(
 }
 
 pub fn sys_connect(socket_fd: u64, sock_addr_ptr: u64, addrlen: u64) -> u64 {
-    if bind_impl(socket_fd, sock_addr_ptr, addrlen).is_err() {
-        return u64::MAX;
+    match connect_impl(socket_fd, sock_addr_ptr, addrlen) {
+        Ok(()) => 0,
+        Err(error) => Errno::from(error).as_syscall_return(),
     }
-    0
 }
 
 pub fn connect_impl(socket_fd: u64, sock_addr_ptr: u64, addrlen: u64) -> Result<(), SocketError> {
@@ -275,11 +293,12 @@ pub fn connect_impl(socket_fd: u64, sock_addr_ptr: u64, addrlen: u64) -> Result<
 }
 
 pub fn listen_impl(socket_fd: u64, backlog: u64) -> Result<(), SocketError> {
-    let socket_size: usize = socket_fd.try_into().unwrap();
-    if socket_size > MAX_FILES {
+    let socket_size = usize::try_from(socket_fd).map_err(|_| SocketError::NotAnOpenFile)?;
+    if socket_size >= MAX_FILES {
         return Result::Err(SocketError::NotAnOpenFile);
     }
-    let file = with_current_pcb(|pcb| pcb.fd_table[socket_size].clone());
+    let file = try_with_current_pcb(|pcb| pcb.fd_table[socket_size].clone())
+        .map_err(|_| SocketError::NotAnOpenFile)?;
     let file = file.ok_or(SocketError::NotAnOpenFile)?;
     if let FakeFile::Socket(socket) = file {
         let mut socket_guard = socket.lock();
@@ -289,9 +308,7 @@ pub fn listen_impl(socket_fd: u64, backlog: u64) -> Result<(), SocketError> {
                 *socket_guard = Socket::Internet(inet_socket);
                 Result::Ok(())
             }
-            Socket::Unix(_domain_socket) => {
-                todo!()
-            }
+            Socket::Unix(_domain_socket) => Err(SocketError::OperationNotSuppoorted),
         }
     } else {
         Result::Err(SocketError::NotASocket)
@@ -300,7 +317,7 @@ pub fn listen_impl(socket_fd: u64, backlog: u64) -> Result<(), SocketError> {
 
 fn listen_internet_socket(socket: &mut InternetSocket, backlog: u64) -> Result<(), SocketError> {
     if let InternetSocket::TCP(ref mut tcp_sock) = socket {
-        let backlog_size: usize = backlog.try_into().unwrap();
+        let backlog_size = usize::try_from(backlog).map_err(|_| SocketError::UnsupportedFlags)?;
         let mut conn_buff: Vec<Option<SockAddr>> = Vec::with_capacity(backlog_size);
         for _ in 0..backlog_size {
             conn_buff.push(Option::None);

@@ -58,6 +58,9 @@ impl MessageWriter {
     }
 
     pub fn finish(mut self) -> Result<Bytes, ProtocolError> {
+        if self.buf.len() < 4 {
+            return Err(ProtocolError::BufferTooSmall);
+        }
         let size = self.buf.len() as u32;
         if size > MAX_MESSAGE_SIZE {
             return Err(ProtocolError::ExceedsMaxSize);

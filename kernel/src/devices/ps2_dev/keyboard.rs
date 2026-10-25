@@ -183,21 +183,22 @@ impl KeyboardState {
 }
 
 /// Initialize the keyboard
-pub fn init() {
-    controller::with_controller(initialize_keyboard);
+pub fn init() -> Result<(), KeyboardError> {
+    controller::with_controller(initialize_keyboard).ok_or(KeyboardError::ControllerError)?
 }
 
 /// Initialize and reset the keyboard
-fn initialize_keyboard(controller: &mut ps2::Controller) {
+fn initialize_keyboard(controller: &mut ps2::Controller) -> Result<(), KeyboardError> {
     let mut keyboard = controller.keyboard();
 
     keyboard
         .reset_and_self_test()
-        .expect("Failed keyboard reset test");
+        .map_err(|_| KeyboardError::CommandError)?;
 
     keyboard
         .enable_scanning()
-        .expect("Failed to enable scanning for keyboard");
+        .map_err(|_| KeyboardError::CommandError)?;
+    Ok(())
 }
 
 /// Get a stream of keyboard events
@@ -206,8 +207,8 @@ pub fn get_stream() -> KeyboardStream {
 }
 
 /// Wait for and return the next keyboard event
-pub async fn next_event() -> KeyboardEvent {
-    KeyboardStream.next().await.unwrap()
+pub async fn next_event() -> Option<KeyboardEvent> {
+    KeyboardStream.next().await
 }
 
 /// Try to read a keyboard event without waiting
@@ -238,15 +239,26 @@ pub fn keyboard_handler() {
 
             match controller.read_data() {
                 Ok(scancode) => {
-                    schedule_kernel(
+                    if let Err(error) = schedule_kernel(
                         async move {
-                            let mut keyboard = KEYBOARD.lock().await;
-                            if let Err(e) = keyboard.process_scancode(scancode) {
-                                serial_println!("Error processing keyboard scancode: {:?}", e);
+                            match KEYBOARD.lock().await {
+                                Ok(mut keyboard) => {
+                                    if let Err(e) = keyboard.process_scancode(scancode) {
+                                        serial_println!(
+                                            "Error processing keyboard scancode: {:?}",
+                                            e
+                                        );
+                                    }
+                                }
+                                Err(_) => {
+                                    serial_println!("Keyboard input task lost its event context")
+                                }
                             }
                         },
                         0,
-                    );
+                    ) {
+                        serial_println!("Failed to schedule keyboard input: {:?}", error);
+                    }
                 }
                 Err(_) => {
                     // If we can't read data despite OUTPUT_FULL being set

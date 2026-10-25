@@ -287,23 +287,24 @@ impl MouseState {
 }
 
 /// Initialize the mouse
-pub fn init() {
-    controller::with_controller(initialize_mouse);
+pub fn init() -> Result<(), MouseError> {
+    controller::with_controller(initialize_mouse).ok_or(MouseError::ControllerError)?
 }
 
 /// Initialize and reset the mouse
-fn initialize_mouse(controller: &mut ps2::Controller) {
+fn initialize_mouse(controller: &mut ps2::Controller) -> Result<(), MouseError> {
     let mut mouse = controller.mouse();
 
     mouse
         .reset_and_self_test()
-        .expect("Failed to self-test mouse");
+        .map_err(|_| MouseError::CommandError)?;
 
-    mouse.set_defaults().expect("Failed to set mouse defaults");
+    mouse.set_defaults().map_err(|_| MouseError::CommandError)?;
 
     mouse
         .enable_data_reporting()
-        .expect("Failed to enable data reporting");
+        .map_err(|_| MouseError::CommandError)?;
+    Ok(())
 }
 
 /// Get a stream of mouse events
@@ -312,8 +313,8 @@ pub fn get_stream() -> MouseStream {
 }
 
 /// Wait for and return the next mouse event
-pub async fn next_event() -> MouseEvent {
-    MouseStream.next().await.unwrap()
+pub async fn next_event() -> Option<MouseEvent> {
+    MouseStream.next().await
 }
 
 /// Try to read a mouse event without waiting
@@ -369,15 +370,23 @@ pub fn mouse_handler() {
 
             match mouse_dev.read_data_packet() {
                 Ok((flags, dx, dy)) => {
-                    schedule_kernel(
+                    if let Err(error) = schedule_kernel(
                         async move {
-                            let mut mouse = MOUSE.lock().await;
-                            if let Err(e) = mouse.process_packet(flags, dx, dy) {
-                                serial_println!("Error processing mouse packet: {:?}", e);
+                            match MOUSE.lock().await {
+                                Ok(mut mouse) => {
+                                    if let Err(e) = mouse.process_packet(flags, dx, dy) {
+                                        serial_println!("Error processing mouse packet: {:?}", e);
+                                    }
+                                }
+                                Err(_) => {
+                                    serial_println!("Mouse input task lost its event context")
+                                }
                             }
                         },
                         0,
-                    );
+                    ) {
+                        serial_println!("Failed to schedule mouse packet: {:?}", error);
+                    }
                 }
                 Err(_) => {
                     // If we can't read a complete packet, break the loop

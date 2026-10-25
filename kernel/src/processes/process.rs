@@ -52,6 +52,14 @@ pub enum ProcessState {
     Kernel,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProcessError {
+    NoCurrentProcess,
+    OutOfMemory,
+    InvalidExecutable,
+    MappingFailed,
+}
+
 /// Represents everything that is given a file descriptor
 #[derive(Debug, Clone)]
 pub enum FakeFile {
@@ -133,7 +141,7 @@ pub fn get_current_pid() -> u32 {
     }
 }
 
-pub fn with_current_pcb<F, R>(f: F) -> R
+pub fn try_with_current_pcb<F, R>(f: F) -> Result<R, ProcessError>
 where
     F: FnOnce(&mut PCB) -> R,
 {
@@ -141,11 +149,11 @@ where
     let process_table = PROCESS_TABLE.read();
     let process = process_table
         .get(&pid)
-        .expect("can't find pcb in process table")
-        .clone();
+        .cloned()
+        .ok_or(ProcessError::NoCurrentProcess)?;
 
     let pcb = unsafe { &mut *process.pcb.get() };
-    f(pcb)
+    Ok(f(pcb))
 }
 
 /// # Safety
@@ -175,10 +183,10 @@ pub unsafe fn print_process_table(process_table: &PROCESS_TABLE) {
     serial_println!("========================");
 }
 
-pub fn create_placeholder_process() -> u32 {
+pub fn create_placeholder_process() -> Result<u32, ProcessError> {
     // Build a new process address space
     let pid = 0;
-    let process_pml4_frame = unsafe { create_process_page_table() };
+    let process_pml4_frame = unsafe { create_process_page_table()? };
     let mm = Mm::new(process_pml4_frame);
     let mut fd_table = [const { None }; MAX_FILES];
     fd_table[0] = Option::Some(FakeFile::Console());
@@ -216,16 +224,16 @@ pub fn create_placeholder_process() -> u32 {
         namespace: Namespace::new(),
     }));
     PROCESS_TABLE.write().insert(pid, Arc::clone(&process));
-    pid
+    Ok(pid)
 }
 
-pub fn create_process(elf_bytes: &[u8]) -> u32 {
+pub fn create_process(elf_bytes: &[u8]) -> Result<u32, ProcessError> {
     let pid = NEXT_PID.fetch_add(1, Ordering::SeqCst);
     with_buddy_frame_allocator(|alloc| {
         alloc.print_free_frames();
     });
     // Build a new process address space
-    let process_pml4_frame = unsafe { create_process_page_table() };
+    let process_pml4_frame = unsafe { create_process_page_table()? };
     let mut mm = Mm::new(process_pml4_frame);
     let mut mapper = unsafe {
         let virt = *HHDM_OFFSET + process_pml4_frame.start_address().as_u64();
@@ -238,7 +246,8 @@ pub fn create_process(elf_bytes: &[u8]) -> u32 {
         &mut mapper,
         &mut KERNEL_MAPPER.lock(),
         mm.borrow_mut(),
-    );
+    )
+    .map_err(|_| ProcessError::InvalidExecutable)?;
     let mut fd_table = [const { None }; MAX_FILES];
     fd_table[0] = Option::Some(FakeFile::Console());
     fd_table[1] = Option::Some(FakeFile::Console());
@@ -277,14 +286,14 @@ pub fn create_process(elf_bytes: &[u8]) -> u32 {
     PROCESS_TABLE.write().insert(pid, Arc::clone(&process));
     debug!("Created process with PID: {}", pid);
     // schedule process (call from main)
-    pid
+    Ok(pid)
 }
 
 /// # Safety
 ///
 /// TODO
-unsafe fn create_process_page_table() -> PhysFrame<Size4KiB> {
-    let frame = alloc_frame().expect("Failed to allocate PML4 frame");
+unsafe fn create_process_page_table() -> Result<PhysFrame<Size4KiB>, ProcessError> {
+    let frame = alloc_frame().ok_or(ProcessError::OutOfMemory)?;
 
     let virt = *HHDM_OFFSET + frame.start_address().as_u64();
     let ptr = virt.as_mut_ptr::<PageTable>();
@@ -299,7 +308,7 @@ unsafe fn create_process_page_table() -> PhysFrame<Size4KiB> {
         }
     }
 
-    frame
+    Ok(frame)
 }
 
 /// Clear the PML4 associated with the PCB
@@ -366,10 +375,11 @@ pub async unsafe fn run_process_ring3(pid: u32) {
     interrupts::disable();
     let process = {
         let process_table = PROCESS_TABLE.read();
-        let process = process_table
-            .get(&pid)
-            .expect("Could not find process from process table");
-        process.clone()
+        let Some(process) = process_table.get(&pid) else {
+            serial_println!("Cannot run missing process {}", pid);
+            return;
+        };
+        Arc::clone(process)
     };
 
     // Do not lock lowest common denominator
@@ -386,7 +396,7 @@ pub async unsafe fn run_process_ring3(pid: u32) {
 
     let registers = &(*process).registers.clone();
 
-    (*process).kernel_rip = return_process as usize as u64;
+    (*process).kernel_rip = return_process as *const () as usize as u64;
     (*process).next_preemption_time = runner_timestamp() + nanos_to_ticks(PROCESS_TIMESLICE);
 
     // Stack layout to move into user mode
@@ -499,9 +509,10 @@ pub fn preempt_process(rsp: u64) {
     // Get PCB from PID
     let preemption_info = unsafe {
         let mut process_table = PROCESS_TABLE.write();
-        let process = process_table
-            .get_mut(&event.pid)
-            .expect("Process not found");
+        let Some(process) = process_table.get_mut(&event.pid) else {
+            serial_println!("Cannot preempt missing process {}", event.pid);
+            return;
+        };
 
         let pcb = process.pcb.get();
 
@@ -541,7 +552,9 @@ pub fn preempt_process(rsp: u64) {
     };
 
     unsafe {
-        schedule_process(event.pid);
+        if let Err(error) = schedule_process(event.pid) {
+            serial_println!("Failed to reschedule process {}: {:?}", event.pid, error);
+        }
 
         // Restore kernel RSP + PC -> RIP from where it was stored in run/resume process
         core::arch::asm!(
@@ -566,9 +579,10 @@ pub fn block_process(rsp: u64) {
     // Get PCB from PID
     let preemption_info = unsafe {
         let mut process_table = PROCESS_TABLE.write();
-        let process = process_table
-            .get_mut(&event.pid)
-            .expect("Process not found");
+        let Some(process) = process_table.get_mut(&event.pid) else {
+            serial_println!("Cannot block missing process {}", event.pid);
+            return;
+        };
 
         let pcb = process.pcb.get();
 
@@ -626,9 +640,10 @@ pub fn sleep_process_int(nanos: u64, rsp: u64) {
     // Get PCB from PID
     let preemption_info = unsafe {
         let mut process_table = PROCESS_TABLE.write();
-        let process = process_table
-            .get_mut(&event.pid)
-            .expect("Process not found");
+        let Some(process) = process_table.get_mut(&event.pid) else {
+            serial_println!("Cannot sleep missing process {}", event.pid);
+            return;
+        };
 
         let pcb = process.pcb.get();
 
@@ -686,9 +701,10 @@ pub fn sleep_process_syscall(nanos: u64, reg_vals: &ForkingRegisters) {
     // Get PCB from PID
     let preemption_info = unsafe {
         let mut process_table = PROCESS_TABLE.write();
-        let process = process_table
-            .get_mut(&event.pid)
-            .expect("Process not found");
+        let Some(process) = process_table.get_mut(&event.pid) else {
+            serial_println!("Cannot sleep missing process {}", event.pid);
+            return;
+        };
 
         let pcb = process.pcb.get();
 

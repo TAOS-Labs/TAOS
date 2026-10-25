@@ -116,13 +116,13 @@ pub struct HWRegisterWrite<T: BitAnd<Output = T> + PartialEq + Copy> {
 unsafe impl<T: BitAnd<Output = T> + PartialEq + Copy> Send for HWRegisterWrite<T> {}
 
 impl<T: BitAnd<Output = T> + PartialEq + Copy> HWRegisterWrite<T> {
-    pub fn new(reg: *mut T, mask: T, expected: T) -> HWRegisterWrite<T> {
-        HWRegisterWrite {
+    pub fn new(reg: *mut T, mask: T, expected: T) -> Option<HWRegisterWrite<T>> {
+        Some(HWRegisterWrite {
             reg,
             mask,
             expected,
-            event: current_running_event().expect("Blocking on MMIO HW Register outside event"),
-        }
+            event: current_running_event()?,
+        })
     }
 
     pub fn awake(&self) {

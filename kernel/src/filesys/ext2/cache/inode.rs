@@ -225,7 +225,9 @@ impl InodeCache {
         }
 
         if let Some(inode_no) = self.find_lru_entry(entries) {
-            let entry = entries.remove(&inode_no).unwrap();
+            let Some(entry) = entries.remove(&inode_no) else {
+                return Err(CacheError::CacheFull);
+            };
 
             if entry.value.lock().is_dirty() {
                 self.write_inode(inode_no, &entry.value.lock()).await?;

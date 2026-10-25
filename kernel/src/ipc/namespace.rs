@@ -84,7 +84,8 @@ impl Namespace {
                     // Need to attach to the new mount
                     let new_fid = self.next_fid.fetch_add(1, Ordering::Relaxed);
                     let msg = Message::Tattach(
-                        Tattach::new(0, new_fid, 0, Bytes::new(), Bytes::new()).unwrap(),
+                        Tattach::new(0, new_fid, 0, Bytes::new(), Bytes::new())
+                            .map_err(|_| Error::Protocol)?,
                     );
 
                     let response = mnt_manager
@@ -106,7 +107,9 @@ impl Namespace {
                 // We're in a mount point - do a 9P walk
                 let new_fid = self.next_fid.fetch_add(1, Ordering::Relaxed);
                 let v = vec![Bytes::copy_from_slice(component.as_bytes())];
-                let msg = Message::Twalk(Twalk::new(0, current_fid, new_fid, v).unwrap());
+                let msg = Message::Twalk(
+                    Twalk::new(0, current_fid, new_fid, v).map_err(|_| Error::Protocol)?,
+                );
 
                 let response = mnt_manager
                     .send_request(MountId(mount_id as u32), new_fid, msg)
@@ -174,7 +177,9 @@ impl Namespace {
 
         // Try to attach to verify mount works
         let fid = self.next_fid.fetch_add(1, Ordering::Relaxed);
-        let msg = Message::Tattach(Tattach::new(0, fid, 0, Bytes::new(), Bytes::new()).unwrap());
+        let msg = Message::Tattach(
+            Tattach::new(0, fid, 0, Bytes::new(), Bytes::new()).map_err(|_| Error::Protocol)?,
+        );
 
         let response = mnt_manager
             .send_request(MountId(mount_id as u32), fid, msg)
@@ -200,22 +205,22 @@ impl Namespace {
             .filter(|s| !s.is_empty())
             .map(String::from)
             .collect();
+        let (last, parents) = components.split_last().ok_or(Error::InvalidPath)?;
 
         let mut current = &mut self.root;
 
         // Walk to mount point
-        for component in &components[..components.len() - 1] {
+        for component in parents {
             current = current.children.get_mut(component).ok_or(Error::NotFound)?;
         }
 
-        let last = &components[components.len() - 1];
         let entry = current.children.get_mut(last).ok_or(Error::NotFound)?;
 
         // Check it's actually a mount
         let mount_id = entry.mount_id.ok_or(Error::NotMount)?;
 
         // Send clunk for root fid
-        let msg = Message::Tclunk(Tclunk::new(0, ROOTFID).unwrap());
+        let msg = Message::Tclunk(Tclunk::new(0, ROOTFID).map_err(|_| Error::Protocol)?);
 
         let response = mnt_manager
             .send_request(MountId(mount_id as u32), ROOTFID, msg)

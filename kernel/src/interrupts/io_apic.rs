@@ -187,7 +187,8 @@ impl IoApicManager {
 
         // Map the physical I/O APIC address to a virtual address
         let phys_frame = PhysFrame::containing_address(self.phys_addr);
-        let virt_addr = map_kernel_frame(mapper, phys_frame, flags);
+        let virt_addr =
+            map_kernel_frame(mapper, phys_frame, flags).map_err(|_| IoApicError::InitFailed)?;
 
         // Store the virtual address
         self.virt_addr = Some(virt_addr);

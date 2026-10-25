@@ -148,16 +148,20 @@ impl TextRenderer {
 
 lazy_static! {
     /// Global text renderer
-    pub static ref TEXT_RENDERER: Mutex<TextRenderer> = {
-        let renderer = TextRenderer::new(FONT_DATA).expect("Failed to initialize text renderer");
-
-        Mutex::new(renderer)
-    };
+    pub static ref TEXT_RENDERER: Mutex<Option<TextRenderer>> =
+        Mutex::new(TextRenderer::new(FONT_DATA).ok());
 }
 
 /// Draw text to the provided framebuffer
-pub fn draw_text(fb: &mut FrameBuffer, text: &str, x: usize, y: usize, size: f32, color: Color) {
-    draw_text_aligned(fb, text, x, y, size, color, TextAlign::Left);
+pub fn draw_text(
+    fb: &mut FrameBuffer,
+    text: &str,
+    x: usize,
+    y: usize,
+    size: f32,
+    color: Color,
+) -> Result<(), &'static str> {
+    draw_text_aligned(fb, text, x, y, size, color, TextAlign::Left)
 }
 
 /// Draw aligned text to the provided framebuffer
@@ -169,13 +173,16 @@ pub fn draw_text_aligned(
     size: f32,
     color: Color,
     align: TextAlign,
-) {
-    TEXT_RENDERER
-        .lock()
-        .render_text(fb, text, Point::new(x, y), size, color, align);
+) -> Result<(), &'static str> {
+    let mut renderer = TEXT_RENDERER.lock();
+    let renderer = renderer.as_mut().ok_or("text renderer unavailable")?;
+    renderer.render_text(fb, text, Point::new(x, y), size, color, align);
+    Ok(())
 }
 
 /// Calculate the width of text when rendered
-pub fn calculate_text_width(text: &str, size: f32) -> usize {
-    TEXT_RENDERER.lock().calculate_text_width(text, size)
+pub fn calculate_text_width(text: &str, size: f32) -> Result<usize, &'static str> {
+    let mut renderer = TEXT_RENDERER.lock();
+    let renderer = renderer.as_mut().ok_or("text renderer unavailable")?;
+    Ok(renderer.calculate_text_width(text, size))
 }

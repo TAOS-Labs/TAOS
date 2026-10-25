@@ -120,7 +120,9 @@ impl BlockCache {
         }
 
         if let Some(block) = self.find_lru_entry(entries) {
-            let entry = entries.remove(&block).unwrap();
+            let Some(entry) = entries.remove(&block) else {
+                return Err(CacheError::CacheFull);
+            };
 
             // We know we can lock this since ref_count = 1
             let guard = entry.value.lock();

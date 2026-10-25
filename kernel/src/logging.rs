@@ -60,19 +60,18 @@ impl Log for Logger {
 /// * Sets different log levels for debug/release builds:
 ///   - Debug builds: LevelFilter::Debug
 ///   - Release builds: LevelFilter::Info
-pub fn init(cpu_id: u32) {
+pub fn init(cpu_id: u32) -> Result<(), log::SetLoggerError> {
     if cpu_id == 0 {
-        log::set_logger(&LOGGER)
-            .map(|()| {
-                log::set_max_level(
-                    #[cfg(debug_assertions)]
-                    LevelFilter::Debug,
-                    #[cfg(not(debug_assertions))]
-                    LevelFilter::Info,
-                )
-            })
-            .expect("Logger initialization failed");
+        log::set_logger(&LOGGER).map(|()| {
+            log::set_max_level(
+                #[cfg(debug_assertions)]
+                LevelFilter::Debug,
+                #[cfg(not(debug_assertions))]
+                LevelFilter::Info,
+            )
+        })?;
     }
+    Ok(())
 }
 
 /// Convenience macro for trace-level logging

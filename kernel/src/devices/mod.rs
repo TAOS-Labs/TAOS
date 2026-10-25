@@ -64,27 +64,38 @@ pub fn init(cpu_id: u32) {
 
         let devices = walk_pci_bus();
 
-        let sd_card_device =
-            find_sd_card(&devices).expect("Build system currently sets up an sd-card");
+        match find_sd_card(&devices) {
+            Some(device) => match initalize_sd_card(&device) {
+                Ok(()) => serial_println!("SD card initialized"),
+                Err(error) => serial_println!("SD card initialization failed: {:?}", error),
+            },
+            None => serial_println!("No SD card found; storage will be unavailable"),
+        }
 
-        initalize_sd_card(&sd_card_device).unwrap();
-        serial_println!("Sd card initialized");
+        match find_xhci_inferface(&devices) {
+            Some(device) => match initalize_xhci_hub(&device) {
+                Ok(()) => serial_println!("xHCI initialized"),
+                Err(error) => serial_println!("xHCI initialization failed: {:?}", error),
+            },
+            None => serial_println!("No xHCI controller found; USB will be unavailable"),
+        }
 
-        let xhci_device =
-            find_xhci_inferface(&devices).expect("Build system currently sets up xhci device");
-        initalize_xhci_hub(&xhci_device).unwrap();
+        if let Err(error) = ps2_dev::init() {
+            serial_println!("PS/2 initialization failed: {}", error);
+        }
 
-        ps2_dev::init();
-
-        schedule_kernel(
+        if let Err(error) = schedule_kernel(
             async {
-                if let Some(hda) = audio::hda::IntelHDA::init().await {
-                    serial_println!("HDA initialized at base address 0x{:X}", hda.base);
-                } else {
-                    serial_println!("HDA controller not found.");
+                match audio::hda::IntelHDA::init().await {
+                    Ok(hda) => {
+                        serial_println!("HDA initialized at base address 0x{:X}", hda.base)
+                    }
+                    Err(error) => serial_println!("HDA initialization failed: {:?}", error),
                 }
             },
             0,
-        );
+        ) {
+            serial_println!("Failed to schedule HDA initialization: {:?}", error);
+        }
     }
 }

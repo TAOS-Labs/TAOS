@@ -10,12 +10,13 @@ pub mod mouse;
 use crate::interrupts::x2apic;
 
 /// Initialize the PS/2 subsystem
-pub fn init() {
+pub fn init() -> Result<(), &'static str> {
     // Initialize controller first
-    controller::init().expect("Failed to initialize controller");
+    controller::init()?;
 
-    keyboard::init();
-    mouse::init();
+    keyboard::init().map_err(|_| "failed to initialize PS/2 keyboard")?;
+    mouse::init().map_err(|_| "failed to initialize PS/2 mouse")?;
+    Ok(())
 }
 
 /// PS/2 keyboard interrupt handler

@@ -255,7 +255,9 @@ impl Mm {
         tree: &mut VmaTree,
     ) -> ShrinkVma {
         // Remove the original VMA from the tree.
-        let vma = Mm::remove_vma(old_start, tree).unwrap().1;
+        let Some((_, vma)) = Mm::remove_vma(old_start, tree) else {
+            return (None, None, None);
+        };
         // Record the original end of the VMA.
         let original_end = {
             let v = vma.lock();
@@ -574,8 +576,8 @@ impl VmArea {
     }
 
     /// Finds the backing corresponding to a page-aligned offset
-    pub fn find_segment(&self, offset: u64) -> VmAreaSegment {
-        self.segments.lock().get(&offset).unwrap().clone()
+    pub fn try_find_segment(&self, offset: u64) -> Option<VmAreaSegment> {
+        self.segments.lock().get(&offset).cloned()
     }
 }
 
@@ -688,6 +690,13 @@ mod tests {
         constants::memory::PAGE_SIZE,
         memory::{frame_allocator::alloc_frame, paging::create_mapping, KERNEL_MAPPER},
     };
+
+    impl VmArea {
+        fn find_segment(&self, offset: u64) -> VmAreaSegment {
+            self.try_find_segment(offset)
+                .expect("test segment should exist")
+        }
+    }
 
     /// Tests insertion and lookup of VM Areas in the memory manager.
     ///
@@ -1680,7 +1689,8 @@ mod tests {
                         page,
                         &mut *mapper,
                         Some(PageTableFlags::PRESENT | PageTableFlags::WRITABLE),
-                    );
+                    )
+                    .expect("test mapping should succeed");
                     mappings.insert(offset, Arc::new(VmaChain { offset, frame }));
                 }
             }
@@ -1934,7 +1944,8 @@ mod tests {
                         page,
                         &mut *mapper,
                         Some(PageTableFlags::WRITABLE | PageTableFlags::PRESENT),
-                    );
+                    )
+                    .expect("test mapping should succeed");
                     mappings.insert(offset, Arc::new(VmaChain { offset, frame }));
                 }
             }
@@ -2000,7 +2011,8 @@ mod tests {
                         page,
                         &mut *mapper,
                         Some(PageTableFlags::WRITABLE | PageTableFlags::PRESENT),
-                    );
+                    )
+                    .expect("test mapping should succeed");
                     mappings.insert(offset, Arc::new(VmaChain { offset, frame }));
                 }
             }

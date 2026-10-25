@@ -160,7 +160,10 @@ impl phy::TxToken for ECMDeviceTxToken<'_> {
 
         let mapper = KERNEL_MAPPER.lock();
 
-        let transfer_length: u16 = len.try_into().unwrap();
+        let Ok(transfer_length) = u16::try_from(len) else {
+            crate::serial_println!("Dropping oversized USB Ethernet packet: {} bytes", len);
+            return result;
+        };
         let transfer_size: u8 = 1;
         let interrupter_target = self.slot;
         let flags = TRBFlags::InterruptOnCompletion | TRBFlags::BlockEventInterrupt;
@@ -172,10 +175,18 @@ impl phy::TxToken for ECMDeviceTxToken<'_> {
             control: flags.bits() | ((TrbTypes::Normal as u32) << 10),
         };
         unsafe {
-            self.out_trb.enqueue(block).unwrap();
+            if self.out_trb.enqueue(block).is_err() {
+                crate::serial_println!(
+                    "Dropping USB Ethernet packet: transfer ring is unavailable"
+                );
+                return result;
+            }
         }
         drop(mapper);
-        let info = XHCI.lock().clone().unwrap();
+        let Some(info) = XHCI.lock().clone() else {
+            crate::serial_println!("Dropping USB Ethernet packet: controller is unavailable");
+            return result;
+        };
 
         let doorbell_base: *mut u32 = (info.base_address.as_u64()
             + info.capablities.doorbell_offset as u64
@@ -212,7 +223,7 @@ impl phy::Device for ECMDevice {
             control: flags.bits() | ((TrbTypes::Normal as u32) << 10),
         };
         unsafe { self.recv_trb.enqueue(block).ok()? };
-        let info = XHCI.lock().clone().unwrap();
+        let info = XHCI.lock().clone()?;
 
         let doorbell_base: *mut u32 = (info.base_address.as_u64()
             + info.capablities.doorbell_offset as u64
@@ -257,7 +268,7 @@ impl phy::Device for ECMDevice {
         };
         let _ = unsafe { self.recv_trb.enqueue(block).ok()? };
         drop(mapper);
-        let info = XHCI.lock().clone().unwrap();
+        let info = XHCI.lock().clone()?;
 
         let doorbell_base: *mut u32 = (info.base_address.as_u64()
             + info.capablities.doorbell_offset as u64
@@ -302,18 +313,14 @@ impl ECMDevice {
         let endpoint_id = (event.control >> 16) & 0x1F;
         let new_dequeue = event.parameters + mapper.phys_offset().as_u64() + 0x10;
         if endpoint_id == self.recv_endpoint_id {
-            self.recv_trb
-                .set_dequeue(new_dequeue)
-                .expect("Should not see this because addr is aligned");
+            self.recv_trb.set_dequeue(new_dequeue).ok()?;
         } else if endpoint_id == self.tx_endpoint_id {
-            self.tx_trb
-                .set_dequeue(new_dequeue)
-                .expect("Should not see this because addr is aligned");
+            self.tx_trb.set_dequeue(new_dequeue).ok()?;
         }
 
         // update hardware event dequeue pointer register
         let binding = XHCI.lock();
-        let info = binding.as_ref().unwrap();
+        let info = binding.as_ref()?;
         let erdp_addr = info.base_address
             + info.capablities.runtime_register_space_offset as u64
             + 0x38
@@ -323,7 +330,8 @@ impl ECMDevice {
                 erdp_addr.as_mut_ptr(),
                 &self.standard_device.event_ring,
                 mapper,
-            );
+            )
+            .ok()?;
         }
 
         Some(event)
@@ -355,21 +363,27 @@ impl ECMDevice {
 
         self.standard_device
             .send_command(paramaters, data_frame.start_address(), 1024)
-            .unwrap();
+            .map_err(|_| XHCIError::TransferRingError)?;
         let mut eth_data_str: [u8; 12] = [0; 12];
         let mut eth_str_idx = 0;
         for str_idx in 0..=24 {
             let data_pointer: *const u8 = (data_addr + str_idx).as_ptr();
             let value = unsafe { core::ptr::read_volatile(data_pointer) };
-            if value >= 48 {
+            if value.is_ascii_hexdigit() && eth_str_idx < eth_data_str.len() {
                 eth_data_str[eth_str_idx] = value;
                 eth_str_idx += 1;
             }
         }
+        if eth_str_idx != eth_data_str.len() {
+            dealloc_frame(data_frame);
+            return Err(XHCIError::NoDescriptor);
+        }
         let mut eth_data: [u8; 6] = [0; 6];
         for idx in 0..6 {
-            let new_string = str::from_utf8(&eth_data_str[(2 * idx)..=((2 * idx) + 1)]).unwrap();
-            eth_data[idx] = u8::from_str_radix(new_string, 16).unwrap();
+            let new_string = str::from_utf8(&eth_data_str[(2 * idx)..=((2 * idx) + 1)])
+                .map_err(|_| XHCIError::NoDescriptor)?;
+            eth_data[idx] =
+                u8::from_str_radix(new_string, 16).map_err(|_| XHCIError::NoDescriptor)?;
         }
 
         dealloc_frame(data_frame);
@@ -400,19 +414,19 @@ pub fn find_cdc_device(devices: &mut Vec<USBDeviceInfo>) -> Option<(u8, u8)> {
     for device in devices {
         if device.descriptor.b_device_class == CLASS_CODE_CDC {
             for configuration in 0..device.descriptor.b_num_configurations {
-                let class_desc =
-                    get_class_descriptors_for_configuration(device, configuration).unwrap();
+                let Ok(class_desc) = get_class_descriptors_for_configuration(device, configuration)
+                else {
+                    continue;
+                };
                 let mut configuration_to_get = 0;
 
                 for descriptor in class_desc {
                     match descriptor {
-                        ECMDeviceDescriptors::Interface(config) => {
+                        ECMDeviceDescriptors::Interface(config)
                             if config.b_interface_class == CLASS_CODE_CDC
-                                && config.b_interface_sub_class == SUBCLASS_CODE_ECM
-                            {
-                                // debug_println!("Configuration = {configuration_to_get}");
-                                return Option::Some((device.slot, configuration_to_get));
-                            }
+                                && config.b_interface_sub_class == SUBCLASS_CODE_ECM =>
+                        {
+                            return Option::Some((device.slot, configuration_to_get));
                         }
                         ECMDeviceDescriptors::Configuration(config) => {
                             configuration_to_get = config.b_configuration_value;
@@ -454,10 +468,10 @@ fn find_device_context_input(descriptors: &Vec<ECMDeviceDescriptors>) -> Option<
                 valid_interface =
                     config.b_interface_class == CLASS_CODE_CDC_DATA && config.b_num_endpoints == 2;
             }
-            ECMDeviceDescriptors::Endpoint(config) => {
-                if valid_interface && (config.b_endpoint_address & (1 << 7)) == (1 << 7) {
-                    return Option::Some(((config.b_endpoint_address & 0xF) * 2) + 1);
-                }
+            ECMDeviceDescriptors::Endpoint(config)
+                if valid_interface && (config.b_endpoint_address & (1 << 7)) != 0 =>
+            {
+                return Option::Some(((config.b_endpoint_address & 0xF) * 2) + 1);
             }
             _ => {}
         }
@@ -473,10 +487,10 @@ fn find_device_context_output(descriptors: &Vec<ECMDeviceDescriptors>) -> Option
                 valid_interface =
                     config.b_interface_class == CLASS_CODE_CDC_DATA && config.b_num_endpoints == 2;
             }
-            ECMDeviceDescriptors::Endpoint(config) => {
-                if valid_interface && (config.b_endpoint_address & (1 << 7)) == (1 << 7) {
-                    return Option::Some((config.b_endpoint_address & 0xF) * 2);
-                }
+            ECMDeviceDescriptors::Endpoint(config)
+                if valid_interface && (config.b_endpoint_address & (1 << 7)) == 0 =>
+            {
+                return Option::Some((config.b_endpoint_address & 0xF) * 2);
             }
             _ => {}
         }
@@ -501,7 +515,7 @@ pub fn init_cdc_device(
         | (bm_request_type as u64);
     device.send_command_no_data(paramaters)?;
 
-    let descriptors = get_class_descriptors_for_configuration(&mut device, configuration).unwrap();
+    let descriptors = get_class_descriptors_for_configuration(&mut device, configuration)?;
     let interface = find_active_interface(&descriptors).ok_or(XHCIError::NoInterface)?;
     // Set our interface into the correct alternate interface
     let bm_request_type: u8 = 0b00000001;
@@ -519,15 +533,21 @@ pub fn init_cdc_device(
     // Send configure endpoint to XHCI so stuff works
     let context_ptr: *mut InputControlContext = device.input_context_vaddr.as_mut_ptr();
     let mut context = unsafe { core::ptr::read_volatile(context_ptr) };
-    let input_id =
-        find_device_context_input(&descriptors).expect("ECM should have input endpoint") as u32;
-    let output_id =
-        find_device_context_output(&descriptors).expect("ECM should have output endpoint") as u32;
+    let input_id = find_device_context_input(&descriptors).ok_or(XHCIError::NoInterface)? as u32;
+    let output_id = find_device_context_output(&descriptors).ok_or(XHCIError::NoInterface)? as u32;
 
-    context.set_add_flag(0, 1);
-    context.set_add_flag(1, 0);
-    context.set_add_flag(input_id, 1);
-    context.set_add_flag(output_id, 1);
+    context
+        .set_add_flag(0, 1)
+        .map_err(|_| XHCIError::CommandRingError)?;
+    context
+        .set_add_flag(1, 0)
+        .map_err(|_| XHCIError::CommandRingError)?;
+    context
+        .set_add_flag(input_id, 1)
+        .map_err(|_| XHCIError::CommandRingError)?;
+    context
+        .set_add_flag(output_id, 1)
+        .map_err(|_| XHCIError::CommandRingError)?;
 
     let ep_2_context_out_addr = device.input_context_vaddr + 0xA0;
     let ep2_ctxt_out_ptr: *mut EndpointContext = ep_2_context_out_addr.as_mut_ptr();
@@ -556,11 +576,13 @@ pub fn init_cdc_device(
         input_trb_buffer.start_address(),
         1,
         RingType::Transfer,
-        (PAGE_SIZE).try_into().unwrap(),
+        PAGE_SIZE as isize,
         mapper.phys_offset(),
     )
-    .expect("Everything should be alligned");
-    ep2_ctxt_in.set_trdequeue_ptr(input_trb_buffer.start_address().as_u64());
+    .map_err(|_| XHCIError::TransferRingError)?;
+    ep2_ctxt_in
+        .set_trdequeue_ptr(input_trb_buffer.start_address().as_u64())
+        .map_err(|_| XHCIError::TransferRingError)?;
 
     let output_trb_buffer = alloc_frame().ok_or(XHCIError::MemoryAllocationFailure)?;
     let output_trb_address =
@@ -572,11 +594,13 @@ pub fn init_cdc_device(
         output_trb_buffer.start_address(),
         1,
         RingType::Transfer,
-        (PAGE_SIZE).try_into().unwrap(),
+        PAGE_SIZE as isize,
         mapper.phys_offset(),
     )
-    .expect("Everything should be alligned");
-    ep2_ctxt_out.set_trdequeue_ptr(output_trb_buffer.start_address().as_u64());
+    .map_err(|_| XHCIError::TransferRingError)?;
+    ep2_ctxt_out
+        .set_trdequeue_ptr(output_trb_buffer.start_address().as_u64())
+        .map_err(|_| XHCIError::TransferRingError)?;
     unsafe {
         core::ptr::write_volatile(context_ptr, context);
     }
@@ -597,7 +621,7 @@ pub fn init_cdc_device(
         status: 0,
         control: ((big_device << 24) | ((TrbTypes::ConfigEpCmd as u32) << 10)),
     };
-    let mut info = XHCI.lock().clone().unwrap();
+    let mut info = XHCI.lock().clone().ok_or(XHCIError::NoFrameAllocator)?;
     let command_ring_lock = info.command_ring.clone();
     let mut command_ring = command_ring_lock.lock();
     unsafe {
@@ -663,7 +687,7 @@ fn get_class_descriptors_for_configuration(
 
     device
         .send_command(paramaters, data_frame.start_address(), 1024)
-        .unwrap();
+        .map_err(|_| XHCIError::TransferRingError)?;
 
     let mut descriptors = Vec::new();
     let data_to_do: *const USBDeviceConfigurationDescriptor = data_addr.as_ptr();
@@ -672,7 +696,7 @@ fn get_class_descriptors_for_configuration(
     let total_size: usize = config_descriptor.w_total_length.into();
     let mut bytes_read: usize = config_descriptor.b_length.into();
     while bytes_read < total_size {
-        let desc_vaddr = data_addr + bytes_read.try_into().unwrap();
+        let desc_vaddr = data_addr + bytes_read as u64;
         let desc_ptr: *const DeviceFunctionalDescriptor = desc_vaddr.as_ptr();
         let base_device = unsafe { core::ptr::read_unaligned(desc_ptr) };
         const INTERFACE: u8 = USBDescriptorTypes::Interface as u8;
@@ -690,19 +714,22 @@ fn get_class_descriptors_for_configuration(
                 let endpoint_descriptor = unsafe { core::ptr::read_unaligned(endpoint_ptr) };
                 descriptors.push(ECMDeviceDescriptors::Endpoint(endpoint_descriptor));
             }
-            CS_ENDPOINT | CS_INTERFACE => {
-                if base_device.b_descriptor_subtype == CDCSubTypes::EthernetNetwoking as u8 {
-                    let networking_ptr: *const EthernetNetworkingFunctionalDescriptor =
-                        desc_vaddr.as_ptr();
-                    let networking_desc = unsafe { core::ptr::read_unaligned(networking_ptr) };
-                    descriptors.push(ECMDeviceDescriptors::Ethernet(networking_desc));
-                }
+            CS_ENDPOINT | CS_INTERFACE
+                if base_device.b_descriptor_subtype == CDCSubTypes::EthernetNetwoking as u8 =>
+            {
+                let networking_ptr: *const EthernetNetworkingFunctionalDescriptor =
+                    desc_vaddr.as_ptr();
+                let networking_desc = unsafe { core::ptr::read_unaligned(networking_ptr) };
+                descriptors.push(ECMDeviceDescriptors::Ethernet(networking_desc));
             }
-            _ => {
-                panic!("Unreckonised descriptor type")
-            }
+            _ => {}
         }
-        bytes_read += base_device.b_length as usize;
+        let descriptor_length = base_device.b_length as usize;
+        if descriptor_length == 0 || bytes_read.saturating_add(descriptor_length) > total_size {
+            dealloc_frame(data_frame);
+            return Err(XHCIError::NoDescriptor);
+        }
+        bytes_read += descriptor_length;
     }
     // TODO: When we update the mapper to not have 2mib pages we would want to
     // remove the uncachable flags from the pte, (BUT not unmap the page to

@@ -21,7 +21,7 @@ use crate::{
         paging::{create_mapping, create_mapping_to_frame, update_mapping, update_permissions},
         HHDM_OFFSET, KERNEL_MAPPER,
     },
-    processes::process::{with_current_pcb, FakeFile},
+    processes::process::{try_with_current_pcb, FakeFile},
 };
 
 use super::mm::{VmArea, VmAreaBackings, VmaChain};
@@ -108,6 +108,18 @@ pub enum FaultOutcome {
     Mapped,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FaultError {
+    FaultAddressUnavailable,
+    InvalidTranslation,
+    AddressOutsideSegment,
+    InvalidFileDescriptor,
+    FilesystemUnavailable,
+    FileIo,
+    InvalidFileType,
+    OutOfMemory,
+}
+
 /// Determines the fault outcome by performing the bulk of the work
 /// This function reads registers, sets up the mapper, finds the process,
 /// locks the VMA tree, and figures out if the fault is due to a missing mapping,
@@ -119,11 +131,16 @@ pub enum FaultOutcome {
 /// # Returns
 /// Returns a FaultOutcome enum with values that would be relevant for each function
 /// This design should allow for easier debugging in the PF handler itself
-pub fn determine_fault_cause(error_code: PageFaultErrorCode, vma: &VmArea) -> FaultOutcome {
+pub fn determine_fault_cause(
+    error_code: PageFaultErrorCode,
+    vma: &VmArea,
+) -> Result<FaultOutcome, FaultError> {
     use x86_64::registers::control::{Cr2, Cr3};
 
     // Read fault info.
-    let faulting_address = Cr2::read().expect("Cannot read faulting address").as_u64();
+    let faulting_address = Cr2::read()
+        .map_err(|_| FaultError::FaultAddressUnavailable)?
+        .as_u64();
 
     // Set up the page table mapper.
     let pml4 = Cr3::read().0;
@@ -141,7 +158,7 @@ pub fn determine_fault_cause(error_code: PageFaultErrorCode, vma: &VmArea) -> Fa
     let is_mapped = match translate_result {
         TranslateResult::Mapped { .. } => true,
         TranslateResult::NotMapped => false,
-        _ => panic!("Unexpected result during page translation"),
+        TranslateResult::InvalidFrameAddress(_) => return Err(FaultError::InvalidTranslation),
     };
     // Compute the fault's offset within the VMA.
     let fault_offset = page.start_address().as_u64() - vma.start;
@@ -152,11 +169,11 @@ pub fn determine_fault_cause(error_code: PageFaultErrorCode, vma: &VmArea) -> Fa
     let seg_entry = segments
         .range(..=fault_offset)
         .next_back()
-        .expect("No segment found covering fault offset");
+        .ok_or(FaultError::AddressOutsideSegment)?;
     let seg_key = *seg_entry.0;
     let segment = seg_entry.1;
     if fault_offset >= segment.end {
-        panic!("Fault offset {} not covered by segment", fault_offset);
+        return Err(FaultError::AddressOutsideSegment);
     }
 
     // Use the segment's backing.
@@ -230,10 +247,7 @@ pub fn determine_fault_cause(error_code: PageFaultErrorCode, vma: &VmArea) -> Fa
             None
         }
     };
-    if outcome.is_none() {
-        panic!("Could not determine fault cause.");
-    }
-    outcome.unwrap()
+    outcome.ok_or(FaultError::InvalidTranslation)
 }
 
 /// Handles a page fault by using an existing anonymous VMA chain mapping.
@@ -248,10 +262,12 @@ pub fn handle_existing_mapping(
     mapper: &mut OffsetPageTable,
     chain: Arc<VmaChain>,
     pt_flags: PageTableFlags,
-) {
+) -> Result<(), FaultError> {
     let mut flags = pt_flags;
     flags.set(PageTableFlags::PRESENT, true);
-    create_mapping_to_frame(page, mapper, Some(flags), chain.frame);
+    create_mapping_to_frame(page, mapper, Some(flags), chain.frame)
+        .map_err(|_| FaultError::OutOfMemory)?;
+    Ok(())
 }
 
 /// Handles the page fault for a file-backed page that should be shared
@@ -270,17 +286,17 @@ pub async fn handle_shared_file_mapping(
     offset: u64,
     pt_flags: PageTableFlags,
     fd: usize,
-) {
+) -> Result<(), FaultError> {
     let mut flags = pt_flags;
     flags.set(PageTableFlags::PRESENT, true);
 
-    let mut fs = FILESYSTEM.get().expect("could not get fs").lock();
-    let file = with_current_pcb(|pcb| {
-        pcb.fd_table[fd]
-            .as_ref()
-            .cloned()
-            .expect("could not get fd from fd table")
-    });
+    let mut fs = FILESYSTEM
+        .get()
+        .ok_or(FaultError::FilesystemUnavailable)?
+        .lock();
+    let file = try_with_current_pcb(|pcb| pcb.fd_table.get(fd).and_then(Clone::clone))
+        .map_err(|_| FaultError::InvalidFileDescriptor)?
+        .ok_or(FaultError::InvalidFileDescriptor)?;
 
     if let FakeFile::File(file_arc) = file {
         let file_guard = file_arc.lock();
@@ -291,21 +307,22 @@ pub async fn handle_shared_file_mapping(
         if absent_in_page_cache {
             fs.add_entry_to_page_cache(file_guard.clone(), offset as usize)
                 .await
-                .expect("failed to add entry to page cache");
+                .map_err(|_| FaultError::FileIo)?;
         }
 
         let kernel_va = fs
             .page_cache_get_mapping(file_guard.clone(), offset as usize)
             .await
-            .unwrap();
+            .map_err(|_| FaultError::FileIo)?;
         let kernel_mapper = { KERNEL_MAPPER.lock() };
         let frame: PhysFrame<Size4KiB> = kernel_mapper
             .translate_page(Page::containing_address(kernel_va))
-            .expect("Could not translate kernel VA.");
-        create_mapping_to_frame(page, mapper, Some(flags), frame);
+            .map_err(|_| FaultError::InvalidTranslation)?;
+        create_mapping_to_frame(page, mapper, Some(flags), frame)
+            .map_err(|_| FaultError::OutOfMemory)?;
+        Ok(())
     } else {
-        // TODO: fix this to return a error to the user (probally just kill it)
-        panic!("Tried to mmap a socket!")
+        Err(FaultError::InvalidFileType)
     }
 }
 
@@ -327,7 +344,7 @@ pub async fn handle_private_file_mapping(
     pt_flags: PageTableFlags,
     fd: usize,
     vma: &mut VmArea,
-) {
+) -> Result<(), FaultError> {
     let mut flags = pt_flags;
 
     // Setting it as COW - make sure PTE is read only
@@ -337,13 +354,13 @@ pub async fn handle_private_file_mapping(
     // Set VMA SHARED flag to false so it's COW
     vma.flags.set(VmAreaFlags::SHARED, false);
 
-    let mut fs = FILESYSTEM.get().expect("could not get fs").lock();
-    let file = with_current_pcb(|pcb| {
-        pcb.fd_table[fd]
-            .as_ref()
-            .cloned()
-            .expect("could not get fd from fd table")
-    });
+    let mut fs = FILESYSTEM
+        .get()
+        .ok_or(FaultError::FilesystemUnavailable)?
+        .lock();
+    let file = try_with_current_pcb(|pcb| pcb.fd_table.get(fd).and_then(Clone::clone))
+        .map_err(|_| FaultError::InvalidFileDescriptor)?
+        .ok_or(FaultError::InvalidFileDescriptor)?;
 
     if let FakeFile::File(file_arc) = file {
         let file_guard = file_arc.lock();
@@ -354,18 +371,22 @@ pub async fn handle_private_file_mapping(
         if absent_in_page_cache {
             fs.add_entry_to_page_cache(file_guard.clone(), offset as usize)
                 .await
-                .expect("failed to add entry to page cache");
+                .map_err(|_| FaultError::FileIo)?;
         }
 
         let kernel_va = fs
             .page_cache_get_mapping(file_guard.clone(), offset as usize)
             .await
-            .unwrap();
+            .map_err(|_| FaultError::FileIo)?;
         let kernel_mapper = { KERNEL_MAPPER.lock() };
         let frame: PhysFrame<Size4KiB> = kernel_mapper
             .translate_page(Page::containing_address(kernel_va))
-            .expect("Could not translate kernel VA.");
-        create_mapping_to_frame(page, mapper, Some(flags), frame);
+            .map_err(|_| FaultError::InvalidTranslation)?;
+        create_mapping_to_frame(page, mapper, Some(flags), frame)
+            .map_err(|_| FaultError::OutOfMemory)?;
+        Ok(())
+    } else {
+        Err(FaultError::InvalidFileType)
     }
 }
 
@@ -382,10 +403,10 @@ pub fn handle_new_mapping(
     backing: &Arc<VmAreaBackings>,
     pt_flags: PageTableFlags,
     vma: &VmArea,
-) {
+) -> Result<(), FaultError> {
     let mut flags = pt_flags;
     flags.set(PageTableFlags::PRESENT, true);
-    let frame = create_mapping(page, mapper, Some(flags));
+    let frame = create_mapping(page, mapper, Some(flags)).map_err(|_| FaultError::OutOfMemory)?;
 
     // Compute the fault's offset within the VMA.
     let fault_offset = page.start_address().as_u64() - vma.start;
@@ -396,18 +417,19 @@ pub fn handle_new_mapping(
     let seg_entry = segments
         .range(..=fault_offset)
         .next_back()
-        .expect("No segment found covering fault offset");
+        .ok_or(FaultError::AddressOutsideSegment)?;
     let seg_key = *seg_entry.0;
     let segment = seg_entry.1;
 
     if fault_offset >= segment.end {
-        panic!("Fault offset {} not covered by segment", fault_offset);
+        return Err(FaultError::AddressOutsideSegment);
     }
     // Compute the mapping offset within the backing.
     // (Assuming each segment's reverse mappings are keyed relative to its own start.)
     let mapping_offset = fault_offset - seg_key + segment.start;
 
     backing.insert_mapping(Arc::new(VmaChain::new(mapping_offset, frame)));
+    Ok(())
 }
 
 /// Handles a copy-on-write fault. Saves current data in a buffer
@@ -421,7 +443,7 @@ pub fn handle_cow_fault(
     page: Page<Size4KiB>,
     mapper: &mut OffsetPageTable,
     pt_flags: PageTableFlags,
-) {
+) -> Result<(), FaultError> {
     let start = page.start_address();
     let src_ptr = start.as_mut_ptr();
 
@@ -432,13 +454,15 @@ pub fn handle_cow_fault(
     }
 
     // Allocate a new frame and update the mapping.
-    let frame = alloc_frame().expect("Frame allocation failed in COW");
-    update_mapping(page, mapper, frame, Some(pt_flags));
+    let frame = alloc_frame().ok_or(FaultError::OutOfMemory)?;
+    update_mapping(page, mapper, frame, Some(pt_flags))
+        .map_err(|_| FaultError::InvalidTranslation)?;
 
     // Copy the saved data back.
     unsafe {
         ptr::copy_nonoverlapping(buffer.as_mut_ptr(), src_ptr, PAGE_SIZE);
     }
+    Ok(())
 }
 
 /// Handles a shared page fault where a parent or child process
@@ -453,8 +477,8 @@ pub fn handle_shared_page_fault(
     page: Page<Size4KiB>,
     mapper: &mut OffsetPageTable,
     pt_flags: PageTableFlags,
-) {
+) -> Result<(), FaultError> {
     let mut flags = pt_flags;
     flags.set(PageTableFlags::PRESENT, true);
-    update_permissions(page, mapper, flags);
+    update_permissions(page, mapper, flags).map_err(|_| FaultError::InvalidTranslation)
 }

@@ -1,7 +1,7 @@
 use super::{
     futures::sleep::Sleep,
     tasks::{CancellationToken, TaskError},
-    Event, EventId, EventQueue, EventRunner, JoinHandle,
+    Event, EventId, EventQueue, EventRunner, JoinHandle, ScheduleError,
 };
 
 use alloc::{
@@ -49,10 +49,12 @@ impl EventRunner {
 
                 self.current_event = self.next_event();
 
-                let event = self
-                    .current_event
-                    .as_ref()
-                    .expect("Have pending events, but empty waiting queues.");
+                let Some(event) = self.current_event.as_ref() else {
+                    crate::serial_println!(
+                        "Event runner queue became inconsistent; skipping scheduler cycle"
+                    );
+                    break;
+                };
 
                 // If not contained, then event must've been completed and
                 // rescheduled (likely due to multiple wakes)
@@ -118,9 +120,9 @@ impl EventRunner {
         future: impl Future<Output = ()> + 'static + Send,
         priority_level: usize,
         pid: u32,
-    ) -> Arc<Event> {
+    ) -> Result<Arc<Event>, ScheduleError> {
         if priority_level >= NUM_EVENT_PRIORITIES {
-            panic!("Invalid event priority: {}", priority_level);
+            Err(ScheduleError::InvalidPriority)
         } else {
             let event = Arc::new(Event::init(
                 future,
@@ -135,7 +137,7 @@ impl EventRunner {
 
             self.pending_events.write().insert(event.eid.0);
 
-            event.clone()
+            Ok(event)
         }
     }
 
@@ -151,9 +153,9 @@ impl EventRunner {
         future: impl Future<Output = ()> + 'static + Send,
         priority_level: usize,
         pid: u32,
-    ) -> Arc<Event> {
+    ) -> Result<Arc<Event>, ScheduleError> {
         if priority_level >= NUM_EVENT_PRIORITIES {
-            panic!("Invalid event priority: {}", priority_level);
+            Err(ScheduleError::InvalidPriority)
         } else {
             let event = Arc::new(Event::init(
                 future,
@@ -167,7 +169,7 @@ impl EventRunner {
             self.pending_events.write().insert(event.eid.0);
             self.blocked_events.write().insert(event.eid.0);
 
-            event.clone()
+            Ok(event)
         }
     }
 
@@ -178,7 +180,11 @@ impl EventRunner {
         self.current_event.as_ref()
     }
 
-    pub fn spawn<F, T>(&mut self, future: F, priority_level: usize) -> JoinHandle<T>
+    pub fn spawn<F, T>(
+        &mut self,
+        future: F,
+        priority_level: usize,
+    ) -> Result<JoinHandle<T>, ScheduleError>
     where
         F: Future<Output = T> + Send + 'static,
         T: Send + 'static,
@@ -213,14 +219,14 @@ impl EventRunner {
             };
 
             // Schedule the wrapped future
-            let eid = without_interrupts(|| self.schedule(wrapped_future, priority_level, 0));
+            let eid = without_interrupts(|| self.schedule(wrapped_future, priority_level, 0))?;
 
-            JoinHandle {
+            Ok(JoinHandle {
                 result,
                 waker,
                 eid: eid.eid,
                 cancellation,
-            }
+            })
         })
     }
 
@@ -238,8 +244,7 @@ impl EventRunner {
     pub fn awake_next_sleeper(&mut self) {
         let sleeper = self.sleeping_events.peek();
 
-        if sleeper.is_some() {
-            let future = sleeper.unwrap();
+        if let Some(future) = sleeper {
             if future.target_timestamp <= self.system_clock {
                 future.awake();
                 self.blocked_events.write().remove(&future.get_id());
@@ -280,9 +285,9 @@ impl EventRunner {
         priority_level: usize,
         pid: u32,
         nanos: u64,
-    ) -> Option<Sleep> {
+    ) -> Result<Option<Sleep>, ScheduleError> {
         if priority_level >= NUM_EVENT_PRIORITIES {
-            panic!("Invalid event priority: {}", priority_level);
+            Err(ScheduleError::InvalidPriority)
         } else {
             let event = Arc::new(Event::init(
                 future,
@@ -301,7 +306,7 @@ impl EventRunner {
             self.pending_events.write().insert(event.eid.0);
             self.blocked_events.write().insert(event.eid.0);
 
-            Some(sleep)
+            Ok(Some(sleep))
         }
     }
 

@@ -14,5 +14,6 @@ pub mod spsc;
 pub mod spsc_pool;
 
 lazy_static! {
-    pub static ref mnt_manager: MountManager = MountManager::new(3);
+    pub static ref mnt_manager: MountManager =
+        MountManager::new(unsafe { core::num::NonZeroUsize::new_unchecked(3) });
 }

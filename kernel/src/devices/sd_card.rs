@@ -203,17 +203,14 @@ const SD_SECTOR_SIZE: u32 = 512;
 #[async_trait]
 impl BlockDevice for SDCardInfo {
     async fn read_block(&self, block_num: u64, buf: &mut [u8]) -> FilesystemResult<u8> {
-        if block_num > self.total_sectors {
+        if block_num >= self.total_sectors || buf.len() != SD_SECTOR_SIZE as usize {
             return Result::Err(FilesystemError::DeviceError(BlockError::InvalidBlock));
         }
-        let data = read_sd_card(
-            self,
-            block_num
-                .try_into()
-                .expect("Maxumum block number should not be greater than 32 bits"),
-        )
-        .await
-        .map_err(|_| FilesystemError::DeviceError(BlockError::DeviceError))?;
+        let block_num = u32::try_from(block_num)
+            .map_err(|_| FilesystemError::DeviceError(BlockError::InvalidBlock))?;
+        let data = read_sd_card(self, block_num)
+            .await
+            .map_err(|_| FilesystemError::DeviceError(BlockError::DeviceError))?;
 
         buf.copy_from_slice(&data);
 
@@ -221,25 +218,21 @@ impl BlockDevice for SDCardInfo {
     }
 
     async fn write_block(&mut self, block_num: u64, buf: &[u8]) -> FilesystemResult<u8> {
-        if block_num > self.total_sectors {
+        if block_num >= self.total_sectors || buf.len() != SD_SECTOR_SIZE as usize {
             return Result::Err(FilesystemError::DeviceError(BlockError::InvalidBlock));
         }
+        let block_num = u32::try_from(block_num)
+            .map_err(|_| FilesystemError::DeviceError(BlockError::InvalidBlock))?;
         let mut data: [u8; 512] = [0; 512];
         data.copy_from_slice(buf);
-        write_sd_card(
-            self,
-            block_num
-                .try_into()
-                .expect("Maximum block number should not be greater than 32 bits"),
-            data,
-        )
-        .await
-        .map_err(|_| FilesystemError::DeviceError(BlockError::DeviceError))?;
+        write_sd_card(self, block_num, data)
+            .await
+            .map_err(|_| FilesystemError::DeviceError(BlockError::DeviceError))?;
         Result::Ok(0)
     }
 
     fn block_size(&self) -> usize {
-        SD_SECTOR_SIZE.try_into().expect("To be on 64 bit system")
+        SD_SECTOR_SIZE as usize
     }
 
     fn total_blocks(&self) -> u64 {
@@ -253,17 +246,20 @@ const SD_BLOCK_IO_SIZE: u32 = SD_SECTOR_SIZE * SECTORS_PER_BLOCK;
 #[async_trait]
 impl BlockIO for SDCardInfo {
     async fn read_block(&self, block_num: u64, buf: &mut [u8]) -> BlockResult<()> {
-        if (block_num + 1) * SECTORS_PER_BLOCK as u64 > self.total_sectors {
+        if buf.len() < SD_BLOCK_IO_SIZE as usize
+            || block_num
+                .checked_add(1)
+                .and_then(|block| block.checked_mul(SECTORS_PER_BLOCK as u64))
+                .is_none_or(|last_block| last_block > self.total_sectors)
+        {
             return BlockResult::Err(BlockError::InvalidBlock);
         }
+        let block_num_32 = u32::try_from(block_num).map_err(|_| BlockError::InvalidBlock)?;
         for start_block in 0..SECTORS_PER_BLOCK {
-            let block_num_32: u32 = block_num
-                .try_into()
-                .expect("Total blocks is less than 32 bits long");
             let data = read_sd_card(self, block_num_32 * SECTORS_PER_BLOCK + start_block)
                 .await
                 .map_err(|_| BlockError::DeviceError)?;
-            let start_block_size: usize = (start_block * SD_SECTOR_SIZE).try_into().unwrap();
+            let start_block_size = (start_block * SD_SECTOR_SIZE) as usize;
             // Copy the data from buff to data (Blame clippy for this abomination)
             buf[start_block_size..(SD_SECTOR_SIZE as usize + start_block_size)]
                 .copy_from_slice(&data[..(SD_SECTOR_SIZE as usize)]);
@@ -273,19 +269,22 @@ impl BlockIO for SDCardInfo {
     }
 
     async fn write_block(&self, block_num: u64, buf: &[u8]) -> BlockResult<()> {
-        if (block_num + 1) * SECTORS_PER_BLOCK as u64 > self.total_sectors {
+        if buf.len() < SD_BLOCK_IO_SIZE as usize
+            || block_num
+                .checked_add(1)
+                .and_then(|block| block.checked_mul(SECTORS_PER_BLOCK as u64))
+                .is_none_or(|last_block| last_block > self.total_sectors)
+        {
             return BlockResult::Err(BlockError::InvalidBlock);
         }
+        let block_num_32 = u32::try_from(block_num).map_err(|_| BlockError::InvalidBlock)?;
         let mut data: [u8; 512] = [0; 512];
         for start_block in 0..SECTORS_PER_BLOCK {
-            let start_block_size: usize = (start_block * SD_SECTOR_SIZE).try_into().unwrap();
+            let start_block_size = (start_block * SD_SECTOR_SIZE) as usize;
             // Copy the data from data to buff (Blame clippy for this abomination)
             data[..(SD_SECTOR_SIZE as usize)].copy_from_slice(
                 &buf[start_block_size..(SD_SECTOR_SIZE as usize + start_block_size)],
             );
-            let block_num_32: u32 = block_num
-                .try_into()
-                .expect("Total blocks is less than 32 bits long");
             write_sd_card(self, block_num_32 * SECTORS_PER_BLOCK + start_block, data)
                 .await
                 .map_err(|_| BlockError::DeviceError)?;
@@ -294,7 +293,7 @@ impl BlockIO for SDCardInfo {
     }
 
     fn block_size(&self) -> u64 {
-        SD_BLOCK_IO_SIZE as u64 //.try_into().expect("To be on 64 bit system")
+        SD_BLOCK_IO_SIZE as u64
     }
 
     fn size_in_bytes(&self) -> u64 {
@@ -512,7 +511,7 @@ fn send_sd_reset_commands(sd_card: &SDCardInfoInternal) -> Result<SDCardInfo, SD
         unsafe { core::ptr::write_volatile(argument_register_addr, new_acmd_response) };
         send_sd_command(sd_card, 41, SDResponseTypes::R3, CommandFlags::empty())?;
     } else {
-        panic!("ACMD should return a 32 bit response")
+        return Err(SDCardError::GenericSDError);
     }
 
     // cmd 2
@@ -537,7 +536,7 @@ fn send_sd_reset_commands(sd_card: &SDCardInfoInternal) -> Result<SDCardInfo, SD
         unsafe { core::ptr::write_volatile(argument_register_addr, rca) };
         send_sd_command(sd_card, 7, SDResponseTypes::R1b, CommandFlags::empty())?;
     } else {
-        panic!("CMD 3 should return a 32 bit response");
+        return Err(SDCardError::GenericSDError);
     }
 
     result
@@ -550,21 +549,16 @@ fn get_full_sd_card_info(
     csd: u128,
 ) -> Result<SDCardInfo, SDCardError> {
     // Currently only supports CSD Version 2.0
-    let csd_structre: u32 = (csd >> 126)
-        .try_into()
-        .expect("Higher bits to be masked out");
-    assert!(
-        csd_structre == 1,
-        "Only SDHC and SDXC cards are supported as of this moment"
-    );
-    let c_size: u32 = ((csd >> 48) & 0xFFFFFF)
-        .try_into()
-        .expect("Higher bits should be masked out");
+    let csd_structre = (csd >> 126) as u32;
+    if csd_structre != 1 {
+        return Err(SDCardError::GenericSDError);
+    }
+    let c_size = ((csd >> 48) & 0xFFFFFF) as u32;
 
     let info = SDCardInfo {
         internal_info: sd_card.clone(),
         reletave_card_address: rca,
-        block_size: SD_SECTOR_SIZE.try_into().expect("To be on 64 bit system"),
+        block_size: SD_SECTOR_SIZE as usize,
         total_sectors: ((c_size + 1) * 1024).into(),
     };
 
@@ -623,7 +617,9 @@ fn send_sd_command(
     respone_type: SDResponseTypes,
     flags: CommandFlags,
 ) -> Result<SDCommandResponse, SDCardError> {
-    assert!(command_idx < 64);
+    if command_idx >= 64 {
+        return Err(SDCardError::GenericSDError);
+    }
     sending_command_valid(sd_card)?;
 
     let command_register_addr = (sd_card.base_address_register + 0xE) as *mut u16;
@@ -741,11 +737,12 @@ pub async fn read_sd_card(sd_card: &SDCardInfo, block: u32) -> Result<[u8; 512],
 
     let present_state_register_addr = (internal_info.base_address_register + 0x24) as *const u32;
 
+    let event = current_running_event().ok_or(SDCardError::GenericSDError)?;
     let read_ready = SDCardReq::new(
         PresentState::BufferReadEnable,
         present_state_register_addr,
         get_runner_time(SD_REQ_TIMEOUT_NANOS),
-        current_running_event().expect("Reading from SD outside event"),
+        event,
     )
     .await;
 
@@ -791,11 +788,12 @@ pub async fn write_sd_card(
 
     let present_state_register_addr = (internal_info.base_address_register + 0x24) as *const u32;
 
+    let event = current_running_event().ok_or(SDCardError::GenericSDError)?;
     let write_ready = SDCardReq::new(
         PresentState::BufferWriteEnable,
         present_state_register_addr,
         get_runner_time(SD_REQ_TIMEOUT_NANOS),
-        current_running_event().expect("Writing to SD outside event"),
+        event,
     )
     .await;
 

@@ -90,21 +90,23 @@ pub struct DeviceInfo {
     pub cache_line_size: u8,
 }
 
-fn get_pci_addres(bus: u8, device: u8, function: u8, offset: u8) -> u32 {
-    assert!(offset % 4 == 0);
-    assert!(function < 8);
-    assert!(device < 32);
+fn get_pci_addres(bus: u8, device: u8, function: u8, offset: u8) -> Option<u32> {
+    if !offset.is_multiple_of(4) || function >= 8 || device >= 32 {
+        return None;
+    }
 
     let bus_extended: u32 = bus.into();
     let device_extended: u32 = device.into();
     let function_extended: u32 = function.into();
     let offset_extended: u32 = offset.into();
 
-    (1 << 31)
-        | (bus_extended << 16)
-        | (device_extended << 11)
-        | (function_extended << 8)
-        | offset_extended
+    Some(
+        (1 << 31)
+            | (bus_extended << 16)
+            | (device_extended << 11)
+            | (function_extended << 8)
+            | offset_extended,
+    )
 }
 
 /// Reads from pci config and returns the result into a u32. Note: device must be
@@ -116,7 +118,9 @@ fn get_pci_addres(bus: u8, device: u8, function: u8, offset: u8) -> u32 {
 /// This function is unsafe because it directly accesses the pci bus without
 /// synch
 pub fn read_config(bus: u8, device: u8, function: u8, offset: u8) -> u32 {
-    let address = get_pci_addres(bus, device, function, offset);
+    let Some(address) = get_pci_addres(bus, device, function, offset) else {
+        return u32::MAX;
+    };
 
     PCI_LOCK.lock();
     let mut address_port: PortGeneric<u32, WriteOnlyAccess> =
@@ -136,7 +140,9 @@ pub fn read_config(bus: u8, device: u8, function: u8, offset: u8) -> u32 {
 
 /// Writes data to the pci bus
 pub fn write_pci_data(bus: u8, device: u8, function: u8, offset: u8, data: u32) {
-    let address = get_pci_addres(bus, device, function, offset);
+    let Some(address) = get_pci_addres(bus, device, function, offset) else {
+        return;
+    };
     PCI_LOCK.lock();
     let mut address_port: PortGeneric<u32, WriteOnlyAccess> =
         port::PortGeneric::new(CONFIG_ADDRESS_BUS);
@@ -156,7 +162,9 @@ pub fn write_pci_data(bus: u8, device: u8, function: u8, offset: u8, data: u32) 
 /// to get the old value of command and set and unset the appropate bits
 /// from the command, as some bits are read only
 pub fn write_pci_command(bus: u8, device: u8, function: u8, command: PCICommand) {
-    let address = get_pci_addres(bus, device, function, 0x4);
+    let Some(address) = get_pci_addres(bus, device, function, 0x4) else {
+        return;
+    };
     PCI_LOCK.lock();
     let mut address_port: PortGeneric<u32, WriteOnlyAccess> =
         port::PortGeneric::new(CONFIG_ADDRESS_BUS);
@@ -180,46 +188,28 @@ pub fn write_pci_command(bus: u8, device: u8, function: u8, command: PCICommand)
 /// device in the DeviceInfo struct
 fn device_connected(bus: u8, device: u8) -> Option<DeviceInfo> {
     let mut config_word = read_config(bus, device, 0, 0);
-    let device_id: u16 = (config_word >> 16).try_into().expect("Masked out bits");
-    let vendor_id: u16 = (config_word & 0x0000FFFF)
-        .try_into()
-        .expect("Masked out bits");
+    let device_id = (config_word >> 16) as u16;
+    let vendor_id = (config_word & 0x0000FFFF) as u16;
 
     if vendor_id == 0xFFFF {
         return Option::None;
     }
 
     config_word = read_config(bus, device, 0, 4);
-    let status: u16 = (config_word >> 16).try_into().expect("Masked out bits");
-    let command = PCICommand::from_bits_retain(
-        (config_word & 0x0000FFFF)
-            .try_into()
-            .expect("Masked out bits"),
-    );
+    let status = (config_word >> 16) as u16;
+    let command = PCICommand::from_bits_retain((config_word & 0x0000FFFF) as u16);
 
     config_word = read_config(bus, device, 0, 8);
-    let class_code: u8 = (config_word >> 24).try_into().expect("Masked out bits");
-    let subclass: u8 = ((config_word & 0x00FF0000) >> 16)
-        .try_into()
-        .expect("Masked out bits");
-    let programming_interface: u8 = ((config_word & 0x0000FF00) >> 8)
-        .try_into()
-        .expect("Masked out bits");
-    let revision_id: u8 = (config_word & 0x000000FF)
-        .try_into()
-        .expect("Masked out bits");
+    let class_code = (config_word >> 24) as u8;
+    let subclass = ((config_word & 0x00FF0000) >> 16) as u8;
+    let programming_interface = ((config_word & 0x0000FF00) >> 8) as u8;
+    let revision_id = (config_word & 0x000000FF) as u8;
 
     config_word = read_config(bus, device, 0, 12);
-    let built_in_self_test: u8 = (config_word >> 24).try_into().expect("Masked out bits");
-    let header_type: u8 = ((config_word & 0x00FF0000) >> 16)
-        .try_into()
-        .expect("Masked out bits");
-    let latency_timer: u8 = ((config_word & 0x0000FF00) >> 8)
-        .try_into()
-        .expect("Masked out bits");
-    let cache_line_size: u8 = (config_word & 0x000000FF)
-        .try_into()
-        .expect("Masked out bits");
+    let built_in_self_test = (config_word >> 24) as u8;
+    let header_type = ((config_word & 0x00FF0000) >> 16) as u8;
+    let latency_timer = ((config_word & 0x0000FF00) >> 8) as u8;
+    let cache_line_size = (config_word & 0x000000FF) as u8;
 
     let device_info = DeviceInfo {
         bus,
@@ -263,7 +253,7 @@ pub fn walk_pci_bus() -> Vec<Arc<Mutex<DeviceInfo>>> {
     while bus < 256 {
         let mut device: u8 = 0;
         while device < 32 {
-            match device_connected(bus.try_into().expect("Masked out bits"), device) {
+            match device_connected(bus as u8, device) {
                 None => (),
                 Some(device_info) => {
                     devices.push(Arc::new(Mutex::new(device_info)));

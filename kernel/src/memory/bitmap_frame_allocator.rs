@@ -183,7 +183,10 @@ impl BitmapFrameAllocator {
     /// # Arguments:
     /// * 'frame_index' - index of bit to be set to 1
     fn set_bit(&mut self, frame_index: usize) {
-        assert!(frame_index < self.total_frames);
+        if frame_index >= self.total_frames {
+            serial_println!("Ignoring out-of-range frame allocation: {}", frame_index);
+            return;
+        }
 
         let byte_index = frame_index / 64;
         let bit_index = frame_index % 64;
@@ -200,17 +203,18 @@ impl BitmapFrameAllocator {
     /// # Arguments:
     /// * 'frame_index' - frame that will be cleared in bitmap
     fn clear_bit(&mut self, frame_index: usize) {
-        assert!(frame_index < self.total_frames);
+        if frame_index >= self.total_frames {
+            serial_println!("Ignoring out-of-range frame deallocation: {}", frame_index);
+            return;
+        }
 
         let byte_index = frame_index / 64;
         let bit_index = frame_index % 64;
 
         let mask = 1 << bit_index;
-        if self.bitmap[byte_index] == 0 {
-            assert!(
-                self.bitmap[byte_index] == 1,
-                "Trying to double free a frame!"
-            );
+        if self.bitmap[byte_index] & mask == 0 {
+            serial_println!("Ignoring double free of frame {}", frame_index);
+            return;
         }
         self.bitmap[byte_index] &= !mask;
         self.free_frames += 1;
@@ -225,7 +229,10 @@ impl BitmapFrameAllocator {
     /// # Arguments:
     /// * 'frame_index' - frame that will be cleared in bitmap
     fn clear_bit_init(&mut self, frame_index: usize) {
-        assert!(frame_index < self.total_frames);
+        if frame_index >= self.total_frames {
+            serial_println!("Ignoring out-of-range initial frame: {}", frame_index);
+            return;
+        }
 
         let byte_index = frame_index / 64;
         let bit_index = frame_index % 64;
@@ -243,7 +250,9 @@ impl BitmapFrameAllocator {
     /// # Returns:
     /// True if bit is 1, False if bit is 0
     fn is_bit_set(&self, frame_index: usize) -> bool {
-        assert!(frame_index < self.total_frames);
+        if frame_index >= self.total_frames {
+            return true;
+        }
 
         let byte_index = frame_index / 64;
         let bit_index = frame_index % 64;

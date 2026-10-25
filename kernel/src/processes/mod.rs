@@ -6,7 +6,9 @@ use process::create_placeholder_process;
 
 pub fn init(cpu_id: u32) {
     if cpu_id == 0 {
-        create_placeholder_process();
+        if let Err(error) = create_placeholder_process() {
+            crate::serial_println!("Failed to create kernel process: {:?}", error);
+        }
     }
 }
 
@@ -24,8 +26,8 @@ mod tests {
 
     #[test_case]
     async fn test_simple_process() {
-        let pid = create_process(TEST_SIMPLE_PROCESS);
-        schedule_process(pid);
+        let pid = create_process(TEST_SIMPLE_PROCESS).expect("test process should load");
+        schedule_process(pid).expect("test process should schedule");
         let waiter = AwaitProcess::new(
             pid,
             get_runner_time(3_000_000_000),
@@ -67,7 +69,7 @@ mod tests {
 
     //     let buf = &buffer[..bytes_read];
 
-    //     let pid = create_process(buf);
+    //     let pid = create_process(buf).expect("test process should load");
     //     schedule_process(pid);
     //     let waiter = AwaitProcess::new(
     //         pid,

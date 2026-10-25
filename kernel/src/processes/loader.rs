@@ -25,6 +25,13 @@ use x86_64::{
 // We import our new helper
 use crate::memory::paging::map_kernel_frame;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LoaderError {
+    InvalidElf,
+    InvalidSegment,
+    UnmapFailed,
+}
+
 /// Function for initializing addresss space for process using ELF executable
 ///
 /// # Arguments:
@@ -40,20 +47,37 @@ pub fn load_elf(
     user_mapper: &mut impl Mapper<Size4KiB>,
     kernel_mapper: &mut OffsetPageTable<'static>,
     mm: &mut Mm,
-) -> (VirtAddr, u64) {
-    let elf = Elf::parse(elf_bytes).expect("Parsing ELF failed");
+) -> Result<(VirtAddr, u64), LoaderError> {
+    let elf = Elf::parse(elf_bytes).map_err(|_| LoaderError::InvalidElf)?;
     for ph in elf.program_headers.iter() {
         if ph.p_type != PT_LOAD {
             continue;
         }
 
-        let virt_addr = VirtAddr::new(ph.p_vaddr);
         let mem_size = ph.p_memsz as usize;
         let file_size = ph.p_filesz as usize;
         let offset = ph.p_offset as usize;
 
+        if mem_size == 0 {
+            continue;
+        }
+        if file_size > mem_size
+            || offset
+                .checked_add(file_size)
+                .is_none_or(|end| end > elf_bytes.len())
+        {
+            return Err(LoaderError::InvalidSegment);
+        }
+
+        let virt_addr = VirtAddr::try_new(ph.p_vaddr).map_err(|_| LoaderError::InvalidSegment)?;
+        let last_addr = ph
+            .p_vaddr
+            .checked_add((mem_size - 1) as u64)
+            .ok_or(LoaderError::InvalidSegment)?;
+        let end_addr = VirtAddr::try_new(last_addr).map_err(|_| LoaderError::InvalidSegment)?;
+
         let start_page = Page::containing_address(virt_addr);
-        let end_page = Page::containing_address(virt_addr + (mem_size - 1) as u64);
+        let end_page = Page::containing_address(end_addr);
 
         // Build final page flags
         let default_flags =
@@ -65,8 +89,10 @@ pub fn load_elf(
         // For each page in [start_page..end_page], create user mapping,
         // then do a kernel alias to copy data in
         for page in Page::range_inclusive(start_page, end_page) {
-            let frame = create_mapping(page, user_mapper, Some(default_flags));
-            let kernel_alias = map_kernel_frame(kernel_mapper, frame, default_flags);
+            let frame = create_mapping(page, user_mapper, Some(default_flags))
+                .map_err(|_| LoaderError::UnmapFailed)?;
+            let kernel_alias = map_kernel_frame(kernel_mapper, frame, default_flags)
+                .map_err(|_| LoaderError::UnmapFailed)?;
             // now `kernel_alias` is a kernel virtual address of that same frame
 
             let page_offset =
@@ -120,19 +146,20 @@ pub fn load_elf(
                 );
             });
 
-            update_permissions(page, user_mapper, flags);
+            update_permissions(page, user_mapper, flags).map_err(|_| LoaderError::UnmapFailed)?;
 
             let unmap_page: Page<Size4KiB> = Page::containing_address(kernel_alias);
             // unmap the frame, but do not actually deallocate it
             // the physical frame is still used by the process in its own mapping
             kernel_mapper
                 .unmap(unmap_page)
-                .expect("Unmapping kernel frame failed")
+                .map_err(|_| LoaderError::UnmapFailed)?
                 .1
                 .flush();
-            with_generic_allocator(|allocator| unsafe { kernel_mapper.clean_up(allocator) });
+            with_generic_allocator(|allocator| unsafe { kernel_mapper.clean_up(allocator) })
+                .ok_or(LoaderError::UnmapFailed)?;
 
-            update_permissions(page, user_mapper, flags);
+            update_permissions(page, user_mapper, flags).map_err(|_| LoaderError::UnmapFailed)?;
         }
     }
 
@@ -157,5 +184,5 @@ pub fn load_elf(
         );
     });
 
-    (stack_end, elf.header.e_entry)
+    Ok((stack_end, elf.header.e_entry))
 }

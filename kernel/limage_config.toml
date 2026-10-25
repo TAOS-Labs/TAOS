@@ -1,5 +1,8 @@
 [build]
 image_path = "target/kernel.iso"
+# Use the vendored OVMF firmware: the upstream nightly release no longer
+# publishes the individual .fd assets, so limage cannot download them.
+ovmf_path = "../ovmf"
 
 [qemu]
 binary = "qemu-system-x86_64"

@@ -24,17 +24,18 @@ pub mod x2apic;
 ///
 /// # Panics
 /// Panics if x2APIC initialization fails for either BSP or AP
-pub fn init(cpu_id: u32) {
-    gdt::init(cpu_id);
+pub fn init(cpu_id: u32) -> Result<(), &'static str> {
+    gdt::init(cpu_id)?;
     idt::init_idt(cpu_id);
     if cpu_id == 0 {
-        x2apic::init_bsp(CPU_FREQUENCY).expect("Failed to configure x2APIC");
+        x2apic::init_bsp(CPU_FREQUENCY).map_err(|_| "failed to configure x2APIC")?;
 
         {
             let mut mapper = KERNEL_MAPPER.lock();
-            io_apic::init(&mut *mapper).expect("Failed to initialize I/O APIC");
+            io_apic::init(&mut *mapper).map_err(|_| "failed to initialize I/O APIC")?;
         }
     } else {
-        x2apic::init_ap().expect("Failed to initialize core APIC");
+        x2apic::init_ap().map_err(|_| "failed to initialize core APIC")?;
     }
+    Ok(())
 }

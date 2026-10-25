@@ -45,10 +45,7 @@ lazy_static! {
 }
 
 pub fn get_current_task() -> Option<&'static TaskContext> {
-    let cpuid = CpuId::new()
-        .get_feature_info()
-        .unwrap()
-        .initial_local_apic_id() as usize;
+    let cpuid = CpuId::new().get_feature_info()?.initial_local_apic_id() as usize;
     if cpuid >= TASK_CONTEXTS.len() {
         return None;
     }
@@ -68,10 +65,10 @@ pub fn get_current_task() -> Option<&'static TaskContext> {
 }
 
 pub fn set_current_task(ctx: Option<Box<TaskContext>>) {
-    let cpuid = CpuId::new()
-        .get_feature_info()
-        .unwrap()
-        .initial_local_apic_id() as usize;
+    let Some(feature_info) = CpuId::new().get_feature_info() else {
+        return;
+    };
+    let cpuid = feature_info.initial_local_apic_id() as usize;
     if cpuid < TASK_CONTEXTS.len() {
         unsafe {
             TASK_CONTEXTS.get_unchecked(cpuid).replace(ctx);

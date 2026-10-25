@@ -34,6 +34,7 @@ impl CancellationToken {
     }
 }
 
+#[allow(dead_code)]
 pub struct CancellationGuard<'a> {
     token: &'a CancellationToken,
 }

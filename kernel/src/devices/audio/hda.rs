@@ -40,6 +40,21 @@ pub struct AudioData {
     pub fmt: u16,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HdaError {
+    ControllerNotFound,
+    InvalidBar,
+    DmaAllocationFailed,
+    InvalidDmaAlignment,
+    CommandBufferUnavailable,
+    CommandBufferFull,
+    ResponseBufferUnavailable,
+    ResponseTimeout,
+    NoCurrentEvent,
+    InvalidStream,
+    AudioFile,
+}
+
 /// Interrupt handler for Intel HDA.
 /// - Handles interrupts by reading INTSTS: interrupt status registeer (0x20) and RIRBSTS: response ring buffer status (0x5d).
 /// - Clears the respective bits by writing them back.
@@ -93,9 +108,9 @@ impl IntelHDA {
     /// - Resets the HDA controller via `reset()`.
     /// - Initializes CORB and RIRB buffers.
     /// - Enables interrupt delivery.
-    pub async fn init() -> Option<Self> {
-        let device = find_hda_device()?;
-        let bar = get_bar(&device)?;
+    pub async fn init() -> Result<Self, HdaError> {
+        let device = find_hda_device().ok_or(HdaError::ControllerNotFound)?;
+        let bar = get_bar(&device).ok_or(HdaError::InvalidBar)?;
 
         let virt = *HHDM_OFFSET + bar as u64;
         let regs = unsafe { &mut *(virt.as_u64() as *mut HdaRegisters) };
@@ -120,11 +135,11 @@ impl IntelHDA {
         };
 
         // reset the HDA
-        hda.reset().await;
+        hda.reset().await?;
 
-        hda.init_corb().await;
+        hda.init_corb().await?;
 
-        hda.init_rirb().await;
+        hda.init_rirb().await?;
 
         // enable interrupts
         let intctl_addr = (hda.virt_base + 0x20) as *mut u32;
@@ -136,7 +151,7 @@ impl IntelHDA {
         // test we can play some audio (commented out cause make test does not like the length)
         // hda.test_dma_transfer().await;
 
-        Some(hda)
+        Ok(hda)
     }
 
     /// Initializes the CORB
@@ -146,7 +161,7 @@ impl IntelHDA {
     /// - Allocates a DMA bufferr and sets base address reegisterrs
     /// - Resets thehardwarer rerad/write pointerrs
     /// - Starts theCORB engines.
-    pub async fn init_corb(&mut self) {
+    pub async fn init_corb(&mut self) -> Result<(), HdaError> {
         // stop the CORB DMA engine
         let corbctl_addr = (self.virt_base + 0x4c) as *mut u8;
         // let mut corbctl_val = unsafe {read_volatile(corbctl_addr)};
@@ -182,8 +197,10 @@ impl IntelHDA {
         } // TODO: This line isnt actually needed since qemu only suports one size so remove maybe?
 
         // Allocate a buffer
-        let corb_buf = DmaBuffer::new(4096).expect("Failed to alloc CORB");
-        assert_eq!(corb_buf.virt_addr.as_u64() & (128 - 1), 0);
+        let corb_buf = DmaBuffer::new(4096).ok_or(HdaError::DmaAllocationFailed)?;
+        if corb_buf.virt_addr.as_u64() & (128 - 1) != 0 {
+            return Err(HdaError::InvalidDmaAlignment);
+        }
         let corb = CorbBuffer::new(&corb_buf, corb_size);
         self.cmd_buf = Some(corb); // TODO: why is this an option?
 
@@ -230,6 +247,7 @@ impl IntelHDA {
         while (corbctl_val >> 1) & 1 != 1 {
             corbctl_val = unsafe { read_volatile(corbctl_addr) };
         }
+        Ok(())
     }
 
     /// initializes the RIRB
@@ -238,7 +256,7 @@ impl IntelHDA {
     /// - Deterrmines supported RIRB size and allocates buffer
     /// - Sets RIRB baseaddressregisterrs and configures interrupt count
     /// - Starts the RIRB engine
-    pub async fn init_rirb(&mut self) {
+    pub async fn init_rirb(&mut self) -> Result<(), HdaError> {
         // stop the DMA engine
         let rirbctl_addr = (self.virt_base + 0x5c) as *mut u8;
         unsafe {
@@ -265,8 +283,10 @@ impl IntelHDA {
         }
 
         // Allocate a buffer
-        let rirb_buf = DmaBuffer::new(4096).expect("Failed to alloc CORB");
-        assert_eq!(rirb_buf.virt_addr.as_u64() & (128 - 1), 0);
+        let rirb_buf = DmaBuffer::new(4096).ok_or(HdaError::DmaAllocationFailed)?;
+        if rirb_buf.virt_addr.as_u64() & (128 - 1) != 0 {
+            return Err(HdaError::InvalidDmaAlignment);
+        }
         let rirb = RirbBuffer::new(&rirb_buf, rirb_size);
         self.rirb_buf = Some(rirb);
 
@@ -300,6 +320,7 @@ impl IntelHDA {
         while (ctl_val >> 1) & 1 != 1 {
             ctl_val = unsafe { read_volatile(rirbctl_addr) };
         }
+        Ok(())
     }
 
     /// sends a command if the buffer is not full
@@ -318,35 +339,38 @@ impl IntelHDA {
         node_id: u32,
         command: HdaVerb,
         data: u16,
-    ) -> Option<()> {
-        let corb = self.cmd_buf.as_mut().unwrap();
+    ) -> Result<(), HdaError> {
+        let corb = self
+            .cmd_buf
+            .as_mut()
+            .ok_or(HdaError::CommandBufferUnavailable)?;
         // first check if the buffer is full
         let corbrp_addr = (self.virt_base + 0x4A) as *mut u8;
         let corbrp_val = unsafe { read_volatile(corbrp_addr) };
         corb.set_read_idx(corbrp_val as u16);
         if corb.is_full() {
-            return None;
+            return Err(HdaError::CommandBufferFull);
         }
 
         let cmd = CorbEntry::create_entry(codec_address, node_id, command, data);
         unsafe {
-            corb.send(cmd).await;
+            corb.send(cmd).await.ok_or(HdaError::CommandBufferFull)?;
             // next update the write pointer to indicate to hardware
             let wp_addr = (self.virt_base + 0x48) as *mut u8;
-            write_volatile(
-                wp_addr,
-                (self.cmd_buf.as_ref().unwrap().get_write_idx() & 0xFF) as u8,
-            );
+            write_volatile(wp_addr, (corb.get_write_idx() & 0xFF) as u8);
         }
-        Some(())
+        Ok(())
     }
 
     /// receive a response from the RIRB
     ///
     /// # Returns
     /// the next available `RirbEntry` if present and `None` if a timeout occurs
-    pub async fn receive_response(&mut self) -> Option<RirbEntry> {
-        let rirb = self.rirb_buf.as_mut().unwrap();
+    pub async fn receive_response(&mut self) -> Result<RirbEntry, HdaError> {
+        let rirb = self
+            .rirb_buf
+            .as_mut()
+            .ok_or(HdaError::ResponseBufferUnavailable)?;
         let rirbwp_addr = (self.virt_base + 0x58) as *mut u16;
         let mut rirbwp_val = unsafe { read_volatile(rirbwp_addr) };
         rirb.set_write_idx(rirbwp_val);
@@ -362,10 +386,22 @@ impl IntelHDA {
         if counter == 0 {
             // timeout
             debug_println!("timed out while waiting");
-            return None;
+            return Err(HdaError::ResponseTimeout);
         }
 
-        unsafe { Some(rirb.read().await) }
+        unsafe { rirb.read().await.ok_or(HdaError::ResponseBufferUnavailable) }
+    }
+
+    async fn command_response(
+        &mut self,
+        codec_address: u32,
+        node_id: u32,
+        command: HdaVerb,
+        data: u16,
+    ) -> Result<RirbEntry, HdaError> {
+        self.send_command(codec_address, node_id, command, data)
+            .await?;
+        self.receive_response().await
     }
 
     /// Probes the audio function group and its widgets
@@ -380,36 +416,26 @@ impl IntelHDA {
     ///
     /// # Returns
     /// a vector of `WidgetInfo` representing the widget topology
-    pub async fn probe_afg_and_widgets(&mut self) -> Vec<WidgetInfo> {
+    pub async fn probe_afg_and_widgets(&mut self) -> Result<Vec<WidgetInfo>, HdaError> {
         let mut widgets = Vec::new();
 
-        self.send_command(0, 0, HdaVerb::GetParameter, NodeParams::NodeCount.as_u16())
-            .await
-            .expect("Failed to send GetParameter NodeCount");
-
         let fg_count_raw = self
-            .receive_response()
-            .await
-            .expect("Failed to receive NodeCount response")
+            .command_response(0, 0, HdaVerb::GetParameter, NodeParams::NodeCount.as_u16())
+            .await?
             .get_response();
 
         let fg_count = fg_count_raw & 0xFF;
 
         let mut afg_nid = None;
         for i in 1..=fg_count {
-            self.send_command(
-                0,
-                i,
-                HdaVerb::GetParameter,
-                NodeParams::FunctionGroupType.as_u16(),
-            )
-            .await
-            .expect("Failed to send GetParameter FunctionGroupType");
-
             let group_type = self
-                .receive_response()
-                .await
-                .expect("Failed to receive FunctionGroupType response")
+                .command_response(
+                    0,
+                    i,
+                    HdaVerb::GetParameter,
+                    NodeParams::FunctionGroupType.as_u16(),
+                )
+                .await?
                 .get_response();
 
             if (group_type & 0xF) == 0x01 {
@@ -421,23 +447,18 @@ impl IntelHDA {
         let afg_node = match afg_nid {
             Some(nid) => nid,
             None => {
-                return widgets;
+                return Ok(widgets);
             }
         };
 
-        self.send_command(
-            0,
-            afg_node as u32,
-            HdaVerb::GetParameter,
-            NodeParams::NodeCount.as_u16(),
-        )
-        .await
-        .expect("Failed to send GetParameter NodeCount for AFG");
-
         let list_length = self
-            .receive_response()
-            .await
-            .expect("Failed to receive NodeCount for AFG");
+            .command_response(
+                0,
+                afg_node as u32,
+                HdaVerb::GetParameter,
+                NodeParams::NodeCount.as_u16(),
+            )
+            .await?;
 
         let total_nodes = (list_length.get_response() & 0xFF) as u8;
         let start_id = ((list_length.get_response() >> 16) & 0xFF) as u8;
@@ -445,123 +466,86 @@ impl IntelHDA {
         for node in 0..total_nodes {
             let nid = start_id + node;
 
-            self.send_command(
-                0,
-                nid as u32,
-                HdaVerb::GetParameter,
-                NodeParams::AudioWidgetCap.as_u16(),
-            )
-            .await
-            .expect("Failed to send GetParameter AudioWidgetCap");
-
             let val = self
-                .receive_response()
-                .await
-                .expect("Failed to receive AudioWidgetCap");
+                .command_response(
+                    0,
+                    nid as u32,
+                    HdaVerb::GetParameter,
+                    NodeParams::AudioWidgetCap.as_u16(),
+                )
+                .await?;
 
             let wtype = (val.get_response() >> 20) & 0xF;
 
             let mut w = WidgetInfo::new(nid);
             w.widget_type = wtype;
 
-            self.send_command(
-                0,
-                nid as u32,
-                HdaVerb::GetParameter,
-                NodeParams::NodeCount.as_u16(),
-            )
-            .await
-            .expect("nope");
             w.node_count = self
-                .receive_response()
-                .await
-                .expect("failed to get node count")
+                .command_response(
+                    0,
+                    nid as u32,
+                    HdaVerb::GetParameter,
+                    NodeParams::NodeCount.as_u16(),
+                )
+                .await?
                 .get_response();
 
-            self.send_command(
-                0,
-                nid as u32,
-                HdaVerb::GetParameter,
-                NodeParams::PinCap.as_u16(),
-            )
-            .await
-            .expect("Failed to send GetParameter PinCap");
             w.pin_caps = self
-                .receive_response()
-                .await
-                .expect("Failed to receive PinCap")
+                .command_response(
+                    0,
+                    nid as u32,
+                    HdaVerb::GetParameter,
+                    NodeParams::PinCap.as_u16(),
+                )
+                .await?
                 .get_response();
 
-            self.send_command(
-                0,
-                nid as u32,
-                HdaVerb::GetParameter,
-                NodeParams::InputAmplifierCap.as_u16(),
-            )
-            .await
-            .expect("Failed to send GetAmpCapabilities");
             w.amp_in_caps = self
-                .receive_response()
-                .await
-                .expect("Failed to receive GetAmpCapabilities")
+                .command_response(
+                    0,
+                    nid as u32,
+                    HdaVerb::GetParameter,
+                    NodeParams::InputAmplifierCap.as_u16(),
+                )
+                .await?
                 .get_response();
 
-            self.send_command(
-                0,
-                nid as u32,
-                HdaVerb::GetParameter,
-                NodeParams::OutputAmplifierCap.as_u16(),
-            )
-            .await
-            .expect("Failed to send GetAmpOutCaps");
             w.amp_out_caps = self
-                .receive_response()
-                .await
-                .expect("Failed to receive GetAmpOutCaps")
+                .command_response(
+                    0,
+                    nid as u32,
+                    HdaVerb::GetParameter,
+                    NodeParams::OutputAmplifierCap.as_u16(),
+                )
+                .await?
                 .get_response();
 
-            self.send_command(0, nid as u32, HdaVerb::GetVolumeKnobCaps, 0)
-                .await
-                .expect("Failed to send GetVolumeKnobCaps");
             w.volume_knob = self
-                .receive_response()
-                .await
-                .expect("Failed to receive GetVolumeKnobCaps")
+                .command_response(0, nid as u32, HdaVerb::GetVolumeKnobCaps, 0)
+                .await?
                 .get_response();
 
-            self.send_command(0, nid as u32, HdaVerb::GetConfigDefault, 0)
-                .await
-                .expect("Failed to send GetConfigDefault");
             w.config_default = self
-                .receive_response()
-                .await
-                .expect("Failed to receive GetConfigDefault")
+                .command_response(0, nid as u32, HdaVerb::GetConfigDefault, 0)
+                .await?
                 .get_response();
 
-            self.send_command(
-                0,
-                nid as u32,
-                HdaVerb::GetParameter,
-                NodeParams::ConnectionListLength.as_u16(),
-            )
-            .await
-            .expect("Failed to send GetParameter ConnectionListLength");
             let resp_val = self
-                .receive_response()
-                .await
-                .expect("Failed to receive ConnectionListLength")
+                .command_response(
+                    0,
+                    nid as u32,
+                    HdaVerb::GetParameter,
+                    NodeParams::ConnectionListLength.as_u16(),
+                )
+                .await?
                 .get_response();
 
             let conn_len = (resp_val & 0x7F) as u8;
 
             for i in 0..conn_len {
-                self.send_command(0, nid as u32, HdaVerb::GetConnectionListEntry, i as u16)
-                    .await
-                    .expect("Failed to send GetConnectionListEntry");
                 let conn = (self
-                    .receive_response()
-                    .await
-                    .expect("Failed to receive GetConnectionListEntry")
+                    .command_response(0, nid as u32, HdaVerb::GetConnectionListEntry, i as u16)
+                    .await?
                     .get_response()
                     & 0xFF) as u8;
 
@@ -571,7 +555,7 @@ impl IntelHDA {
             widgets.push(w);
         }
 
-        widgets
+        Ok(widgets)
     }
 
     /// Recursively traces a valid signal path from a pin node to a DAC node.
@@ -582,52 +566,40 @@ impl IntelHDA {
     /// # Returns:
     /// - `Some((pin_node, dac_node))` if a DAC is found along the connection path.
     /// - `None` if no DAC is reachable.
-    pub async fn trace_path_to_dac(&mut self, pin_node: u8) -> Option<(u8, u8)> {
+    pub async fn trace_path_to_dac(&mut self, pin_node: u8) -> Result<Option<(u8, u8)>, HdaError> {
         let mut stack: Vec<(u8, Vec<u8>)> = vec![(pin_node, vec![pin_node])];
 
         while let Some((node, path)) = stack.pop() {
-            self.send_command(
-                0,
-                node as u32,
-                HdaVerb::GetParameter,
-                NodeParams::AudioWidgetCap.as_u16(),
-            )
-            .await
-            .expect("Failed to send AudioWidgetCap");
             let widget_type = self
-                .receive_response()
-                .await
-                .expect("Failed to receive AudioWidgetCap")
+                .command_response(
+                    0,
+                    node as u32,
+                    HdaVerb::GetParameter,
+                    NodeParams::AudioWidgetCap.as_u16(),
+                )
+                .await?
                 .get_response();
             let wtype = (widget_type >> 20) & 0xF;
 
             if wtype == 0x0 {
-                return Some((pin_node, node));
+                return Ok(Some((pin_node, node)));
             }
 
-            self.send_command(
-                0,
-                node as u32,
-                HdaVerb::GetParameter,
-                NodeParams::ConnectionListLength.as_u16(),
-            )
-            .await
-            .expect("Failed to send ConnectionListLength");
             let conn_len_resp = self
-                .receive_response()
-                .await
-                .expect("Failed to receive ConnectionListLength")
+                .command_response(
+                    0,
+                    node as u32,
+                    HdaVerb::GetParameter,
+                    NodeParams::ConnectionListLength.as_u16(),
+                )
+                .await?
                 .get_response();
             let conn_len = (conn_len_resp & 0x7F) as u8;
 
             for i in 0..conn_len {
-                self.send_command(0, node as u32, HdaVerb::GetConnectionListEntry, i as u16)
-                    .await
-                    .expect("Failed to send GetConnectionListEntry");
                 let conn_resp = self
-                    .receive_response()
-                    .await
-                    .expect("Failed to receive GetConnectionListEntry")
+                    .command_response(0, node as u32, HdaVerb::GetConnectionListEntry, i as u16)
+                    .await?
                     .get_response();
                 let conn_node = (conn_resp & 0xFF) as u8;
 
@@ -637,12 +609,12 @@ impl IntelHDA {
             }
         }
 
-        None
+        Ok(None)
     }
 
     /// Resets the controller using GCTL register:
     /// - Clears and sets CRST bit (bit 0)
-    pub async fn reset(&mut self) {
+    pub async fn reset(&mut self) -> Result<(), HdaError> {
         unsafe {
             let gctl_ptr = MMioPtr(
                 (self.regs as *const _ as *const u8).add(offset_of!(HdaRegisters, gctl))
@@ -651,34 +623,55 @@ impl IntelHDA {
             let gctl = gctl_ptr.read();
 
             gctl_ptr.write(gctl & !(1 << 0));
-            HWRegisterWrite::new(gctl_ptr.as_ptr(), 0x1, 0).await;
+            HWRegisterWrite::new(gctl_ptr.as_ptr(), 0x1, 0)
+                .ok_or(HdaError::NoCurrentEvent)?
+                .await;
 
             let gctl = gctl_ptr.read();
 
             gctl_ptr.write(gctl | (1 << 0));
 
-            HWRegisterWrite::new(gctl_ptr.as_ptr(), 0x1, 1).await;
-            nanosleep_current_event(500_000).unwrap().await; // wait 0.5 ms
+            HWRegisterWrite::new(gctl_ptr.as_ptr(), 0x1, 1)
+                .ok_or(HdaError::NoCurrentEvent)?
+                .await;
+            nanosleep_current_event(500_000)
+                .ok_or(HdaError::NoCurrentEvent)?
+                .await; // wait 0.5 ms
 
             // Delay 0.1 ms for codecs to get initialized (can we safely go smaller?)
-            nanosleep_current_event(1_000_000).unwrap().await;
+            nanosleep_current_event(1_000_000)
+                .ok_or(HdaError::NoCurrentEvent)?
+                .await;
         }
+        Ok(())
     }
 
     /// Starts audio stream (sets RUN bit in SDxCTL)
-    pub fn start_stream(&mut self, stream_idx: usize) {
+    pub fn start_stream(&mut self, stream_idx: usize) -> Result<(), HdaError> {
+        let stream = self
+            .regs
+            .stream_regs
+            .get_mut(stream_idx)
+            .ok_or(HdaError::InvalidStream)?;
         unsafe {
-            let ctl = &mut self.regs.stream_regs[stream_idx].ctl0;
+            let ctl = &mut stream.ctl0;
             write_volatile(ctl, read_volatile(ctl) | (1 << 1)); // RUN RUN RUN PLZ
         }
+        Ok(())
     }
 
     /// Stops audio stream (clears RUN bit in SDxCTL)
-    pub fn stop_stream(&mut self, stream_idx: usize) {
+    pub fn stop_stream(&mut self, stream_idx: usize) -> Result<(), HdaError> {
+        let stream = self
+            .regs
+            .stream_regs
+            .get_mut(stream_idx)
+            .ok_or(HdaError::InvalidStream)?;
         unsafe {
-            let ctl = &mut self.regs.stream_regs[stream_idx].ctl0;
+            let ctl = &mut stream.ctl0;
             write_volatile(ctl, read_volatile(ctl) & !(1 << 1)); // RUN STOPPPP
         }
+        Ok(())
     }
 
     /// Plays a WAV file throughh the audio output usning DMA.
@@ -689,106 +682,69 @@ impl IntelHDA {
     /// - Initializes the stream descriptor with control info
     /// - ALterrnates between the BDLs based on the IOC bit
     /// -
-    pub async fn test_dma_transfer(&mut self) {
+    pub async fn test_dma_transfer(&mut self) -> Result<(), HdaError> {
         // turn on the nodes
-        self.send_command(0, 0, HdaVerb::SetPowerState, 0)
-            .await
-            .expect("Failed to send command to the CORB");
-        self.receive_response()
-            .await
-            .expect("Failed to receive response from the RIRB");
+        self.command_response(0, 0, HdaVerb::SetPowerState, 0)
+            .await?;
 
-        self.send_command(0, 0, HdaVerb::GetParameter, NodeParams::NodeCount.as_u16())
-            .await
-            .expect("Failed to send command to the CORB");
-        self.receive_response()
-            .await
-            .expect("Failed to receive response from the RIRB");
+        self.command_response(0, 0, HdaVerb::GetParameter, NodeParams::NodeCount.as_u16())
+            .await?;
 
-        let audio_data = load_wav().await.expect("Wav error");
+        let audio_data = load_wav().await.map_err(|_| HdaError::AudioFile)?;
 
-        self.probe_afg_and_widgets().await;
+        self.probe_afg_and_widgets().await?;
 
-        if let Some((pin_node, dac_node)) = self.trace_path_to_dac(3).await {
-            self.send_command(0, dac_node as u32, HdaVerb::SetPowerState, 0x00)
-                .await
-                .expect("Failed to send SetPowerState to DAC");
-            self.receive_response()
-                .await
-                .expect("No response to SetPowerState");
+        if let Some((pin_node, dac_node)) = self.trace_path_to_dac(3).await? {
+            self.command_response(0, dac_node as u32, HdaVerb::SetPowerState, 0x00)
+                .await?;
 
             // 0x10 means strream number 1, channel 0
-            self.send_command(0, dac_node as u32, HdaVerb::SetStreamChannel, 0x10)
-                .await
-                .expect("Failed to send SetStreamChannel");
-            self.receive_response()
-                .await
-                .expect("No response to SetStreamChannel");
+            self.command_response(0, dac_node as u32, HdaVerb::SetStreamChannel, 0x10)
+                .await?;
 
             // Set ampplifier gain on the DAC: unmuted, 0 dB gain
             // 0xB035 enabbles output for both channels with default ggain
-            self.send_command(0, dac_node as u32, HdaVerb::SetAmplifierGain, 0xB035)
-                .await
-                .expect("Failed to send SetAmplifierGain");
-            self.receive_response()
-                .await
-                .expect("No response to SetAmplifierGain");
+            self.command_response(0, dac_node as u32, HdaVerb::SetAmplifierGain, 0xB035)
+                .await?;
 
             // Configure the DAC format to 48kHz, 16-bit, stereoo
-            self.send_command(
+            self.command_response(
                 0,
                 dac_node as u32,
                 HdaVerb::SetConverterFormat,
                 audio_data.fmt,
             )
-            .await
-            .expect("Failed to send SetConverterFormat");
-            self.receive_response()
-                .await
-                .expect("No response to SetConverterFormat");
+            .await?;
 
             // Read current pin conttrol to preserve existing bitts before setting EAPD/output
-            self.send_command(0, pin_node as u32, HdaVerb::GetPinControl, 0)
-                .await
-                .expect("Failed to send GetPinControl");
             let mut pin_ctrl = self
-                .receive_response()
-                .await
-                .expect("No response to GetPinControl")
+                .command_response(0, pin_node as u32, HdaVerb::GetPinControl, 0)
+                .await?
                 .get_response();
 
             // Enable output and EAPD by setting bbbits 6 and 7 (0xC0)
             pin_ctrl |= 0xC0;
-            self.send_command(
+            self.command_response(
                 0,
                 pin_node as u32,
                 HdaVerb::SetPinControl,
                 (pin_ctrl & 0xFF) as u16,
             )
-            .await
-            .expect("Failed to send SetPinControl");
-            self.receive_response()
-                .await
-                .expect("No response to SetPinControl");
+            .await?;
         } else {
             debug_println!("Could not trace a valid path from pin to DAC.");
         }
 
         // create BDL stuff
-        let audio_buf = DmaBuffer::new(audio_data.len).expect("Failed to allocate audio buffer");
-        let bdl_buf1 = DmaBuffer::new(core::mem::size_of::<BdlEntry>() * 16).expect("Failed BDL");
-        let bdl_buf2 = DmaBuffer::new(core::mem::size_of::<BdlEntry>() * 16).expect("Failed BDL");
+        let audio_buf = DmaBuffer::new(audio_data.len).ok_or(HdaError::DmaAllocationFailed)?;
+        let bdl_buf1 = DmaBuffer::new(core::mem::size_of::<BdlEntry>() * 16)
+            .ok_or(HdaError::DmaAllocationFailed)?;
+        let bdl_buf2 = DmaBuffer::new(core::mem::size_of::<BdlEntry>() * 16)
+            .ok_or(HdaError::DmaAllocationFailed)?;
 
-        assert_eq!(
-            bdl_buf1.phys_addr.as_u64() % 128,
-            0,
-            "BDL 1 not 128-byte aligned"
-        );
-        assert_eq!(
-            bdl_buf2.phys_addr.as_u64() % 128,
-            0,
-            "BDL 2 not 128-byte aligned"
-        );
+        if bdl_buf1.phys_addr.as_u64() % 128 != 0 || bdl_buf2.phys_addr.as_u64() % 128 != 0 {
+            return Err(HdaError::InvalidDmaAlignment);
+        }
 
         unsafe {
             core::ptr::copy_nonoverlapping(
@@ -975,6 +931,7 @@ impl IntelHDA {
                 }
             }
         }
+        Ok(())
     }
 }
 
